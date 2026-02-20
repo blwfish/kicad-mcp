@@ -221,6 +221,188 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def audit_footprint_overlaps(
+        pcb_path: str,
+        min_clearance_mm: float = 0.0,
+        use_courtyard: bool = True,
+    ) -> Dict[str, Any]:
+        """Audit all footprint pairs for physical overlap or insufficient clearance.
+
+        Checks every pair of placed footprints for bounding-box overlap.
+        Unlike audit_pcb_placement (which checks keepout zones and board edges),
+        this detects when two footprints physically collide with each other.
+        Does NOT modify the PCB file.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            min_clearance_mm: Minimum required clearance between footprints in mm (default 0).
+                When > 0, footprints closer than this distance are flagged even if not overlapping.
+            use_courtyard: Use courtyard or pad bounds instead of full body bbox (default True).
+                Reduces false positives for large modules like ESP32 where the body bbox
+                is much larger than the actual copper area.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+{_KEEPOUT_HELPER}
+board = pcbnew.LoadBoard({pcb_path!r})
+min_clearance = {min_clearance_mm}
+use_courtyard = {use_courtyard}
+
+def get_courtyard_bbox(fp):
+    \"\"\"Get courtyard bounding box, falling back to pad bbox, then body bbox.\"\"\"
+    # Try courtyard layer first
+    x_min = float("inf")
+    y_min = float("inf")
+    x_max = float("-inf")
+    y_max = float("-inf")
+    found = False
+    for item in fp.GraphicalItems():
+        layer_name = board.GetLayerName(item.GetLayer())
+        if "CrtYd" in layer_name:
+            found = True
+            bbox = item.GetBoundingBox()
+            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
+            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
+            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
+            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
+    if found:
+        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
+                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}, "courtyard"
+
+    # Fall back to pad bounding box
+    x_min = float("inf")
+    y_min = float("inf")
+    x_max = float("-inf")
+    y_max = float("-inf")
+    found = False
+    for pad in fp.Pads():
+        found = True
+        pos = pad.GetPosition()
+        size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x)
+        y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x)
+        h = pcbnew.ToMM(size.y)
+        x_min = min(x_min, x - w / 2)
+        y_min = min(y_min, y - h / 2)
+        x_max = max(x_max, x + w / 2)
+        y_max = max(y_max, y + h / 2)
+    if found:
+        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
+                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}, "pads"
+
+    # Last resort: body bbox
+    return None, "none"
+
+# Collect bounding boxes for all footprints
+footprints = []
+for fp in board.GetFootprints():
+    pos = fp.GetPosition()
+    fp_bbox = fp.GetBoundingBox(False, False)
+    body_box = {{
+        "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+        "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+        "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+        "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+    }}
+
+    if use_courtyard:
+        tight_box, source = get_courtyard_bbox(fp)
+        check_box = tight_box if tight_box else body_box
+        box_source = source if tight_box else "body"
+    else:
+        check_box = body_box
+        box_source = "body"
+
+    footprints.append({{
+        "reference": fp.GetReference(),
+        "value": fp.GetValue(),
+        "footprint": fp.GetFPID().GetUniStringLibItemName(),
+        "position_mm": [round(pcbnew.ToMM(pos.x), 3), round(pcbnew.ToMM(pos.y), 3)],
+        "bbox": check_box,
+        "bbox_source": box_source,
+    }})
+
+# Pairwise overlap check
+overlaps = []
+for i in range(len(footprints)):
+    a = footprints[i]
+    a_box = a["bbox"]
+    # Expand bbox by min_clearance for proximity check
+    a_expanded = {{
+        "x_min_mm": a_box["x_min_mm"] - min_clearance,
+        "y_min_mm": a_box["y_min_mm"] - min_clearance,
+        "x_max_mm": a_box["x_max_mm"] + min_clearance,
+        "y_max_mm": a_box["y_max_mm"] + min_clearance,
+    }}
+    for j in range(i + 1, len(footprints)):
+        b = footprints[j]
+        b_box = b["bbox"]
+
+        # Check actual overlap (body collision)
+        actual_overlap = rects_overlap(a_box, b_box)
+        area = overlap_area(a_box, b_box) if actual_overlap else 0.0
+
+        # Check clearance violation (expanded bbox)
+        clearance_violation = min_clearance > 0 and rects_overlap(a_expanded, b_box)
+
+        if actual_overlap or clearance_violation:
+            # Compute gap (negative = overlap, positive = clearance)
+            gap_x = max(a_box["x_min_mm"], b_box["x_min_mm"]) - min(a_box["x_max_mm"], b_box["x_max_mm"])
+            gap_y = max(a_box["y_min_mm"], b_box["y_min_mm"]) - min(a_box["y_max_mm"], b_box["y_max_mm"])
+            # Closest approach: positive = separation, negative = penetration
+            gap_mm = max(gap_x, gap_y)
+
+            entry = {{
+                "ref_a": a["reference"],
+                "ref_b": b["reference"],
+                "value_a": a["value"],
+                "value_b": b["value"],
+                "overlap": actual_overlap,
+                "overlap_mm2": area,
+                "gap_mm": round(gap_mm, 3),
+                "bbox_a": a_box,
+                "bbox_b": b_box,
+                "bbox_source_a": a["bbox_source"],
+                "bbox_source_b": b["bbox_source"],
+            }}
+            if actual_overlap:
+                entry["severity"] = "error"
+                entry["message"] = f"{{a['reference']}} and {{b['reference']}} physically overlap by {{area}} mm2"
+            else:
+                entry["severity"] = "warning"
+                entry["message"] = f"{{a['reference']}} and {{b['reference']}} are only {{round(gap_mm, 3)}} mm apart (min clearance: {{min_clearance}} mm)"
+            overlaps.append(entry)
+
+total = len(footprints)
+pairs_checked = total * (total - 1) // 2
+error_count = sum(1 for o in overlaps if o["severity"] == "error")
+warning_count = sum(1 for o in overlaps if o["severity"] == "warning")
+
+if overlaps:
+    summary = f"{{len(overlaps)}} overlap(s) found among {{total}} footprints ({{error_count}} collisions, {{warning_count}} clearance warnings)"
+else:
+    summary = f"All {{total}} footprints are clear of each other"
+    if min_clearance > 0:
+        summary += f" (min clearance {{min_clearance}} mm)"
+
+print(json.dumps({{
+    "status": "ok",
+    "total_footprints": total,
+    "pairs_checked": pairs_checked,
+    "overlap_count": len(overlaps),
+    "error_count": error_count,
+    "warning_count": warning_count,
+    "overlaps": overlaps,
+    "summary": summary,
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
     def audit_pcb_placement(pcb_path: str) -> Dict[str, Any]:
         """Audit all footprint placements for keepout zone violations and board boundary issues.
 

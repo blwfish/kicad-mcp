@@ -26,10 +26,10 @@ class TestCreateServer:
         )
 
     def test_current_tool_count(self, mcp_server):
-        """Snapshot test: currently 69 tools. Update if tools are added/removed."""
+        """Snapshot test: currently 70 tools. Update if tools are added/removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 69, (
-            f"Expected 69 tools, got {len(tools)}. "
+        assert len(tools) == 70, (
+            f"Expected 70 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -69,6 +69,7 @@ class TestExpectedToolsExist:
         "get_board_constraints",
         "validate_placement",
         "audit_pcb_placement",
+        "audit_footprint_overlaps",
         # Project tools
         "list_projects",
         "get_project_structure",

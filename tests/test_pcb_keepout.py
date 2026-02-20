@@ -539,3 +539,283 @@ class TestHelperLogic:
         inner = self._rect(200, 200, 210, 210)
         outer = self._rect(0, 0, 100, 100)
         assert self.rect_inside(inner, outer) is False
+
+
+# -- audit_footprint_overlaps tests ------------------------------------------
+
+class TestAuditFootprintOverlaps:
+
+    def test_file_not_found(self, keepout_server):
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn("/nonexistent/board.kicad_pcb")
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_no_overlaps(self, mock_run, keepout_server, pcb_file):
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 5,
+            "pairs_checked": 10,
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 5 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file)
+        assert result["status"] == "ok"
+        assert result["overlap_count"] == 0
+        assert result["pairs_checked"] == 10
+        assert "clear" in result["summary"]
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_physical_overlap_detected(self, mock_run, keepout_server, pcb_file):
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 3,
+            "pairs_checked": 3,
+            "overlap_count": 1,
+            "error_count": 1,
+            "warning_count": 0,
+            "overlaps": [{
+                "ref_a": "J6",
+                "ref_b": "J2",
+                "value_a": "Conn_01x08",
+                "value_b": "Conn_01x16",
+                "overlap": True,
+                "overlap_mm2": 2.5,
+                "gap_mm": -0.33,
+                "severity": "error",
+                "message": "J6 and J2 physically overlap by 2.5 mm2",
+                "bbox_a": {
+                    "x_min_mm": 100.73, "y_min_mm": 142.0,
+                    "x_max_mm": 103.27, "y_max_mm": 162.78,
+                },
+                "bbox_b": {
+                    "x_min_mm": 99.0, "y_min_mm": 163.11,
+                    "x_max_mm": 181.0, "y_max_mm": 174.0,
+                },
+            }],
+            "summary": "1 overlap(s) found among 3 footprints (1 collisions, 0 clearance warnings)",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file)
+        assert result["overlap_count"] == 1
+        assert result["error_count"] == 1
+        overlap = result["overlaps"][0]
+        assert overlap["ref_a"] == "J6"
+        assert overlap["ref_b"] == "J2"
+        assert overlap["overlap"] is True
+        assert overlap["severity"] == "error"
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_clearance_warning(self, mock_run, keepout_server, pcb_file):
+        """Footprints within min_clearance but not overlapping produce a warning."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 2,
+            "pairs_checked": 1,
+            "overlap_count": 1,
+            "error_count": 0,
+            "warning_count": 1,
+            "overlaps": [{
+                "ref_a": "R1",
+                "ref_b": "R2",
+                "value_a": "4.7k",
+                "value_b": "4.7k",
+                "overlap": False,
+                "overlap_mm2": 0.0,
+                "gap_mm": 0.15,
+                "severity": "warning",
+                "message": "R1 and R2 are only 0.15 mm apart (min clearance: 0.5 mm)",
+                "bbox_a": {
+                    "x_min_mm": 160.0, "y_min_mm": 134.0,
+                    "x_max_mm": 164.0, "y_max_mm": 138.0,
+                },
+                "bbox_b": {
+                    "x_min_mm": 160.0, "y_min_mm": 138.15,
+                    "x_max_mm": 164.0, "y_max_mm": 142.15,
+                },
+            }],
+            "summary": "1 overlap(s) found among 2 footprints (0 collisions, 1 clearance warnings)",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file, min_clearance_mm=0.5)
+        assert result["warning_count"] == 1
+        assert result["error_count"] == 0
+        overlap = result["overlaps"][0]
+        assert overlap["overlap"] is False
+        assert overlap["severity"] == "warning"
+        assert overlap["gap_mm"] == 0.15
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_pairs_checked_formula(self, mock_run, keepout_server, pcb_file):
+        """Verify pairs_checked = n*(n-1)/2."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 20,
+            "pairs_checked": 190,  # 20*19/2
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 20 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file)
+        assert result["pairs_checked"] == 190
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_script_uses_pairwise_check(self, mock_run, keepout_server, pcb_file):
+        """Verify the generated script contains pairwise overlap logic."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 0,
+            "pairs_checked": 0,
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 0 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file)
+        script = mock_run.call_args[0][0]
+        assert "rects_overlap" in script
+        assert "overlap_area" in script
+        assert "range(i + 1" in script
+        assert "GetBoundingBox" in script
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_script_error_propagated(self, mock_run, keepout_server, pcb_file):
+        mock_run.side_effect = RuntimeError("pcbnew crashed")
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        with pytest.raises(RuntimeError, match="pcbnew crashed"):
+            fn(pcb_file)
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_default_clearance_zero(self, mock_run, keepout_server, pcb_file):
+        """Default min_clearance_mm is 0 (only actual overlaps reported)."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 2,
+            "pairs_checked": 1,
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 2 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file)
+        script = mock_run.call_args[0][0]
+        assert "min_clearance = 0.0" in script or "min_clearance = 0" in script
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_use_courtyard_default_true(self, mock_run, keepout_server, pcb_file):
+        """Default use_courtyard=True generates courtyard/pad-based bbox logic."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 0,
+            "pairs_checked": 0,
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 0 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file)
+        script = mock_run.call_args[0][0]
+        assert "use_courtyard = True" in script
+        assert "get_courtyard_bbox" in script
+        assert "CrtYd" in script
+        assert "Pads()" in script
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_use_courtyard_false_uses_body_bbox(self, mock_run, keepout_server, pcb_file):
+        """use_courtyard=False uses body bbox only."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 0,
+            "pairs_checked": 0,
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 0 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file, use_courtyard=False)
+        script = mock_run.call_args[0][0]
+        assert "use_courtyard = False" in script
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_bbox_source_reported(self, mock_run, keepout_server, pcb_file):
+        """Overlap entries include bbox_source_a and bbox_source_b."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 2,
+            "pairs_checked": 1,
+            "overlap_count": 1,
+            "error_count": 1,
+            "warning_count": 0,
+            "overlaps": [{
+                "ref_a": "J4",
+                "ref_b": "J6",
+                "value_a": "OLED",
+                "value_b": "Expansion",
+                "overlap": True,
+                "overlap_mm2": 7.93,
+                "gap_mm": -2.21,
+                "severity": "error",
+                "message": "J4 and J6 physically overlap by 7.93 mm2",
+                "bbox_a": {},
+                "bbox_b": {},
+                "bbox_source_a": "pads",
+                "bbox_source_b": "pads",
+            }],
+            "summary": "1 overlap(s) found among 2 footprints (1 collisions, 0 clearance warnings)",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file)
+        overlap = result["overlaps"][0]
+        assert overlap["bbox_source_a"] == "pads"
+        assert overlap["bbox_source_b"] == "pads"
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_multiple_overlaps(self, mock_run, keepout_server, pcb_file):
+        """Multiple overlap pairs are reported."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 4,
+            "pairs_checked": 6,
+            "overlap_count": 3,
+            "error_count": 2,
+            "warning_count": 1,
+            "overlaps": [
+                {"ref_a": "R1", "ref_b": "R2", "overlap": True, "severity": "error",
+                 "overlap_mm2": 1.0, "gap_mm": -0.5,
+                 "value_a": "10k", "value_b": "10k",
+                 "message": "R1 and R2 physically overlap by 1.0 mm2",
+                 "bbox_a": {}, "bbox_b": {}},
+                {"ref_a": "R1", "ref_b": "C1", "overlap": True, "severity": "error",
+                 "overlap_mm2": 0.5, "gap_mm": -0.2,
+                 "value_a": "10k", "value_b": "100nF",
+                 "message": "R1 and C1 physically overlap by 0.5 mm2",
+                 "bbox_a": {}, "bbox_b": {}},
+                {"ref_a": "R2", "ref_b": "C1", "overlap": False, "severity": "warning",
+                 "overlap_mm2": 0.0, "gap_mm": 0.3,
+                 "value_a": "10k", "value_b": "100nF",
+                 "message": "R2 and C1 are only 0.3 mm apart (min clearance: 0.5 mm)",
+                 "bbox_a": {}, "bbox_b": {}},
+            ],
+            "summary": "3 overlap(s) found among 4 footprints (2 collisions, 1 clearance warnings)",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file, min_clearance_mm=0.5)
+        assert result["overlap_count"] == 3
+        assert result["error_count"] == 2
+        assert result["warning_count"] == 1
