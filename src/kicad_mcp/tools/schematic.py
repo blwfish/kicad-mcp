@@ -268,6 +268,11 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             from kicad_sch_api.discovery import get_search_index
 
             search_index = get_search_index()
+
+            # Rebuild if index is empty or any library file has been modified
+            if search_index.is_stale():
+                search_index.rebuild_index()
+
             results = search_index.search(query, library=library, limit=limit)
             if not results:
                 return {"status": "ok", "count": 0, "results": []}
@@ -276,7 +281,11 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             for r in results[:limit]:
                 items.append({
                     "lib_id": r.get("lib_id", "Unknown"),
+                    "name": r.get("name", ""),
+                    "library": r.get("library", ""),
                     "description": r.get("description", ""),
+                    "keywords": r.get("keywords", ""),
+                    "pin_count": r.get("pin_count", 0),
                 })
             return {"status": "ok", "count": len(items), "results": items}
         except ImportError:
