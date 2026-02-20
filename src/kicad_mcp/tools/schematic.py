@@ -265,31 +265,18 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             limit: Maximum number of results.
         """
         try:
-            from kicad_sch_api.discovery import get_search_index
+            from kicad_mcp.utils.library_index import get_library_index
 
-            search_index = get_search_index()
+            index = get_library_index()
 
-            # Rebuild if index is empty or any library file has been modified
-            if search_index.is_stale():
-                search_index.rebuild_index()
+            if index.symbols_stale():
+                index.rebuild_symbols()
 
-            results = search_index.search(query, library=library, limit=limit)
-            if not results:
-                return {"status": "ok", "count": 0, "results": []}
-
-            items = []
-            for r in results[:limit]:
-                items.append({
-                    "lib_id": r.get("lib_id", "Unknown"),
-                    "name": r.get("name", ""),
-                    "library": r.get("library", ""),
-                    "description": r.get("description", ""),
-                    "keywords": r.get("keywords", ""),
-                    "pin_count": r.get("pin_count", 0),
-                })
-            return {"status": "ok", "count": len(items), "results": items}
-        except ImportError:
-            return {"error": "Component search functionality not available"}
+            results = index.search_symbols(query, library=library, limit=limit)
+            return {"status": "ok", "count": len(results), "results": results}
+        except Exception as e:
+            logger.error("Component search failed: %s", e)
+            return {"error": f"Component search failed: {e}"}
 
     @mcp.tool()
     def filter_components(

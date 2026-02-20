@@ -258,15 +258,15 @@ print(json.dumps({{
             limit: Maximum number of results (default 20).
         """
         try:
-            from kicad_mcp.utils.footprint_index import get_footprint_index
+            from kicad_mcp.utils.library_index import get_library_index
 
-            index = get_footprint_index()
+            index = get_library_index()
 
-            if index.is_stale():
-                count = index.rebuild_index()
+            if index.footprints_stale():
+                count = index.rebuild_footprints()
                 logger.info("Footprint index rebuilt: %d entries", count)
 
-            results = index.search(query, library=library, limit=limit)
+            results = index.search_footprints(query, library=library, limit=limit)
 
             return {
                 "status": "ok",
