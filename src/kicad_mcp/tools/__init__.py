@@ -1,0 +1,1 @@
+"""KiCad MCP tool modules."""

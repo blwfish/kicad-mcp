@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kicad-mcp"
+version = "1.0.0"
+description = "MCP server for KiCad electronic design automation — schematic, PCB layout, and analysis"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Brian Wong" },
+]
+keywords = ["kicad", "eda", "electronics", "pcb", "schematic", "mcp", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Manufacturing",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "kicad-sch-api>=0.5.0",
+    "pyyaml>=6.0.0",
+    "defusedxml>=0.7.0",
+]
+
+[project.scripts]
+kicad-mcp = "kicad_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/blwfish/kicad-mcp"
+"Bug Tracker" = "https://github.com/blwfish/kicad-mcp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kicad_mcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.10.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kicad_mcp"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--tb=short",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests (require KiCad)",
+    "requires_kicad: Tests that require KiCad Python 3.9 with pcbnew bindings",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+strict_equality = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["pcbnew", "kicad_sch_api.*"]
+ignore_missing_imports = true
