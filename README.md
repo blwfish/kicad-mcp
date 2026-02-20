@@ -146,7 +146,7 @@ src/kicad_mcp/
 ## Development
 
 ```bash
-# Run tests (197 tests, no KiCad installation required)
+# Run tests (179 tests, no KiCad installation required)
 pytest
 
 # Run with coverage
