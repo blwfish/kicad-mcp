@@ -1,8 +1,8 @@
-"""PCB footprint tools: place, move, list, and get pad positions."""
+"""PCB footprint tools: place, move, list, search, and get pad positions."""
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
 
@@ -238,3 +238,41 @@ print(json.dumps({{
 }}))
 """
         return run_pcbnew_script(script)
+
+    @mcp.tool()
+    def search_footprints(
+        query: str,
+        library: Optional[str] = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Search for footprints in KiCad footprint libraries.
+
+        Searches a SQLite FTS5 index built from all installed KiCad footprint
+        libraries. The index auto-rebuilds when library files change (e.g. after
+        a KiCad upgrade). Returns footprint names suitable for use with
+        place_footprint.
+
+        Args:
+            query: Search terms (e.g., "SOT-23", "0603 resistor", "QFP 48").
+            library: Optional library name to restrict search (e.g., "Resistor_SMD").
+            limit: Maximum number of results (default 20).
+        """
+        try:
+            from kicad_mcp.utils.footprint_index import get_footprint_index
+
+            index = get_footprint_index()
+
+            if index.is_stale():
+                count = index.rebuild_index()
+                logger.info("Footprint index rebuilt: %d entries", count)
+
+            results = index.search(query, library=library, limit=limit)
+
+            return {
+                "status": "ok",
+                "count": len(results),
+                "results": results,
+            }
+        except Exception as e:
+            logger.error("Footprint search failed: %s", e)
+            return {"error": f"Footprint search failed: {e}"}

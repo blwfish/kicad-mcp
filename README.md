@@ -1,6 +1,6 @@
 # kicad-mcp
 
-MCP server for KiCad — 71 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
+MCP server for KiCad — 72 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 Design schematics, lay out PCBs, autoroute traces, run DRC, and analyze circuits — all from an AI assistant like Claude.
 
@@ -40,11 +40,11 @@ claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 
 **Drawing** — `add_text`, `add_text_box`, `add_sheet`, `add_sheet_pin`
 
-### PCB Layout (27 tools)
+### PCB Layout (28 tools)
 
 **Board** — `create_pcb`, `load_pcb`, `add_board_outline`, `set_design_rules`
 
-**Footprints** — `place_footprint`, `move_footprint`, `list_pcb_footprints`, `get_pad_positions`
+**Footprints** — `place_footprint`, `move_footprint`, `list_pcb_footprints`, `get_pad_positions`, `search_footprints`
 
 **Nets** — `add_net`, `assign_pad_net`, `bulk_assign_pad_nets`, `list_pcb_nets`, `update_pcb_from_schematic`
 
@@ -95,12 +95,14 @@ update_pcb_from_schematic(project_path="project.kicad_pro")
 
 Exports the netlist from the schematic, creates all nets in the PCB, and assigns them to the correct pads.
 
-### Component Search
+### Library Search
 
-`search_components` maintains a SQLite index of all KiCad symbol libraries. The index auto-rebuilds when library files change (e.g. after a KiCad upgrade):
+`search_components` and `search_footprints` maintain SQLite FTS5 indexes of all KiCad symbol and footprint libraries respectively. Both auto-rebuild when library files change (e.g. after a KiCad upgrade):
 
 ```
-search_components(query="op amp")
+search_components(query="op amp")          # → Device:LM358, Amplifier_Operational:LM741, ...
+search_footprints(query="SOT-23")          # → Package_TO_SOT_SMD:SOT-23, ...
+search_footprints(query="0603 resistor")   # → Resistor_SMD:R_0603_1608Metric, ...
 ```
 
 ## Typical Workflow
@@ -144,7 +146,7 @@ src/kicad_mcp/
 ## Development
 
 ```bash
-# Run tests (173 tests, no KiCad installation required)
+# Run tests (197 tests, no KiCad installation required)
 pytest
 
 # Run with coverage
