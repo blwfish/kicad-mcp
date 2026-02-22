@@ -2,10 +2,13 @@
 Export tools for KiCad projects.
 """
 import asyncio
+import base64
 import os
 import shutil
 import subprocess
 from typing import Any, Dict
+
+from mcp.types import ImageContent
 
 from fastmcp import FastMCP, Context
 
@@ -63,6 +66,12 @@ def register_export_tools(mcp: FastMCP) -> None:
                 result = await _generate_thumbnail_with_cli(pcb_file, ctx)
                 if result and "error" not in result:
                     print("Thumbnail generated successfully via CLI.")
+                    if "image_data" in result:
+                        return ImageContent(
+                            type="image",
+                            data=result["image_data"],
+                            mimeType=result["mime_type"],
+                        )
                     return result
                 else:
                     print("_generate_thumbnail_with_cli returned error or empty result")
@@ -198,11 +207,13 @@ async def _generate_thumbnail_with_cli(
             )
             if ctx:
                 await ctx.report_progress(90, 100)
-                await ctx.info(f"Thumbnail saved to: {output_file}")
+                await ctx.info(f"Thumbnail generated ({len(img_data)} bytes)")
             return {
                 "status": "ok",
                 "thumbnail_path": output_file,
                 "size_bytes": len(img_data),
+                "image_data": base64.b64encode(img_data).decode("utf-8"),
+                "mime_type": "image/svg+xml",
             }
 
         except subprocess.CalledProcessError as e:
