@@ -1,6 +1,6 @@
 # kicad-mcp
 
-MCP server for KiCad — 72 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
+MCP server for KiCad — 73 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 Design schematics, lay out PCBs, autoroute traces, run DRC, and analyze circuits — all from an AI assistant like Claude.
 
@@ -28,7 +28,7 @@ pip install -e ".[dev]"
 claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 ```
 
-## Tools (71)
+## Tools (73)
 
 ### Schematic Design (28 tools)
 
@@ -40,7 +40,7 @@ claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 
 **Drawing** — `add_text`, `add_text_box`, `add_sheet`, `add_sheet_pin`
 
-### PCB Layout (28 tools)
+### PCB Layout (29 tools)
 
 **Board** — `create_pcb`, `load_pcb`, `add_board_outline`, `set_design_rules`
 
@@ -48,7 +48,7 @@ claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 
 **Nets** — `add_net`, `assign_pad_net`, `bulk_assign_pad_nets`, `list_pcb_nets`, `update_pcb_from_schematic`
 
-**Routing** — `add_trace`, `add_via`, `autoroute_pcb`
+**Routing** — `add_trace`, `add_via`, `autoroute_pcb`, `panelize_pcb`
 
 **Zones** — `add_copper_zone`, `fill_zones`, `get_keepout_zones`
 

@@ -1,6 +1,6 @@
 # KiCad MCP — Instructions for Claude
 
-You have access to 72 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
+You have access to 73 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
 
 ## Mandatory Rules
 
@@ -86,7 +86,15 @@ autoroute_pcb(pcb_path=..., passes=2)
 
 FreeRouter is non-deterministic. Use `passes=2` or `passes=3` for complex boards — the tool keeps the best result. Requires Java 17+.
 
-### 6. Copper Zones and Finish
+### 6. Panelization (optional)
+
+```
+panelize_pcb(pcb_path=..., rows=2, cols=5, cut_type="vcuts", framing="railstb")
+```
+
+Creates a manufacturing panel with V-scores or mousebites. Supports framing rails, tooling holes, and fiducials. Output defaults to `{name}-panel.kicad_pcb`.
+
+### 7. Copper Zones and Finish
 
 ```
 add_copper_zone(pcb_path=..., net_name="GND", layer="B.Cu",
