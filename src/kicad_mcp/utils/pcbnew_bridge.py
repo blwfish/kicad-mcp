@@ -136,9 +136,24 @@ def run_pcbnew_script(script: str, timeout: float = 30.0) -> Dict[str, Any]:
         if not stdout:
             raise RuntimeError("pcbnew script produced no output")
 
-        # Take the last line as JSON (in case of stray prints)
-        json_line = stdout.split("\n")[-1]
-        parsed = json.loads(json_line)
+        # Find the JSON object in stdout.  SWIG memory-leak warnings
+        # (e.g. "swig/python detected a memory leak of type 'ZONE *'")
+        # can appear on stdout after the script's print(), so we scan
+        # backwards for the first line that parses as JSON.
+        parsed = None
+        for line in reversed(stdout.split("\n")):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    parsed = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if parsed is None:
+            raise RuntimeError(
+                f"pcbnew script output contains no valid JSON line\n"
+                f"Output was: {stdout[:2000]}"
+            )
 
         logger.debug("pcbnew script completed in %.2fs", elapsed)
         return parsed
@@ -146,15 +161,5 @@ def run_pcbnew_script(script: str, timeout: float = 30.0) -> Dict[str, Any]:
     except subprocess.TimeoutExpired:
         logger.error("pcbnew script timed out after %.1fs", timeout)
         raise RuntimeError(f"pcbnew script timed out after {timeout}s")
-    except json.JSONDecodeError as e:
-        logger.error(
-            "pcbnew script output is not valid JSON: %s\nOutput: %s",
-            e,
-            result.stdout[:2000],
-        )
-        raise RuntimeError(
-            f"pcbnew script output is not valid JSON: {e}\n"
-            f"Output was: {result.stdout[:2000]}"
-        )
     finally:
         os.unlink(script_path)
