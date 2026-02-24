@@ -81,10 +81,12 @@ fp.SetValue({value!r})
 if {rotation_deg} != 0:
     fp.SetOrientationDegrees({rotation_deg})
 
+# Add to board BEFORE flipping — Flip() calls GetBoard()->FlipLayer()
+# internally, which segfaults if the footprint isn't on a board yet.
+board.Add(fp)
+
 if {layer!r} == "B.Cu":
     fp.Flip(fp.GetPosition(), False)
-
-board.Add(fp)
 board.Save({pcb_path!r})
 
 print(json.dumps({{
