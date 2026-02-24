@@ -5,12 +5,10 @@ kicad-cli is mocked so tests run without KiCad installed.
 """
 
 import asyncio
-import base64
 import os
 import subprocess
 
 import pytest
-from mcp.types import ImageContent
 
 from tests.conftest import get_tool_fn
 
@@ -55,7 +53,7 @@ def _mock_run_ok(svg_bytes, project_dir):
 # ---------------------------------------------------------------------------
 
 class TestGeneratePcbThumbnailSuccess:
-    def test_returns_image_content(self, mcp_server, project_path, monkeypatch):
+    def test_returns_dict_with_path(self, mcp_server, project_path, monkeypatch):
         fn = get_tool_fn(mcp_server, "generate_pcb_thumbnail")
         monkeypatch.setattr(
             "kicad_mcp.tools.export.subprocess.run",
@@ -67,9 +65,12 @@ class TestGeneratePcbThumbnailSuccess:
         monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(project_path=project_path, ctx=None))
-        assert isinstance(result, ImageContent)
+        assert isinstance(result, dict)
+        assert result["status"] == "ok"
+        assert "thumbnail_path" in result
+        assert result["thumbnail_path"].endswith(".svg")
 
-    def test_mime_type_is_svg(self, mcp_server, project_path, monkeypatch):
+    def test_returns_file_size(self, mcp_server, project_path, monkeypatch):
         fn = get_tool_fn(mcp_server, "generate_pcb_thumbnail")
         monkeypatch.setattr(
             "kicad_mcp.tools.export.subprocess.run",
@@ -81,9 +82,10 @@ class TestGeneratePcbThumbnailSuccess:
         monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(project_path=project_path, ctx=None))
-        assert result.mimeType == "image/svg+xml"
+        assert result["size_bytes"] == len(FAKE_SVG)
 
-    def test_image_data_is_valid_base64_svg(self, mcp_server, project_path, monkeypatch):
+    def test_no_image_data_in_result(self, mcp_server, project_path, monkeypatch):
+        """Ensure base64 image data is NOT returned (it causes API errors)."""
         fn = get_tool_fn(mcp_server, "generate_pcb_thumbnail")
         monkeypatch.setattr(
             "kicad_mcp.tools.export.subprocess.run",
@@ -95,8 +97,8 @@ class TestGeneratePcbThumbnailSuccess:
         monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(project_path=project_path, ctx=None))
-        decoded = base64.b64decode(result.data)
-        assert decoded == FAKE_SVG
+        assert "image_data" not in result
+        assert "mime_type" not in result
 
     def test_generate_project_thumbnail_alias(self, mcp_server, project_path, monkeypatch):
         """generate_project_thumbnail should produce identical output."""
@@ -115,9 +117,9 @@ class TestGeneratePcbThumbnailSuccess:
         r1 = asyncio.run(fn1(project_path=project_path, ctx=None))
         r2 = asyncio.run(fn2(project_path=project_path, ctx=None))
 
-        assert isinstance(r1, ImageContent)
-        assert isinstance(r2, ImageContent)
-        assert r1.data == r2.data
+        assert isinstance(r1, dict)
+        assert isinstance(r2, dict)
+        assert r1["status"] == r2["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
