@@ -1,12 +1,23 @@
-"""PCB autorouting via FreeRouter (Specctra DSN/SES pipeline)."""
+"""PCB autorouting via FreeRouter (Specctra DSN/SES pipeline).
+
+Provides both synchronous (autoroute_pcb) and async (autoroute_pcb_async +
+poll_autoroute + cancel_autoroute) tools.  The async path avoids MCP timeouts
+by running FreeRouter in a background thread and letting the caller poll for
+completion.
+"""
 
 import json
 import logging
 import os
 import platform
+import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
+import time
+import uuid
 from typing import Any, Dict, Optional
 
 from fastmcp import FastMCP
@@ -23,6 +34,10 @@ _FREEROUTER_SEARCH_PATHS = [
     os.path.expanduser("~/freerouting-2.1.0.jar"),
     os.path.expanduser("~/freerouting.jar"),
 ]
+
+# Async job tracking: job_id -> {status, started, result, error, ...}
+_autoroute_jobs: Dict[str, Dict[str, Any]] = {}
+_autoroute_lock = threading.Lock()
 
 
 def _find_freerouter_jar(explicit_path: Optional[str] = None) -> Optional[str]:
@@ -66,6 +81,327 @@ def _find_java() -> Optional[str]:
     return None
 
 
+def _parse_freerouter_incomplete(stdout: str) -> int:
+    """Parse FreeRouter stdout to find the number of incomplete connections.
+
+    FreeRouter prints lines like:
+        "0 connections not found"
+        "3 connections not found"
+    """
+    for line in reversed(stdout.split("\n")):
+        m = re.search(r"(\d+)\s+connections?\s+not\s+found", line, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+
+    # Also check for "x incomplete" pattern
+    for line in reversed(stdout.split("\n")):
+        m = re.search(r"(\d+)\s+incomplete", line, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+
+    return 0  # Assume success if no indication of failure
+
+
+def _export_dsn(
+    pcb_path: str, dsn_path: str, remove_zones: bool
+) -> Dict[str, Any]:
+    """Export a PCB to Specctra DSN format (step 1 of the pipeline)."""
+    if remove_zones:
+        zone_removal_info = """
+# Remove copper pour zones (FreeRouter doesn't understand them)
+zones_removed = 0
+zones_to_remove = []
+for z in board.Zones():
+    if not z.GetIsRuleArea():
+        zones_to_remove.append(z)
+for z in zones_to_remove:
+    board.Remove(z)
+    zones_removed += 1
+"""
+    else:
+        zone_removal_info = "zones_removed = 0"
+
+    export_script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+
+{zone_removal_info}
+
+# Export Specctra DSN
+pcbnew.ExportSpecctraDSN(board, {dsn_path!r})
+
+# Save board (with zones removed if applicable)
+board.Save({pcb_path!r})
+
+# Count tracks/vias before routing
+tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
+vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
+
+print(json.dumps({{
+    "status": "ok",
+    "dsn_exported": True,
+    "dsn_path": {dsn_path!r},
+    "zones_removed": zones_removed,
+    "existing_tracks": tracks,
+    "existing_vias": vias,
+}}))
+"""
+    return run_pcbnew_script(export_script, timeout=30.0)
+
+
+def _import_ses(pcb_path: str, ses_path: str) -> Dict[str, Any]:
+    """Import a Specctra SES file back into the PCB (step 3 of the pipeline)."""
+    import_script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+
+# Import Specctra SES
+pcbnew.ImportSpecctraSES(board, {ses_path!r})
+board.Save({pcb_path!r})
+
+# Count results
+tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
+vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
+
+# Count nets with unrouted connections
+netinfo = board.GetNetInfo()
+net_count = netinfo.GetNetCount()
+
+print(json.dumps({{
+    "status": "ok",
+    "ses_imported": True,
+    "tracks": tracks,
+    "vias": vias,
+    "net_count": net_count,
+}}))
+"""
+    return run_pcbnew_script(import_script, timeout=30.0)
+
+
+def _run_freerouter_pass(
+    java_path: str,
+    jar_path: str,
+    dsn_path: str,
+    ses_path: str,
+    work_dir: str,
+    timeout: float,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run a single FreeRouter pass.  Returns pass result dict.
+
+    If *job_id* is given, the subprocess PID is stored in
+    ``_autoroute_jobs[job_id]["pid"]`` so cancel_autoroute can kill it.
+    """
+    cmd = [
+        java_path, "-jar", jar_path,
+        "-de", dsn_path,
+        "-do", ses_path,
+        "--gui.enabled=false",
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=work_dir,
+    )
+
+    # Store PID for cancellation
+    if job_id:
+        with _autoroute_lock:
+            job = _autoroute_jobs.get(job_id)
+            if job:
+                job["pid"] = proc.pid
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        return {"status": "timeout"}
+
+    # Check if job was cancelled while running
+    if job_id:
+        with _autoroute_lock:
+            job = _autoroute_jobs.get(job_id)
+            if job and job.get("status") == "cancelled":
+                return {"status": "cancelled"}
+
+    if proc.returncode != 0:
+        return {"status": "error", "error": stderr[:500]}
+
+    if not os.path.exists(ses_path):
+        return {"status": "no_output"}
+
+    incomplete = _parse_freerouter_incomplete(stdout)
+    return {"status": "ok", "incomplete": incomplete, "stdout": stdout}
+
+
+def _run_full_autoroute(
+    pcb_path: str,
+    jar_path: str,
+    java_path: str,
+    passes: int,
+    remove_zones: bool,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run the complete autoroute pipeline (DSN export → FreeRouter → SES import).
+
+    Used by both the synchronous and async tools.
+    """
+    pcb_basename = os.path.splitext(os.path.basename(pcb_path))[0]
+    work_dir = tempfile.mkdtemp(prefix="kicad_autoroute_")
+    dsn_path = os.path.join(work_dir, f"{pcb_basename}.dsn")
+    ses_path = os.path.join(work_dir, f"{pcb_basename}.ses")
+
+    # 30 minutes per pass — FreeRouter on complex boards can take 10-20+ min
+    per_pass_timeout = 1800.0
+
+    try:
+        # Step 1: Export DSN
+        logger.info("Exporting DSN from %s", pcb_path)
+        export_result = _export_dsn(pcb_path, dsn_path, remove_zones)
+
+        if "error" in export_result:
+            return {"error": f"DSN export failed: {export_result['error']}"}
+        if not os.path.exists(dsn_path):
+            return {"error": f"DSN file was not created at {dsn_path}"}
+
+        # Update job phase
+        if job_id:
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job:
+                    job["phase"] = "routing"
+
+        # Step 2: Run FreeRouter passes
+        best_ses = None
+        best_incomplete = float("inf")
+        pass_results = []
+
+        for pass_num in range(1, passes + 1):
+            # Check cancellation before each pass
+            if job_id:
+                with _autoroute_lock:
+                    job = _autoroute_jobs.get(job_id)
+                    if job and job.get("status") == "cancelled":
+                        return {
+                            "error": "Cancelled by user",
+                            "passes": pass_results,
+                        }
+                    if job:
+                        job["current_pass"] = pass_num
+
+            pass_ses = (
+                ses_path if passes == 1
+                else os.path.join(work_dir, f"{pcb_basename}_pass{pass_num}.ses")
+            )
+
+            logger.info("FreeRouter pass %d/%d", pass_num, passes)
+            result = _run_freerouter_pass(
+                java_path, jar_path, dsn_path, pass_ses,
+                work_dir, per_pass_timeout, job_id,
+            )
+
+            if result["status"] == "cancelled":
+                return {"error": "Cancelled by user", "passes": pass_results}
+
+            pass_result = {"pass": pass_num, "status": result["status"]}
+            if "error" in result:
+                pass_result["error"] = result["error"]
+            if "incomplete" in result:
+                pass_result["incomplete"] = result["incomplete"]
+            pass_results.append(pass_result)
+
+            if result["status"] == "ok":
+                incomplete = result["incomplete"]
+                if incomplete < best_incomplete:
+                    best_incomplete = incomplete
+                    best_ses = pass_ses
+
+        if best_ses is None:
+            return {
+                "error": "All FreeRouter passes failed",
+                "passes": pass_results,
+            }
+
+        # Update job phase
+        if job_id:
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job:
+                    job["phase"] = "importing"
+
+        # Step 3: Import SES
+        logger.info("Importing SES into %s", pcb_path)
+        import_result = _import_ses(pcb_path, best_ses)
+
+        if "error" in import_result:
+            return {"error": f"SES import failed: {import_result['error']}"}
+
+        return {
+            "status": "ok",
+            "pcb_path": pcb_path,
+            "freerouter_jar": jar_path,
+            "zones_removed": export_result.get("zones_removed", 0),
+            "tracks_before": export_result.get("existing_tracks", 0),
+            "vias_before": export_result.get("existing_vias", 0),
+            "tracks_after": import_result.get("tracks", 0),
+            "vias_after": import_result.get("vias", 0),
+            "net_count": import_result.get("net_count", 0),
+            "passes_run": len(pass_results),
+            "best_incomplete": (
+                best_incomplete if best_incomplete != float("inf") else None
+            ),
+            "pass_results": pass_results,
+            "note": (
+                "Copper zones were removed before routing. "
+                "Re-add them with add_copper_zone + fill_zones."
+                if remove_zones and export_result.get("zones_removed", 0) > 0
+                else "Routing complete."
+            ),
+        }
+
+    finally:
+        # Clean up temp files (but not if async job still referencing them)
+        if not job_id:
+            try:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
+def _autoroute_worker(job_id: str, **kwargs: Any) -> None:
+    """Background thread worker for async autorouting."""
+    try:
+        result = _run_full_autoroute(job_id=job_id, **kwargs)
+        with _autoroute_lock:
+            job = _autoroute_jobs.get(job_id)
+            if job and job.get("status") != "cancelled":
+                job["status"] = "done" if "error" not in result else "error"
+                job["result"] = result
+                job["elapsed"] = round(time.time() - job["started"], 1)
+    except Exception as exc:
+        with _autoroute_lock:
+            job = _autoroute_jobs.get(job_id)
+            if job:
+                job["status"] = "error"
+                job["result"] = {"error": str(exc)}
+                job["elapsed"] = round(time.time() - job["started"], 1)
+    finally:
+        # Clean up work_dir
+        with _autoroute_lock:
+            job = _autoroute_jobs.get(job_id)
+            if job and "work_dir" in job:
+                try:
+                    shutil.rmtree(job["work_dir"], ignore_errors=True)
+                except Exception:
+                    pass
+
+
 def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
     """Register PCB autorouting tools."""
 
@@ -99,7 +435,6 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        # Find FreeRouter
         jar_path = _find_freerouter_jar(freerouter_jar or None)
         if not jar_path:
             return {
@@ -110,220 +445,202 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
                 )
             }
 
-        # Find Java
         java_path = _find_java()
         if not java_path:
             return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
 
-        pcb_dir = os.path.dirname(os.path.abspath(pcb_path))
-        pcb_basename = os.path.splitext(os.path.basename(pcb_path))[0]
+        return _run_full_autoroute(
+            pcb_path=pcb_path,
+            jar_path=jar_path,
+            java_path=java_path,
+            passes=passes,
+            remove_zones=remove_zones,
+        )
 
-        # Use a temp directory for DSN/SES files to avoid polluting the project
-        work_dir = tempfile.mkdtemp(prefix="kicad_autoroute_")
-        dsn_path = os.path.join(work_dir, f"{pcb_basename}.dsn")
-        ses_path = os.path.join(work_dir, f"{pcb_basename}.ses")
+    @mcp.tool()
+    def autoroute_pcb_async(
+        pcb_path: str,
+        freerouter_jar: str = "",
+        passes: int = 1,
+        remove_zones: bool = True,
+    ) -> Dict[str, Any]:
+        """Start autorouting in the background.  Returns a job_id immediately.
 
-        try:
-            # Step 1: Optionally remove copper zones and export DSN
-            zone_removal_info = ""
-            if remove_zones:
-                zone_removal_info = """
-# Remove copper pour zones (FreeRouter doesn't understand them)
-zones_removed = 0
-zones_to_remove = []
-for z in board.Zones():
-    if not z.GetIsRuleArea():
-        zones_to_remove.append(z)
-for z in zones_to_remove:
-    board.Remove(z)
-    zones_removed += 1
-"""
-            else:
-                zone_removal_info = "zones_removed = 0"
+        Use ``poll_autoroute(job_id)`` to check progress and retrieve
+        results.  Use ``cancel_autoroute(job_id)`` to abort.
 
-            export_script = f"""
-import pcbnew, json
+        FreeRouter can take 10-30+ minutes on complex boards.  This async
+        variant avoids MCP call timeouts by returning immediately and
+        running FreeRouter in a background thread.
 
-board = pcbnew.LoadBoard({pcb_path!r})
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            freerouter_jar: Path to freerouting JAR file. Auto-detected if empty.
+            passes: Number of autoroute attempts (best result kept). Default 1.
+            remove_zones: Remove copper pour zones before routing (recommended). Default True.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
 
-{zone_removal_info}
-
-# Export Specctra DSN
-pcbnew.ExportSpecctraDSN(board, {dsn_path!r})
-
-# Save board (with zones removed if applicable)
-board.Save({pcb_path!r})
-
-# Count tracks/vias before routing
-tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
-vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
-
-print(json.dumps({{
-    "status": "ok",
-    "dsn_exported": True,
-    "dsn_path": {dsn_path!r},
-    "zones_removed": zones_removed,
-    "existing_tracks": tracks,
-    "existing_vias": vias,
-}}))
-"""
-            logger.info("Exporting DSN from %s", pcb_path)
-            export_result = run_pcbnew_script(export_script, timeout=30.0)
-
-            if "error" in export_result:
-                return {"error": f"DSN export failed: {export_result['error']}"}
-
-            if not os.path.exists(dsn_path):
-                return {"error": f"DSN file was not created at {dsn_path}"}
-
-            # Step 2: Run FreeRouter (possibly multiple passes)
-            best_ses = None
-            best_incomplete = float("inf")
-            pass_results = []
-
-            for pass_num in range(1, passes + 1):
-                pass_ses = ses_path if passes == 1 else os.path.join(
-                    work_dir, f"{pcb_basename}_pass{pass_num}.ses"
-                )
-
-                logger.info("FreeRouter pass %d/%d", pass_num, passes)
-
-                cmd = [
-                    java_path, "-jar", jar_path,
-                    "-de", dsn_path,
-                    "-do", pass_ses,
-                    "--gui.enabled=false",
-                ]
-
-                try:
-                    fr_result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=300,  # 5 minute timeout
-                        cwd=work_dir,
-                    )
-                except subprocess.TimeoutExpired:
-                    pass_results.append({
-                        "pass": pass_num,
-                        "status": "timeout",
-                        "incomplete": float("inf"),
-                    })
-                    continue
-
-                if fr_result.returncode != 0:
-                    pass_results.append({
-                        "pass": pass_num,
-                        "status": "error",
-                        "error": fr_result.stderr[:500],
-                    })
-                    continue
-
-                if not os.path.exists(pass_ses):
-                    pass_results.append({
-                        "pass": pass_num,
-                        "status": "no_output",
-                    })
-                    continue
-
-                # Parse FreeRouter output for incomplete count
-                incomplete = _parse_freerouter_incomplete(fr_result.stdout)
-                pass_results.append({
-                    "pass": pass_num,
-                    "status": "ok",
-                    "incomplete": incomplete,
-                })
-
-                if incomplete < best_incomplete:
-                    best_incomplete = incomplete
-                    best_ses = pass_ses
-
-            if best_ses is None:
-                return {
-                    "error": "All FreeRouter passes failed",
-                    "passes": pass_results,
-                    "dsn_path": dsn_path,
-                }
-
-            # Step 3: Import SES back into PCB
-            import_script = f"""
-import pcbnew, json
-
-board = pcbnew.LoadBoard({pcb_path!r})
-
-# Import Specctra SES
-pcbnew.ImportSpecctraSES(board, {best_ses!r})
-board.Save({pcb_path!r})
-
-# Count results
-tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
-vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
-
-# Count nets with unrouted connections
-netinfo = board.GetNetInfo()
-net_count = netinfo.GetNetCount()
-
-print(json.dumps({{
-    "status": "ok",
-    "ses_imported": True,
-    "tracks": tracks,
-    "vias": vias,
-    "net_count": net_count,
-}}))
-"""
-            logger.info("Importing SES into %s", pcb_path)
-            import_result = run_pcbnew_script(import_script, timeout=30.0)
-
-            if "error" in import_result:
-                return {"error": f"SES import failed: {import_result['error']}"}
-
+        jar_path = _find_freerouter_jar(freerouter_jar or None)
+        if not jar_path:
             return {
-                "status": "ok",
-                "pcb_path": pcb_path,
-                "freerouter_jar": jar_path,
-                "zones_removed": export_result.get("zones_removed", 0),
-                "tracks_before": export_result.get("existing_tracks", 0),
-                "vias_before": export_result.get("existing_vias", 0),
-                "tracks_after": import_result.get("tracks", 0),
-                "vias_after": import_result.get("vias", 0),
-                "net_count": import_result.get("net_count", 0),
-                "passes_run": len(pass_results),
-                "best_incomplete": best_incomplete if best_incomplete != float("inf") else None,
-                "pass_results": pass_results,
-                "note": (
-                    "Copper zones were removed before routing. "
-                    "Re-add them with add_copper_zone + fill_zones."
-                    if remove_zones and export_result.get("zones_removed", 0) > 0
-                    else "Routing complete."
-                ),
+                "error": (
+                    "FreeRouter JAR not found. Provide freerouter_jar path, "
+                    "set FREEROUTER_JAR env var, or place freerouting-2.1.0.jar "
+                    "in a known location."
+                )
             }
 
-        finally:
-            # Clean up temp files
+        java_path = _find_java()
+        if not java_path:
+            return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
+
+        job_id = uuid.uuid4().hex[:8]
+
+        with _autoroute_lock:
+            _autoroute_jobs[job_id] = {
+                "status": "running",
+                "started": time.time(),
+                "pcb_path": pcb_path,
+                "passes": passes,
+                "phase": "exporting",
+                "current_pass": 0,
+                "pid": None,
+            }
+
+        thread = threading.Thread(
+            target=_autoroute_worker,
+            kwargs={
+                "job_id": job_id,
+                "pcb_path": pcb_path,
+                "jar_path": jar_path,
+                "java_path": java_path,
+                "passes": passes,
+                "remove_zones": remove_zones,
+            },
+            daemon=True,
+        )
+        thread.start()
+
+        return {
+            "job_id": job_id,
+            "status": "submitted",
+            "pcb_path": pcb_path,
+            "passes": passes,
+            "note": "Use poll_autoroute(job_id) to check progress.",
+        }
+
+    @mcp.tool()
+    def poll_autoroute(job_id: str) -> Dict[str, Any]:
+        """Check the status of an async autoroute job.
+
+        Returns:
+          - ``{"status": "running", ...}`` while FreeRouter is working
+          - ``{"status": "done", "result": {...}}`` when complete
+          - ``{"status": "error", "result": {"error": "..."}}`` on failure
+
+        Completed/failed jobs are removed from tracking after retrieval.
+
+        Args:
+            job_id: The job ID returned by autoroute_pcb_async.
+        """
+        with _autoroute_lock:
+            if job_id not in _autoroute_jobs:
+                return {
+                    "error": (
+                        f"Unknown job_id: {job_id!r}. "
+                        "Already retrieved or never submitted."
+                    )
+                }
+
+            job = _autoroute_jobs[job_id]
+            elapsed = round(time.time() - job["started"], 1)
+
+            if job["status"] == "running":
+                return {
+                    "status": "running",
+                    "elapsed_s": elapsed,
+                    "phase": job.get("phase", "unknown"),
+                    "current_pass": job.get("current_pass", 0),
+                    "total_passes": job.get("passes", 1),
+                }
+
+            # Done, error, or cancelled — retrieve and clean up
+            result = dict(job)
+            del _autoroute_jobs[job_id]
+
+        return {
+            "status": result["status"],
+            "elapsed_s": result.get("elapsed", elapsed),
+            "result": result.get("result", {}),
+        }
+
+    @mcp.tool()
+    def cancel_autoroute(job_id: str) -> Dict[str, Any]:
+        """Cancel a running async autoroute job.
+
+        Marks the job as cancelled and kills the FreeRouter subprocess
+        if it is running.
+
+        Args:
+            job_id: The job ID returned by autoroute_pcb_async.
+        """
+        with _autoroute_lock:
+            if job_id not in _autoroute_jobs:
+                return {
+                    "error": (
+                        f"Unknown job_id: {job_id!r}. "
+                        "Already retrieved or never submitted."
+                    )
+                }
+
+            job = _autoroute_jobs[job_id]
+            if job["status"] != "running":
+                return {
+                    "error": (
+                        f"Job {job_id} is not running "
+                        f"(status: {job['status']})"
+                    )
+                }
+
+            elapsed = round(time.time() - job["started"], 1)
+            job["status"] = "cancelled"
+            job["elapsed"] = elapsed
+            job["result"] = {"error": f"Cancelled by user after {elapsed}s"}
+
+            # Kill the FreeRouter subprocess
+            pid = job.get("pid")
+
+        if pid:
             try:
-                shutil.rmtree(work_dir, ignore_errors=True)
-            except Exception:
-                pass
+                os.kill(pid, signal.SIGTERM)
+                logger.info("Sent SIGTERM to FreeRouter PID %d", pid)
+            except ProcessLookupError:
+                pass  # Already exited
+            except Exception as exc:
+                logger.warning("Failed to kill PID %d: %s", pid, exc)
 
+        return {
+            "status": "cancelled",
+            "job_id": job_id,
+            "elapsed_s": elapsed,
+        }
 
-def _parse_freerouter_incomplete(stdout: str) -> int:
-    """Parse FreeRouter stdout to find the number of incomplete connections.
-
-    FreeRouter prints lines like:
-        "0 connections not found"
-        "3 connections not found"
-    """
-    import re
-
-    for line in reversed(stdout.split("\n")):
-        m = re.search(r"(\d+)\s+connections?\s+not\s+found", line, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-
-    # Also check for "x incomplete" pattern
-    for line in reversed(stdout.split("\n")):
-        m = re.search(r"(\d+)\s+incomplete", line, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-
-    return 0  # Assume success if no indication of failure
+    @mcp.tool()
+    def list_autoroute_jobs() -> Dict[str, Any]:
+        """List all tracked autoroute jobs and their current status."""
+        now = time.time()
+        with _autoroute_lock:
+            jobs = {
+                jid: {
+                    "status": j["status"],
+                    "elapsed_s": round(now - j["started"], 1),
+                    "pcb_path": j.get("pcb_path", ""),
+                    "phase": j.get("phase", ""),
+                    "current_pass": j.get("current_pass", 0),
+                    "total_passes": j.get("passes", 1),
+                }
+                for jid, j in _autoroute_jobs.items()
+            }
+        return {"jobs": jobs, "count": len(jobs)}
