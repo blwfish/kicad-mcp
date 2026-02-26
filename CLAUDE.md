@@ -1,6 +1,6 @@
 # KiCad MCP — Instructions for Claude
 
-You have access to 80 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
+You have access to 82 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
 
 ## Mandatory Rules
 
@@ -39,7 +39,16 @@ save_schematic()
 validate_schematic()
 ```
 
-### 2. PCB Setup
+### 2. Board Size Planning
+
+```
+estimate_board_size(footprints=[                    # Get dimensions BEFORE creating PCB
+    {"library": "...", "footprint_name": "..."},
+    ...
+])
+```
+
+### 3. PCB Setup
 
 ```
 create_pcb(pcb_path="project.kicad_pcb")
@@ -47,17 +56,22 @@ add_board_outline(pcb_path=..., x_mm=100, y_mm=100, width_mm=50, height_mm=30)
 set_design_rules(pcb_path=..., min_track_width_mm=0.25, min_clearance_mm=0.2)
 ```
 
-### 3. Footprint Placement
+### 4. Footprint Placement
 
 ```
 search_footprints(query="...")              # Find footprint library + name
 place_footprint(pcb_path=..., library=..., footprint_name=..., reference=..., value=..., x_mm=..., y_mm=...)
 ```
 
+Or after placing footprints anywhere and assigning nets:
+```
+suggest_placement(pcb_path=...)             # Get optimized positions based on connectivity
+# Then apply with move_footprint for each suggestion
+```
+
 After placing all footprints:
 ```
-audit_footprint_overlaps(pcb_path=...)      # Pairwise collision check
-audit_pcb_placement(pcb_path=...)           # Keepout and boundary check
+audit_all(pcb_path=...)                     # Overlaps + keepouts + silkscreen in one call
 ```
 
 ### 4. Net Assignment
@@ -110,12 +124,14 @@ Zone corners should match or exceed the board outline. Common pattern: GND pour 
 
 | I need to... | Use this | Not this |
 |---|---|---|
+| Choose board size | `estimate_board_size` | Guessing dimensions |
+| Initial placement | `suggest_placement` | Manual coordinate math |
 | Route traces | `autoroute_pcb` | `add_trace` / `add_via` |
 | Find a symbol name | `search_components` | Guessing from training data |
 | Find a footprint name | `search_footprints` | Guessing from training data |
 | Create nets from schematic | `update_pcb_from_schematic` | Manual `add_net` + `bulk_assign_pad_nets` |
-| Check component collisions | `audit_footprint_overlaps` | Visual inspection |
-| Check board boundary | `audit_pcb_placement` | Manual coordinate math |
+| Check all placement issues | `audit_all` | Three separate audit calls |
+| Fix silkscreen overlaps | `auto_fix_silkscreen` | Manual `update_silkscreen_item` |
 | Run DRC | `run_drc_check` | Skipping verification |
 
 ## Placement Guidelines

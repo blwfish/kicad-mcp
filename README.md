@@ -1,6 +1,6 @@
 # kicad-mcp
 
-MCP server for KiCad — 80 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
+MCP server for KiCad — 82 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 Design schematics, lay out PCBs, autoroute traces, run DRC, and analyze circuits — all from an AI assistant like Claude.
 
@@ -28,7 +28,7 @@ pip install -e ".[dev]"
 claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 ```
 
-## Tools (78)
+## Tools (82)
 
 ### Schematic Design (28 tools)
 
@@ -40,7 +40,7 @@ claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 
 **Drawing** — `add_text`, `add_text_box`, `add_sheet`, `add_sheet_pin`
 
-### PCB Layout (34 tools)
+### PCB Layout (38 tools)
 
 **Board** — `create_pcb`, `load_pcb`, `add_board_outline`, `set_design_rules`
 
@@ -52,9 +52,11 @@ claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 
 **Zones** — `add_copper_zone`, `fill_zones`, `get_keepout_zones`
 
-**Silkscreen** — `add_text_to_pcb`, `list_silkscreen_items`, `update_silkscreen_item`, `check_silkscreen_overlaps`
+**Silkscreen** — `add_text_to_pcb`, `list_silkscreen_items`, `update_silkscreen_item`, `check_silkscreen_overlaps`, `auto_fix_silkscreen`
 
-**Validation** — `get_board_constraints`, `validate_placement`, `audit_pcb_placement`, `audit_footprint_overlaps`
+**Validation** — `get_board_constraints`, `validate_placement`, `audit_pcb_placement`, `audit_footprint_overlaps`, `audit_all`
+
+**Planning** — `estimate_board_size`, `suggest_placement`
 
 ### Project & Analysis (16 tools)
 
@@ -109,11 +111,12 @@ search_footprints(query="0603 resistor")   # → Resistor_SMD:R_0603_1608Metric,
 
 ```
 1. Create schematic        → add_component, connect_pins_with_labels
-2. Place footprints        → place_footprint, audit_footprint_overlaps
-3. Sync nets               → update_pcb_from_schematic
-4. Autoroute               → autoroute_pcb
-5. Add copper zones        → add_copper_zone, fill_zones
-6. Verify                  → run_drc_check, check_silkscreen_overlaps
+2. Estimate board size     → estimate_board_size
+3. Place footprints        → place_footprint, suggest_placement, audit_all
+4. Sync nets               → update_pcb_from_schematic
+5. Autoroute               → autoroute_pcb
+6. Add copper zones        → add_copper_zone, fill_zones
+7. Verify                  → run_drc_check, auto_fix_silkscreen
 ```
 
 ## Architecture
@@ -132,6 +135,7 @@ src/kicad_mcp/
     pcb_zones.py             # Copper zones and fills
     pcb_silkscreen.py        # Silkscreen text management
     pcb_keepout.py           # Keepout zones and placement validation
+    pcb_planning.py          # Board size estimation and placement suggestions
     schematic.py             # All schematic tools (wraps kicad-sch-api)
     project.py               # Project management
     export.py                # Thumbnail generation
