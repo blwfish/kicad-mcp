@@ -84,6 +84,9 @@ print(json.dumps({{
     ) -> Dict[str, Any]:
         """Add a rectangular board outline (Edge.Cuts) to the PCB.
 
+        Any existing Edge.Cuts segments are removed first, so this can be
+        used to resize the board without creating a new PCB file.
+
         Args:
             pcb_path: Path to the .kicad_pcb file.
             x_mm: Top-left X position in mm.
@@ -98,6 +101,16 @@ print(json.dumps({{
 import pcbnew, json
 
 board = pcbnew.LoadBoard({pcb_path!r})
+
+# Remove existing Edge.Cuts segments so outline can be replaced
+edge_cuts_id = pcbnew.Edge_Cuts
+to_remove = []
+for drawing in board.GetDrawings():
+    if drawing.GetLayer() == edge_cuts_id:
+        to_remove.append(drawing)
+removed_count = len(to_remove)
+for item in to_remove:
+    board.Remove(item)
 
 x = pcbnew.FromMM({x_mm})
 y = pcbnew.FromMM({y_mm})
@@ -121,6 +134,7 @@ board.Save({pcb_path!r})
 
 print(json.dumps({{
     "status": "ok",
+    "previous_edge_cuts_removed": removed_count,
     "outline": {{
         "x_mm": {x_mm},
         "y_mm": {y_mm},

@@ -28,8 +28,8 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: currently 78 tools. Update if tools are added/removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 78, (
-            f"Expected 78 tools, got {len(tools)}. "
+        assert len(tools) == 80, (
+            f"Expected 80 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -65,6 +65,7 @@ class TestExpectedToolsExist:
         "list_silkscreen_items",
         "update_silkscreen_item",
         "check_silkscreen_overlaps",
+        "auto_fix_silkscreen",
         "add_text_to_pcb",
         # PCB autoroute tools
         "autoroute_pcb",
@@ -80,6 +81,7 @@ class TestExpectedToolsExist:
         "validate_placement",
         "audit_pcb_placement",
         "audit_footprint_overlaps",
+        "audit_all",
         # Project tools
         "list_projects",
         "get_project_structure",

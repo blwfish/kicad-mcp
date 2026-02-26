@@ -183,10 +183,13 @@ if {clear_tracks!r} or {clear_vias!r}:
         board.Remove(item)
 
 if {clear_zones!r}:
-    to_remove = []
-    for i in range(board.GetAreaCount()):
-        to_remove.append(board.GetArea(i))
-    for zone in to_remove:
+    # Collect zone references from Zones() iterator (not GetArea index)
+    # and remove them. Using list() materialises the iterator before
+    # we start mutating the board.
+    zone_list = list(board.Zones())
+    for zone in zone_list:
+        if zone.GetIsRuleArea():
+            continue  # Preserve keepout/rule areas, only remove copper zones
         board.Remove(zone)
         zones_removed += 1
 

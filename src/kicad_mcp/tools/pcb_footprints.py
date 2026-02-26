@@ -7,12 +7,15 @@ from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
 
 logger = logging.getLogger(__name__)
 
 
 def register_pcb_footprint_tools(mcp: FastMCP) -> None:
     """Register PCB footprint tools."""
+
+    _KEEPOUT_HELPER = KEEPOUT_HELPER
 
     @mcp.tool()
     def place_footprint(
@@ -25,8 +28,13 @@ def register_pcb_footprint_tools(mcp: FastMCP) -> None:
         y_mm: float,
         rotation_deg: float = 0.0,
         layer: str = "F.Cu",
+        check_keepouts: bool = True,
     ) -> Dict[str, Any]:
         """Place a footprint on the PCB from a KiCad library.
+
+        By default, checks the proposed position against keepout zones and
+        board boundaries before placing. If violations are found, the
+        footprint is still placed but warnings are included in the result.
 
         Args:
             pcb_path: Path to the .kicad_pcb file.
@@ -38,9 +46,52 @@ def register_pcb_footprint_tools(mcp: FastMCP) -> None:
             y_mm: Y position in millimeters.
             rotation_deg: Rotation angle in degrees (default 0).
             layer: PCB layer, "F.Cu" or "B.Cu" (default "F.Cu").
+            check_keepouts: Check placement against keepout zones and board
+                boundaries (default True). Warnings are included in the result
+                but do not prevent placement.
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+
+        keepout_code = ""
+        if check_keepouts:
+            keepout_code = f"""
+{_KEEPOUT_HELPER}
+
+# Check placement against keepout zones and board boundary
+fp_bbox = fp.GetBoundingBox(False, False)
+fp_rect = {{
+    "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+    "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+    "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+    "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+}}
+keepouts = extract_keepouts(board)
+outline = get_board_outline(board)
+placement_warnings = []
+
+for kz in keepouts:
+    kz_bb = kz["bounding_box"]
+    if not rects_overlap(fp_rect, kz_bb):
+        continue
+    c = kz["constraints"]
+    blocked = [k.replace("no_", "") for k, v in c.items() if v]
+    if blocked:
+        src = kz["source_ref"] or kz["source"]
+        placement_warnings.append(f"Overlaps keepout from {{src}} (blocks {{', '.join(blocked)}})")
+
+if outline and not rect_inside(fp_rect, outline):
+    overhang_parts = []
+    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
+        overhang_parts.append(f"left {{round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}}mm")
+    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
+        overhang_parts.append(f"right {{round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}}mm")
+    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
+        overhang_parts.append(f"top {{round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}}mm")
+    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
+        overhang_parts.append(f"bottom {{round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}}mm")
+    placement_warnings.append(f"Extends beyond board outline ({{', '.join(overhang_parts)}})")
+"""
 
         script = f"""
 import pcbnew, json, os, glob
@@ -87,9 +138,13 @@ board.Add(fp)
 
 if {layer!r} == "B.Cu":
     fp.Flip(fp.GetPosition(), False)
+
+placement_warnings = []
+{keepout_code}
+
 board.Save({pcb_path!r})
 
-print(json.dumps({{
+result = {{
     "status": "ok",
     "placed": {{
         "reference": {reference!r},
@@ -99,7 +154,10 @@ print(json.dumps({{
         "rotation": {rotation_deg},
         "layer": {layer!r},
     }},
-}}))
+}}
+if placement_warnings:
+    result["placement_warnings"] = placement_warnings
+print(json.dumps(result))
 """
         return run_pcbnew_script(script)
 

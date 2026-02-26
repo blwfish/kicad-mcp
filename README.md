@@ -1,6 +1,6 @@
 # kicad-mcp
 
-MCP server for KiCad — 78 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
+MCP server for KiCad — 80 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 Design schematics, lay out PCBs, autoroute traces, run DRC, and analyze circuits — all from an AI assistant like Claude.
 

@@ -342,3 +342,126 @@ print(json.dumps({{
 }}))
 """
         return run_pcbnew_script(script)
+
+    @mcp.tool()
+    def auto_fix_silkscreen(pcb_path: str) -> Dict[str, Any]:
+        """Automatically fix silkscreen text that overlaps copper pads.
+
+        For each visible silkscreen text item (reference designator or value)
+        that overlaps pads from a different component, attempts to reposition
+        the text by shifting it away from the overlapping pads. If a text
+        item overlaps multiple pads, it is hidden instead.
+
+        Does not modify standalone text items (only footprint reference/value).
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+
+silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
+
+# Collect all pads with bounding boxes
+all_pads = []
+for fp in board.GetFootprints():
+    for pad in fp.Pads():
+        sz = pad.GetBoundingBox()
+        all_pads.append({{
+            "reference": fp.GetReference(),
+            "x_min": sz.GetX(), "y_min": sz.GetY(),
+            "x_max": sz.GetRight(), "y_max": sz.GetBottom(),
+            "cx": (sz.GetX() + sz.GetRight()) // 2,
+            "cy": (sz.GetY() + sz.GetBottom()) // 2,
+        }})
+
+def find_overlapping_pads(text_bbox, own_ref):
+    \"\"\"Find pads from other components that overlap this text bbox.\"\"\"
+    overlapping = []
+    for pad in all_pads:
+        if pad["reference"] == own_ref:
+            continue
+        if (text_bbox.GetX() < pad["x_max"] and text_bbox.GetRight() > pad["x_min"] and
+            text_bbox.GetY() < pad["y_max"] and text_bbox.GetBottom() > pad["y_min"]):
+            overlapping.append(pad)
+    return overlapping
+
+fixed = []
+hidden = []
+already_ok = 0
+
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    fp_pos = fp.GetPosition()
+
+    for field_type, field_obj in [("reference", fp.Reference()), ("value", fp.Value())]:
+        if not field_obj.IsVisible():
+            continue
+        if field_obj.GetLayer() not in silk_layer_ids:
+            continue
+
+        bbox = field_obj.GetBoundingBox()
+        overlapping = find_overlapping_pads(bbox, ref)
+
+        if not overlapping:
+            already_ok += 1
+            continue
+
+        # Strategy: try shifting text in 4 directions (up, down, left, right)
+        # by the height of the text. Pick the first direction that eliminates
+        # all overlaps. If none work, hide the text.
+        text_height = bbox.GetHeight()
+        text_width = bbox.GetWidth()
+        shifts = [
+            (0, -(text_height + pcbnew.FromMM(0.3))),   # up
+            (0, text_height + pcbnew.FromMM(0.3)),       # down
+            (-(text_width + pcbnew.FromMM(0.3)), 0),     # left
+            (text_width + pcbnew.FromMM(0.3), 0),        # right
+        ]
+
+        orig_pos = field_obj.GetPosition()
+        resolved = False
+
+        for dx, dy in shifts:
+            new_pos = pcbnew.VECTOR2I(orig_pos.x + dx, orig_pos.y + dy)
+            field_obj.SetPosition(new_pos)
+            new_bbox = field_obj.GetBoundingBox()
+            new_overlaps = find_overlapping_pads(new_bbox, ref)
+            if not new_overlaps:
+                resolved = True
+                fixed.append({{
+                    "component": ref,
+                    "field": field_type,
+                    "action": "moved",
+                    "dx_mm": round(pcbnew.ToMM(dx), 2),
+                    "dy_mm": round(pcbnew.ToMM(dy), 2),
+                }})
+                break
+
+        if not resolved:
+            # Restore position and hide instead
+            field_obj.SetPosition(orig_pos)
+            field_obj.SetVisible(False)
+            hidden.append({{
+                "component": ref,
+                "field": field_type,
+                "action": "hidden",
+                "overlapping_pads": len(overlapping),
+            }})
+
+board.Save({pcb_path!r})
+
+print(json.dumps({{
+    "status": "ok",
+    "already_ok": already_ok,
+    "moved": len(fixed),
+    "hidden": len(hidden),
+    "fixes": fixed + hidden,
+}}))
+"""
+        return run_pcbnew_script(script)
