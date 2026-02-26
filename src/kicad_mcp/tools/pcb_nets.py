@@ -159,6 +159,7 @@ board = pcbnew.LoadBoard({pcb_path!r})
 assignments = {assignments_repr}
 results = []
 errors = []
+created_nets = []
 
 for a in assignments:
     ref = a["reference"]
@@ -172,8 +173,14 @@ for a in assignments:
 
     net = board.FindNet(net_name)
     if net is None or net.GetNetCode() == 0:
-        errors.append(f"Net {{net_name}} not found")
-        continue
+        # Auto-create missing nets — they persist because pads reference them
+        net_info = pcbnew.NETINFO_ITEM(board, net_name)
+        board.Add(net_info)
+        net = board.FindNet(net_name)
+        if net is None or net.GetNetCode() == 0:
+            errors.append(f"Net {{net_name}} not found and could not be created")
+            continue
+        created_nets.append(net_name)
 
     pad_found = False
     for pad in fp.Pads():
@@ -191,6 +198,7 @@ board.Save({pcb_path!r})
 print(json.dumps({{
     "status": "ok",
     "assigned": len(results),
+    "nets_created": created_nets,
     "errors": errors,
     "results": results,
 }}))
