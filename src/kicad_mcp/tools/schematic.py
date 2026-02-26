@@ -368,7 +368,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         if comp is None:
             return {"error": f"Component {reference} not found"}
 
-        pin_pos = comp.get_pin_position(pin_number)
+        pin_pos = _kicad_pin_position(comp, pin_number)
         if pin_pos is None:
             return {"error": f"Pin {pin_number} not found on {reference}"}
 
@@ -394,7 +394,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
 
         pins_data = []
         for pin in comp.pins:
-            pin_pos = comp.get_pin_position(pin.number)
+            pin_pos = _kicad_pin_position(comp, pin.number)
             entry: dict[str, Any] = {
                 "number": pin.number,
                 "name": pin.name,
@@ -405,6 +405,84 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             pins_data.append(entry)
 
         return {"status": "ok", "reference": reference, "count": len(pins_data), "pins": pins_data}
+
+    # ------------------------------------------------------------------
+    # Helpers: correct pin position & wire stub direction
+    # ------------------------------------------------------------------
+    #
+    # KiCad symbol libraries use a Y-up coordinate system (math
+    # convention) while the schematic editor uses Y-down (screen
+    # convention).  When a symbol is placed in the schematic, KiCad
+    # negates the Y coordinate of every point before applying the
+    # component rotation and adding the component position.
+    #
+    # kicad-sch-api's ``get_pin_position()`` does NOT negate Y, which
+    # causes wire endpoints to land on the wrong pins.  The helpers
+    # below apply the correct transformation.
+    # ------------------------------------------------------------------
+
+    def _kicad_pin_position(comp, pin_number: str):
+        """Return the absolute pin-tip position as KiCad computes it.
+
+        KiCad symbol libraries use Y-up while the schematic uses Y-down.
+        KiCad's internal transform is: rotate first, then negate Y,
+        then add component position.
+
+        Returns:
+            ``Point(x, y)`` in schematic coordinates, or *None*.
+        """
+        import math
+        from kicad_sch_api.core.types import Point
+
+        pin = comp.get_pin(pin_number)
+        if pin is None:
+            return None
+
+        # Step 1: Rotate pin position by component angle (still in Y-up space)
+        angle_rad = math.radians(comp.rotation)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        rx = pin.position.x * cos_a - pin.position.y * sin_a
+        ry = pin.position.x * sin_a + pin.position.y * cos_a
+
+        # Step 2: Negate Y to convert to schematic Y-down, then translate
+        return Point(
+            round(comp.position.x + rx, 3),
+            round(comp.position.y - ry, 3),   # negate AFTER rotation
+        )
+
+    def _pin_wire_offset(comp, pin_number: str, distance: float = 2.54):
+        """Compute (dx, dy) for a wire stub extending *away* from the symbol body.
+
+        In the symbol's Y-up coordinate system, the pin angle points
+        FROM tip TOWARD body.  After rotating by comp.rotation and
+        negating Y, the "away from body" direction in schematic
+        coordinates (Y-down) is::
+
+            away_deg = (-pin.rotation - comp.rotation + 180) % 360
+
+        Returns:
+            (dx, dy) tuple in schematic coordinates.
+        """
+        import math
+
+        pin = comp.get_pin(pin_number)
+        if pin is None:
+            return (distance, 0.0)  # Fallback: rightward
+
+        away_deg = (-pin.rotation - comp.rotation + 180) % 360
+        away_rad = math.radians(away_deg)
+        dx = distance * math.cos(away_rad)
+        dy = distance * math.sin(away_rad)
+
+        # Snap near-zero values to 0 to keep coordinates on the 1.27mm grid
+        if abs(dx) < 0.01:
+            dx = 0.0
+        if abs(dy) < 0.01:
+            dy = 0.0
+
+        return (round(dx, 3), round(dy, 3))
 
     @mcp.tool()
     def add_label_to_pin(
@@ -430,14 +508,14 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         if comp is None:
             return {"error": f"Component {reference} not found"}
 
-        pin_pos = comp.get_pin_position(pin_number)
+        pin_pos = _kicad_pin_position(comp, pin_number)
         if pin_pos is None:
             return {"error": f"Pin {pin_number} not found on {reference}"}
 
-        # Use minimum 2.54mm offset so the wire has nonzero length
         effective_offset = offset if offset != 0 else 2.54
-        label_x = pin_pos.x + effective_offset
-        label_y = pin_pos.y
+        dx, dy = _pin_wire_offset(comp, pin_number, effective_offset)
+        label_x = pin_pos.x + dx
+        label_y = pin_pos.y + dy
 
         # Wire stub from pin to label — required for netlist connectivity
         sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(label_x, label_y))
@@ -478,13 +556,15 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             comp = sch.components.get(ref)
             if comp is None:
                 return {"error": f"Component {ref} not found"}
-            pin_pos = comp.get_pin_position(pin)
+            pin_pos = _kicad_pin_position(comp, pin)
             if pin_pos is None:
                 return {"error": f"Pin {pin} not found on {ref}"}
-            label_x = pin_pos.x + 2.54
+            dx, dy = _pin_wire_offset(comp, pin, 2.54)
+            label_x = pin_pos.x + dx
+            label_y = pin_pos.y + dy
             # Wire stub from pin to label — required for netlist connectivity
-            sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(label_x, pin_pos.y))
-            uuid = sch.add_label(net_name, (label_x, pin_pos.y))
+            sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(label_x, label_y))
+            uuid = sch.add_label(net_name, (label_x, label_y))
             label_uuids.append(uuid)
 
         return {

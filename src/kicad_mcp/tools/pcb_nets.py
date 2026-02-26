@@ -357,6 +357,22 @@ print(json.dumps({{
         if not net_definitions:
             return {"error": "No nets found in schematic netlist"}
 
+        # Sanity-check: detect obvious power/ground cross-wiring
+        power_ground_warnings = []
+        for a in pad_assignments:
+            func = (a.get("pinfunction") or "").upper()
+            net = a["net"].upper()
+            if func in ("GND", "VSS") and any(
+                p in net for p in ("+3V3", "+5V", "VCC", "VDD", "3V3", "5V")
+            ):
+                power_ground_warnings.append(
+                    f"{a['reference']} pin {a['pad']} ({func}) → power net {a['net']}"
+                )
+            elif func in ("VDD", "VCC", "3V3", "5V") and "GND" in net:
+                power_ground_warnings.append(
+                    f"{a['reference']} pin {a['pad']} ({func}) → ground net {a['net']}"
+                )
+
         # Step 3: Inject nets into PCB file via direct editing
         # (pcbnew's Save() prunes unused nets, so we must inject them
         # into the file first, then use pcbnew for pad assignments)
@@ -486,5 +502,7 @@ print(json.dumps({{
         pcbnew_result["nets_created"] = nets_created
         pcbnew_result["nets_existing"] = nets_existing
         pcbnew_result["unconnected_nets_skipped"] = skipped_unconnected
+        if power_ground_warnings:
+            pcbnew_result["power_ground_warnings"] = power_ground_warnings
 
         return pcbnew_result
