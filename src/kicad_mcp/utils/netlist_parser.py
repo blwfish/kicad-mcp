@@ -382,8 +382,123 @@ class SchematicParser:
         print(f"Found {len(self.nets)} potential nets from labels and power symbols")
 
 
+def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
+    """Extract netlist using kicad-cli for authoritative connectivity.
+
+    Uses ``kicad-cli sch export netlist --format kicadxml`` which correctly
+    resolves all label types (local, global, hierarchical) and power symbols.
+    Returns None if kicad-cli is not available so callers can fall back to
+    the regex-based parser.
+
+    Args:
+        schematic_path: Path to the KiCad schematic file (.kicad_sch)
+
+    Returns:
+        Dictionary with netlist information, or None if kicad-cli unavailable
+    """
+    import subprocess
+    import tempfile
+    import xml.etree.ElementTree as ET
+
+    from kicad_mcp.utils.kicad_cli import find_kicad_cli
+
+    kicad_cli = find_kicad_cli()
+    if not kicad_cli:
+        return None
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".xml", delete=False
+    ) as tmp:
+        netlist_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            [kicad_cli, "sch", "export", "netlist",
+             "--format", "kicadxml",
+             "--output", netlist_path,
+             schematic_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"kicad-cli netlist export failed: {result.stderr.strip()}")
+            return None
+
+        tree = ET.parse(netlist_path)
+        root = tree.getroot()
+    except Exception as e:
+        print(f"kicad-cli netlist export/parse failed: {e}")
+        return None
+    finally:
+        if os.path.exists(netlist_path):
+            os.unlink(netlist_path)
+
+    # Extract components from <components>
+    component_info: Dict[str, Dict] = {}
+    comps_element = root.find("components")
+    if comps_element is not None:
+        for comp_elem in comps_element.findall("comp"):
+            ref = comp_elem.get("ref", "")
+            if not ref:
+                continue
+            info: Dict[str, Any] = {"reference": ref}
+            val_elem = comp_elem.find("value")
+            if val_elem is not None and val_elem.text:
+                info["value"] = val_elem.text
+            fp_elem = comp_elem.find("footprint")
+            if fp_elem is not None and fp_elem.text:
+                info["footprint"] = fp_elem.text
+            libsrc = comp_elem.find("libsource")
+            if libsrc is not None:
+                lib = libsrc.get("lib", "")
+                part = libsrc.get("part", "")
+                if lib and part:
+                    info["lib_id"] = f"{lib}:{part}"
+                desc = libsrc.get("description", "")
+                if desc:
+                    info["properties"] = {"Description": desc}
+            component_info[ref] = info
+
+    # Extract nets from <nets>
+    nets: Dict[str, List] = {}
+    nets_element = root.find("nets")
+    if nets_element is not None:
+        for net_elem in nets_element.findall("net"):
+            net_name = net_elem.get("name", "")
+            if not net_name:
+                continue
+            # Strip leading "/" from local label net names
+            clean_name = net_name.lstrip("/")
+            # Skip auto-generated unconnected nets
+            if clean_name.startswith("unconnected-("):
+                continue
+            pins = []
+            for node in net_elem.findall("node"):
+                node_ref = node.get("ref", "")
+                pin = node.get("pin", "")
+                pinfunction = node.get("pinfunction", "")
+                if node_ref and pin:
+                    entry: Dict[str, str] = {
+                        "component": node_ref,
+                        "pin": pin,
+                    }
+                    if pinfunction:
+                        entry["pinfunction"] = pinfunction
+                    pins.append(entry)
+            nets[clean_name] = pins
+
+    return {
+        "components": component_info,
+        "nets": nets,
+        "component_count": len(component_info),
+        "net_count": len(nets),
+    }
+
+
 def extract_netlist(schematic_path: str) -> Dict[str, Any]:
     """Extract netlist information from a KiCad schematic file.
+
+    Tries kicad-cli first (authoritative, handles all label types).
+    Falls back to regex-based parser if kicad-cli is not available.
 
     Args:
         schematic_path: Path to the KiCad schematic file (.kicad_sch)
@@ -391,6 +506,12 @@ def extract_netlist(schematic_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary with netlist information
     """
+    # Try kicad-cli first — it handles local labels correctly
+    cli_result = extract_netlist_via_cli(schematic_path)
+    if cli_result is not None:
+        return cli_result
+
+    # Fallback to regex parser (CI environments without KiCad)
     try:
         parser = SchematicParser(schematic_path)
         return parser.parse()
