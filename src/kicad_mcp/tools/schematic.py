@@ -225,6 +225,118 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         }
 
     @mcp.tool()
+    def add_multi_unit_component(
+        lib_id: str,
+        reference: str,
+        value: str,
+        position: list[float],
+        units: list[int] | None = None,
+        footprint: str | None = None,
+        unit_spacing: float = 15.0,
+    ) -> dict:
+        """Add a multi-unit component, placing each unit as a separate symbol block.
+
+        For ICs like LM393 (dual comparator) or 7400 (quad NAND), each unit
+        gets its own symbol block in the schematic sharing the same reference.
+        Power units are included automatically.
+
+        Args:
+            lib_id: Library ID (e.g., Comparator:LM393).
+            reference: Component reference (e.g., U2). Shared by all units.
+            value: Component value (e.g., LM393).
+            position: [x, y] for unit 1. Subsequent units placed below.
+            units: Which units to place (default: all with pins). E.g., [1, 3] for LM393.
+            footprint: Component footprint (e.g., Package_SO:SOIC-8_3.9x4.9mm_P1.27mm).
+            unit_spacing: Vertical spacing between units in mm (default 15).
+        """
+        from kicad_sch_api.library.cache import get_symbol_cache
+
+        sch = _require_schematic()
+        if len(position) != 2:
+            return {"error": "position must be [x, y]"}
+
+        # Look up symbol definition to build unit→pins mapping for the response
+        cache = get_symbol_cache()
+        symbol_def = cache.get_symbol(lib_id)
+        if symbol_def is None:
+            return {"error": f"Symbol '{lib_id}' not found in KiCad libraries"}
+
+        unit_pins = _parse_unit_pin_mapping(symbol_def)
+        if not unit_pins:
+            # Single-unit symbol — fall through to normal add
+            return add_component(lib_id, reference, value, position, footprint)
+
+        # Determine which units to place
+        if units is not None:
+            units_to_place = sorted(units)
+        else:
+            # Place all units that have pins
+            units_to_place = sorted(unit_pins.keys())
+
+        # Validate requested units
+        invalid = [u for u in units_to_place if u not in unit_pins]
+        if invalid:
+            return {
+                "error": f"Units {invalid} not found in symbol. Available: {sorted(unit_pins.keys())}",
+            }
+
+        if len(units_to_place) == len(unit_pins) and units is None:
+            # Place ALL units — use kicad-sch-api's built-in add_all_units
+            result = sch.components.add(
+                lib_id=lib_id,
+                reference=reference,
+                value=value,
+                position=tuple(position),
+                footprint=footprint,
+                add_all_units=True,
+                unit_spacing=unit_spacing,
+            )
+            # Result is a MultiUnitComponentGroup
+            placed_units = []
+            for comp in result:
+                unit = getattr(comp, "unit", None)
+                if unit is None:
+                    unit = getattr(getattr(comp, "_data", None), "unit", 1)
+                placed_units.append({
+                    "unit": unit,
+                    "pins": unit_pins.get(unit, []),
+                    "position": [round(comp.position.x, 3), round(comp.position.y, 3)],
+                })
+        else:
+            # Place selected units individually
+            placed_units = []
+            for i, unit_num in enumerate(units_to_place):
+                unit_x = position[0]
+                unit_y = position[1] + i * unit_spacing
+                comp = sch.components.add(
+                    lib_id=lib_id,
+                    reference=reference,
+                    value=value,
+                    position=(unit_x, unit_y),
+                    footprint=footprint,
+                    unit=unit_num,
+                )
+                placed_units.append({
+                    "unit": unit_num,
+                    "pins": unit_pins[unit_num],
+                    "position": [round(comp.position.x, 3), round(comp.position.y, 3)],
+                })
+
+        logger.info(
+            "Added multi-unit component %s (%s) with %d units: %s",
+            reference, lib_id, len(placed_units),
+            [u["unit"] for u in placed_units],
+        )
+        return {
+            "status": "ok",
+            "reference": reference,
+            "lib_id": lib_id,
+            "value": value,
+            "total_units": len(placed_units),
+            "units": placed_units,
+        }
+
+    @mcp.tool()
     def remove_component(reference: str) -> dict:
         """Remove component from schematic.
 
@@ -364,7 +476,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             pin_number: Pin number (e.g., 1, 2).
         """
         sch = _require_schematic()
-        comp = sch.components.get(reference)
+        comp = _find_component_for_pin(sch, reference, pin_number)
         if comp is None:
             return {"error": f"Component {reference} not found"}
 
@@ -384,25 +496,65 @@ def register_schematic_tools(mcp: FastMCP) -> None:
     def list_component_pins(reference: str) -> dict:
         """List all pins for a component with positions.
 
+        For multi-unit components, lists pins across all placed units with
+        correct positions relative to each unit's placement.
+
         Args:
             reference: Component reference (e.g., R1).
         """
         sch = _require_schematic()
-        comp = sch.components.get(reference)
-        if comp is None:
+
+        # Collect all component instances with this reference
+        all_comps = [c for c in sch.components if c.reference == reference]
+        if not all_comps:
             return {"error": f"Component {reference} not found"}
 
         pins_data = []
-        for pin in comp.pins:
-            pin_pos = _kicad_pin_position(comp, pin.number)
-            entry: dict[str, Any] = {
-                "number": pin.number,
-                "name": pin.name,
-            }
-            if pin_pos:
-                entry["x"] = round(pin_pos.x, 3)
-                entry["y"] = round(pin_pos.y, 3)
-            pins_data.append(entry)
+        seen_pins: set[str] = set()
+
+        if len(all_comps) == 1:
+            # Single-unit: list all pins from the one component
+            comp = all_comps[0]
+            for pin in comp.pins:
+                pin_pos = _kicad_pin_position(comp, pin.number)
+                entry: dict[str, Any] = {
+                    "number": pin.number,
+                    "name": pin.name,
+                }
+                if pin_pos:
+                    entry["x"] = round(pin_pos.x, 3)
+                    entry["y"] = round(pin_pos.y, 3)
+                pins_data.append(entry)
+        else:
+            # Multi-unit: find correct unit for each pin
+            from kicad_sch_api.library.cache import get_symbol_cache
+
+            cache = get_symbol_cache()
+            symbol_def = cache.get_symbol(all_comps[0].lib_id)
+            unit_pins = _parse_unit_pin_mapping(symbol_def) if symbol_def else {}
+
+            for comp in all_comps:
+                unit = getattr(comp, "unit", None)
+                if unit is None:
+                    unit = getattr(getattr(comp, "_data", None), "unit", 1) or 1
+                pins_in_unit = set(unit_pins.get(unit, []))
+                for pin in comp.pins:
+                    if pin.number in seen_pins:
+                        continue
+                    # Only compute position for pins belonging to this unit
+                    if pins_in_unit and pin.number not in pins_in_unit:
+                        continue
+                    seen_pins.add(pin.number)
+                    pin_pos = _kicad_pin_position(comp, pin.number)
+                    entry = {
+                        "number": pin.number,
+                        "name": pin.name,
+                        "unit": unit,
+                    }
+                    if pin_pos:
+                        entry["x"] = round(pin_pos.x, 3)
+                        entry["y"] = round(pin_pos.y, 3)
+                    pins_data.append(entry)
 
         return {"status": "ok", "reference": reference, "count": len(pins_data), "pins": pins_data}
 
@@ -420,6 +572,96 @@ def register_schematic_tools(mcp: FastMCP) -> None:
     # causes wire endpoints to land on the wrong pins.  The helpers
     # below apply the correct transformation.
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Multi-unit symbol helpers
+    # ------------------------------------------------------------------
+
+    def _parse_unit_pin_mapping(symbol_def):
+        """Parse raw KiCad symbol data to build {unit_num: [pin_numbers]} mapping.
+
+        Multi-unit symbols (LM393, 7400, etc.) have sub-symbols named like
+        ``LM393_1_1`` (unit 1, style 1), ``LM393_3_1`` (unit 3, style 1).
+        Style ``_2`` variants are DeMorgan representations and are skipped.
+
+        The raw data uses ``sexpdata.Symbol`` objects where the tag name is
+        accessed via ``.value()`` (a method call, not a property).
+        """
+        import sexpdata as _sexpdata
+
+        def _tag(elem) -> str:
+            """Extract tag string from a sexpdata.Symbol or plain string."""
+            if isinstance(elem, _sexpdata.Symbol):
+                return elem.value()
+            return str(elem).strip('"')
+
+        unit_pins: dict[int, list[str]] = {}
+        raw = symbol_def.raw_kicad_data
+        if not isinstance(raw, list):
+            return unit_pins
+        for item in raw:
+            if not isinstance(item, list) or len(item) < 2:
+                continue
+            if _tag(item[0]) != "symbol":
+                continue
+            name = item[1] if isinstance(item[1], str) else str(item[1]).strip('"')
+            parts = name.split("_")
+            if len(parts) < 3:
+                continue
+            try:
+                unit_num = int(parts[-2])
+                style = int(parts[-1])
+                if style != 1:  # Skip DeMorgan variants
+                    continue
+            except ValueError:
+                continue
+            pins: list[str] = []
+            for sub in item:
+                if not isinstance(sub, list) or len(sub) < 2:
+                    continue
+                if _tag(sub[0]) != "pin":
+                    continue
+                for s in sub:
+                    if isinstance(s, list) and len(s) >= 2:
+                        if _tag(s[0]) == "number":
+                            pn = s[1] if isinstance(s[1], str) else str(s[1]).strip('"')
+                            pins.append(pn)
+            if pins:
+                unit_pins[unit_num] = pins
+        return unit_pins
+
+    def _find_component_for_pin(sch, reference: str, pin_number: str):
+        """Find the component instance (unit) that owns the given pin.
+
+        For single-unit symbols, this is equivalent to ``sch.components.get(reference)``.
+        For multi-unit symbols (multiple components sharing the same reference),
+        it finds the correct unit by looking up which sub-symbol owns the pin.
+        """
+        from kicad_sch_api.library.cache import get_symbol_cache
+
+        # Collect all component instances with this reference
+        all_comps = [c for c in sch.components if c.reference == reference]
+        if len(all_comps) <= 1:
+            return sch.components.get(reference)
+
+        # Build unit→pins mapping from symbol library
+        cache = get_symbol_cache()
+        symbol_def = cache.get_symbol(all_comps[0].lib_id)
+        if symbol_def is None:
+            return all_comps[0]
+        unit_pins = _parse_unit_pin_mapping(symbol_def)
+
+        # Find which unit owns this pin
+        for comp in all_comps:
+            # Component wrapper doesn't expose .unit — access via ._data
+            unit = getattr(comp, "unit", None)
+            if unit is None:
+                unit = getattr(getattr(comp, "_data", None), "unit", 1) or 1
+            if pin_number in unit_pins.get(unit, []):
+                return comp
+
+        # Fallback: return first component (it has all pins in its pin list)
+        return all_comps[0]
 
     def _kicad_pin_position(comp, pin_number: str):
         """Return the absolute pin-tip position as KiCad computes it.
@@ -504,7 +746,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             offset: Offset distance from pin (default: 0).
         """
         sch = _require_schematic()
-        comp = sch.components.get(reference)
+        comp = _find_component_for_pin(sch, reference, pin_number)
         if comp is None:
             return {"error": f"Component {reference} not found"}
 
@@ -553,7 +795,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         sch = _require_schematic()
         label_uuids = []
         for ref, pin in [(comp1_ref, pin1), (comp2_ref, pin2)]:
-            comp = sch.components.get(ref)
+            comp = _find_component_for_pin(sch, ref, pin)
             if comp is None:
                 return {"error": f"Component {ref} not found"}
             pin_pos = _kicad_pin_position(comp, pin)
