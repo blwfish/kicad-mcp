@@ -1,4 +1,4 @@
-"""PCB routing tools: traces and vias."""
+"""PCB routing tools: traces, vias, and routing management."""
 
 import logging
 import os
@@ -134,6 +134,69 @@ print(json.dumps({{
         "type": via_type,
         "net": net_name,
     }},
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
+    def clear_routing(
+        pcb_path: str,
+        clear_tracks: bool = True,
+        clear_vias: bool = True,
+        clear_zones: bool = False,
+    ) -> Dict[str, Any]:
+        """Remove tracks, vias, and/or copper zones from the PCB.
+
+        Useful before re-autorouting after component placement changes.
+        By default removes tracks and vias but preserves zones.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            clear_tracks: Remove all tracks (default True).
+            clear_vias: Remove all vias (default True).
+            clear_zones: Remove all copper zones (default False).
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+
+tracks_removed = 0
+vias_removed = 0
+zones_removed = 0
+
+if {clear_tracks!r} or {clear_vias!r}:
+    to_remove = []
+    for track in board.GetTracks():
+        if {clear_tracks!r} and track.GetClass() == "PCB_TRACK":
+            to_remove.append(track)
+        elif {clear_vias!r} and track.GetClass() == "PCB_VIA":
+            to_remove.append(track)
+    for item in to_remove:
+        if item.GetClass() == "PCB_VIA":
+            vias_removed += 1
+        else:
+            tracks_removed += 1
+        board.Remove(item)
+
+if {clear_zones!r}:
+    to_remove = []
+    for i in range(board.GetAreaCount()):
+        to_remove.append(board.GetArea(i))
+    for zone in to_remove:
+        board.Remove(zone)
+        zones_removed += 1
+
+board.Save({pcb_path!r})
+
+print(json.dumps({{
+    "status": "ok",
+    "tracks_removed": tracks_removed,
+    "vias_removed": vias_removed,
+    "zones_removed": zones_removed,
 }}))
 """
         return run_pcbnew_script(script)

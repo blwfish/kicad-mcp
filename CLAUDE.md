@@ -1,6 +1,6 @@
 # KiCad MCP — Instructions for Claude
 
-You have access to 73 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
+You have access to 78 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
 
 ## Mandatory Rules
 

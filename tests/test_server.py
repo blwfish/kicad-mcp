@@ -26,10 +26,10 @@ class TestCreateServer:
         )
 
     def test_current_tool_count(self, mcp_server):
-        """Snapshot test: currently 73 tools. Update if tools are added/removed."""
+        """Snapshot test: currently 78 tools. Update if tools are added/removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 73, (
-            f"Expected 73 tools, got {len(tools)}. "
+        assert len(tools) == 78, (
+            f"Expected 78 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -56,6 +56,7 @@ class TestExpectedToolsExist:
         # PCB routing tools
         "add_trace",
         "add_via",
+        "clear_routing",
         "set_design_rules",
         # PCB zone tools
         "add_copper_zone",
@@ -67,6 +68,10 @@ class TestExpectedToolsExist:
         "add_text_to_pcb",
         # PCB autoroute tools
         "autoroute_pcb",
+        "autoroute_pcb_async",
+        "poll_autoroute",
+        "cancel_autoroute",
+        "list_autoroute_jobs",
         # PCB panelize tools
         "panelize_pcb",
         # PCB keepout tools

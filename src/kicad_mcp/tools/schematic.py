@@ -415,7 +415,9 @@ def register_schematic_tools(mcp: FastMCP) -> None:
     ) -> dict:
         """Add label directly to component pin.
 
-        Places a net label at the pin's absolute position.
+        Places a net label at the pin's absolute position and creates a
+        wire stub connecting the label to the pin. The wire ensures
+        KiCad's netlist exporter recognizes the connection.
 
         Args:
             reference: Component reference (e.g., R1).
@@ -432,14 +434,21 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         if pin_pos is None:
             return {"error": f"Pin {pin_number} not found on {reference}"}
 
-        label_uuid = sch.add_label(text, (pin_pos.x + offset, pin_pos.y))
+        # Use minimum 2.54mm offset so the wire has nonzero length
+        effective_offset = offset if offset != 0 else 2.54
+        label_x = pin_pos.x + effective_offset
+        label_y = pin_pos.y
+
+        # Wire stub from pin to label — required for netlist connectivity
+        sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(label_x, label_y))
+        label_uuid = sch.add_label(text, (label_x, label_y))
         return {
             "status": "ok",
             "label_uuid": label_uuid,
             "text": text,
             "reference": reference,
             "pin_number": pin_number,
-            "position": [round(pin_pos.x + offset, 3), round(pin_pos.y, 3)],
+            "position": [round(label_x, 3), round(label_y, 3)],
         }
 
     @mcp.tool()
@@ -453,7 +462,8 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         """Connect two component pins using same label.
 
         Places matching net labels on both pins so KiCad treats them as
-        connected.
+        connected. Each label is connected to its pin via a wire stub
+        to ensure KiCad's netlist exporter recognizes the connection.
 
         Args:
             comp1_ref: First component reference.
@@ -471,7 +481,10 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             pin_pos = comp.get_pin_position(pin)
             if pin_pos is None:
                 return {"error": f"Pin {pin} not found on {ref}"}
-            uuid = sch.add_label(net_name, (pin_pos.x, pin_pos.y))
+            label_x = pin_pos.x + 2.54
+            # Wire stub from pin to label — required for netlist connectivity
+            sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(label_x, pin_pos.y))
+            uuid = sch.add_label(net_name, (label_x, pin_pos.y))
             label_uuids.append(uuid)
 
         return {
