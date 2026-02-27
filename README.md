@@ -6,17 +6,15 @@ An [MCP server](https://modelcontextprotocol.io/) that lets your AI agent design
 
 You talk to your AI agent. Your agent talks to KiCad. You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and the agent handles the rest: placing components, routing traces, checking for errors, and producing manufacturing-ready files.
 
-You don't need to know KiCad. You don't need to know what an MCP server is. You just need an AI agent (like [Claude](https://claude.ai/)) and KiCad installed on your computer.
+You don't need to know KiCad. You don't need to know what an MCP server is. You just need an AI agent (like [Claude](https://claude.ai/)).
 
 ## Getting Started
 
-**Step 1:** Make sure [KiCad 8+](https://www.kicad.org/download/) is installed on your machine.
-
-**Step 2:** Tell your AI agent:
+Tell your AI agent:
 
 > Go to https://github.com/blwfish/kicad-mcp and read the AGENT-INSTALL.md file. Follow the instructions to install and configure the KiCad MCP server on this machine.
 
-That's it. Your agent will handle cloning the repo, installing dependencies, downloading any additional tools needed (like the autorouter), and registering itself. Once setup is complete, you can ask your agent to design PCBs.
+Your agent will handle the rest — installing prerequisites, cloning the repo, downloading the autorouter, and registering itself. Once setup is complete, you can ask your agent to design PCBs.
 
 ## What You Can Ask Your Agent To Do
 
