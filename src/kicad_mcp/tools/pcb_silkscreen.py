@@ -457,9 +457,11 @@ print(json.dumps({{
         """Automatically fix silkscreen text that overlaps copper pads.
 
         For each visible silkscreen text item (reference designator or value)
-        that overlaps pads from a different component, attempts to reposition
-        the text by shifting it away from the overlapping pads. If a text
-        item overlaps multiple pads, it is hidden instead.
+        that overlaps pads from a different component, tries up to 8 candidate
+        positions arranged around the footprint's bounding box (N, S, W, E,
+        NW, NE, SW, SE).  The first position that is free of pad overlaps and
+        lies within the board outline is used.  Text is hidden only when all 8
+        positions fail.
 
         Does not modify standalone text items (only footprint reference/value).
 
@@ -485,20 +487,33 @@ for fp in board.GetFootprints():
             "reference": fp.GetReference(),
             "x_min": sz.GetX(), "y_min": sz.GetY(),
             "x_max": sz.GetRight(), "y_max": sz.GetBottom(),
-            "cx": (sz.GetX() + sz.GetRight()) // 2,
-            "cy": (sz.GetY() + sz.GetBottom()) // 2,
         }})
 
-def find_overlapping_pads(text_bbox, own_ref):
-    \"\"\"Find pads from other components that overlap this text bbox.\"\"\"
-    overlapping = []
+# Board outline bbox for boundary clamping
+try:
+    board_bb = board.GetBoardEdgesBoundingBox()
+    board_valid = board_bb.GetWidth() > 0
+except Exception:
+    board_valid = False
+
+def has_pad_overlap(text_bbox, own_ref):
     for pad in all_pads:
         if pad["reference"] == own_ref:
             continue
         if (text_bbox.GetX() < pad["x_max"] and text_bbox.GetRight() > pad["x_min"] and
             text_bbox.GetY() < pad["y_max"] and text_bbox.GetBottom() > pad["y_min"]):
-            overlapping.append(pad)
-    return overlapping
+            return True
+    return False
+
+def in_board(text_bbox):
+    if not board_valid:
+        return True
+    return (board_bb.GetX() <= text_bbox.GetX() and
+            text_bbox.GetRight() <= board_bb.GetRight() and
+            board_bb.GetY() <= text_bbox.GetY() and
+            text_bbox.GetBottom() <= board_bb.GetBottom())
+
+MARGIN = pcbnew.FromMM(0.3)
 
 fixed = []
 hidden = []
@@ -506,7 +521,6 @@ already_ok = 0
 
 for fp in board.GetFootprints():
     ref = fp.GetReference()
-    fp_pos = fp.GetPosition()
 
     for field_type, field_obj in [("reference", fp.Reference()), ("value", fp.Value())]:
         if not field_obj.IsVisible():
@@ -514,53 +528,59 @@ for fp in board.GetFootprints():
         if field_obj.GetLayer() not in silk_layer_ids:
             continue
 
-        bbox = field_obj.GetBoundingBox()
-        overlapping = find_overlapping_pads(bbox, ref)
-
-        if not overlapping:
+        text_bbox = field_obj.GetBoundingBox()
+        if not has_pad_overlap(text_bbox, ref):
             already_ok += 1
             continue
 
-        # Strategy: try shifting text in 4 directions (up, down, left, right)
-        # by the height of the text. Pick the first direction that eliminates
-        # all overlaps. If none work, hide the text.
-        text_height = bbox.GetHeight()
-        text_width = bbox.GetWidth()
-        shifts = [
-            (0, -(text_height + pcbnew.FromMM(0.3))),   # up
-            (0, text_height + pcbnew.FromMM(0.3)),       # down
-            (-(text_width + pcbnew.FromMM(0.3)), 0),     # left
-            (text_width + pcbnew.FromMM(0.3), 0),        # right
+        # Compute 8 candidate positions around the footprint bounding box.
+        # Using the footprint bbox (not just the current text position) gives
+        # semantically sensible placements that don't depend on where the text
+        # happened to land after autorouting.
+        fp_bb = fp.GetBoundingBox()
+        cx  = fp_bb.GetCenter().x
+        cy  = fp_bb.GetCenter().y
+        fw2 = fp_bb.GetWidth()  // 2
+        fh2 = fp_bb.GetHeight() // 2
+        tw2 = text_bbox.GetWidth()  // 2
+        th2 = text_bbox.GetHeight() // 2
+
+        candidates = [
+            (cx,           cy - fh2 - th2 - MARGIN),              # N
+            (cx,           cy + fh2 + th2 + MARGIN),              # S
+            (cx - fw2 - tw2 - MARGIN, cy),                        # W
+            (cx + fw2 + tw2 + MARGIN, cy),                        # E
+            (cx - fw2 - tw2 - MARGIN, cy - fh2 - th2 - MARGIN),  # NW
+            (cx + fw2 + tw2 + MARGIN, cy - fh2 - th2 - MARGIN),  # NE
+            (cx - fw2 - tw2 - MARGIN, cy + fh2 + th2 + MARGIN),  # SW
+            (cx + fw2 + tw2 + MARGIN, cy + fh2 + th2 + MARGIN),  # SE
         ]
 
         orig_pos = field_obj.GetPosition()
         resolved = False
 
-        for dx, dy in shifts:
-            new_pos = pcbnew.VECTOR2I(orig_pos.x + dx, orig_pos.y + dy)
-            field_obj.SetPosition(new_pos)
+        for px, py in candidates:
+            field_obj.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
             new_bbox = field_obj.GetBoundingBox()
-            new_overlaps = find_overlapping_pads(new_bbox, ref)
-            if not new_overlaps:
+            if not has_pad_overlap(new_bbox, ref) and in_board(new_bbox):
                 resolved = True
+                pos = field_obj.GetPosition()
                 fixed.append({{
                     "component": ref,
                     "field": field_type,
                     "action": "moved",
-                    "dx_mm": round(pcbnew.ToMM(dx), 2),
-                    "dy_mm": round(pcbnew.ToMM(dy), 2),
+                    "x_mm": round(pcbnew.ToMM(pos.x), 2),
+                    "y_mm": round(pcbnew.ToMM(pos.y), 2),
                 }})
                 break
 
         if not resolved:
-            # Restore position and hide instead
             field_obj.SetPosition(orig_pos)
             field_obj.SetVisible(False)
             hidden.append({{
                 "component": ref,
                 "field": field_type,
                 "action": "hidden",
-                "overlapping_pads": len(overlapping),
             }})
 
 board.Save({pcb_path!r})
@@ -574,3 +594,151 @@ print(json.dumps({{
 }}))
 """
         return run_pcbnew_script(script)
+
+    @mcp.tool()
+    def finalize_pcb(
+        pcb_path: str,
+        fix_silkscreen: bool = True,
+        fill_zones: bool = True,
+    ) -> Dict[str, Any]:
+        """Fix silkscreen overlaps and fill copper zones in one operation.
+
+        A compound finalisation step to run before generating fabrication
+        outputs.  Equivalent to auto_fix_silkscreen + fill_zones in sequence
+        but with a single board load and save, so it is faster and avoids
+        intermediate file states.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            fix_silkscreen: Run silkscreen overlap auto-fix (default True).
+            fill_zones: Run copper zone fill (default True).
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+results = {{}}
+
+# ── Silkscreen fix ────────────────────────────────────────────────────────────
+if {fix_silkscreen!r}:
+    silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
+
+    all_pads = []
+    for fp in board.GetFootprints():
+        for pad in fp.Pads():
+            sz = pad.GetBoundingBox()
+            all_pads.append({{
+                "reference": fp.GetReference(),
+                "x_min": sz.GetX(), "y_min": sz.GetY(),
+                "x_max": sz.GetRight(), "y_max": sz.GetBottom(),
+            }})
+
+    try:
+        board_bb = board.GetBoardEdgesBoundingBox()
+        board_valid = board_bb.GetWidth() > 0
+    except Exception:
+        board_valid = False
+
+    def has_pad_overlap(text_bbox, own_ref):
+        for pad in all_pads:
+            if pad["reference"] == own_ref:
+                continue
+            if (text_bbox.GetX() < pad["x_max"] and text_bbox.GetRight() > pad["x_min"] and
+                text_bbox.GetY() < pad["y_max"] and text_bbox.GetBottom() > pad["y_min"]):
+                return True
+        return False
+
+    def in_board(text_bbox):
+        if not board_valid:
+            return True
+        return (board_bb.GetX() <= text_bbox.GetX() and
+                text_bbox.GetRight() <= board_bb.GetRight() and
+                board_bb.GetY() <= text_bbox.GetY() and
+                text_bbox.GetBottom() <= board_bb.GetBottom())
+
+    MARGIN = pcbnew.FromMM(0.3)
+    silk_fixed = []
+    silk_hidden = []
+    silk_ok = 0
+
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        for field_type, field_obj in [("reference", fp.Reference()), ("value", fp.Value())]:
+            if not field_obj.IsVisible():
+                continue
+            if field_obj.GetLayer() not in silk_layer_ids:
+                continue
+            text_bbox = field_obj.GetBoundingBox()
+            if not has_pad_overlap(text_bbox, ref):
+                silk_ok += 1
+                continue
+
+            fp_bb = fp.GetBoundingBox()
+            cx  = fp_bb.GetCenter().x
+            cy  = fp_bb.GetCenter().y
+            fw2 = fp_bb.GetWidth()  // 2
+            fh2 = fp_bb.GetHeight() // 2
+            tw2 = text_bbox.GetWidth()  // 2
+            th2 = text_bbox.GetHeight() // 2
+
+            candidates = [
+                (cx,           cy - fh2 - th2 - MARGIN),
+                (cx,           cy + fh2 + th2 + MARGIN),
+                (cx - fw2 - tw2 - MARGIN, cy),
+                (cx + fw2 + tw2 + MARGIN, cy),
+                (cx - fw2 - tw2 - MARGIN, cy - fh2 - th2 - MARGIN),
+                (cx + fw2 + tw2 + MARGIN, cy - fh2 - th2 - MARGIN),
+                (cx - fw2 - tw2 - MARGIN, cy + fh2 + th2 + MARGIN),
+                (cx + fw2 + tw2 + MARGIN, cy + fh2 + th2 + MARGIN),
+            ]
+
+            orig_pos = field_obj.GetPosition()
+            resolved = False
+            for px, py in candidates:
+                field_obj.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
+                new_bbox = field_obj.GetBoundingBox()
+                if not has_pad_overlap(new_bbox, ref) and in_board(new_bbox):
+                    resolved = True
+                    pos = field_obj.GetPosition()
+                    silk_fixed.append({{"component": ref, "field": field_type,
+                                        "action": "moved",
+                                        "x_mm": round(pcbnew.ToMM(pos.x), 2),
+                                        "y_mm": round(pcbnew.ToMM(pos.y), 2)}})
+                    break
+            if not resolved:
+                field_obj.SetPosition(orig_pos)
+                field_obj.SetVisible(False)
+                silk_hidden.append({{"component": ref, "field": field_type, "action": "hidden"}})
+
+    results["silkscreen"] = {{
+        "already_ok": silk_ok,
+        "moved": len(silk_fixed),
+        "hidden": len(silk_hidden),
+        "fixes": silk_fixed + silk_hidden,
+    }}
+
+# ── Zone fill ─────────────────────────────────────────────────────────────────
+if {fill_zones!r}:
+    copper_zones = [z for z in board.Zones() if not z.GetIsRuleArea()]
+    if copper_zones:
+        for z in copper_zones:
+            z.UnFill()
+        filler = pcbnew.ZONE_FILLER(board)
+        fill_ok = filler.Fill(board.Zones())
+        zone_info = []
+        for z in copper_zones:
+            ls = z.GetLayerSet()
+            lname = "F.Cu" if ls.Contains(pcbnew.F_Cu) else "B.Cu" if ls.Contains(pcbnew.B_Cu) else "other"
+            zone_info.append({{"net": z.GetNetname(), "layer": lname, "filled": z.IsFilled()}})
+        results["zones"] = {{"fill_success": fill_ok, "zones_filled": len(copper_zones), "zones": zone_info}}
+    else:
+        results["zones"] = {{"fill_success": True, "zones_filled": 0, "message": "No copper zones"}}
+
+board.Save({pcb_path!r})
+results["status"] = "ok"
+print(json.dumps(results))
+"""
+        return run_pcbnew_script(script, timeout=120.0)
