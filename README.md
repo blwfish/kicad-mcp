@@ -1,12 +1,12 @@
 # kicad-mcp
 
-An [MCP server](https://modelcontextprotocol.io/) that lets your AI agent design circuit boards using [KiCad](https://www.kicad.org/). 91 tools covering schematic capture, PCB layout, autorouting, design rule checking, and more.
+This tool enables your AI agent to use [KiCad](https://www.kicad.org/) — the industry-standard open-source electronics design software — to design circuits and lay out printed circuit boards for you.
 
 ## What This Does
 
-You talk to your AI agent. Your agent talks to KiCad. You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and the agent handles the rest: placing components, routing traces, checking for errors, and producing manufacturing-ready files.
+You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 91 tools covering the full design workflow.
 
-You don't need to know KiCad. You don't need to know what an MCP server is. You just need an AI agent (like [Claude](https://claude.ai/)).
+You don't need to know KiCad. You don't need to know what a PCB layout tool does. You just need an AI agent (like [Claude](https://claude.ai/)).
 
 ## Getting Started
 
