@@ -1,170 +1,58 @@
 # kicad-mcp
 
-MCP server for KiCad — 91 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
+An [MCP server](https://modelcontextprotocol.io/) that lets your AI agent design circuit boards using [KiCad](https://www.kicad.org/). 91 tools covering schematic capture, PCB layout, autorouting, design rule checking, and more.
 
-Design schematics, lay out PCBs, autoroute traces, run DRC, and analyze circuits — all from an AI assistant like Claude.
+## What This Does
 
-> **Using an AI agent?** Point your agent at **[AGENT-INSTALL.md](AGENT-INSTALL.md)** — it has everything the agent needs to install, configure, and use this server. The rest of this README is the human-readable version.
+You talk to your AI agent. Your agent talks to KiCad. You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and the agent handles the rest: placing components, routing traces, checking for errors, and producing manufacturing-ready files.
 
-> **Note:** I built this for myself and use Claude on a Mac. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
+You don't need to know KiCad. You don't need to know what an MCP server is. You just need an AI agent (like [Claude](https://claude.ai/)) and KiCad installed on your computer.
 
-## Quick Start
+## Getting Started
 
-### Prerequisites
+**Step 1:** Make sure [KiCad 8+](https://www.kicad.org/download/) is installed on your machine.
 
-- **KiCad 8+** installed (provides pcbnew Python bindings)
-- **Python 3.10+**
-- **Java 17+** (for FreeRouter autorouting — optional but recommended)
+**Step 2:** Tell your AI agent:
 
-### Install
+> Go to https://github.com/blwfish/kicad-mcp and read the AGENT-INSTALL.md file. Follow the instructions to install and configure the KiCad MCP server on this machine.
 
-```bash
-git clone https://github.com/blwfish/kicad-mcp.git
-cd kicad-mcp
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
+That's it. Your agent will handle cloning the repo, installing dependencies, downloading any additional tools needed (like the autorouter), and registering itself. Once setup is complete, you can ask your agent to design PCBs.
 
-### Register with Claude Code
+## What You Can Ask Your Agent To Do
 
-```bash
-claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
-```
+- **Design a PCB from a description** — "I need a board with an ATmega328, three LEDs, and a USB-C connector"
+- **Lay out a PCB from a schematic** — "Here's my schematic, create the board layout and route it"
+- **Modify an existing board** — "Move the voltage regulator closer to the connector and re-route"
+- **Check a design** — "Run DRC on my board and fix any issues"
+- **Prepare for manufacturing** — "Panelize this board 2x5 with V-scores and generate the files"
 
-## Tools (91)
+The agent knows the full workflow — schematic → board sizing → component placement → routing → copper zones → verification — and will walk through it step by step.
 
-### Schematic Design (28 tools)
+## Background
 
-**Management** — `create_schematic`, `load_schematic`, `save_schematic`, `get_schematic_info`, `validate_schematic`, `backup_schematic`, `clone_schematic`
+I built this for myself. I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
 
-**Components** — `add_component`, `add_multi_unit_component`, `remove_component`, `move_component`, `list_components`, `search_components`, `filter_components`, `bulk_update_components`, `components_in_area`
+### What's Under the Hood
 
-**Connections** — `add_wire`, `remove_wire`, `add_label`, `edit_label`, `add_label_to_pin`, `connect_pins_with_labels`, `get_component_pin_position`, `list_component_pins`, `remove_label`, `add_hierarchical_label`, `add_junction`
+The server provides 91 tools organized into three groups:
 
-**Drawing** — `add_text`, `add_text_box`, `add_sheet`, `add_sheet_pin`
+- **Schematic tools** (28) — create and edit circuit schematics, place components, wire connections
+- **PCB tools** (47) — board layout, footprint placement, autorouting via [FreeRouter](https://github.com/freerouting/freerouting), copper zones, silkscreen management, design rule checking and auto-fix
+- **Analysis tools** (16) — project management, BOM generation, netlist extraction, circuit pattern recognition
 
-### PCB Layout (38 tools)
+The server uses [FastMCP](https://github.com/jlowin/fastmcp) and delegates PCB operations to KiCad's bundled Python via subprocess. Schematic operations use [kicad-sch-api](https://pypi.org/project/kicad-sch-api/).
 
-**Board** — `create_pcb`, `load_pcb`, `add_board_outline`, `set_design_rules`
-
-**Footprints** — `place_footprint`, `move_footprint`, `list_pcb_footprints`, `get_pad_positions`, `search_footprints`
-
-**Nets** — `add_net`, `assign_pad_net`, `bulk_assign_pad_nets`, `rename_net`, `list_pcb_nets`, `update_pcb_from_schematic`
-
-**Routing** — `add_trace`, `edit_trace_width`, `add_via`, `clear_routing`, `autoroute_pcb`, `autoroute_pcb_async`, `poll_autoroute`, `cancel_autoroute`, `list_autoroute_jobs`, `panelize_pcb`
-
-**Zones** — `add_copper_zone`, `fill_zones`, `get_keepout_zones`
-
-**Silkscreen** — `add_text_to_pcb`, `edit_text`, `list_silkscreen_items`, `update_silkscreen_item`, `check_silkscreen_overlaps`, `auto_fix_silkscreen`, `finalize_pcb`
-
-**Validation** — `get_board_constraints`, `validate_placement`, `audit_pcb_placement`, `audit_footprint_overlaps`, `audit_all`, `auto_fix_placement`
-
-**Planning** — `estimate_board_size`, `suggest_placement`
-
-**DRC Auto-Fix** — `drc_autofix`
-
-### Project & Analysis (16 tools)
-
-**Project** — `list_projects`, `get_project_structure`, `open_project`, `validate_project`
-
-**DRC & Export** — `run_drc_check`, `get_drc_history_tool`, `generate_pcb_thumbnail`, `generate_project_thumbnail`
-
-**BOM** — `analyze_bom`, `export_bom_csv`
-
-**Netlist** — `extract_schematic_netlist`, `extract_project_netlist`, `analyze_schematic_connections`, `find_component_connections`
-
-**Circuit Patterns** — `identify_circuit_patterns`, `analyze_project_circuit_patterns`
-
-## Key Capabilities
-
-### Autorouting
-
-The `autoroute_pcb` tool wraps the [FreeRouter](https://github.com/freerouting/freerouting) autorouter in a single MCP call:
-
-1. Removes copper pour zones (FreeRouter doesn't understand them)
-2. Exports the board as a Specctra DSN file
-3. Runs FreeRouter headless
-4. Imports the routed SES session back into the PCB
-
-```
-autoroute_pcb(pcb_path="board.kicad_pcb", passes=2)
-```
-
-FreeRouter is non-deterministic — use `passes=2` or `passes=3` and the tool keeps the best result. After autorouting, re-add copper zones with `add_copper_zone` + `fill_zones`.
-
-### Schematic-to-PCB Sync
-
-`update_pcb_from_schematic` is the MCP equivalent of KiCad's F8 "Update PCB from Schematic":
-
-```
-update_pcb_from_schematic(project_path="project.kicad_pro")
-```
-
-Exports the netlist from the schematic, creates all nets in the PCB, and assigns them to the correct pads.
-
-### Library Search
-
-`search_components` and `search_footprints` maintain SQLite FTS5 indexes of all KiCad symbol and footprint libraries respectively. Both auto-rebuild when library files change (e.g. after a KiCad upgrade):
-
-```
-search_components(query="op amp")          # → Device:LM358, Amplifier_Operational:LM741, ...
-search_footprints(query="SOT-23")          # → Package_TO_SOT_SMD:SOT-23, ...
-search_footprints(query="0603 resistor")   # → Resistor_SMD:R_0603_1608Metric, ...
-```
-
-## Typical Workflow
-
-```
-1. Create schematic        → add_component, connect_pins_with_labels
-2. Estimate board size     → estimate_board_size
-3. Place footprints        → place_footprint, suggest_placement, audit_all
-4. Sync nets               → update_pcb_from_schematic
-5. Autoroute               → autoroute_pcb
-6. Add copper zones        → add_copper_zone, fill_zones
-7. Verify                  → run_drc_check, auto_fix_silkscreen
-```
-
-## Architecture
-
-The server uses [FastMCP](https://github.com/jlowin/fastmcp) and delegates PCB operations to KiCad's bundled Python 3.9 via subprocess (since pcbnew is a compiled C++ module tied to KiCad's own Python). Schematic operations use the [kicad-sch-api](https://pypi.org/project/kicad-sch-api/) library.
-
-```
-src/kicad_mcp/
-  server.py                 # Entry point, tool registration
-  tools/
-    pcb_board.py             # Board creation, outline, design rules
-    pcb_footprints.py        # Footprint placement and queries
-    pcb_nets.py              # Net management and schematic sync
-    pcb_routing.py           # Manual trace/via routing
-    pcb_autoroute.py         # FreeRouter autorouting pipeline
-    pcb_zones.py             # Copper zones and fills
-    pcb_silkscreen.py        # Silkscreen text management
-    pcb_keepout.py           # Keepout zones and placement validation
-    pcb_planning.py          # Board size estimation and placement suggestions
-    schematic.py             # All schematic tools (wraps kicad-sch-api)
-    project.py               # Project management
-    export.py                # Thumbnail generation
-    drc.py                   # Design rule checking
-    bom.py                   # Bill of materials
-    netlist.py               # Netlist extraction and analysis
-    patterns.py              # Circuit pattern recognition
-  utils/
-    pcbnew_bridge.py         # Subprocess bridge to KiCad's Python/pcbnew
-```
-
-## Development
+### For Developers
 
 ```bash
-# Run tests (199 tests, no KiCad installation required)
+# 199 tests, no KiCad installation required
 pytest
-
-# Run with coverage
-pytest --cov=kicad_mcp
 
 # Lint
 ruff check src/ tests/
 ```
+
+See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 
 ## License
 
