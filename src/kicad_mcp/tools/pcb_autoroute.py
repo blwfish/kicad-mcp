@@ -28,11 +28,10 @@ logger = logging.getLogger(__name__)
 
 # Known locations for the FreeRouter JAR
 _FREEROUTER_SEARCH_PATHS = [
-    # Alongside the kicad-mcp-extensions project
-    "/Volumes/Files/claude/KiCAD-mcp-extensions/freerouting-2.1.0.jar",
-    # User home
     os.path.expanduser("~/freerouting-2.1.0.jar"),
     os.path.expanduser("~/freerouting.jar"),
+    os.path.expanduser("~/Downloads/freerouting-2.1.0.jar"),
+    os.path.expanduser("~/Downloads/freerouting.jar"),
 ]
 
 # Async job tracking: job_id -> {status, started, result, error, ...}

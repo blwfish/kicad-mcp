@@ -1,8 +1,12 @@
 # kicad-mcp
 
-MCP server for KiCad — 83 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
+MCP server for KiCad — 91 tools for AI-assisted electronics design via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 Design schematics, lay out PCBs, autoroute traces, run DRC, and analyze circuits — all from an AI assistant like Claude.
+
+> **Using an AI agent?** Point your agent at **[AGENT-INSTALL.md](AGENT-INSTALL.md)** — it has everything the agent needs to install, configure, and use this server. The rest of this README is the human-readable version.
+
+> **Note:** I built this for myself and use Claude on a Mac. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
 ## Quick Start
 
@@ -28,15 +32,15 @@ pip install -e ".[dev]"
 claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 ```
 
-## Tools (82)
+## Tools (91)
 
 ### Schematic Design (28 tools)
 
 **Management** — `create_schematic`, `load_schematic`, `save_schematic`, `get_schematic_info`, `validate_schematic`, `backup_schematic`, `clone_schematic`
 
-**Components** — `add_component`, `remove_component`, `list_components`, `search_components`, `filter_components`, `bulk_update_components`, `components_in_area`
+**Components** — `add_component`, `add_multi_unit_component`, `remove_component`, `move_component`, `list_components`, `search_components`, `filter_components`, `bulk_update_components`, `components_in_area`
 
-**Connections** — `add_wire`, `remove_wire`, `add_label`, `add_label_to_pin`, `connect_pins_with_labels`, `get_component_pin_position`, `list_component_pins`, `remove_label`, `add_hierarchical_label`, `add_junction`
+**Connections** — `add_wire`, `remove_wire`, `add_label`, `edit_label`, `add_label_to_pin`, `connect_pins_with_labels`, `get_component_pin_position`, `list_component_pins`, `remove_label`, `add_hierarchical_label`, `add_junction`
 
 **Drawing** — `add_text`, `add_text_box`, `add_sheet`, `add_sheet_pin`
 
@@ -46,17 +50,19 @@ claude mcp add kicad -- /path/to/kicad-mcp/.venv/bin/kicad-mcp
 
 **Footprints** — `place_footprint`, `move_footprint`, `list_pcb_footprints`, `get_pad_positions`, `search_footprints`
 
-**Nets** — `add_net`, `assign_pad_net`, `bulk_assign_pad_nets`, `list_pcb_nets`, `update_pcb_from_schematic`
+**Nets** — `add_net`, `assign_pad_net`, `bulk_assign_pad_nets`, `rename_net`, `list_pcb_nets`, `update_pcb_from_schematic`
 
-**Routing** — `add_trace`, `add_via`, `clear_routing`, `autoroute_pcb`, `autoroute_pcb_async`, `poll_autoroute`, `cancel_autoroute`, `list_autoroute_jobs`, `panelize_pcb`
+**Routing** — `add_trace`, `edit_trace_width`, `add_via`, `clear_routing`, `autoroute_pcb`, `autoroute_pcb_async`, `poll_autoroute`, `cancel_autoroute`, `list_autoroute_jobs`, `panelize_pcb`
 
 **Zones** — `add_copper_zone`, `fill_zones`, `get_keepout_zones`
 
-**Silkscreen** — `add_text_to_pcb`, `list_silkscreen_items`, `update_silkscreen_item`, `check_silkscreen_overlaps`, `auto_fix_silkscreen`
+**Silkscreen** — `add_text_to_pcb`, `edit_text`, `list_silkscreen_items`, `update_silkscreen_item`, `check_silkscreen_overlaps`, `auto_fix_silkscreen`, `finalize_pcb`
 
-**Validation** — `get_board_constraints`, `validate_placement`, `audit_pcb_placement`, `audit_footprint_overlaps`, `audit_all`
+**Validation** — `get_board_constraints`, `validate_placement`, `audit_pcb_placement`, `audit_footprint_overlaps`, `audit_all`, `auto_fix_placement`
 
 **Planning** — `estimate_board_size`, `suggest_placement`
+
+**DRC Auto-Fix** — `drc_autofix`
 
 ### Project & Analysis (16 tools)
 
@@ -150,7 +156,7 @@ src/kicad_mcp/
 ## Development
 
 ```bash
-# Run tests (179 tests, no KiCad installation required)
+# Run tests (199 tests, no KiCad installation required)
 pytest
 
 # Run with coverage
