@@ -1,27 +1,27 @@
 # KiCad MCP — Agent Installation & Usage Guide
 
-You are an AI agent helping a human install and use the KiCad MCP server. This file tells you everything you need to do that. Read it fully before taking any action.
+This file is for you, the AI agent. It tells you what needs to be true on this system for the KiCad MCP server to work, how to make it true, and how to use it once it's running. Read it fully before taking any action.
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server that gives you 91 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally with your human.
+kicad-mcp is a Model Context Protocol (MCP) server providing 91 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
-**Origin:** This was built by one person for their own use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
+**Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
 ## Prerequisites
 
-Check each prerequisite below. Install anything that's missing — do this yourself (the commands are provided), don't ask the human to do it unless you lack the permissions or platform knowledge to proceed.
+The following must be present on the system. Check each one. Install anything missing — the commands and URLs are provided for each platform.
 
 ### 1. KiCad 8+ (required)
 
 KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP server calls KiCad's bundled Python as a subprocess — it does not import pcbnew directly.
 
-**Check:** Run `kicad-cli --version`. You need version 8.0 or later (9.x is fine).
+**Check:** `kicad-cli --version` — must be 8.0 or later (9.x is fine).
 
-**If missing:** KiCad requires a GUI installer on most platforms — this is the one step where you'll likely need to ask the human to install it themselves:
-- **macOS:** Direct them to https://www.kicad.org/download/ — it's a drag-to-Applications install
-- **Linux:** `sudo apt install kicad` or the KiCad PPA for the latest version. Flatpak is also available. The distro package manager version is often outdated.
-- **Windows:** Direct them to https://www.kicad.org/download/ for the installer
+**Install:**
+- **macOS:** GUI installer from https://www.kicad.org/download/ (drag to Applications)
+- **Linux:** `sudo apt install kicad` or the KiCad PPA for latest. Flatpak also available. Distro package manager versions are often outdated.
+- **Windows:** Installer from https://www.kicad.org/download/
 
 **What it provides:**
 - `kicad-cli` — used for DRC checks, netlist export, thumbnail generation
@@ -30,32 +30,37 @@ KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP 
 
 ### 2. Python 3.10+ (required)
 
-The MCP server itself runs on the system Python (not KiCad's Python). 3.10+ is required for type union syntax.
+The MCP server runs on the system Python (not KiCad's Python). 3.10+ is required for type union syntax.
 
-**Check:** Run `python3 --version`.
+**Check:** `python3 --version`
 
-**If missing:** Install it. On macOS: `brew install python@3.12`. On Linux: `sudo apt install python3`. On Windows: download from python.org. Most systems with an AI agent running already have Python.
+**Install:**
+- **macOS:** `brew install python@3.12`
+- **Linux:** `sudo apt install python3`
+- **Windows:** https://www.python.org/downloads/
+
+Most systems already have this if an AI agent is running.
 
 ### 3. Java 17+ (recommended)
 
-Required for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Java, all other tools work fine but you cannot autoroute. Since autorouting is one of the most valuable capabilities, install Java unless the human says they don't need it.
+Required for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Java, all other tools work fine but autorouting is unavailable. Autorouting is one of the most valuable capabilities — install Java unless there's a reason not to.
 
-**Check:** Run `java -version`.
+**Check:** `java -version`
 
-**If missing:** Install it yourself:
+**Install:**
 - **macOS:** `brew install openjdk@21`
-- **Linux:** `sudo apt install openjdk-21-jre` (or equivalent for the distro)
-- **Windows:** Download and install from https://adoptium.net/
+- **Linux:** `sudo apt install openjdk-21-jre` (or distro equivalent)
+- **Windows:** https://adoptium.net/
 
-### 4. FreeRouter JAR (recommended, for autorouting)
+### 4. FreeRouter JAR (recommended)
 
-The FreeRouter autorouter JAR file. If Java is installed but FreeRouter is not found, download it yourself:
+The FreeRouter autorouter. If Java is present but FreeRouter is not found, download it:
 
 ```bash
 curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.1.0/freerouting-2.1.0.jar
 ```
 
-The server searches these locations automatically:
+The server auto-detects these locations:
 - `~/freerouting-2.1.0.jar`
 - `~/freerouting.jar`
 - `~/Downloads/freerouting-2.1.0.jar`
@@ -63,11 +68,9 @@ The server searches these locations automatically:
 - `freerouting` on the system PATH
 - The `FREEROUTER_JAR` environment variable
 
-If the GitHub release URL above has changed, go to https://github.com/freerouting/freerouting/releases and find the latest `.jar` asset. Download it to `~/freerouting.jar`.
+If the release URL above is stale, find the current `.jar` at https://github.com/freerouting/freerouting/releases and download it to `~/freerouting.jar`.
 
 ## Installation
-
-Clone and install. Do this yourself — no human input needed:
 
 ```bash
 git clone https://github.com/blwfish/kicad-mcp.git
@@ -77,7 +80,7 @@ source .venv/bin/activate    # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
-Choose an appropriate location for the clone (e.g., `~/Projects/`, `~/src/`, or wherever the human keeps their repos). If you don't know, `~/kicad-mcp` is fine.
+Clone location: `~/Projects/`, `~/src/`, or wherever repos live on this system. `~/kicad-mcp` is a safe default.
 
 ### Register as an MCP Server
 
@@ -86,9 +89,9 @@ Choose an appropriate location for the clone (e.g., `~/Projects/`, `~/src/`, or 
 claude mcp add kicad -- /absolute/path/to/kicad-mcp/.venv/bin/kicad-mcp
 ```
 
-Use the **absolute path** to the venv's `kicad-mcp` entry point. Relative paths break when the agent runs from a different working directory.
+The path must be **absolute**. Relative paths break when the working directory changes.
 
-**Other agents** using `mcp.json` or similar config:
+**Other agents** — the server speaks standard MCP over stdio:
 ```json
 {
   "mcpServers": {
@@ -99,7 +102,7 @@ Use the **absolute path** to the venv's `kicad-mcp` entry point. Relative paths 
 }
 ```
 
-Consult your agent platform's MCP documentation for the exact config format and location.
+Config format and location varies by agent platform.
 
 ## Verify Installation
 
@@ -127,7 +130,7 @@ All are optional. The server auto-detects sensible defaults for each platform.
 |----------|---------|----------------|
 | `FREEROUTER_JAR` | Path to FreeRouter JAR | If the JAR isn't in `~/` or `~/Downloads/` |
 | `KICAD_CLI_PATH` | Path to `kicad-cli` executable | If KiCad is installed in a non-standard location |
-| `KICAD_SEARCH_PATHS` | Comma-separated project directories | If the human's KiCad projects are in unusual locations |
+| `KICAD_SEARCH_PATHS` | Comma-separated project directories | If KiCad projects are in unusual locations |
 | `KICAD_FOOTPRINT_DIR` | Override footprint library directory | If using custom/third-party footprint libraries |
 | `KICAD_SYMBOL_DIR` | Override symbol library directory | If using custom/third-party symbol libraries |
 
@@ -143,7 +146,7 @@ The file `CLAUDE.md` in the repo root is your primary reference for **using** th
 - **Placement guidelines** — component grouping, spacing, pin numbering
 - **DRC interpretation** — which violations matter and which are cosmetic
 
-If you are registered as an MCP server for a project that does KiCad work, ask the human to add kicad-mcp's `CLAUDE.md` to the project's claude configuration so you always have it in context.
+If you are registered as an MCP server for a project that does KiCad work, the project's claude configuration should include kicad-mcp's `CLAUDE.md` so you always have it in context.
 
 ### The Workflow in Brief
 
@@ -204,7 +207,7 @@ PCB tools run via KiCad's bundled Python (not the system Python). The bridge loo
 - **Windows:** `C:\Program Files\KiCad\bin\python.exe`
 - **Linux:** `/usr/bin/python3` (pcbnew must be importable from system Python)
 
-If KiCad is installed but pcbnew tools fail, the human may need to verify their KiCad installation includes the Python scripting console (it's included by default in standard installs).
+If KiCad is installed but pcbnew tools fail, verify the KiCad installation includes the Python scripting console (it's included by default in standard installs).
 
 ### Autorouting fails silently
 
