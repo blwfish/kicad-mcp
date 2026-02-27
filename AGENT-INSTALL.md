@@ -10,7 +10,7 @@ kicad-mcp is a Model Context Protocol (MCP) server that gives you 91 tools for K
 
 ## Prerequisites
 
-Before installing, verify these are present on the system. If any are missing, help the human install them.
+Check each prerequisite below. Install anything that's missing — do this yourself (the commands are provided), don't ask the human to do it unless you lack the permissions or platform knowledge to proceed.
 
 ### 1. KiCad 8+ (required)
 
@@ -18,7 +18,10 @@ KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP 
 
 **Check:** Run `kicad-cli --version`. You need version 8.0 or later (9.x is fine).
 
-**If missing:** Direct the human to https://www.kicad.org/download/. On macOS this is a drag-to-Applications install. On Linux, the package manager version is often outdated — the KiCad PPA or Flatpak is preferred.
+**If missing:** KiCad requires a GUI installer on most platforms — this is the one step where you'll likely need to ask the human to install it themselves:
+- **macOS:** Direct them to https://www.kicad.org/download/ — it's a drag-to-Applications install
+- **Linux:** `sudo apt install kicad` or the KiCad PPA for the latest version. Flatpak is also available. The distro package manager version is often outdated.
+- **Windows:** Direct them to https://www.kicad.org/download/ for the installer
 
 **What it provides:**
 - `kicad-cli` — used for DRC checks, netlist export, thumbnail generation
@@ -31,30 +34,40 @@ The MCP server itself runs on the system Python (not KiCad's Python). 3.10+ is r
 
 **Check:** Run `python3 --version`.
 
-### 3. Java 17+ (optional, recommended)
+**If missing:** Install it. On macOS: `brew install python@3.12`. On Linux: `sudo apt install python3`. On Windows: download from python.org. Most systems with an AI agent running already have Python.
 
-Required only for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Java, all other tools work fine but you cannot autoroute.
+### 3. Java 17+ (recommended)
+
+Required for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Java, all other tools work fine but you cannot autoroute. Since autorouting is one of the most valuable capabilities, install Java unless the human says they don't need it.
 
 **Check:** Run `java -version`.
 
-**If missing:** On macOS, `brew install openjdk@21` or Amazon Corretto. On Linux, `apt install openjdk-21-jre` or equivalent. On Windows, download from Adoptium.
+**If missing:** Install it yourself:
+- **macOS:** `brew install openjdk@21`
+- **Linux:** `sudo apt install openjdk-21-jre` (or equivalent for the distro)
+- **Windows:** Download and install from https://adoptium.net/
 
-### 4. FreeRouter JAR (optional, for autorouting)
+### 4. FreeRouter JAR (recommended, for autorouting)
 
-The FreeRouter autorouter JAR file. The server searches these locations automatically:
+The FreeRouter autorouter JAR file. If Java is installed but FreeRouter is not found, download it yourself:
+
+```bash
+curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.1.0/freerouting-2.1.0.jar
+```
+
+The server searches these locations automatically:
 - `~/freerouting-2.1.0.jar`
 - `~/freerouting.jar`
 - `~/Downloads/freerouting-2.1.0.jar`
 - `~/Downloads/freerouting.jar`
 - `freerouting` on the system PATH
+- The `FREEROUTER_JAR` environment variable
 
-You can also set the `FREEROUTER_JAR` environment variable to an explicit path.
-
-**Download:** https://github.com/freerouting/freerouting/releases — get the `.jar` file and place it in `~/` or `~/Downloads/`.
+If the GitHub release URL above has changed, go to https://github.com/freerouting/freerouting/releases and find the latest `.jar` asset. Download it to `~/freerouting.jar`.
 
 ## Installation
 
-Run these commands:
+Clone and install. Do this yourself — no human input needed:
 
 ```bash
 git clone https://github.com/blwfish/kicad-mcp.git
@@ -64,18 +77,18 @@ source .venv/bin/activate    # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
-### Register with Claude Code
+Choose an appropriate location for the clone (e.g., `~/Projects/`, `~/src/`, or wherever the human keeps their repos). If you don't know, `~/kicad-mcp` is fine.
 
+### Register as an MCP Server
+
+**Claude Code:**
 ```bash
 claude mcp add kicad -- /absolute/path/to/kicad-mcp/.venv/bin/kicad-mcp
 ```
 
-Use the **absolute path** to the venv's `kicad-mcp` entry point. Relative paths will break when Claude Code runs from a different working directory.
+Use the **absolute path** to the venv's `kicad-mcp` entry point. Relative paths break when the agent runs from a different working directory.
 
-### Register with Other Agents
-
-The server speaks standard MCP over stdio. For agents that use an `mcp.json` or similar config:
-
+**Other agents** using `mcp.json` or similar config:
 ```json
 {
   "mcpServers": {
@@ -85,6 +98,8 @@ The server speaks standard MCP over stdio. For agents that use an `mcp.json` or 
   }
 }
 ```
+
+Consult your agent platform's MCP documentation for the exact config format and location.
 
 ## Verify Installation
 
