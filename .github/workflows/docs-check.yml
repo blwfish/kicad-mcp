@@ -61,13 +61,17 @@ jobs:
           TEST_COUNT=$(grep -oP 'Expected \K\d+' tests/test_server.py | head -1)
           echo "test_server.py expects $TEST_COUNT tools"
 
-          # Check README.md
-          README_COUNT=$(grep -oP '(\d+) tools for AI' README.md | grep -oP '^\d+' | head -1)
+          # Check README.md — looks for "N tools covering" or "N tools for AI"
+          README_COUNT=$(grep -oP '(\d+) tools (covering|for AI)' README.md | grep -oP '^\d+' | head -1)
           echo "README.md says $README_COUNT tools"
 
           # Check CLAUDE.md
           CLAUDE_COUNT=$(grep -oP '(\d+) MCP tools' CLAUDE.md | grep -oP '^\d+' | head -1)
           echo "CLAUDE.md says $CLAUDE_COUNT tools"
+
+          # Check AGENT-INSTALL.md
+          AGENT_COUNT=$(grep -oP 'providing (\d+) tools' AGENT-INSTALL.md | grep -oP '\d+' | head -1)
+          echo "AGENT-INSTALL.md says $AGENT_COUNT tools"
 
           # Compare
           MISMATCH=0
@@ -81,6 +85,10 @@ jobs:
           fi
           if [ "$ACTUAL" != "$CLAUDE_COUNT" ]; then
             echo "::error::Tool count mismatch: server has $ACTUAL but CLAUDE.md says $CLAUDE_COUNT"
+            MISMATCH=1
+          fi
+          if [ -n "$AGENT_COUNT" ] && [ "$ACTUAL" != "$AGENT_COUNT" ]; then
+            echo "::error::Tool count mismatch: server has $ACTUAL but AGENT-INSTALL.md says $AGENT_COUNT"
             MISMATCH=1
           fi
 
