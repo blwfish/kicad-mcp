@@ -353,12 +353,13 @@ print(json.dumps({{
 
     @mcp.tool()
     def check_silkscreen_overlaps(pcb_path: str) -> Dict[str, Any]:
-        """Find silkscreen text items that overlap copper pads.
+        """Find silkscreen text items that overlap copper pads or other silkscreen text.
 
         Checks all visible silkscreen text (reference designators, values,
-        standalone text) against all pads on the board. Reports overlaps
-        between different components that could cause manufacturing issues.
-        Skips text overlapping its own component's pads (which is normal).
+        standalone text) against all pads on the board and against each other.
+        Reports overlaps between different components that could cause
+        manufacturing issues.  Skips text overlapping its own component's
+        pads (which is normal).
 
         Args:
             pcb_path: Path to the .kicad_pcb file.
@@ -425,15 +426,18 @@ for fp in board.GetFootprints():
             "y_max": sz.GetBottom(),
         }})
 
-# Check for AABB overlaps (skip text overlapping own component)
-overlaps = []
+def aabb_overlap(ax_min, ay_min, ax_max, ay_max, bx_min, by_min, bx_max, by_max):
+    return ax_min < bx_max and ax_max > bx_min and ay_min < by_max and ay_max > by_min
+
+# Check text-over-pad overlaps (skip text overlapping own component)
+pad_overlaps = []
 for si in silk_items:
     for pad in pads:
         if si["component"] == pad["reference"]:
             continue
-        if (si["bbox_x_min"] < pad["x_max"] and si["bbox_x_max"] > pad["x_min"] and
-            si["bbox_y_min"] < pad["y_max"] and si["bbox_y_max"] > pad["y_min"]):
-            overlaps.append({{
+        if aabb_overlap(si["bbox_x_min"], si["bbox_y_min"], si["bbox_x_max"], si["bbox_y_max"],
+                        pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
+            pad_overlaps.append({{
                 "silk_type": si["type"],
                 "silk_component": si["component"],
                 "silk_text": si["text"],
@@ -442,26 +446,46 @@ for si in silk_items:
                 "pad_number": pad["pad_number"],
             }})
 
+# Check text-over-text overlaps (different components, same layer)
+text_overlaps = []
+for i in range(len(silk_items)):
+    a = silk_items[i]
+    for j in range(i + 1, len(silk_items)):
+        b = silk_items[j]
+        if a["component"] is not None and a["component"] == b["component"]:
+            continue
+        if a["layer"] != b["layer"]:
+            continue
+        if aabb_overlap(a["bbox_x_min"], a["bbox_y_min"], a["bbox_x_max"], a["bbox_y_max"],
+                        b["bbox_x_min"], b["bbox_y_min"], b["bbox_x_max"], b["bbox_y_max"]):
+            text_overlaps.append({{
+                "text_a_type": a["type"], "text_a_component": a["component"], "text_a": a["text"],
+                "text_b_type": b["type"], "text_b_component": b["component"], "text_b": b["text"],
+                "layer": a["layer"],
+            }})
+
 print(json.dumps({{
     "status": "ok",
     "silk_items_checked": len(silk_items),
     "pads_checked": len(pads),
-    "overlap_count": len(overlaps),
-    "overlaps": overlaps,
+    "overlap_count": len(pad_overlaps),
+    "overlaps": pad_overlaps,
+    "text_overlap_count": len(text_overlaps),
+    "text_overlaps": text_overlaps,
 }}))
 """
         return run_pcbnew_script(script)
 
     @mcp.tool()
     def auto_fix_silkscreen(pcb_path: str) -> Dict[str, Any]:
-        """Automatically fix silkscreen text that overlaps copper pads.
+        """Automatically fix silkscreen text that overlaps copper pads or other text.
 
         For each visible silkscreen text item (reference designator or value)
-        that overlaps pads from a different component, tries up to 8 candidate
-        positions arranged around the footprint's bounding box (N, S, W, E,
-        NW, NE, SW, SE).  The first position that is free of pad overlaps and
-        lies within the board outline is used.  Text is hidden only when all 8
-        positions fail.
+        that overlaps pads from a different component or text from a different
+        component, tries up to 8 candidate positions arranged around the
+        footprint's bounding box (N, S, W, E, NW, NE, SW, SE).  The first
+        position that is free of pad and text overlaps and lies within the
+        board outline is used.  Text is hidden only when all 8 positions fail.
 
         Does not modify standalone text items (only footprint reference/value).
 
@@ -489,6 +513,27 @@ for fp in board.GetFootprints():
             "x_max": sz.GetRight(), "y_max": sz.GetBottom(),
         }})
 
+# Collect all visible silk text objects for text-vs-text checking.
+# We store the actual pcbnew field objects so we can re-read bboxes
+# after earlier items have been moved.
+all_silk = []
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    for ft, fo in [("reference", fp.Reference()), ("value", fp.Value())]:
+        if not fo.IsVisible():
+            continue
+        if fo.GetLayer() not in silk_layer_ids:
+            continue
+        all_silk.append({{"component": ref, "field_type": ft, "obj": fo,
+                          "layer": fo.GetLayer()}})
+# Standalone text (not fixable, but used as obstacles)
+for drawing in board.GetDrawings():
+    if hasattr(drawing, 'GetText') and drawing.GetLayer() in silk_layer_ids:
+        vis = drawing.IsVisible() if hasattr(drawing, 'IsVisible') else True
+        if vis:
+            all_silk.append({{"component": None, "field_type": "standalone",
+                              "obj": drawing, "layer": drawing.GetLayer()}})
+
 # Board outline bbox for boundary clamping
 try:
     board_bb = board.GetBoardEdgesBoundingBox()
@@ -496,14 +541,35 @@ try:
 except Exception:
     board_valid = False
 
+def aabb_hit(a, bx_min, by_min, bx_max, by_max):
+    return (a.GetX() < bx_max and a.GetRight() > bx_min and
+            a.GetY() < by_max and a.GetBottom() > by_min)
+
 def has_pad_overlap(text_bbox, own_ref):
     for pad in all_pads:
         if pad["reference"] == own_ref:
             continue
-        if (text_bbox.GetX() < pad["x_max"] and text_bbox.GetRight() > pad["x_min"] and
-            text_bbox.GetY() < pad["y_max"] and text_bbox.GetBottom() > pad["y_min"]):
+        if aabb_hit(text_bbox, pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
             return True
     return False
+
+def has_text_overlap(text_bbox, own_ref, own_layer, own_obj):
+    for si in all_silk:
+        if si["obj"] is own_obj:
+            continue
+        if si["component"] is not None and si["component"] == own_ref:
+            continue
+        if si["layer"] != own_layer:
+            continue
+        if not si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else False:
+            continue
+        ob = si["obj"].GetBoundingBox()
+        if aabb_hit(text_bbox, ob.GetX(), ob.GetY(), ob.GetRight(), ob.GetBottom()):
+            return True
+    return False
+
+def has_any_overlap(text_bbox, own_ref, own_layer, own_obj):
+    return has_pad_overlap(text_bbox, own_ref) or has_text_overlap(text_bbox, own_ref, own_layer, own_obj)
 
 def in_board(text_bbox):
     if not board_valid:
@@ -529,14 +595,11 @@ for fp in board.GetFootprints():
             continue
 
         text_bbox = field_obj.GetBoundingBox()
-        if not has_pad_overlap(text_bbox, ref):
+        own_layer = field_obj.GetLayer()
+        if not has_any_overlap(text_bbox, ref, own_layer, field_obj):
             already_ok += 1
             continue
 
-        # Compute 8 candidate positions around the footprint bounding box.
-        # Using the footprint bbox (not just the current text position) gives
-        # semantically sensible placements that don't depend on where the text
-        # happened to land after autorouting.
         fp_bb = fp.GetBoundingBox()
         cx  = fp_bb.GetCenter().x
         cy  = fp_bb.GetCenter().y
@@ -562,7 +625,7 @@ for fp in board.GetFootprints():
         for px, py in candidates:
             field_obj.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
             new_bbox = field_obj.GetBoundingBox()
-            if not has_pad_overlap(new_bbox, ref) and in_board(new_bbox):
+            if not has_any_overlap(new_bbox, ref, own_layer, field_obj) and in_board(new_bbox):
                 resolved = True
                 pos = field_obj.GetPosition()
                 fixed.append({{
@@ -636,20 +699,55 @@ if {fix_silkscreen!r}:
                 "x_max": sz.GetRight(), "y_max": sz.GetBottom(),
             }})
 
+    # Collect all visible silk text objects for text-vs-text checking
+    all_silk = []
+    for fp in board.GetFootprints():
+        _ref = fp.GetReference()
+        for _ft, _fo in [("reference", fp.Reference()), ("value", fp.Value())]:
+            if not _fo.IsVisible() or _fo.GetLayer() not in silk_layer_ids:
+                continue
+            all_silk.append({{"component": _ref, "obj": _fo, "layer": _fo.GetLayer()}})
+    for drawing in board.GetDrawings():
+        if hasattr(drawing, 'GetText') and drawing.GetLayer() in silk_layer_ids:
+            _vis = drawing.IsVisible() if hasattr(drawing, 'IsVisible') else True
+            if _vis:
+                all_silk.append({{"component": None, "obj": drawing, "layer": drawing.GetLayer()}})
+
     try:
         board_bb = board.GetBoardEdgesBoundingBox()
         board_valid = board_bb.GetWidth() > 0
     except Exception:
         board_valid = False
 
+    def _aabb_hit(a, bx_min, by_min, bx_max, by_max):
+        return (a.GetX() < bx_max and a.GetRight() > bx_min and
+                a.GetY() < by_max and a.GetBottom() > by_min)
+
     def has_pad_overlap(text_bbox, own_ref):
         for pad in all_pads:
             if pad["reference"] == own_ref:
                 continue
-            if (text_bbox.GetX() < pad["x_max"] and text_bbox.GetRight() > pad["x_min"] and
-                text_bbox.GetY() < pad["y_max"] and text_bbox.GetBottom() > pad["y_min"]):
+            if _aabb_hit(text_bbox, pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
                 return True
         return False
+
+    def has_text_overlap(text_bbox, own_ref, own_layer, own_obj):
+        for si in all_silk:
+            if si["obj"] is own_obj:
+                continue
+            if si["component"] is not None and si["component"] == own_ref:
+                continue
+            if si["layer"] != own_layer:
+                continue
+            if not si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else False:
+                continue
+            ob = si["obj"].GetBoundingBox()
+            if _aabb_hit(text_bbox, ob.GetX(), ob.GetY(), ob.GetRight(), ob.GetBottom()):
+                return True
+        return False
+
+    def has_any_overlap(text_bbox, own_ref, own_layer, own_obj):
+        return has_pad_overlap(text_bbox, own_ref) or has_text_overlap(text_bbox, own_ref, own_layer, own_obj)
 
     def in_board(text_bbox):
         if not board_valid:
@@ -672,7 +770,8 @@ if {fix_silkscreen!r}:
             if field_obj.GetLayer() not in silk_layer_ids:
                 continue
             text_bbox = field_obj.GetBoundingBox()
-            if not has_pad_overlap(text_bbox, ref):
+            own_layer = field_obj.GetLayer()
+            if not has_any_overlap(text_bbox, ref, own_layer, field_obj):
                 silk_ok += 1
                 continue
 
@@ -700,7 +799,7 @@ if {fix_silkscreen!r}:
             for px, py in candidates:
                 field_obj.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
                 new_bbox = field_obj.GetBoundingBox()
-                if not has_pad_overlap(new_bbox, ref) and in_board(new_bbox):
+                if not has_any_overlap(new_bbox, ref, own_layer, field_obj) and in_board(new_bbox):
                     resolved = True
                     pos = field_obj.GetPosition()
                     silk_fixed.append({{"component": ref, "field": field_type,

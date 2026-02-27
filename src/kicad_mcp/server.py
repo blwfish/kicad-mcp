@@ -21,6 +21,7 @@ def create_server() -> FastMCP:
     from kicad_mcp.tools.pcb_autoroute import register_pcb_autoroute_tools
     from kicad_mcp.tools.pcb_panelize import register_pcb_panelize_tools
     from kicad_mcp.tools.pcb_planning import register_pcb_planning_tools
+    from kicad_mcp.tools.pcb_drc_fix import register_pcb_drc_fix_tools
 
     register_pcb_board_tools(mcp)
     register_pcb_footprint_tools(mcp)
@@ -32,6 +33,7 @@ def create_server() -> FastMCP:
     register_pcb_autoroute_tools(mcp)
     register_pcb_panelize_tools(mcp)
     register_pcb_planning_tools(mcp)
+    register_pcb_drc_fix_tools(mcp)
 
     # Upstream tools (project, export, DRC, BOM, netlist, patterns)
     from kicad_mcp.tools.project import register_project_tools

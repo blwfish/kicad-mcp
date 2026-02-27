@@ -1,6 +1,6 @@
 # KiCad MCP — Instructions for Claude
 
-You have access to 83 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
+You have access to 91 MCP tools for KiCad electronic design automation. Follow these instructions when using them.
 
 ## Mandatory Rules
 
@@ -120,6 +120,22 @@ check_silkscreen_overlaps(pcb_path=...)
 
 Zone corners should match or exceed the board outline. Common pattern: GND pour on B.Cu covering the full board.
 
+### 8. DRC Auto-Fix (optional)
+
+If DRC reveals violations, auto-fix them in one shot:
+
+```
+drc_autofix(pcb_path=..., project_path="project.kicad_pro", autoroute_passes=2)
+```
+
+Fixes courtyard overlaps (nudges footprints), routing violations (clears + re-autoroutes), and silkscreen overlaps in order. Returns before/after DRC comparison.
+
+For targeted fixes:
+```
+auto_fix_placement(pcb_path=..., spacing_mm=0.5)   # Courtyard overlaps only
+auto_fix_silkscreen(pcb_path=...)                    # Silkscreen overlaps only
+```
+
 ## Tool Selection
 
 | I need to... | Use this | Not this |
@@ -132,6 +148,8 @@ Zone corners should match or exceed the board outline. Common pattern: GND pour 
 | Create nets from schematic | `update_pcb_from_schematic` | Manual `add_net` + `bulk_assign_pad_nets` |
 | Check all placement issues | `audit_all` | Three separate audit calls |
 | Fix silkscreen overlaps | `auto_fix_silkscreen` | Manual `update_silkscreen_item` |
+| Fix courtyard overlaps | `auto_fix_placement` | Manual `move_footprint` guesswork |
+| Fix all DRC violations | `drc_autofix` | Manual fix-by-fix iteration |
 | Run DRC | `run_drc_check` | Skipping verification |
 
 ## Placement Guidelines

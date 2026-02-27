@@ -627,52 +627,94 @@ for fp in board.GetFootprints():
             "is_footprint_keepout": True,
         }})
 
-# --- 3. Silkscreen overlap check ---
+# --- 3. Silkscreen overlap check (pads + text-to-text) ---
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
 silk_overlaps = []
+silk_text_overlaps = []
 silk_items = []
 for fp in board.GetFootprints():
     ref = fp.GetReference()
     for ft, fo in [("reference", fp.Reference()), ("value", fp.Value())]:
         if not fo.IsVisible() or fo.GetLayer() not in silk_layer_ids:
             continue
+        sb = fo.GetBoundingBox()
         silk_items.append({{
             "component": ref, "type": ft,
-            "bbox": fo.GetBoundingBox(),
+            "bbox": sb,
+            "layer": fo.GetLayer(),
+            "x_min": sb.GetX(), "y_min": sb.GetY(),
+            "x_max": sb.GetRight(), "y_max": sb.GetBottom(),
         }})
+
+# Also include standalone text as obstacles
+for drawing in board.GetDrawings():
+    if hasattr(drawing, 'GetText') and drawing.GetLayer() in silk_layer_ids:
+        vis = drawing.IsVisible() if hasattr(drawing, 'IsVisible') else True
+        if vis:
+            sb = drawing.GetBoundingBox()
+            silk_items.append({{
+                "component": None, "type": "standalone",
+                "bbox": sb,
+                "layer": drawing.GetLayer(),
+                "x_min": sb.GetX(), "y_min": sb.GetY(),
+                "x_max": sb.GetRight(), "y_max": sb.GetBottom(),
+            }})
 
 all_pads = []
 for fp in board.GetFootprints():
     for pad in fp.Pads():
+        pb = pad.GetBoundingBox()
         all_pads.append({{
             "reference": fp.GetReference(),
-            "bbox": pad.GetBoundingBox(),
+            "x_min": pb.GetX(), "y_min": pb.GetY(),
+            "x_max": pb.GetRight(), "y_max": pb.GetBottom(),
         }})
 
+def _aabb(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1):
+    return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
+
+# Text over pads
 for si in silk_items:
-    sb = si["bbox"]
     for pad in all_pads:
         if si["component"] == pad["reference"]:
             continue
-        pb = pad["bbox"]
-        if (sb.GetX() < pb.GetRight() and sb.GetRight() > pb.GetX() and
-            sb.GetY() < pb.GetBottom() and sb.GetBottom() > pb.GetY()):
+        if _aabb(si["x_min"], si["y_min"], si["x_max"], si["y_max"],
+                 pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
             silk_overlaps.append({{
                 "silk_component": si["component"],
                 "silk_type": si["type"],
                 "pad_component": pad["reference"],
             }})
 
+# Text over text (different components, same layer)
+for i in range(len(silk_items)):
+    a = silk_items[i]
+    for j in range(i + 1, len(silk_items)):
+        b = silk_items[j]
+        if a["component"] is not None and a["component"] == b["component"]:
+            continue
+        if a["layer"] != b["layer"]:
+            continue
+        if _aabb(a["x_min"], a["y_min"], a["x_max"], a["y_max"],
+                 b["x_min"], b["y_min"], b["x_max"], b["y_max"]):
+            silk_text_overlaps.append({{
+                "text_a_component": a["component"], "text_a_type": a["type"],
+                "text_b_component": b["component"], "text_b_type": b["type"],
+            }})
+
 # --- Summary ---
 total_fp = len(footprints)
-issues = len(fp_overlaps) + len(keepout_violations) + len(silk_overlaps)
+all_silk_issues = len(silk_overlaps) + len(silk_text_overlaps)
+issues = len(fp_overlaps) + len(keepout_violations) + all_silk_issues
 parts = []
 if fp_overlaps:
     parts.append(f"{{len(fp_overlaps)}} footprint overlap(s)")
 if keepout_violations:
     parts.append(f"{{len(keepout_violations)}} keepout/boundary issue(s)")
 if silk_overlaps:
-    parts.append(f"{{len(silk_overlaps)}} silkscreen overlap(s)")
+    parts.append(f"{{len(silk_overlaps)}} silkscreen-over-pad overlap(s)")
+if silk_text_overlaps:
+    parts.append(f"{{len(silk_text_overlaps)}} silkscreen text-to-text overlap(s)")
 summary = ", ".join(parts) if parts else f"All {{total_fp}} footprints pass all checks"
 
 print(json.dumps({{
@@ -682,7 +724,217 @@ print(json.dumps({{
     "footprint_overlaps": fp_overlaps,
     "keepout_violations": keepout_violations,
     "silkscreen_overlaps": silk_overlaps,
+    "silkscreen_text_overlaps": silk_text_overlaps,
     "summary": summary,
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
+    def auto_fix_placement(
+        pcb_path: str,
+        spacing_mm: float = 0.5,
+        max_passes: int = 3,
+    ) -> Dict[str, Any]:
+        """Resolve courtyard overlaps by nudging footprints apart.
+
+        For each pair of overlapping footprints, moves the less-connected
+        component (fewer signal nets) along the axis of minimum penetration
+        by enough to create the requested gap.  Runs iteratively since
+        nudging one pair can create new overlaps.
+
+        Respects board outline — will not push components outside the board.
+        If a nudge in both directions would leave the board, the pair is
+        reported as unfixable.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            spacing_mm: Target gap between courtyards after fix (default 0.5).
+            max_passes: Maximum fix iterations (default 3).
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+spacing = {spacing_mm}
+max_passes = {max_passes}
+
+POWER_NETS = {{"", "GND", "+5V", "+3V3", "+3.3V", "+12V", "VCC", "VDD", "VSS", "VBUS"}}
+
+def get_courtyard_bbox(fp):
+    x_min = float("inf"); y_min = float("inf")
+    x_max = float("-inf"); y_max = float("-inf")
+    found = False
+    for item in fp.GraphicalItems():
+        layer_name = board.GetLayerName(item.GetLayer())
+        if "CrtYd" in layer_name:
+            found = True
+            bbox = item.GetBoundingBox()
+            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
+            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
+            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
+            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
+    if found:
+        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
+    # Fallback to pad bbox
+    for pad in fp.Pads():
+        found = True
+        pos = pad.GetPosition(); size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
+        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
+    if found:
+        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
+    return None
+
+def signal_net_count(fp):
+    nets = set()
+    for pad in fp.Pads():
+        n = pad.GetNetname()
+        if n and n not in POWER_NETS:
+            nets.add(n)
+    return len(nets)
+
+# Board outline
+outline = None
+try:
+    bb = board.GetBoardEdgesBoundingBox()
+    if bb.GetWidth() > 0:
+        outline = (pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY()),
+                   pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
+except Exception:
+    pass
+
+def bbox_inside_board(bx0, by0, bx1, by1):
+    if outline is None:
+        return True
+    return bx0 >= outline[0] and by0 >= outline[1] and bx1 <= outline[2] and by1 <= outline[3]
+
+all_moves = []
+unfixed = []
+passes_used = 0
+
+for pass_num in range(1, max_passes + 1):
+    passes_used = pass_num
+    # Rebuild footprint data each pass (positions change)
+    fp_data = []
+    for fp in board.GetFootprints():
+        bbox = get_courtyard_bbox(fp)
+        if bbox is None:
+            continue
+        fp_data.append({{
+            "ref": fp.GetReference(),
+            "fp": fp,
+            "bbox": bbox,
+            "nets": signal_net_count(fp),
+        }})
+
+    # Find overlapping pairs
+    pairs = []
+    for i in range(len(fp_data)):
+        a = fp_data[i]; ab = a["bbox"]
+        for j in range(i + 1, len(fp_data)):
+            b = fp_data[j]; bb_ = b["bbox"]
+            if ab[0] < bb_[2] and ab[2] > bb_[0] and ab[1] < bb_[3] and ab[3] > bb_[1]:
+                pairs.append((a, b))
+
+    if not pairs:
+        break
+
+    moved_this_pass = False
+    for a, b in pairs:
+        # Decide which to move: fewer signal nets = less connected = move it
+        if a["nets"] <= b["nets"]:
+            mover, anchor = a, b
+        else:
+            mover, anchor = b, a
+
+        mb = mover["bbox"]; ab_ = anchor["bbox"]
+        # Overlap on each axis
+        ox = min(mb[2], ab_[2]) - max(mb[0], ab_[0])  # x overlap
+        oy = min(mb[3], ab_[3]) - max(mb[1], ab_[1])  # y overlap
+
+        if ox <= 0 or oy <= 0:
+            continue  # No longer overlapping (fixed by earlier nudge)
+
+        mover_fp = mover["fp"]
+        old_pos = mover_fp.GetPosition()
+        old_x = pcbnew.ToMM(old_pos.x)
+        old_y = pcbnew.ToMM(old_pos.y)
+
+        resolved = False
+        # Try nudging along axis of minimum overlap, then the other axis
+        axes = []
+        if ox <= oy:
+            dx = ox + spacing
+            mc = (mb[0] + mb[2]) / 2; ac = (ab_[0] + ab_[2]) / 2
+            sign_x = 1 if mc >= ac else -1
+            axes.append((sign_x * dx, 0))
+            axes.append((-sign_x * dx, 0))
+            dy = oy + spacing
+            mc = (mb[1] + mb[3]) / 2; ac = (ab_[1] + ab_[3]) / 2
+            sign_y = 1 if mc >= ac else -1
+            axes.append((0, sign_y * dy))
+            axes.append((0, -sign_y * dy))
+        else:
+            dy = oy + spacing
+            mc = (mb[1] + mb[3]) / 2; ac = (ab_[1] + ab_[3]) / 2
+            sign_y = 1 if mc >= ac else -1
+            axes.append((0, sign_y * dy))
+            axes.append((0, -sign_y * dy))
+            dx = ox + spacing
+            mc = (mb[0] + mb[2]) / 2; ac = (ab_[0] + ab_[2]) / 2
+            sign_x = 1 if mc >= ac else -1
+            axes.append((sign_x * dx, 0))
+            axes.append((-sign_x * dx, 0))
+
+        for ddx, ddy in axes:
+            new_x = old_x + ddx
+            new_y = old_y + ddy
+            # Compute new bbox
+            w = mb[2] - mb[0]; h = mb[3] - mb[1]
+            off_x = old_x - (mb[0] + w/2); off_y = old_y - (mb[1] + h/2)
+            nb = (new_x - off_x - w/2, new_y - off_y - h/2,
+                  new_x - off_x + w/2, new_y - off_y + h/2)
+            if not bbox_inside_board(nb[0], nb[1], nb[2], nb[3]):
+                continue
+            # Apply move
+            mover_fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(new_x), pcbnew.FromMM(new_y)))
+            all_moves.append({{
+                "reference": mover["ref"],
+                "old_x_mm": round(old_x, 3), "old_y_mm": round(old_y, 3),
+                "new_x_mm": round(new_x, 3), "new_y_mm": round(new_y, 3),
+                "reason": f"overlap with {{anchor['ref']}}",
+                "pass": pass_num,
+            }})
+            # Update bbox for subsequent pair checks this pass
+            mover["bbox"] = nb
+            resolved = True
+            moved_this_pass = True
+            break
+
+        if not resolved:
+            unfixed.append({{
+                "ref_a": a["ref"], "ref_b": b["ref"],
+                "reason": "could not resolve without leaving board",
+            }})
+
+    if not moved_this_pass:
+        break
+
+board.Save({pcb_path!r})
+
+print(json.dumps({{
+    "status": "ok",
+    "moves": all_moves,
+    "move_count": len(all_moves),
+    "unfixed": unfixed,
+    "unfixed_count": len(unfixed),
+    "passes_used": passes_used,
 }}))
 """
         return run_pcbnew_script(script)
