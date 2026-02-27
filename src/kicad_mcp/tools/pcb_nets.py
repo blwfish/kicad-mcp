@@ -206,6 +206,61 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def rename_net(
+        pcb_path: str,
+        old_name: str,
+        new_name: str,
+    ) -> Dict[str, Any]:
+        """Rename a net across the entire PCB.
+
+        Updates the net definition and all pad references that embed the net
+        name.  Track and via references store only the net code and need no
+        change.  Uses direct file editing so the rename survives pcbnew's
+        Save() pruning rules.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            old_name: Current net name.
+            new_name: Replacement net name.
+        """
+        import re as _re
+
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        with open(pcb_path, "r") as f:
+            content = f.read()
+
+        # Verify old net exists and get its code
+        match = _re.search(r'\(net\s+(\d+)\s+"' + _re.escape(old_name) + r'"\)', content)
+        if not match:
+            return {"error": f"Net '{old_name}' not found in {pcb_path}"}
+
+        if old_name == new_name:
+            return {"status": "ok", "old_name": old_name, "new_name": new_name, "replacements": 0}
+
+        # Check new name doesn't already exist
+        if _re.search(r'\(net\s+\d+\s+"' + _re.escape(new_name) + r'"\)', content):
+            return {"error": f"Net '{new_name}' already exists — merge not supported"}
+
+        net_code = match.group(1)
+        # Replace all occurrences of (net N "old_name") — covers both the
+        # top-level definition and pad-level references.
+        pattern = r'\(net\s+' + net_code + r'\s+"' + _re.escape(old_name) + r'"\)'
+        new_content, count = _re.subn(pattern, f'(net {net_code} "{new_name}")', content)
+
+        with open(pcb_path, "w") as f:
+            f.write(new_content)
+
+        return {
+            "status": "ok",
+            "old_name": old_name,
+            "new_name": new_name,
+            "net_code": int(net_code),
+            "replacements": count,
+        }
+
+    @mcp.tool()
     def list_pcb_nets(pcb_path: str) -> Dict[str, Any]:
         """List all nets in the PCB.
 

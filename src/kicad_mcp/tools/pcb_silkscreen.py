@@ -243,6 +243,115 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def edit_text(
+        pcb_path: str,
+        text: str,
+        new_text: Optional[str] = None,
+        x_mm: Optional[float] = None,
+        y_mm: Optional[float] = None,
+        layer: Optional[str] = None,
+        size_mm: Optional[float] = None,
+        thickness_mm: Optional[float] = None,
+        rotation_deg: Optional[float] = None,
+        near_x_mm: Optional[float] = None,
+        near_y_mm: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Edit a standalone PCB text item in place.
+
+        Finds the text by its current content and applies updates without
+        requiring delete-and-recreate.  If multiple items share the same
+        text, supply near_x_mm / near_y_mm to pick the closest one.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            text: Current text content to match.
+            new_text: Replacement text content. None to keep current.
+            x_mm: New X position in mm. None to keep current.
+            y_mm: New Y position in mm. None to keep current.
+            layer: New layer name (e.g. "F.SilkS", "B.SilkS"). None to keep current.
+            size_mm: New text height in mm. None to keep current.
+            thickness_mm: New stroke thickness in mm. None to keep current.
+            rotation_deg: New rotation in degrees. None to keep current.
+            near_x_mm: Disambiguate by proximity — X of expected location.
+            near_y_mm: Disambiguate by proximity — Y of expected location.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        if all(v is None for v in (new_text, x_mm, y_mm, layer, size_mm, thickness_mm, rotation_deg)):
+            return {"error": "No modifications specified"}
+
+        near_x = near_x_mm if near_x_mm is not None else "None"
+        near_y = near_y_mm if near_y_mm is not None else "None"
+
+        mods = []
+        if new_text is not None:
+            mods.append(f"item.SetText({new_text!r})")
+        if x_mm is not None and y_mm is not None:
+            mods.append(f"item.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM({x_mm}), pcbnew.FromMM({y_mm})))")
+        elif x_mm is not None:
+            mods.append(f"pos = item.GetPosition(); item.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM({x_mm}), pos.y))")
+        elif y_mm is not None:
+            mods.append(f"pos = item.GetPosition(); item.SetPosition(pcbnew.VECTOR2I(pos.x, pcbnew.FromMM({y_mm})))")
+        if layer is not None:
+            mods.append(f"item.SetLayer(board.GetLayerID({layer!r}))")
+        if size_mm is not None:
+            mods.append(f"item.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM({size_mm}), pcbnew.FromMM({size_mm})))")
+        if thickness_mm is not None:
+            mods.append(f"item.SetTextThickness(pcbnew.FromMM({thickness_mm}))")
+        if rotation_deg is not None:
+            mods.append(f"item.SetTextAngle(pcbnew.EDA_ANGLE({rotation_deg}, pcbnew.DEGREES_T))")
+        mods_code = "\n".join(mods)
+
+        script = f"""
+import pcbnew, json, math
+
+board = pcbnew.LoadBoard({pcb_path!r})
+
+target_text = {text!r}
+near_x = {near_x}
+near_y = {near_y}
+
+candidates = []
+for drawing in board.GetDrawings():
+    if hasattr(drawing, 'GetText') and drawing.GetText() == target_text:
+        candidates.append(drawing)
+
+if not candidates:
+    print(json.dumps({{"error": f"No standalone text matching {{target_text!r}} found"}}))
+    raise SystemExit(0)
+
+if len(candidates) > 1:
+    if near_x is not None and near_y is not None:
+        ref_x = pcbnew.FromMM(near_x)
+        ref_y = pcbnew.FromMM(near_y)
+        candidates.sort(key=lambda d: math.hypot(d.GetPosition().x - ref_x, d.GetPosition().y - ref_y))
+    else:
+        positions = [f"({{round(pcbnew.ToMM(d.GetPosition().x),2)}}, {{round(pcbnew.ToMM(d.GetPosition().y),2)}})" for d in candidates]
+        print(json.dumps({{"error": f"Multiple items match {{target_text!r}}: {{positions}}. Supply near_x_mm/near_y_mm to disambiguate."}}))
+        raise SystemExit(0)
+
+item = candidates[0]
+{mods_code}
+
+board.Save({pcb_path!r})
+
+pos = item.GetPosition()
+size = item.GetTextSize()
+print(json.dumps({{
+    "status": "ok",
+    "text": item.GetText(),
+    "x_mm": round(pcbnew.ToMM(pos.x), 3),
+    "y_mm": round(pcbnew.ToMM(pos.y), 3),
+    "layer": board.GetLayerName(item.GetLayer()),
+    "size_mm": round(pcbnew.ToMM(size.x), 3),
+    "thickness_mm": round(pcbnew.ToMM(item.GetTextThickness()), 3),
+    "rotation_deg": item.GetTextAngle().AsDegrees(),
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
     def check_silkscreen_overlaps(pcb_path: str) -> Dict[str, Any]:
         """Find silkscreen text items that overlap copper pads.
 

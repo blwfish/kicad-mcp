@@ -139,6 +139,64 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def edit_trace_width(
+        pcb_path: str,
+        new_width_mm: float,
+        net_name: str = "",
+        layer: str = "",
+    ) -> Dict[str, Any]:
+        """Change the width of existing traces.
+
+        Filters by net name and/or layer; if neither is supplied, updates
+        every track on the board.  Vias are never modified.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            new_width_mm: New trace width in mm.
+            net_name: Limit to traces on this net. Empty string = all nets.
+            layer: Limit to traces on this layer (e.g. "F.Cu"). Empty = all layers.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+
+net_filter = {net_name!r}
+layer_filter = {layer!r}
+new_width = pcbnew.FromMM({new_width_mm})
+updated = 0
+skipped = 0
+
+for track in board.GetTracks():
+    if track.GetClass() != "PCB_TRACK":
+        skipped += 1
+        continue
+    if net_filter and track.GetNetname() != net_filter:
+        skipped += 1
+        continue
+    if layer_filter and board.GetLayerName(track.GetLayer()) != layer_filter:
+        skipped += 1
+        continue
+    track.SetWidth(new_width)
+    updated += 1
+
+board.Save({pcb_path!r})
+
+print(json.dumps({{
+    "status": "ok",
+    "updated": updated,
+    "skipped": skipped,
+    "new_width_mm": {new_width_mm},
+    "net_filter": net_filter or "(all)",
+    "layer_filter": layer_filter or "(all)",
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
     def clear_routing(
         pcb_path: str,
         clear_tracks: bool = True,

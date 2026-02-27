@@ -938,6 +938,100 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             return {"status": "ok", "label_uuid": label_uuid}
         return {"error": f"Label {label_uuid} not found"}
 
+    @mcp.tool()
+    def edit_label(
+        label_uuid: str,
+        new_text: str | None = None,
+        position: list[float] | None = None,
+        rotation: float | None = None,
+        size: float | None = None,
+    ) -> dict:
+        """Edit an existing label's text, position, rotation, or size in place.
+
+        Avoids the correctness risk of delete-and-re-add by mutating the
+        label object directly.  Use the label_uuid returned by add_label or
+        list the schematic info to find existing UUIDs.
+
+        Args:
+            label_uuid: UUID of the label to edit.
+            new_text: Replacement net label text. None to keep current.
+            position: New [x, y] position. None to keep current.
+            rotation: New rotation in degrees. None to keep current.
+            size: New font size. None to keep current.
+        """
+        sch = _require_schematic()
+
+        if all(v is None for v in (new_text, position, rotation, size)):
+            return {"error": "No modifications specified"}
+
+        # Find the label by UUID across both regular and hierarchical collections
+        label = None
+        for lbl in sch.labels:
+            if lbl.uuid == label_uuid:
+                label = lbl
+                break
+        if label is None:
+            for lbl in sch.hierarchical_labels:
+                if lbl.uuid == label_uuid:
+                    label = lbl
+                    break
+        if label is None:
+            return {"error": f"Label with UUID {label_uuid!r} not found"}
+
+        if new_text is not None:
+            label.text = new_text
+        if position is not None:
+            if len(position) != 2:
+                return {"error": "position must be [x, y]"}
+            label.position = tuple(position)
+        if rotation is not None:
+            label.rotation = rotation
+        if size is not None:
+            label.size = size
+
+        return {
+            "status": "ok",
+            "label_uuid": label_uuid,
+            "text": label.text,
+            "position": [label.position.x, label.position.y],
+            "rotation": label.rotation,
+            "size": label.size,
+        }
+
+    @mcp.tool()
+    def move_component(
+        reference: str,
+        position: list[float],
+    ) -> dict:
+        """Move a schematic component to a new position.
+
+        Repositions the component without removing or re-adding it, so all
+        existing wire connections by net name are preserved.
+
+        Args:
+            reference: Component reference (e.g., "R1", "U3").
+            position: New [x, y] coordinates in schematic units.
+        """
+        sch = _require_schematic()
+
+        if len(position) != 2:
+            return {"error": "position must be [x, y]"}
+
+        matches = list(sch.components.filter(reference=reference))
+        if not matches:
+            return {"error": f"Component {reference!r} not found"}
+
+        comp = matches[0]
+        old_pos = [comp.position.x, comp.position.y] if comp.position else None
+        comp.position = tuple(position)
+
+        return {
+            "status": "ok",
+            "reference": reference,
+            "old_position": old_pos,
+            "new_position": position,
+        }
+
     # ------------------------------------------------------------------
     # Junction management
     # ------------------------------------------------------------------
