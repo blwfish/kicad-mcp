@@ -32,16 +32,17 @@ def register_pcb_zone_tools(mcp: FastMCP) -> None:
             net_name: Net name for the zone (e.g., "GND").
             layer: Copper layer (default "F.Cu").
             corners: List of [x_mm, y_mm] corner points defining the zone outline.
+                If empty, automatically uses the board outline (Edge.Cuts)
+                as the zone boundary — the most common use case for ground pours.
             clearance_mm: Clearance to other nets in mm (default 0.3).
             min_width_mm: Minimum fill width in mm (default 0.2).
             connect_pads: Pad connection type - "thermal", "solid", or "none" (default "thermal").
+                Note: "thermal" relief can cause starved-thermal DRC violations when
+                autorouted traces block spoke formation. Use "solid" to avoid this.
             priority: Zone priority (higher fills first, default 0).
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
-
-        if len(corners) < 3:
-            return {"error": "Zone needs at least 3 corner points"}
 
         corners_repr = repr(corners)
 
@@ -54,6 +55,23 @@ net = board.FindNet({net_name!r})
 if net is None or net.GetNetCode() == 0:
     print(json.dumps({{"error": f"Net {net_name!r} not found"}}))
     raise SystemExit(0)
+
+# Determine zone corners
+corners = {corners_repr}
+auto_outline = False
+if len(corners) < 3:
+    # Auto-derive from board outline (Edge.Cuts bounding box)
+    bb = board.GetBoardEdgesBoundingBox()
+    if bb.GetWidth() > 0 and bb.GetHeight() > 0:
+        x0 = round(pcbnew.ToMM(bb.GetX()), 2)
+        y0 = round(pcbnew.ToMM(bb.GetY()), 2)
+        x1 = round(pcbnew.ToMM(bb.GetRight()), 2)
+        y1 = round(pcbnew.ToMM(bb.GetBottom()), 2)
+        corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        auto_outline = True
+    else:
+        print(json.dumps({{"error": "No corners provided and no board outline (Edge.Cuts) found"}}))
+        raise SystemExit(0)
 
 zone = pcbnew.ZONE(board)
 zone.SetNet(net)
@@ -76,7 +94,6 @@ else:
 # Build outline
 outline = zone.Outline()
 outline.NewOutline()
-corners = {corners_repr}
 for i, (cx, cy) in enumerate(corners):
     outline.Append(pcbnew.FromMM(cx), pcbnew.FromMM(cy))
 
@@ -92,7 +109,7 @@ filler.Fill(zone_list)
 
 board.Save({pcb_path!r})
 
-print(json.dumps({{
+result = {{
     "status": "ok",
     "zone": {{
         "net": {net_name!r},
@@ -103,7 +120,11 @@ print(json.dumps({{
         "connect_pads": connect,
         "priority": {priority},
     }},
-}}))
+}}
+if auto_outline:
+    result["auto_outline"] = True
+    result["note"] = "Zone corners auto-derived from board outline (Edge.Cuts)"
+print(json.dumps(result))
 """
         return run_pcbnew_script(script, timeout=60.0)
 

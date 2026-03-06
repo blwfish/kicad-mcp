@@ -144,6 +144,30 @@ placement_warnings = []
 
 board.Save({pcb_path!r})
 
+# Get bounding box dimensions for placement planning
+bbox = fp.GetBoundingBox(False, False)
+bbox_info = {{
+    "x_min_mm": round(pcbnew.ToMM(bbox.GetX()), 2),
+    "y_min_mm": round(pcbnew.ToMM(bbox.GetY()), 2),
+    "x_max_mm": round(pcbnew.ToMM(bbox.GetRight()), 2),
+    "y_max_mm": round(pcbnew.ToMM(bbox.GetBottom()), 2),
+    "width_mm": round(pcbnew.ToMM(bbox.GetWidth()), 2),
+    "height_mm": round(pcbnew.ToMM(bbox.GetHeight()), 2),
+}}
+
+# Try to get courtyard specifically (tighter than body bbox)
+courtyard_layer = pcbnew.F_CrtYd if {layer!r} == "F.Cu" else pcbnew.B_CrtYd
+cy_bb = fp.GetBoundingBox(False, True)  # include text=False, only courtyard
+if cy_bb.GetWidth() > 0:
+    bbox_info["courtyard"] = {{
+        "x_min_mm": round(pcbnew.ToMM(cy_bb.GetX()), 2),
+        "y_min_mm": round(pcbnew.ToMM(cy_bb.GetY()), 2),
+        "x_max_mm": round(pcbnew.ToMM(cy_bb.GetRight()), 2),
+        "y_max_mm": round(pcbnew.ToMM(cy_bb.GetBottom()), 2),
+        "width_mm": round(pcbnew.ToMM(cy_bb.GetWidth()), 2),
+        "height_mm": round(pcbnew.ToMM(cy_bb.GetHeight()), 2),
+    }}
+
 result = {{
     "status": "ok",
     "placed": {{
@@ -154,6 +178,7 @@ result = {{
         "rotation": {rotation_deg},
         "layer": {layer!r},
     }},
+    "bounding_box": bbox_info,
 }}
 if placement_warnings:
     result["placement_warnings"] = placement_warnings
