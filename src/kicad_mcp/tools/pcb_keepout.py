@@ -731,6 +731,149 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def check_pad_clearances(
+        pcb_path: str,
+        min_clearance_mm: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Check pad-to-pad clearances between all footprints on the PCB.
+
+        Unlike audit_footprint_overlaps (which checks courtyard bounding boxes),
+        this tool checks individual pad geometries.  Two courtyards can be 1mm
+        apart while individual pads are only 0.05mm apart — this catches those
+        cases.
+
+        Run this BEFORE autorouting to catch placement issues that would
+        otherwise only appear in DRC after a lengthy routing pass.
+
+        When min_clearance_mm is 0, uses the board's design rule minimum
+        clearance.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            min_clearance_mm: Minimum required clearance between pads of
+                different footprints in mm.  0 = use board design rule minimum.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json, math
+
+board = pcbnew.LoadBoard({pcb_path!r})
+min_cl = {min_clearance_mm}
+
+# Use board design rule if no explicit clearance given
+if min_cl <= 0:
+    ds = board.GetDesignSettings()
+    min_cl = pcbnew.ToMM(ds.m_MinClearance)
+    if min_cl <= 0:
+        min_cl = 0.2  # fallback
+
+# Collect all pads with their absolute position and size
+all_pads = []
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    for pad in fp.Pads():
+        pos = pad.GetPosition()
+        size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x)
+        y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x)
+        h = pcbnew.ToMM(size.y)
+        all_pads.append({{
+            "ref": ref,
+            "pad": pad.GetNumber(),
+            "net": pad.GetNetname(),
+            "x": x, "y": y,
+            "w": w, "h": h,
+            # Pad bounding box
+            "x0": x - w / 2, "y0": y - h / 2,
+            "x1": x + w / 2, "y1": y + h / 2,
+        }})
+
+# Pairwise check across different footprints
+violations = []
+n = len(all_pads)
+
+for i in range(n):
+    a = all_pads[i]
+    # Expand pad A by min_clearance for fast AABB rejection
+    ax0 = a["x0"] - min_cl
+    ay0 = a["y0"] - min_cl
+    ax1 = a["x1"] + min_cl
+    ay1 = a["y1"] + min_cl
+    for j in range(i + 1, n):
+        b = all_pads[j]
+        # Skip same-footprint pairs
+        if a["ref"] == b["ref"]:
+            continue
+        # Fast AABB rejection with clearance expansion
+        if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
+            continue
+        # Compute actual gap between pad bounding boxes
+        gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
+        gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
+        # If both gaps are negative, pads overlap — gap is 0 (or negative)
+        if gap_x < 0 and gap_y < 0:
+            gap = 0.0  # actual overlap
+        else:
+            # Gap is the Chebyshev distance (max of axis-aligned gaps)
+            # For non-overlapping: distance = max(gap_x, gap_y) if one is positive
+            # For partially overlapping on one axis: distance = max(0, gap_x, gap_y)
+            gap = max(0.0, gap_x, gap_y)
+        if gap < min_cl:
+            violations.append({{
+                "pad_a": f"{{a['ref']}}:{{a['pad']}}",
+                "pad_b": f"{{b['ref']}}:{{b['pad']}}",
+                "net_a": a["net"],
+                "net_b": b["net"],
+                "gap_mm": round(gap, 3),
+                "min_clearance_mm": round(min_cl, 3),
+                "overlap": gap == 0.0,
+                "pad_a_center": [round(a["x"], 3), round(a["y"], 3)],
+                "pad_b_center": [round(b["x"], 3), round(b["y"], 3)],
+            }})
+
+# Deduplicate by footprint pair and summarize
+fp_pairs = {{}}
+for v in violations:
+    ref_a = v["pad_a"].split(":")[0]
+    ref_b = v["pad_b"].split(":")[0]
+    key = tuple(sorted([ref_a, ref_b]))
+    if key not in fp_pairs:
+        fp_pairs[key] = {{
+            "ref_a": key[0], "ref_b": key[1],
+            "pad_violations": 0, "min_gap_mm": float("inf"),
+        }}
+    fp_pairs[key]["pad_violations"] += 1
+    fp_pairs[key]["min_gap_mm"] = min(fp_pairs[key]["min_gap_mm"], v["gap_mm"])
+
+fp_summaries = []
+for p in fp_pairs.values():
+    p["min_gap_mm"] = round(p["min_gap_mm"], 3)
+    fp_summaries.append(p)
+fp_summaries.sort(key=lambda x: x["min_gap_mm"])
+
+if violations:
+    summary = f"{{len(violations)}} pad clearance violation(s) across {{len(fp_summaries)}} footprint pair(s) (min_clearance={{min_cl}}mm)"
+else:
+    summary = f"All inter-footprint pad clearances >= {{min_cl}}mm ({{n}} pads checked)"
+
+print(json.dumps({{
+    "status": "ok",
+    "total_pads": n,
+    "min_clearance_mm": round(min_cl, 3),
+    "violation_count": len(violations),
+    "footprint_pairs_affected": len(fp_summaries),
+    "footprint_pair_summary": fp_summaries,
+    "violations": violations[:50],  # Cap at 50 to avoid huge output
+    "violations_truncated": len(violations) > 50,
+    "summary": summary,
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
     def auto_fix_placement(
         pcb_path: str,
         spacing_mm: float = 0.5,

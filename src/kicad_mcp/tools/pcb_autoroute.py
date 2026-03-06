@@ -410,14 +410,16 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
         freerouter_jar: str = "",
         passes: int = 1,
         remove_zones: bool = True,
+        net_classes: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Autoroute a PCB using FreeRouter (Specctra DSN/SES pipeline).
 
         Runs the full autorouting pipeline:
-        1. Optionally removes copper pour zones (FreeRouter doesn't understand them)
-        2. Exports the board as a Specctra DSN file
-        3. Runs FreeRouter headless autorouter
-        4. Imports the routed SES session file back into the PCB
+        1. Optionally sets up net classes for per-net trace widths
+        2. Optionally removes copper pour zones (FreeRouter doesn't understand them)
+        3. Exports the board as a Specctra DSN file
+        4. Runs FreeRouter headless autorouter
+        5. Imports the routed SES session file back into the PCB
 
         After autorouting, re-add copper zones with add_copper_zone and
         fill them with fill_zones.
@@ -430,6 +432,12 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
             freerouter_jar: Path to freerouting JAR file. Auto-detected if empty.
             passes: Number of autoroute attempts (best result kept). Default 1.
             remove_zones: Remove copper pour zones before routing (recommended). Default True.
+            net_classes: Optional dict of net class definitions to apply before
+                routing.  Format: ``{"ClassName": {"nets": [...], "track_width_mm": 0.5,
+                "clearance_mm": 0.3, "via_diameter_mm": 0.8, "via_drill_mm": 0.4}}``.
+                FreeRouter reads these from the DSN export and routes each net
+                at the specified width.  Requires a .kicad_pro file alongside
+                the PCB.
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
@@ -448,13 +456,93 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
         if not java_path:
             return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
 
-        return _run_full_autoroute(
+        # Apply net classes before routing (so DSN export includes them)
+        net_class_results = []
+        if net_classes:
+            from kicad_mcp.tools.pcb_nets import _default_net_class
+            stem = os.path.splitext(pcb_path)[0]
+            pro_path = stem + ".kicad_pro"
+            if not os.path.exists(pro_path):
+                return {
+                    "error": (
+                        f"net_classes requires a .kicad_pro file at {pro_path}. "
+                        "Create one or use set_net_class separately."
+                    )
+                }
+
+            import json as _json
+
+            with open(pro_path, "r") as f:
+                project = _json.load(f)
+
+            if "net_settings" not in project:
+                project["net_settings"] = {
+                    "classes": [_default_net_class()],
+                    "meta": {"version": 4},
+                    "net_colors": None,
+                    "netclass_assignments": None,
+                    "netclass_patterns": [],
+                }
+
+            ns = project["net_settings"]
+            classes = ns.get("classes", [])
+            assignments = ns.get("netclass_assignments") or {}
+
+            for cls_name, cls_def in net_classes.items():
+                nets = cls_def.get("nets", [])
+                tw = cls_def.get("track_width_mm", 0.25)
+                cl = cls_def.get("clearance_mm", 0.2)
+                vd = cls_def.get("via_diameter_mm", 0.6)
+                vr = cls_def.get("via_drill_mm", 0.3)
+
+                # Find or create class
+                existing = None
+                for c in classes:
+                    if c.get("name") == cls_name:
+                        existing = c
+                        break
+                if existing:
+                    existing["track_width"] = tw
+                    existing["clearance"] = cl
+                    existing["via_diameter"] = vd
+                    existing["via_drill"] = vr
+                else:
+                    nc = _default_net_class()
+                    nc["name"] = cls_name
+                    nc["track_width"] = tw
+                    nc["clearance"] = cl
+                    nc["via_diameter"] = vd
+                    nc["via_drill"] = vr
+                    classes.append(nc)
+
+                for net_name in nets:
+                    assignments[net_name] = cls_name
+
+                net_class_results.append({
+                    "class": cls_name,
+                    "track_width_mm": tw,
+                    "nets_assigned": len(nets),
+                })
+
+            ns["classes"] = classes
+            ns["netclass_assignments"] = assignments
+
+            with open(pro_path, "w") as f:
+                _json.dump(project, f, indent=2)
+                f.write("\n")
+
+        result = _run_full_autoroute(
             pcb_path=pcb_path,
             jar_path=jar_path,
             java_path=java_path,
             passes=passes,
             remove_zones=remove_zones,
         )
+
+        if net_class_results:
+            result["net_classes_applied"] = net_class_results
+
+        return result
 
     @mcp.tool()
     def autoroute_pcb_async(

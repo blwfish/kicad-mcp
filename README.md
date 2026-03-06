@@ -4,7 +4,7 @@ This tool enables your AI agent to use [KiCad](https://www.kicad.org/) — the i
 
 ## What This Does
 
-You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 91 tools covering the full design workflow.
+You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 93 tools covering the full design workflow.
 
 You don't need to know KiCad. You don't need to know what a PCB layout tool does. You just need an AI agent (like [Claude](https://claude.ai/)).
 
@@ -32,7 +32,7 @@ I built this for myself. I use Claude Code on a Mac. Other platforms *should* wo
 
 ### What's Under the Hood
 
-The server provides 91 tools organized into three groups:
+The server provides 93 tools organized into three groups:
 
 - **Schematic tools** (28) — create and edit circuit schematics, place components, wire connections
 - **PCB tools** (47) — board layout, footprint placement, autorouting via [FreeRouter](https://github.com/freerouting/freerouting), copper zones, silkscreen management, design rule checking and auto-fix

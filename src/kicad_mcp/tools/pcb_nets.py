@@ -1,8 +1,9 @@
-"""PCB net tools: add, assign, bulk assign, list, and sync from schematic."""
+"""PCB net tools: add, assign, bulk assign, list, net classes, and sync from schematic."""
 
+import json as _json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
 
@@ -381,6 +382,7 @@ print(json.dumps({{
 
         nets_created = []
         nets_existing = []
+        skipped_unconnected = []
 
         for net_name in net_definitions:
             if net_name in existing_nets:
@@ -496,3 +498,132 @@ print(json.dumps({{
             pcbnew_result["power_ground_warnings"] = power_ground_warnings
 
         return pcbnew_result
+
+    @mcp.tool()
+    def set_net_class(
+        pcb_path: str,
+        class_name: str,
+        nets: List[str],
+        track_width_mm: float = 0.25,
+        clearance_mm: float = 0.2,
+        via_diameter_mm: float = 0.6,
+        via_drill_mm: float = 0.3,
+    ) -> Dict[str, Any]:
+        """Create or update a net class and assign nets to it.
+
+        Net classes define per-net routing rules (trace width, clearance, via
+        size).  FreeRouter reads these from the Specctra DSN export and routes
+        each net at the correct width.  Call this BEFORE autoroute_pcb so
+        FreeRouter sees the classes.
+
+        Common usage: create a "Power" class with wider traces for GND/VCC,
+        and leave signal nets on the Default class.
+
+        Net class definitions live in the KiCad project file (.kicad_pro),
+        which must exist alongside the PCB file.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.  The .kicad_pro file is
+                derived from this path (same directory, same stem).
+            class_name: Name for the net class (e.g., "Power", "HighSpeed").
+            nets: List of net names to assign to this class.
+            track_width_mm: Trace width in mm (default 0.25).
+            clearance_mm: Clearance to other nets in mm (default 0.2).
+            via_diameter_mm: Via pad diameter in mm (default 0.6).
+            via_drill_mm: Via drill diameter in mm (default 0.3).
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        # Derive project file path
+        stem = os.path.splitext(pcb_path)[0]
+        pro_path = stem + ".kicad_pro"
+        if not os.path.exists(pro_path):
+            return {"error": f"Project file not found: {pro_path}"}
+
+        with open(pro_path, "r") as f:
+            project = _json.load(f)
+
+        # Ensure net_settings structure exists
+        if "net_settings" not in project:
+            project["net_settings"] = {
+                "classes": [_default_net_class()],
+                "meta": {"version": 4},
+                "net_colors": None,
+                "netclass_assignments": None,
+                "netclass_patterns": [],
+            }
+
+        ns = project["net_settings"]
+        classes = ns.get("classes", [])
+
+        # Find or create the class
+        existing = None
+        for cls in classes:
+            if cls.get("name") == class_name:
+                existing = cls
+                break
+
+        if existing:
+            existing["track_width"] = track_width_mm
+            existing["clearance"] = clearance_mm
+            existing["via_diameter"] = via_diameter_mm
+            existing["via_drill"] = via_drill_mm
+            action = "updated"
+        else:
+            new_class = _default_net_class()
+            new_class["name"] = class_name
+            new_class["track_width"] = track_width_mm
+            new_class["clearance"] = clearance_mm
+            new_class["via_diameter"] = via_diameter_mm
+            new_class["via_drill"] = via_drill_mm
+            classes.append(new_class)
+            ns["classes"] = classes
+            action = "created"
+
+        # Assign nets to this class
+        assignments = ns.get("netclass_assignments") or {}
+        assigned_count = 0
+        for net_name in nets:
+            assignments[net_name] = class_name
+            assigned_count += 1
+        ns["netclass_assignments"] = assignments
+
+        with open(pro_path, "w") as f:
+            _json.dump(project, f, indent=2)
+            f.write("\n")
+
+        return {
+            "status": "ok",
+            "class_name": class_name,
+            "action": action,
+            "track_width_mm": track_width_mm,
+            "clearance_mm": clearance_mm,
+            "via_diameter_mm": via_diameter_mm,
+            "via_drill_mm": via_drill_mm,
+            "nets_assigned": assigned_count,
+            "nets": nets,
+            "project_file": pro_path,
+        }
+
+
+def _default_net_class() -> Dict[str, Any]:
+    """Return a default net class template matching KiCad 9's format."""
+    return {
+        "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "Default",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 2147483647,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.2,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+    }
