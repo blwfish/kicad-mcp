@@ -596,7 +596,9 @@ for fp in board.GetFootprints():
 
         text_bbox = field_obj.GetBoundingBox()
         own_layer = field_obj.GetLayer()
-        if not has_any_overlap(text_bbox, ref, own_layer, field_obj):
+        has_overlap = has_any_overlap(text_bbox, ref, own_layer, field_obj)
+        clips_edge = not in_board(text_bbox)
+        if not has_overlap and not clips_edge:
             already_ok += 1
             continue
 
@@ -771,7 +773,9 @@ if {fix_silkscreen!r}:
                 continue
             text_bbox = field_obj.GetBoundingBox()
             own_layer = field_obj.GetLayer()
-            if not has_any_overlap(text_bbox, ref, own_layer, field_obj):
+            _has_overlap = has_any_overlap(text_bbox, ref, own_layer, field_obj)
+            _clips_edge = not in_board(text_bbox)
+            if not _has_overlap and not _clips_edge:
                 silk_ok += 1
                 continue
 

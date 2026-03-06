@@ -109,14 +109,13 @@ if net is None or net.GetNetCode() == 0:
     print(json.dumps({{"error": f"Net {net_name!r} not found"}}))
     raise SystemExit(0)
 
-pad_found = False
+pad_count = 0
 for pad in fp.Pads():
     if pad.GetNumber() == {pad_number!r}:
         pad.SetNet(net)
-        pad_found = True
-        break
+        pad_count += 1
 
-if not pad_found:
+if pad_count == 0:
     print(json.dumps({{"error": f"Pad {pad_number!r} not found on {reference!r}"}}))
     raise SystemExit(0)
 
@@ -127,6 +126,7 @@ print(json.dumps({{
     "reference": {reference!r},
     "pad": {pad_number!r},
     "net": {net_name!r},
+    "sub_pads": pad_count,
 }}))
 """
         return run_pcbnew_script(script)
@@ -183,15 +183,14 @@ for a in assignments:
             continue
         created_nets.append(net_name)
 
-    pad_found = False
+    pad_count = 0
     for pad in fp.Pads():
         if pad.GetNumber() == pad_num:
             pad.SetNet(net)
-            pad_found = True
-            results.append({{"reference": ref, "pad": pad_num, "net": net_name}})
-            break
-
-    if not pad_found:
+            pad_count += 1
+    if pad_count > 0:
+        results.append({{"reference": ref, "pad": pad_num, "net": net_name, "sub_pads": pad_count}})
+    else:
         errors.append(f"Pad {{pad_num}} not found on {{ref}}")
 
 board.Save({pcb_path!r})
@@ -364,6 +363,44 @@ print(json.dumps({{
                     f"{a['reference']} pin {a['pad']} ({func}) → ground net {a['net']}"
                 )
 
+        # Detect suspiciously large nets (likely schematic wiring errors)
+        LARGE_NET_THRESHOLD = 30
+        for net_name, pins in nets.items():
+            if len(pins) > LARGE_NET_THRESHOLD:
+                # Collect distinct pin functions on this net
+                funcs = set()
+                for p in pins:
+                    f = (p.get("pinfunction") or "").upper()
+                    if f:
+                        funcs.add(f)
+                # If a net has both power and ground pin functions, it's shorted
+                has_gnd = any(f in ("GND", "VSS", "GNDA") for f in funcs)
+                has_pwr = any(
+                    f in ("VDD", "VCC", "VIN", "3V3", "5V", "VBUS") for f in funcs
+                )
+                severity = "ERROR: power/ground short" if (has_gnd and has_pwr) else "WARNING"
+                power_ground_warnings.append(
+                    f"{severity}: net '{net_name}' has {len(pins)} nodes "
+                    f"(functions: {', '.join(sorted(funcs)) or 'none'}). "
+                    f"Check schematic for unintended connections."
+                )
+
+        # Detect missing expected power/ground nets
+        EXPECTED_POWER_NETS = {"GND", "+3V3", "+5V", "VCC", "VDD"}
+        # Check if any GND-function pin exists in the design
+        all_funcs = set()
+        for a in pad_assignments:
+            f = (a.get("pinfunction") or "").upper()
+            if f:
+                all_funcs.add(f)
+        net_names_upper = {n.upper() for n in net_definitions}
+        if any(f in ("GND", "VSS") for f in all_funcs):
+            if "GND" not in net_names_upper:
+                power_ground_warnings.append(
+                    "WARNING: design has GND-function pins but no GND net. "
+                    "GND may be absorbed into another net due to schematic wiring error."
+                )
+
         # Step 3: Inject nets into PCB file via direct editing
         # (pcbnew's Save() prunes unused nets, so we must inject them
         # into the file first, then use pcbnew for pad assignments)
@@ -439,23 +476,25 @@ for a in assignments:
         assign_errors.append(f"Net {{net_name}} not found")
         continue
 
-    pad_found = False
+    pad_count = 0
     pinfunc = a.get("pinfunction", "")
+    old_net = ""
     for pad in fp.Pads():
         if pad.GetNumber() == pad_num:
-            old_net = pad.GetNetname()
+            if pad_count == 0:
+                old_net = pad.GetNetname()
             pad.SetNet(net)
-            assigned.append({{
-                "reference": ref,
-                "pad": pad_num,
-                "net": net_name,
-                "pinfunction": pinfunc,
-                "old_net": old_net,
-            }})
-            pad_found = True
-            break
-
-    if not pad_found:
+            pad_count += 1
+    if pad_count > 0:
+        assigned.append({{
+            "reference": ref,
+            "pad": pad_num,
+            "net": net_name,
+            "pinfunction": pinfunc,
+            "old_net": old_net,
+            "sub_pads": pad_count,
+        }})
+    else:
         assign_errors.append(f"Pad {{pad_num}} not found on {{ref}}")
 
 board.Save({pcb_path!r})
