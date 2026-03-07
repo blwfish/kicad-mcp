@@ -577,3 +577,221 @@ class TestAutoroutePreflight:
         assert result["status"] == "ok"
         mock_fix.assert_not_called()  # No overlaps, so no fix attempted
         assert result["preflight"]["pad_violations"] == 3
+
+
+# -- Pipeline tests ----------------------------------------------------------
+
+class TestBuildPcbFromSchematic:
+    """Tests for the build_pcb_from_schematic pipeline tool."""
+
+    def test_missing_project_file(self, mcp_server):
+        """Non-existent project path returns error."""
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn("/nonexistent/path.kicad_pro")
+        assert "error" in result
+
+    def test_missing_schematic(self, mcp_server, tmp_path):
+        """Project exists but schematic missing returns error."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro))
+        assert "error" in result
+        assert "Schematic not found" in result["error"]
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_full_pipeline_happy_path(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones, mock_gerbers,
+        mcp_server, tmp_path,
+    ):
+        """Full pipeline with all steps succeeding."""
+        # Set up project files
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        sch = tmp_path / "test.kicad_sch"
+        sch.write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {
+                "R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603_1608Metric"},
+                "C1": {"reference": "C1", "value": "100nF", "footprint": "Capacitor_SMD:C_0603_1608Metric"},
+            },
+            "components_without_footprint": [],
+            "nets": {"GND": [{"component": "R1", "pin": "2"}, {"component": "C1", "pin": "2"}],
+                     "SIG": [{"component": "R1", "pin": "1"}, {"component": "C1", "pin": "1"}]},
+            "component_count": 2,
+            "net_count": 2,
+            "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
+        mock_place.return_value = {"status": "ok", "placed_count": 2, "placed": [], "errors": []}
+        mock_nets.return_value = {"status": "ok", "pads_assigned": 4, "assignment_errors": [],
+                                  "nets_created": 2, "total_nets": 2}
+        mock_optimize.return_value = {"status": "ok", "components_moved": 2}
+        mock_route.return_value = {"status": "ok", "tracks_after": 20, "vias_after": 2, "best_incomplete": 0}
+        mock_zones.return_value = {"status": "ok", "zones_added": 2}
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro))
+
+        assert result["status"] == "ok"
+        assert result["component_count"] == 2
+        assert result["net_count"] == 2
+        assert result["tracks"] == 20
+        assert result["incomplete_nets"] == 0
+        assert "export_gerbers" not in result["steps"]
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_explicit_board_size(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones, mock_gerbers,
+        mcp_server, tmp_path,
+    ):
+        """Explicit board dimensions are passed through to create step."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        sch = tmp_path / "test.kicad_sch"
+        sch.write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603"}},
+            "components_without_footprint": [],
+            "nets": {"SIG": [{"component": "R1", "pin": "1"}]},
+            "component_count": 1, "net_count": 1, "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 22, "height_mm": 69, "auto_sized": False}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "placed": [], "errors": []}
+        mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
+        mock_optimize.return_value = {"status": "ok", "components_moved": 1}
+        mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "best_incomplete": 0}
+        mock_zones.return_value = {"status": "ok", "zones_added": 2}
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro), board_width_mm=22, board_height_mm=69)
+
+        assert result["status"] == "ok"
+        # Verify explicit dimensions were passed
+        mock_create.assert_called_once_with(
+            str(tmp_path / "test.kicad_pcb"), 22, 69,
+            mock_netlist.return_value["components"],
+        )
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_autoroute_failure_stops_pipeline(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones,
+        mcp_server, tmp_path,
+    ):
+        """Autoroute error stops pipeline — no zones step."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        sch = tmp_path / "test.kicad_sch"
+        sch.write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603"}},
+            "components_without_footprint": [],
+            "nets": {"SIG": [{"component": "R1", "pin": "1"}]},
+            "component_count": 1, "net_count": 1, "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "placed": [], "errors": []}
+        mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
+        mock_optimize.return_value = {"status": "ok", "components_moved": 1}
+        mock_route.return_value = {"error": "FreeRouter JAR not found"}
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro))
+
+        assert "status" not in result or result.get("status") != "ok"
+        assert "autoroute" in result["steps"]
+        assert "error" in result["steps"]["autoroute"]
+        mock_zones.assert_not_called()
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_missing_footprints_warns(self, mock_netlist, mcp_server, tmp_path):
+        """Components without footprints are skipped with warning, pipeline stops if none remain."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        sch = tmp_path / "test.kicad_sch"
+        sch.write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {},  # All components lacked footprints
+            "components_without_footprint": ["U1", "R1"],
+            "nets": {},
+            "component_count": 0, "net_count": 0, "skipped_count": 2,
+        }
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro))
+
+        assert "error" in result
+        assert "No components with footprints" in result["error"]
+        assert any("2 component(s) skipped" in w for w in result.get("warnings", []))
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_gerber_export_when_requested(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones, mock_gerbers,
+        mcp_server, tmp_path,
+    ):
+        """Gerber export runs only when export_gerbers=True."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        sch = tmp_path / "test.kicad_sch"
+        sch.write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603"}},
+            "components_without_footprint": [],
+            "nets": {"SIG": [{"component": "R1", "pin": "1"}]},
+            "component_count": 1, "net_count": 1, "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "placed": [], "errors": []}
+        mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
+        mock_optimize.return_value = {"status": "ok", "components_moved": 1}
+        mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "best_incomplete": 0}
+        mock_zones.return_value = {"status": "ok", "zones_added": 2}
+        mock_gerbers.return_value = {"status": "ok", "zip_path": "/tmp/test-gerbers.zip", "total_files": 12}
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro), export_gerbers=True)
+
+        assert result["status"] == "ok"
+        assert result["gerber_zip"] == "/tmp/test-gerbers.zip"
+        mock_gerbers.assert_called_once()

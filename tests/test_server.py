@@ -28,8 +28,8 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: currently 78 tools. Update if tools are added/removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 97, (
-            f"Expected 97 tools, got {len(tools)}. "
+        assert len(tools) == 98, (
+            f"Expected 98 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -125,6 +125,8 @@ class TestExpectedToolsExist:
         "check_pin_collisions",
         "validate_schematic",
         "get_schematic_info",
+        # Pipeline tools
+        "build_pcb_from_schematic",
     ]
 
     @pytest.fixture(autouse=True)
