@@ -216,14 +216,16 @@ print(json.dumps({{"status": "ok", "suggested_sizes": suggestions, "errors": err
     return run_pcbnew_script(script)
 
 
-def _step_place_footprints(
+def _step_load_footprints(
     pcb_path: str,
     components: Dict[str, Dict],
-    board_width_mm: float,
-    board_height_mm: float,
 ) -> Dict[str, Any]:
-    """Step 3: Place all footprints in a grid layout (temporary positions)."""
-    # Build placement list: [{ref, library, footprint_name, value}, ...]
+    """Step 3: Load all footprints onto the board at stacked positions.
+
+    This is a simple loading step — footprints are placed at temporary
+    positions so step 4 can find them by reference for net assignment.
+    Step 5 (smart_placement) handles final positioning.
+    """
     placements = []
     for ref, info in components.items():
         fp_str = info["footprint"]
@@ -238,12 +240,10 @@ def _step_place_footprints(
     placements_repr = repr(placements)
 
     script = f"""
-import pcbnew, json, os, math
+import pcbnew, json, os
 
 board = pcbnew.LoadBoard({pcb_path!r})
 placements = {placements_repr}
-board_w = {board_width_mm}
-board_h = {board_height_mm}
 
 lib_search_paths = [
     "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
@@ -261,13 +261,7 @@ def find_lib(lib_name):
 placed = []
 errors = []
 
-# Grid layout: place components in rows, starting from top-left with padding
-margin = 5.0  # mm from board edge
-grid_x = margin
-grid_y = margin
-row_height = 0.0
-max_x = board_w - margin
-
+# Stack all footprints at (5, 5) — step 5 will move them
 for p in placements:
     lib_path = find_lib(p["library"])
     if not lib_path:
@@ -279,36 +273,17 @@ for p in placements:
         errors.append(f"Footprint '{{p['footprint_name']}}' not found for {{p['ref']}}")
         continue
 
-    # Measure footprint size
-    bbox = fp.GetBoundingBox(False, False)
-    w = pcbnew.ToMM(bbox.GetWidth())
-    h = pcbnew.ToMM(bbox.GetHeight())
-
-    # Check if we need to wrap to next row
-    if grid_x + w > max_x and grid_x > margin:
-        grid_x = margin
-        grid_y += row_height + 2.0  # 2mm gap between rows
-        row_height = 0.0
-
-    # Position at grid cell center
-    cx = grid_x + w / 2
-    cy = grid_y + h / 2
-
     fp.SetReference(p["ref"])
     fp.SetValue(p["value"])
-    fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(cx), pcbnew.FromMM(cy)))
+    fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(5)))
     board.Add(fp)
-
-    placed.append({{"ref": p["ref"], "x_mm": round(cx, 2), "y_mm": round(cy, 2)}})
-    grid_x += w + 2.0  # 2mm gap between components
-    row_height = max(row_height, h)
+    placed.append(p["ref"])
 
 board.Save({pcb_path!r})
 
 print(json.dumps({{
     "status": "ok",
     "placed_count": len(placed),
-    "placed": placed,
     "errors": errors,
 }}))
 """
@@ -425,8 +400,33 @@ print(json.dumps({{
     return result
 
 
-def _step_optimize_placement(pcb_path: str, spacing_mm: float = 1.0) -> Dict[str, Any]:
-    """Step 5: Optimize footprint placement based on connectivity, then apply moves."""
+def _step_smart_placement(
+    pcb_path: str,
+    nets: Dict[str, List],
+    spacing_mm: float = 1.0,
+) -> Dict[str, Any]:
+    """Step 5: Smart tiered placement based on connectivity and component type.
+
+    Classifies components into 4 tiers and places them in priority order:
+    - Tier 1: Components with keepout zones (ESP32, etc.) → board edges
+    - Tier 2: Connectors (J*, SW*, H*) → board edges near partners
+    - Tier 3: ICs and large active components → near connected partners
+    - Tier 4: Small passives → fill gaps near connected ICs
+
+    All placements are strictly boundary-checked (full bbox must fit inside
+    the board outline with margin). Keepout zones from placed components are
+    tracked and avoided by all subsequent placements.
+    """
+    # Build connectivity from nets dict (component-pair signal affinity)
+    # nets: {"net_name": [{"component": "R1", "pin": "1"}, ...]}
+    net_members: Dict[str, List[str]] = {}
+    for net_name, pins in nets.items():
+        members = list({p["component"] for p in pins})
+        if len(members) > 1:
+            net_members[net_name] = members
+
+    nets_repr = repr(dict(net_members))
+
     script = f"""
 import pcbnew, json, math
 {KEEPOUT_HELPER}
@@ -436,197 +436,363 @@ spacing = {spacing_mm}
 outline = get_board_outline(board)
 
 if not outline:
-    print(json.dumps({{"status": "ok", "message": "No board outline, skipping placement optimization"}}))
+    print(json.dumps({{"status": "ok", "message": "No board outline, skipping placement"}}))
     raise SystemExit(0)
 
-board_w = outline["width_mm"]
-board_h = outline["height_mm"]
-board_cx = outline["x_min_mm"] + board_w / 2
-board_cy = outline["y_min_mm"] + board_h / 2
+POWER_PATS = ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5V", "+3", "+12", "VBUS"]
+board_xmin = outline["x_min_mm"]
+board_ymin = outline["y_min_mm"]
+board_xmax = outline["x_max_mm"]
+board_ymax = outline["y_max_mm"]
+board_cx = (board_xmin + board_xmax) / 2
+board_cy = (board_ymin + board_ymax) / 2
+margin = max(0.5, spacing)
 
-# Collect footprint info
+# --- Collect footprint info ---
+# Track ASYMMETRIC extents from footprint origin (not symmetric half-sizes).
+# Footprint origins are often at pin 1, not bbox center — e.g. a 13mm
+# Phoenix connector with origin at pin 1 extends 3mm left and 10mm right.
 fp_info = {{}}
 for fp in board.GetFootprints():
     ref = fp.GetReference()
-    bbox = fp.GetBoundingBox(False, False)
-    w = pcbnew.ToMM(bbox.GetWidth())
-    h = pcbnew.ToMM(bbox.GetHeight())
+    fp_pos = fp.GetPosition()
+    fp_x = pcbnew.ToMM(fp_pos.x)
+    fp_y = pcbnew.ToMM(fp_pos.y)
 
-    cy_xmin = float("inf"); cy_ymin = float("inf")
-    cy_xmax = float("-inf"); cy_ymax = float("-inf")
+    bbox = fp.GetBoundingBox(False, False)
+    # Extent from origin in each direction (positive values)
+    ext_left  = fp_x - pcbnew.ToMM(bbox.GetX())
+    ext_right = pcbnew.ToMM(bbox.GetRight()) - fp_x
+    ext_top   = fp_y - pcbnew.ToMM(bbox.GetY())
+    ext_bot   = pcbnew.ToMM(bbox.GetBottom()) - fp_y
+
+    # Courtyard bounds (preferred over body bbox)
     cy_found = False
+    cy_xmin_abs = float("inf"); cy_ymin_abs = float("inf")
+    cy_xmax_abs = float("-inf"); cy_ymax_abs = float("-inf")
     for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
+        ln = board.GetLayerName(item.GetLayer())
+        if "CrtYd" in ln:
             cy_found = True
             ib = item.GetBoundingBox()
-            cy_xmin = min(cy_xmin, pcbnew.ToMM(ib.GetX()))
-            cy_ymin = min(cy_ymin, pcbnew.ToMM(ib.GetY()))
-            cy_xmax = max(cy_xmax, pcbnew.ToMM(ib.GetRight()))
-            cy_ymax = max(cy_ymax, pcbnew.ToMM(ib.GetBottom()))
+            cy_xmin_abs = min(cy_xmin_abs, pcbnew.ToMM(ib.GetX()))
+            cy_ymin_abs = min(cy_ymin_abs, pcbnew.ToMM(ib.GetY()))
+            cy_xmax_abs = max(cy_xmax_abs, pcbnew.ToMM(ib.GetRight()))
+            cy_ymax_abs = max(cy_ymax_abs, pcbnew.ToMM(ib.GetBottom()))
     if cy_found:
-        w = cy_xmax - cy_xmin
-        h = cy_ymax - cy_ymin
+        ext_left  = fp_x - cy_xmin_abs
+        ext_right = cy_xmax_abs - fp_x
+        ext_top   = fp_y - cy_ymin_abs
+        ext_bot   = cy_ymax_abs - fp_y
 
+    # Keepout zones
     has_keepout = False
     keepout_side = None
+    keepout_rel = None  # relative bbox (dx_min, dy_min, dx_max, dy_max)
     try:
         for zone in fp.Zones():
             if zone.GetIsRuleArea():
                 has_keepout = True
                 zbb = zone.GetBoundingBox()
-                fp_pos = fp.GetPosition()
-                zx = pcbnew.ToMM(zbb.GetX()) - pcbnew.ToMM(fp_pos.x)
-                zy = pcbnew.ToMM(zbb.GetY()) - pcbnew.ToMM(fp_pos.y)
-                zr = pcbnew.ToMM(zbb.GetRight()) - pcbnew.ToMM(fp_pos.x)
-                zb = pcbnew.ToMM(zbb.GetBottom()) - pcbnew.ToMM(fp_pos.y)
-                extents = {{"left": abs(zx), "right": abs(zr), "top": abs(zy), "bottom": abs(zb)}}
-                keepout_side = max(extents, key=extents.get)
+                dx_min = pcbnew.ToMM(zbb.GetX()) - fp_x
+                dy_min = pcbnew.ToMM(zbb.GetY()) - fp_y
+                dx_max = pcbnew.ToMM(zbb.GetRight()) - fp_x
+                dy_max = pcbnew.ToMM(zbb.GetBottom()) - fp_y
+                keepout_rel = (dx_min, dy_min, dx_max, dy_max)
+                extents_map = {{"left": abs(dx_min), "right": abs(dx_max),
+                               "top": abs(dy_min), "bottom": abs(dy_max)}}
+                keepout_side = max(extents_map, key=extents_map.get)
+                # Merge keepout into envelope
+                ext_left  = max(ext_left, -dx_min)
+                ext_right = max(ext_right, dx_max)
+                ext_top   = max(ext_top, -dy_min)
+                ext_bot   = max(ext_bot, dy_max)
     except AttributeError:
         pass
 
-    pad_nets = set()
-    for pad in fp.Pads():
-        net = pad.GetNetname()
-        if net and not net.startswith("unconnected-"):
-            pad_nets.add(net)
-
+    w = ext_left + ext_right
+    h = ext_top + ext_bot
     fp_info[ref] = {{
+        "ext_left": round(ext_left, 2), "ext_right": round(ext_right, 2),
+        "ext_top": round(ext_top, 2), "ext_bot": round(ext_bot, 2),
         "width": round(w, 2), "height": round(h, 2),
-        "nets": pad_nets, "has_keepout": has_keepout,
-        "keepout_side": keepout_side,
+        "has_keepout": has_keepout, "keepout_side": keepout_side,
+        "keepout_rel": keepout_rel,
+        "area": round(w * h, 2),
     }}
 
 if not fp_info:
-    print(json.dumps({{"status": "ok", "message": "No footprints to optimize"}}))
+    print(json.dumps({{"status": "ok", "message": "No footprints to place"}}))
     raise SystemExit(0)
 
-# Build connectivity graph (signal nets only)
+# --- Build connectivity from netlist ---
+net_members = {nets_repr}
 connectivity = {{}}
-refs = list(fp_info.keys())
-for i in range(len(refs)):
-    for j in range(i + 1, len(refs)):
-        a, b = refs[i], refs[j]
-        shared = fp_info[a]["nets"] & fp_info[b]["nets"]
-        signal_shared = {{n for n in shared if not any(
-            p in n.upper() for p in ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5", "+3"])}}
-        if signal_shared:
-            connectivity[(a, b)] = len(signal_shared)
+conn_score = {{ref: 0.0 for ref in fp_info}}
 
-# Rank by connectivity
-conn_score = {{ref: 0 for ref in refs}}
-for (a, b), count in connectivity.items():
-    conn_score[a] += count
-    conn_score[b] += count
+for net_name, members in net_members.items():
+    is_power = any(p in net_name.upper() for p in POWER_PATS)
+    weight = 0.1 if is_power else 1.0
+    placed_members = [m for m in members if m in fp_info]
+    for i in range(len(placed_members)):
+        for j in range(i + 1, len(placed_members)):
+            a, b = placed_members[i], placed_members[j]
+            key = (min(a, b), max(a, b))
+            connectivity[key] = connectivity.get(key, 0.0) + weight
+            conn_score[a] = conn_score.get(a, 0.0) + weight
+            conn_score[b] = conn_score.get(b, 0.0) + weight
 
-sorted_refs = sorted(refs, key=lambda r: (conn_score[r], fp_info[r]["width"] * fp_info[r]["height"]), reverse=True)
+# --- Classify into tiers ---
+EDGE_PREFIXES = ("J", "SW", "H", "USB")
+tier1, tier2, tier3, tier4 = [], [], [], []
 
-# Place components
+for ref, info in fp_info.items():
+    if info["has_keepout"]:
+        tier1.append(ref)
+    elif any(ref.startswith(p) for p in EDGE_PREFIXES):
+        tier2.append(ref)
+    elif (ref.startswith("U") or ref.startswith("Q")) and info["area"] > 50:
+        tier3.append(ref)
+    else:
+        tier4.append(ref)
+
+def sort_key(r):
+    return (-conn_score.get(r, 0), -fp_info[r]["area"], r)
+
+tier1.sort(key=sort_key)
+tier2.sort(key=sort_key)
+tier3.sort(key=sort_key)
+tier4.sort(key=sort_key)
+
+# --- Placement engine ---
 placements = {{}}
 placed_boxes = []
+keepout_boxes = []  # absolute keepout zone bboxes
 
-def box_collides(bx, placed, gap):
-    for pb in placed:
-        if (bx[0] - gap < pb[2] and bx[2] + gap > pb[0] and
-            bx[1] - gap < pb[3] and bx[3] + gap > pb[1]):
+def get_extents(ref):
+    info = fp_info[ref]
+    return info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"]
+
+def fits_on_board(cx, cy, el, er, et, eb):
+    return (cx - el >= board_xmin + margin and cx + er <= board_xmax - margin and
+            cy - et >= board_ymin + margin and cy + eb <= board_ymax - margin)
+
+def box_overlaps(a, b):
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+def collides(cx, cy, el, er, et, eb):
+    box = (cx - el - spacing, cy - et - spacing, cx + er + spacing, cy + eb + spacing)
+    for pb in placed_boxes:
+        if box_overlaps(box, pb):
             return True
     return False
 
-def clamp_to_board(x, y, w, h):
-    half_w, half_h = w / 2, h / 2
-    x = max(outline["x_min_mm"] + half_w + spacing, min(x, outline["x_max_mm"] - half_w - spacing))
-    y = max(outline["y_min_mm"] + half_h + spacing, min(y, outline["y_max_mm"] - half_h - spacing))
-    return x, y
+def hits_keepout(cx, cy, el, er, et, eb):
+    box = (cx - el, cy - et, cx + er, cy + eb)
+    for kz in keepout_boxes:
+        if box_overlaps(box, kz):
+            return True
+    return False
 
-if sorted_refs:
-    hub = sorted_refs[0]
-    info = fp_info[hub]
-    cx, cy = board_cx, board_cy
+def place_at(ref, cx, cy):
+    info = fp_info[ref]
+    el, er, et, eb = info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"]
+    placements[ref] = (round(cx, 2), round(cy, 2))
+    placed_boxes.append((cx - el, cy - et, cx + er, cy + eb))
+    # Track keepout zones in absolute coords
+    if info["keepout_rel"]:
+        dx0, dy0, dx1, dy1 = info["keepout_rel"]
+        keepout_boxes.append((cx + dx0, cy + dy0, cx + dx1, cy + dy1))
 
-    if info["has_keepout"] and info["keepout_side"]:
-        side = info["keepout_side"]
-        if side == "top":
-            cy = outline["y_min_mm"] + info["height"] / 2 + spacing
-        elif side == "bottom":
-            cy = outline["y_max_mm"] - info["height"] / 2 - spacing
-        elif side == "left":
-            cx = outline["x_min_mm"] + info["width"] / 2 + spacing
-        elif side == "right":
-            cx = outline["x_max_mm"] - info["width"] / 2 - spacing
+def find_partner_pos(ref):
+    best_pos = None
+    best_score = 0
+    for placed_ref, pos in placements.items():
+        key = (min(ref, placed_ref), max(ref, placed_ref))
+        score = connectivity.get(key, 0)
+        if score > best_score:
+            best_score = score
+            best_pos = pos
+    return best_pos if best_pos else (board_cx, board_cy)
 
-    cx, cy = clamp_to_board(cx, cy, info["width"], info["height"])
-    hw, hh = info["width"] / 2, info["height"] / 2
-    placements[hub] = (round(cx, 2), round(cy, 2))
-    placed_boxes.append((cx - hw, cy - hh, cx + hw, cy + hh))
+def valid_pos(cx, cy, el, er, et, eb):
+    return fits_on_board(cx, cy, el, er, et, eb) and not collides(cx, cy, el, er, et, eb) and not hits_keepout(cx, cy, el, er, et, eb)
 
-    for ref in sorted_refs[1:]:
-        info = fp_info[ref]
-        hw, hh = info["width"] / 2, info["height"] / 2
+def fallback_grid(el, er, et, eb, step=1.0):
+    y = board_ymin + et + margin
+    while y <= board_ymax - eb - margin:
+        x = board_xmin + el + margin
+        while x <= board_xmax - er - margin:
+            if valid_pos(x, y, el, er, et, eb):
+                return (x, y)
+            x += step
+        y += step
+    return None
 
-        best_target = None
-        best_score = 0
-        for placed_ref in placements:
-            for (a, b), score in connectivity.items():
-                partner = b if a == ref else (a if b == ref else None)
-                if partner == placed_ref and score > best_score:
-                    best_score = score
-                    best_target = placed_ref
+# --- Tier 1: Keepout components → edge placement ---
+for ref in tier1:
+    el, er, et, eb = get_extents(ref)
+    ks = fp_info[ref]["keepout_side"] or "top"
 
-        if best_target:
-            tx, ty = placements[best_target]
+    best = None
+    best_dist = float("inf")
+    target = find_partner_pos(ref)
+
+    # Try preferred edge first, then others
+    edges_order = [ks] + [e for e in ["top", "bottom", "left", "right"] if e != ks]
+    for edge in edges_order:
+        if edge in ("top", "bottom"):
+            fixed_y = board_ymin + et + margin if edge == "top" else board_ymax - eb - margin
+            x = board_xmin + el + margin
+            while x <= board_xmax - er - margin:
+                if valid_pos(x, fixed_y, el, er, et, eb):
+                    d = math.hypot(x - target[0], fixed_y - target[1])
+                    if d < best_dist:
+                        best_dist = d
+                        best = (x, fixed_y)
+                x += 2.0
         else:
-            tx, ty = board_cx, board_cy
+            fixed_x = board_xmin + el + margin if edge == "left" else board_xmax - er - margin
+            y = board_ymin + et + margin
+            while y <= board_ymax - eb - margin:
+                if valid_pos(fixed_x, y, el, er, et, eb):
+                    d = math.hypot(fixed_x - target[0], y - target[1])
+                    if d < best_dist:
+                        best_dist = d
+                        best = (fixed_x, y)
+                y += 2.0
 
-        placed = False
-        for radius in [r * 2.0 for r in range(1, 40)]:
-            if placed:
+    if best:
+        place_at(ref, best[0], best[1])
+    else:
+        fb = fallback_grid(el, er, et, eb)
+        if fb:
+            place_at(ref, fb[0], fb[1])
+
+# --- Tier 2: Connectors → edge placement near partners ---
+for ref in tier2:
+    el, er, et, eb = get_extents(ref)
+    target = find_partner_pos(ref)
+
+    best = None
+    best_dist = float("inf")
+
+    for edge in ["top", "bottom", "left", "right"]:
+        if edge in ("top", "bottom"):
+            fixed_y = board_ymin + et + margin if edge == "top" else board_ymax - eb - margin
+            x = board_xmin + el + margin
+            while x <= board_xmax - er - margin:
+                if valid_pos(x, fixed_y, el, er, et, eb):
+                    d = math.hypot(x - target[0], fixed_y - target[1])
+                    if d < best_dist:
+                        best_dist = d
+                        best = (x, fixed_y)
+                x += 2.0
+        else:
+            fixed_x = board_xmin + el + margin if edge == "left" else board_xmax - er - margin
+            y = board_ymin + et + margin
+            while y <= board_ymax - eb - margin:
+                if valid_pos(fixed_x, y, el, er, et, eb):
+                    d = math.hypot(fixed_x - target[0], y - target[1])
+                    if d < best_dist:
+                        best_dist = d
+                        best = (fixed_x, y)
+                y += 2.0
+
+    if best:
+        place_at(ref, best[0], best[1])
+    else:
+        # Connector couldn't fit on edge, try interior
+        fb = fallback_grid(el, er, et, eb)
+        if fb:
+            place_at(ref, fb[0], fb[1])
+
+# --- Tier 3: ICs → spiral from connected partner ---
+for ref in tier3:
+    el, er, et, eb = get_extents(ref)
+    target = find_partner_pos(ref)
+
+    step = max(2.0, min(el + er, et + eb) / 2)
+    found = False
+    for r_mult in range(1, 60):
+        if found:
+            break
+        radius = r_mult * step
+        n_angles = max(12, int(2 * math.pi * radius / step))
+        for i in range(n_angles):
+            angle = 2 * math.pi * i / n_angles
+            cx = target[0] + radius * math.cos(angle)
+            cy = target[1] + radius * math.sin(angle)
+            if valid_pos(cx, cy, el, er, et, eb):
+                place_at(ref, cx, cy)
+                found = True
                 break
-            for angle_deg in range(0, 360, 30):
-                angle = math.radians(angle_deg)
-                px = tx + radius * math.cos(angle)
-                py = ty + radius * math.sin(angle)
-                px, py = clamp_to_board(px, py, info["width"], info["height"])
-                box = (px - hw, py - hh, px + hw, py + hh)
-                if (box[0] < outline["x_min_mm"] + 0.1 or
-                    box[2] > outline["x_max_mm"] - 0.1 or
-                    box[1] < outline["y_min_mm"] + 0.1 or
-                    box[3] > outline["y_max_mm"] - 0.1):
-                    continue
-                if not box_collides(box, placed_boxes, spacing):
-                    placements[ref] = (round(px, 2), round(py, 2))
-                    placed_boxes.append(box)
-                    placed = True
-                    break
-        if not placed:
-            for gx in range(int(outline["x_min_mm"] + hw + 1), int(outline["x_max_mm"] - hw), 2):
-                if placed:
-                    break
-                for gy in range(int(outline["y_min_mm"] + hh + 1), int(outline["y_max_mm"] - hh), 2):
-                    box = (gx - hw, gy - hh, gx + hw, gy + hh)
-                    if not box_collides(box, placed_boxes, spacing):
-                        placements[ref] = (round(float(gx), 2), round(float(gy), 2))
-                        placed_boxes.append(box)
-                        placed = True
-                        break
 
-# Apply moves
+    if not found:
+        fb = fallback_grid(el, er, et, eb)
+        if fb:
+            place_at(ref, fb[0], fb[1])
+
+# --- Tier 4: Passives → tight spiral from connected partner ---
+for ref in tier4:
+    el, er, et, eb = get_extents(ref)
+    target = find_partner_pos(ref)
+
+    found = False
+    for r_mult in range(1, 80):
+        if found:
+            break
+        radius = r_mult * 1.0  # 1mm steps for small passives
+        n_angles = max(12, int(2 * math.pi * radius / 1.0))
+        for i in range(n_angles):
+            angle = 2 * math.pi * i / n_angles
+            cx = target[0] + radius * math.cos(angle)
+            cy = target[1] + radius * math.sin(angle)
+            if valid_pos(cx, cy, el, er, et, eb):
+                place_at(ref, cx, cy)
+                found = True
+                break
+
+    if not found:
+        fb = fallback_grid(el, er, et, eb, step=0.5)
+        if fb:
+            place_at(ref, fb[0], fb[1])
+
+# --- Apply placements ---
 moved = []
+failed = []
+all_refs = set(fp_info.keys())
+placed_refs = set(placements.keys())
+
 for ref, (px, py) in placements.items():
     fp = board.FindFootprintByReference(ref)
     if fp:
         fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(px), pcbnew.FromMM(py)))
         moved.append({{"ref": ref, "x_mm": px, "y_mm": py}})
 
+for ref in all_refs - placed_refs:
+    failed.append(ref)
+
 board.Save({pcb_path!r})
+
+# Hub = most-connected component overall
+hub = max(conn_score, key=conn_score.get) if conn_score else None
 
 print(json.dumps({{
     "status": "ok",
-    "components_moved": len(moved),
-    "hub_component": sorted_refs[0] if sorted_refs else None,
-    "moved": moved[:10],  # truncate for readability
+    "components_placed": len(moved),
+    "hub_component": hub,
+    "tiers": {{
+        "keepout": tier1,
+        "edge": tier2,
+        "ic": tier3,
+        "passive": tier4,
+    }},
+    "failed_placements": failed,
+    "placements": moved[:10],
 }}))
 """
-    return run_pcbnew_script(script, timeout=30.0)
+    return run_pcbnew_script(script, timeout=60.0)
 
 
 def _step_autoroute(pcb_path: str, passes: int = 1) -> Dict[str, Any]:
@@ -821,8 +987,8 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
     ) -> Dict[str, Any]:
         """Build a complete routed PCB from a KiCad schematic in one step.
 
-        Runs the full pipeline: extract netlist → create PCB → place
-        footprints → assign nets → optimize placement → autoroute →
+        Runs the full pipeline: extract netlist → create PCB → load
+        footprints → assign nets → smart placement → autoroute →
         add ground planes → fill zones → (optionally) export Gerbers.
 
         Requires a KiCad project with a schematic (.kicad_sch) that has
@@ -898,9 +1064,9 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 f"Board auto-sized to {actual_width}x{actual_height}mm"
             )
 
-        # Step 3: Place footprints
-        step = _step_place_footprints(pcb_path, components, actual_width, actual_height)
-        if not _record("place_footprints", step):
+        # Step 3: Load footprints onto board (temporary positions)
+        step = _step_load_footprints(pcb_path, components)
+        if not _record("load_footprints", step):
             return pipeline_result
 
         pipeline_result["footprints_placed"] = step.get("placed_count", 0)
@@ -912,10 +1078,10 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         pipeline_result["pads_assigned"] = step.get("pads_assigned", 0)
 
-        # Step 5: Optimize placement
-        step = _step_optimize_placement(pcb_path)
-        _record("optimize_placement", step)
-        # Non-fatal — continue even if optimization fails
+        # Step 5: Smart placement (tiered, connectivity-aware)
+        step = _step_smart_placement(pcb_path, nets)
+        _record("smart_placement", step)
+        # Non-fatal — continue even if placement is imperfect
 
         # Step 6: Autoroute
         step = _step_autoroute(pcb_path, passes=autoroute_passes)

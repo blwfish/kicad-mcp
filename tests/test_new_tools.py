@@ -602,9 +602,9 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
     @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
     @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_full_pipeline_happy_path(
@@ -633,10 +633,10 @@ class TestBuildPcbFromSchematic:
             "skipped_count": 0,
         }
         mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
-        mock_place.return_value = {"status": "ok", "placed_count": 2, "placed": [], "errors": []}
+        mock_place.return_value = {"status": "ok", "placed_count": 2, "errors": []}
         mock_nets.return_value = {"status": "ok", "pads_assigned": 4, "assignment_errors": [],
                                   "nets_created": 2, "total_nets": 2}
-        mock_optimize.return_value = {"status": "ok", "components_moved": 2}
+        mock_optimize.return_value = {"status": "ok", "components_placed": 2}
         mock_route.return_value = {"status": "ok", "tracks_after": 20, "vias_after": 2, "best_incomplete": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
 
@@ -653,9 +653,9 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
     @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
     @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_explicit_board_size(
@@ -677,9 +677,9 @@ class TestBuildPcbFromSchematic:
             "component_count": 1, "net_count": 1, "skipped_count": 0,
         }
         mock_create.return_value = {"status": "ok", "width_mm": 22, "height_mm": 69, "auto_sized": False}
-        mock_place.return_value = {"status": "ok", "placed_count": 1, "placed": [], "errors": []}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": []}
         mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
-        mock_optimize.return_value = {"status": "ok", "components_moved": 1}
+        mock_optimize.return_value = {"status": "ok", "components_placed": 1}
         mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "best_incomplete": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
 
@@ -695,9 +695,9 @@ class TestBuildPcbFromSchematic:
 
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
     @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
     @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_autoroute_failure_stops_pipeline(
@@ -719,9 +719,9 @@ class TestBuildPcbFromSchematic:
             "component_count": 1, "net_count": 1, "skipped_count": 0,
         }
         mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
-        mock_place.return_value = {"status": "ok", "placed_count": 1, "placed": [], "errors": []}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": []}
         mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
-        mock_optimize.return_value = {"status": "ok", "components_moved": 1}
+        mock_optimize.return_value = {"status": "ok", "components_placed": 1}
         mock_route.return_value = {"error": "FreeRouter JAR not found"}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
@@ -758,9 +758,9 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_optimize_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
     @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
-    @patch("kicad_mcp.tools.pcb_pipeline._step_place_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
     @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_gerber_export_when_requested(
@@ -782,9 +782,9 @@ class TestBuildPcbFromSchematic:
             "component_count": 1, "net_count": 1, "skipped_count": 0,
         }
         mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
-        mock_place.return_value = {"status": "ok", "placed_count": 1, "placed": [], "errors": []}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": []}
         mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
-        mock_optimize.return_value = {"status": "ok", "components_moved": 1}
+        mock_optimize.return_value = {"status": "ok", "components_placed": 1}
         mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "best_incomplete": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
         mock_gerbers.return_value = {"status": "ok", "zip_path": "/tmp/test-gerbers.zip", "total_files": 12}
