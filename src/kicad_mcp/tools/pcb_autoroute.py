@@ -6,6 +6,7 @@ by running FreeRouter in a background thread and letting the caller poll for
 completion.
 """
 
+import glob
 import json
 import logging
 import os
@@ -54,6 +55,22 @@ def _find_freerouter_jar(explicit_path: Optional[str] = None) -> Optional[str]:
     for path in _FREEROUTER_SEARCH_PATHS:
         if os.path.isfile(path):
             return path
+
+    # Glob search: look for freerouting*.jar in common directories
+    for search_dir in [
+        os.path.expanduser("~"),
+        os.path.expanduser("~/Downloads"),
+        # Sibling directories of this repo (common dev layout)
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."),
+    ]:
+        search_dir = os.path.realpath(search_dir)
+        for pattern in [
+            os.path.join(search_dir, "freerouting*.jar"),
+            os.path.join(search_dir, "*", "freerouting*.jar"),
+        ]:
+            matches = sorted(glob.glob(pattern), reverse=True)  # newest version first
+            if matches:
+                return matches[0]
 
     # Search in PATH for 'freerouting' command
     which = shutil.which("freerouting")
