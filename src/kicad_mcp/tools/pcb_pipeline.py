@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from fastmcp import FastMCP
 
-from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
+from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.kicad_cli import get_kicad_cli_path
 from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
@@ -158,18 +158,7 @@ fp_specs = {fp_list_repr}
 padding = 2.0
 routing_factor = 2.5
 
-lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
-    os.path.expanduser("~/Documents/KiCad/footprints"),
-    "/usr/share/kicad/footprints",
-]
-
-def find_lib(lib_name):
-    for sp in lib_search_paths:
-        candidate = os.path.join(sp, lib_name + ".pretty")
-        if os.path.isdir(candidate):
-            return candidate
-    return None
+{LIB_SEARCH_HELPER}
 
 components = []
 errors = []
@@ -245,18 +234,7 @@ import pcbnew, json, os
 board = pcbnew.LoadBoard({pcb_path!r})
 placements = {placements_repr}
 
-lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
-    os.path.expanduser("~/Documents/KiCad/footprints"),
-    "/usr/share/kicad/footprints",
-]
-
-def find_lib(lib_name):
-    for sp in lib_search_paths:
-        candidate = os.path.join(sp, lib_name + ".pretty")
-        if os.path.isdir(candidate):
-            return candidate
-    return None
+{LIB_SEARCH_HELPER}
 
 placed = []
 errors = []

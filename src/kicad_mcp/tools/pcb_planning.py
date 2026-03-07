@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
-from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
+from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +52,7 @@ fp_specs = {fp_list_repr}
 padding = {padding_mm}
 routing_factor = {routing_factor}
 
-lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
-    os.path.expanduser("~/Documents/KiCad/footprints"),
-    "/usr/share/kicad/footprints",
-]
-
-def find_lib(lib_name):
-    for sp in lib_search_paths:
-        candidate = os.path.join(sp, lib_name + ".pretty")
-        if os.path.isdir(candidate):
-            return candidate
-    return None
+{LIB_SEARCH_HELPER}
 
 components = []
 errors = []

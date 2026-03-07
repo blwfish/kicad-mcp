@@ -7,7 +7,12 @@ from typing import Any, Dict
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
-from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
+from kicad_mcp.utils.keepout_helpers import (
+    KEEPOUT_HELPER,
+    COURTYARD_BBOX_HELPER,
+    COURTYARD_BBOX_TUPLE_HELPER,
+    LIB_SEARCH_HELPER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +20,11 @@ logger = logging.getLogger(__name__)
 def register_pcb_keepout_tools(mcp: FastMCP) -> None:
     """Register PCB keepout validation tools."""
 
-    # Keepout helper code is a string constant that gets embedded
-    # in each pcbnew subprocess script.
+    # Helper code string constants embedded in pcbnew subprocess scripts.
     _KEEPOUT_HELPER = KEEPOUT_HELPER
+    _COURTYARD_BBOX = COURTYARD_BBOX_HELPER
+    _COURTYARD_BBOX_TUPLE = COURTYARD_BBOX_TUPLE_HELPER
+    _LIB_SEARCH = LIB_SEARCH_HELPER
 
     @mcp.tool()
     def get_keepout_zones(pcb_path: str) -> Dict[str, Any]:
@@ -128,17 +135,8 @@ import pcbnew, json, os
 {_KEEPOUT_HELPER}
 board = pcbnew.LoadBoard({pcb_path!r})
 
-lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
-    os.path.expanduser("~/Documents/KiCad/footprints"),
-    "/usr/share/kicad/footprints",
-]
-lib_path = None
-for sp in lib_search_paths:
-    candidate = os.path.join(sp, {library!r} + ".pretty")
-    if os.path.isdir(candidate):
-        lib_path = candidate
-        break
+{_LIB_SEARCH}
+lib_path = find_lib({library!r})
 if not lib_path:
     print(json.dumps({{"error": "Library '{library}' not found"}}))
     raise SystemExit(0)
@@ -251,51 +249,17 @@ board = pcbnew.LoadBoard({pcb_path!r})
 min_clearance = {min_clearance_mm}
 use_courtyard = {use_courtyard}
 
+{_COURTYARD_BBOX}
+# Wrap to add source annotation (courtyard vs pads vs none)
+_base_get_bbox = get_courtyard_bbox
 def get_courtyard_bbox(fp):
-    \"\"\"Get courtyard bounding box, falling back to pad bbox, then body bbox.\"\"\"
-    # Try courtyard layer first
-    x_min = float("inf")
-    y_min = float("inf")
-    x_max = float("-inf")
-    y_max = float("-inf")
-    found = False
+    result = _base_get_bbox(fp)
+    if result is None:
+        return None, "none"
     for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}, "courtyard"
-
-    # Fall back to pad bounding box
-    x_min = float("inf")
-    y_min = float("inf")
-    x_max = float("-inf")
-    y_max = float("-inf")
-    found = False
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition()
-        size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x)
-        y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x)
-        h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w / 2)
-        y_min = min(y_min, y - h / 2)
-        x_max = max(x_max, x + w / 2)
-        y_max = max(y_max, y + h / 2)
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}, "pads"
-
-    # Last resort: body bbox
-    return None, "none"
+        if "CrtYd" in board.GetLayerName(item.GetLayer()):
+            return result, "courtyard"
+    return result, "pads"
 
 # Collect bounding boxes for all footprints
 footprints = []
@@ -523,36 +487,7 @@ board = pcbnew.LoadBoard({pcb_path!r})
 min_clearance = {min_clearance_mm}
 
 # --- 1. Footprint overlap check (courtyard-based) ---
-def get_courtyard_bbox(fp):
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition(); size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
-        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
-    return None
+{_COURTYARD_BBOX}
 
 footprints = []
 for fp in board.GetFootprints():
@@ -916,36 +851,7 @@ errors = []
 warnings = []
 
 # --- 1. Courtyard overlap check ---
-def get_courtyard_bbox(fp):
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition(); size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
-        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
-    return None
+{_COURTYARD_BBOX}
 
 footprints = []
 for fp in board.GetFootprints():
@@ -1112,42 +1018,7 @@ board = pcbnew.LoadBoard({pcb_path!r})
 spacing = {spacing_mm}
 max_passes = {max_passes}
 
-POWER_NETS = {{"", "GND", "+5V", "+3V3", "+3.3V", "+12V", "VCC", "VDD", "VSS", "VBUS"}}
-
-def get_courtyard_bbox(fp):
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
-    # Fallback to pad bbox
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition(); size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
-        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
-    if found:
-        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
-    return None
-
-def signal_net_count(fp):
-    nets = set()
-    for pad in fp.Pads():
-        n = pad.GetNetname()
-        if n and n not in POWER_NETS:
-            nets.add(n)
-    return len(nets)
+{_COURTYARD_BBOX_TUPLE}
 
 # Board outline
 outline = None

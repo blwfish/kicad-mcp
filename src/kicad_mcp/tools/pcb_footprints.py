@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
-from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
+from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 
 logger = logging.getLogger(__name__)
 
@@ -98,24 +98,10 @@ import pcbnew, json, os, glob
 
 board = pcbnew.LoadBoard({pcb_path!r})
 
-# Find the footprint library path
+{LIB_SEARCH_HELPER}
 lib_name = {library!r}
 fp_name = {footprint_name!r}
-
-# Search standard KiCad footprint library locations
-lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
-    os.path.expanduser("~/Documents/KiCad/footprints"),
-    "/usr/share/kicad/footprints",
-]
-
-lib_path = None
-for search_path in lib_search_paths:
-    candidate = os.path.join(search_path, lib_name + ".pretty")
-    if os.path.isdir(candidate):
-        lib_path = candidate
-        break
-
+lib_path = find_lib(lib_name)
 if not lib_path:
     print(json.dumps({{"error": f"Library '{{lib_name}}' not found"}}))
     raise SystemExit(0)
@@ -349,20 +335,10 @@ print(json.dumps({{
         script = f"""
 import pcbnew, json, os
 
+{LIB_SEARCH_HELPER}
 lib_name = {library!r}
 fp_name = {footprint_name!r}
-
-lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
-    os.path.expanduser("~/Documents/KiCad/footprints"),
-    "/usr/share/kicad/footprints",
-]
-lib_path = None
-for sp in lib_search_paths:
-    candidate = os.path.join(sp, lib_name + ".pretty")
-    if os.path.isdir(candidate):
-        lib_path = candidate
-        break
+lib_path = find_lib(lib_name)
 if not lib_path:
     print(json.dumps({{"error": f"Library '{{lib_name}}' not found"}}))
     raise SystemExit(0)

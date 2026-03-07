@@ -24,7 +24,11 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
-from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
+from kicad_mcp.utils.keepout_helpers import (
+    KEEPOUT_HELPER,
+    COURTYARD_BBOX_HELPER,
+    COURTYARD_BBOX_TUPLE_HELPER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -438,33 +442,7 @@ if min_cl <= 0:
 errors = []
 
 # --- Courtyard overlap check ---
-def get_courtyard_bbox(fp):
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition(); size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
-        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
-    if found:
-        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
-    return None
+{COURTYARD_BBOX_HELPER}
 
 footprints = []
 for fp in board.GetFootprints():
@@ -544,41 +522,7 @@ import pcbnew, json
 board = pcbnew.LoadBoard({pcb_path!r})
 spacing = {spacing_mm}
 
-POWER_NETS = {{"", "GND", "+5V", "+3V3", "+3.3V", "+12V", "VCC", "VDD", "VSS", "VBUS"}}
-
-def get_courtyard_bbox(fp):
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition(); size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
-        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
-    if found:
-        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
-    return None
-
-def signal_net_count(fp):
-    count = 0
-    for pad in fp.Pads():
-        net = pad.GetNetname()
-        if net and net not in POWER_NETS:
-            count += 1
-    return count
+{COURTYARD_BBOX_TUPLE_HELPER}
 
 outline = None
 for dwg in board.GetDrawings():
