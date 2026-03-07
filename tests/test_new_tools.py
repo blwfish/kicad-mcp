@@ -489,3 +489,91 @@ class TestExportGerbers:
 
         assert result["status"] == "ok"
         assert result["output_dir"] == str(tmp_path / "gerbers")
+
+
+# -- autoroute preflight tests ----------------------------------------------
+
+class TestAutoroutePreflight:
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_auto_fix_placement")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_pre_route_check")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar")
+    def test_clean_board_skips_fix(self, mock_jar, mock_java, mock_route,
+                                    mock_check, mock_fix, mcp_server, pcb_file):
+        """When pre-route check is clean, auto_fix should NOT be called."""
+        mock_jar.return_value = "/fake/freerouter.jar"
+        mock_java.return_value = "/usr/bin/java"
+        mock_check.return_value = {
+            "status": "ok", "route_ready": True,
+            "courtyard_overlaps": 0, "pad_violations": 0,
+            "error_count": 0, "errors": [],
+        }
+        mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
+
+        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
+        result = fn(pcb_file)
+
+        assert result["status"] == "ok"
+        mock_fix.assert_not_called()
+        assert "preflight" not in result
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_auto_fix_placement")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_pre_route_check")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar")
+    def test_overlaps_trigger_auto_fix(self, mock_jar, mock_java, mock_route,
+                                        mock_check, mock_fix, mcp_server, pcb_file):
+        """Courtyard overlaps should trigger auto_fix before routing."""
+        mock_jar.return_value = "/fake/freerouter.jar"
+        mock_java.return_value = "/usr/bin/java"
+        # First check: overlaps found
+        # Second check (after fix): clean
+        mock_check.side_effect = [
+            {
+                "status": "ok", "route_ready": False,
+                "courtyard_overlaps": 2, "pad_violations": 0,
+                "error_count": 2, "errors": ["Courtyard overlap: R1 and U1"],
+            },
+            {
+                "status": "ok", "route_ready": True,
+                "courtyard_overlaps": 0, "pad_violations": 0,
+                "error_count": 0, "errors": [],
+            },
+        ]
+        mock_fix.return_value = {"status": "ok", "components_moved": 1, "moved": ["R1"]}
+        mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
+
+        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
+        result = fn(pcb_file)
+
+        assert result["status"] == "ok"
+        mock_fix.assert_called_once()
+        assert result["preflight"]["auto_fix_applied"] is True
+        assert result["preflight"]["route_ready_after_fix"] is True
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_auto_fix_placement")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_pre_route_check")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar")
+    def test_pad_violations_warn_but_continue(self, mock_jar, mock_java, mock_route,
+                                               mock_check, mock_fix, mcp_server, pcb_file):
+        """Pad violations (no overlaps) should warn but still route."""
+        mock_jar.return_value = "/fake/freerouter.jar"
+        mock_java.return_value = "/usr/bin/java"
+        mock_check.return_value = {
+            "status": "ok", "route_ready": False,
+            "courtyard_overlaps": 0, "pad_violations": 3,
+            "error_count": 3, "errors": ["Pad clearance: R1:1 and R2:2"],
+        }
+        mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
+
+        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
+        result = fn(pcb_file)
+
+        assert result["status"] == "ok"
+        mock_fix.assert_not_called()  # No overlaps, so no fix attempted
+        assert result["preflight"]["pad_violations"] == 3

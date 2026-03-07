@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,239 @@ def _autoroute_worker(job_id: str, **kwargs: Any) -> None:
                     pass
 
 
+def _run_pre_route_check(pcb_path: str) -> Dict[str, Any]:
+    """Run a lightweight pre-route placement check.
+
+    Returns dict with 'route_ready' boolean and lists of issues found.
+    Called internally by autoroute_pcb before launching FreeRouter.
+    """
+    script = f"""
+import pcbnew, json
+{KEEPOUT_HELPER}
+board = pcbnew.LoadBoard({pcb_path!r})
+
+ds = board.GetDesignSettings()
+min_cl = pcbnew.ToMM(ds.m_MinClearance)
+if min_cl <= 0:
+    min_cl = 0.2
+
+errors = []
+
+# --- Courtyard overlap check ---
+def get_courtyard_bbox(fp):
+    x_min = float("inf"); y_min = float("inf")
+    x_max = float("-inf"); y_max = float("-inf")
+    found = False
+    for item in fp.GraphicalItems():
+        layer_name = board.GetLayerName(item.GetLayer())
+        if "CrtYd" in layer_name:
+            found = True
+            bbox = item.GetBoundingBox()
+            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
+            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
+            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
+            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
+    if found:
+        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
+                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
+    for pad in fp.Pads():
+        found = True
+        pos = pad.GetPosition(); size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
+        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
+    if found:
+        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
+                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
+    return None
+
+footprints = []
+for fp in board.GetFootprints():
+    tight_box = get_courtyard_bbox(fp)
+    if not tight_box:
+        fp_bbox = fp.GetBoundingBox(False, False)
+        tight_box = {{
+            "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+            "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+            "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+            "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+        }}
+    footprints.append({{"reference": fp.GetReference(), "bbox": tight_box}})
+
+courtyard_overlaps = []
+for i in range(len(footprints)):
+    a = footprints[i]; a_box = a["bbox"]
+    for j in range(i + 1, len(footprints)):
+        b = footprints[j]; b_box = b["bbox"]
+        if rects_overlap(a_box, b_box):
+            courtyard_overlaps.append({{
+                "ref_a": a["reference"], "ref_b": b["reference"],
+            }})
+            errors.append(f"Courtyard overlap: {{a['reference']}} and {{b['reference']}}")
+
+# --- Pad clearance check ---
+all_pads = []
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    for pad in fp.Pads():
+        pos = pad.GetPosition(); size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+        all_pads.append({{
+            "ref": ref, "pad": pad.GetNumber(),
+            "x0": x - w/2, "y0": y - h/2,
+            "x1": x + w/2, "y1": y + h/2,
+        }})
+
+pad_violations = []
+n = len(all_pads)
+for i in range(n):
+    a = all_pads[i]
+    ax0 = a["x0"] - min_cl; ay0 = a["y0"] - min_cl
+    ax1 = a["x1"] + min_cl; ay1 = a["y1"] + min_cl
+    for j in range(i + 1, n):
+        b = all_pads[j]
+        if a["ref"] == b["ref"]:
+            continue
+        if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
+            continue
+        pad_violations.append(f"{{a['ref']}}:{{a['pad']}} vs {{b['ref']}}:{{b['pad']}}")
+        errors.append(f"Pad clearance: {{a['ref']}}:{{a['pad']}} and {{b['ref']}}:{{b['pad']}}")
+        if len(pad_violations) >= 10:
+            break
+    if len(pad_violations) >= 10:
+        break
+
+route_ready = len(errors) == 0
+print(json.dumps({{
+    "status": "ok",
+    "route_ready": route_ready,
+    "courtyard_overlaps": len(courtyard_overlaps),
+    "pad_violations": len(pad_violations),
+    "error_count": len(errors),
+    "errors": errors[:20],
+}}))
+"""
+    return run_pcbnew_script(script)
+
+
+def _run_auto_fix_placement(pcb_path: str, spacing_mm: float = 0.5) -> Dict[str, Any]:
+    """Nudge overlapping footprints apart.  Lightweight wrapper around pcbnew."""
+    script = f"""
+import pcbnew, json
+
+board = pcbnew.LoadBoard({pcb_path!r})
+spacing = {spacing_mm}
+
+POWER_NETS = {{"", "GND", "+5V", "+3V3", "+3.3V", "+12V", "VCC", "VDD", "VSS", "VBUS"}}
+
+def get_courtyard_bbox(fp):
+    x_min = float("inf"); y_min = float("inf")
+    x_max = float("-inf"); y_max = float("-inf")
+    found = False
+    for item in fp.GraphicalItems():
+        layer_name = board.GetLayerName(item.GetLayer())
+        if "CrtYd" in layer_name:
+            found = True
+            bbox = item.GetBoundingBox()
+            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
+            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
+            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
+            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
+    if found:
+        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
+    for pad in fp.Pads():
+        found = True
+        pos = pad.GetPosition(); size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
+        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
+    if found:
+        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
+    return None
+
+def signal_net_count(fp):
+    count = 0
+    for pad in fp.Pads():
+        net = pad.GetNetname()
+        if net and net not in POWER_NETS:
+            count += 1
+    return count
+
+outline = None
+for dwg in board.GetDrawings():
+    layer_name = board.GetLayerName(dwg.GetLayer())
+    if "Edge.Cuts" in layer_name:
+        bbox = dwg.GetBoundingBox()
+        if outline is None:
+            outline = [pcbnew.ToMM(bbox.GetX()), pcbnew.ToMM(bbox.GetY()),
+                       pcbnew.ToMM(bbox.GetRight()), pcbnew.ToMM(bbox.GetBottom())]
+        else:
+            outline[0] = min(outline[0], pcbnew.ToMM(bbox.GetX()))
+            outline[1] = min(outline[1], pcbnew.ToMM(bbox.GetY()))
+            outline[2] = max(outline[2], pcbnew.ToMM(bbox.GetRight()))
+            outline[3] = max(outline[3], pcbnew.ToMM(bbox.GetBottom()))
+
+moved = []
+unfixable = []
+for _pass in range(3):
+    fp_list = list(board.GetFootprints())
+    moved_this_pass = 0
+    for i in range(len(fp_list)):
+        a = fp_list[i]; a_box = get_courtyard_bbox(a)
+        if not a_box: continue
+        for j in range(i + 1, len(fp_list)):
+            b = fp_list[j]; b_box = get_courtyard_bbox(b)
+            if not b_box: continue
+            # Check overlap
+            if a_box[0] >= b_box[2] or a_box[2] <= b_box[0] or a_box[1] >= b_box[3] or a_box[3] <= b_box[1]:
+                continue
+            # Overlap found — nudge the less-connected one
+            a_ref = a.GetReference(); b_ref = b.GetReference()
+            if signal_net_count(a) < signal_net_count(b):
+                mover, mover_box, static_box = a, a_box, b_box
+                mover_ref = a_ref
+            else:
+                mover, mover_box, static_box = b, b_box, a_box
+                mover_ref = b_ref
+            # Calculate minimum nudge
+            dx_right = static_box[2] - mover_box[0] + spacing
+            dx_left = mover_box[2] - static_box[0] + spacing
+            dy_down = static_box[3] - mover_box[1] + spacing
+            dy_up = mover_box[3] - static_box[1] + spacing
+            nudge = min(dx_right, dx_left, dy_down, dy_up)
+            if nudge == dx_right:
+                dx, dy = nudge, 0
+            elif nudge == dx_left:
+                dx, dy = -nudge, 0
+            elif nudge == dy_down:
+                dx, dy = 0, nudge
+            else:
+                dx, dy = 0, -nudge
+            pos = mover.GetPosition()
+            new_x = pcbnew.ToMM(pos.x) + dx
+            new_y = pcbnew.ToMM(pos.y) + dy
+            mover.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(new_x), pcbnew.FromMM(new_y)))
+            moved.append(mover_ref)
+            moved_this_pass += 1
+    if moved_this_pass == 0:
+        break
+
+if moved:
+    board.Save({pcb_path!r})
+
+print(json.dumps({{
+    "status": "ok",
+    "components_moved": len(set(moved)),
+    "moved": list(set(moved)),
+    "unfixable": unfixable,
+}}))
+"""
+    return run_pcbnew_script(script)
+
+
 def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
     """Register PCB autorouting tools."""
 
@@ -531,6 +765,38 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
                 _json.dump(project, f, indent=2)
                 f.write("\n")
 
+        # Pre-flight placement check — catch issues before spending time on FreeRouter
+        preflight = _run_pre_route_check(pcb_path)
+        preflight_info = {}
+
+        if preflight.get("status") == "ok" and not preflight.get("route_ready", True):
+            overlaps = preflight.get("courtyard_overlaps", 0)
+
+            if overlaps > 0:
+                # Auto-fix courtyard overlaps by nudging footprints apart
+                logger.info("Pre-route: %d courtyard overlap(s), auto-fixing", overlaps)
+                fix_result = _run_auto_fix_placement(pcb_path)
+                preflight_info["auto_fix_applied"] = True
+                preflight_info["components_moved"] = fix_result.get("components_moved", 0)
+
+                # Re-check after fix
+                recheck = _run_pre_route_check(pcb_path)
+                if recheck.get("status") == "ok" and not recheck.get("route_ready", True):
+                    # Still have issues (likely pad clearance, not just courtyards)
+                    preflight_info["errors_after_fix"] = recheck.get("errors", [])[:10]
+                    preflight_info["route_ready_after_fix"] = False
+                    # Continue anyway — FreeRouter may still produce a usable result
+                    logger.warning("Pre-route: still %d error(s) after fix, routing anyway",
+                                   recheck.get("error_count", 0))
+                else:
+                    preflight_info["route_ready_after_fix"] = True
+            else:
+                # Pad clearance issues only — can't auto-fix, but warn and continue
+                preflight_info["pad_violations"] = preflight.get("pad_violations", 0)
+                preflight_info["errors"] = preflight.get("errors", [])[:10]
+                logger.warning("Pre-route: %d error(s) (no courtyard overlaps to fix)",
+                               preflight.get("error_count", 0))
+
         result = _run_full_autoroute(
             pcb_path=pcb_path,
             jar_path=jar_path,
@@ -541,6 +807,8 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
 
         if net_class_results:
             result["net_classes_applied"] = net_class_results
+        if preflight_info:
+            result["preflight"] = preflight_info
 
         return result
 
