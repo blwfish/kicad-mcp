@@ -28,8 +28,8 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: currently 78 tools. Update if tools are added/removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 96, (
-            f"Expected 96 tools, got {len(tools)}. "
+        assert len(tools) == 97, (
+            f"Expected 97 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -96,6 +96,7 @@ class TestExpectedToolsExist:
         "open_project",
         "validate_project",
         # Export / DRC / BOM / netlist / patterns
+        "export_gerbers",
         "generate_pcb_thumbnail",
         "run_drc_check",
         "analyze_bom",

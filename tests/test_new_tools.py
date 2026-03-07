@@ -1,12 +1,13 @@
 """
 Tests for new tools: check_pin_collisions, get_footprint_dimensions,
-pre_route_check, and set_design_rules project file updates.
+pre_route_check, set_design_rules project file updates, and export_gerbers.
 """
 
 import asyncio
 import json
 import os
-from unittest.mock import patch
+import zipfile
+from unittest.mock import patch, MagicMock
 
 import pytest
 from fastmcp import FastMCP
@@ -15,6 +16,7 @@ from kicad_mcp.server import create_server
 from kicad_mcp.tools.pcb_board import register_pcb_board_tools
 from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
 from kicad_mcp.tools.pcb_keepout import register_pcb_keepout_tools
+from kicad_mcp.tools.export import register_export_tools
 
 
 # -- Fixtures ----------------------------------------------------------------
@@ -372,3 +374,118 @@ class TestSetDesignRulesProjectFile:
         with open(str(pro)) as f:
             data = json.load(f)
         assert data["board"]["design_settings"]["rules"]["min_through_hole_diameter"] == 0.15
+
+
+# -- export_gerbers tests ---------------------------------------------------
+
+class TestExportGerbers:
+
+    @pytest.fixture
+    def export_server(self):
+        mcp = FastMCP("test-export")
+        register_export_tools(mcp)
+        return mcp
+
+    def test_tool_registered(self, export_server):
+        fn = _get_tool_fn(export_server, "export_gerbers")
+        assert fn is not None
+
+    def test_file_not_found(self, export_server):
+        fn = _get_tool_fn(export_server, "export_gerbers")
+        result = fn("/nonexistent/board.kicad_pcb")
+        assert "error" in result
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_creates_gerbers_and_zip(self, mock_run, mock_cli, export_server, tmp_path):
+        """Successful export should produce files and a ZIP."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        # Create a fake PCB file and simulate kicad-cli output
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+        gerber_dir = tmp_path / "gerbers"
+        gerber_dir.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            # Simulate kicad-cli creating output files
+            if "gerbers" in cmd:
+                (gerber_dir / "test-F_Cu.gbr").write_text("G04*")
+                (gerber_dir / "test-B_Cu.gbr").write_text("G04*")
+                (gerber_dir / "test-Edge_Cuts.gbr").write_text("G04*")
+            elif "drill" in cmd:
+                (gerber_dir / "test.drl").write_text("M48")
+            return MagicMock(returncode=0, stdout="ok", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export_gerbers")
+        result = fn(str(pcb), output_dir=str(gerber_dir))
+
+        assert result["status"] == "ok"
+        assert result["gerber_count"] == 3
+        assert result["drill_count"] == 1
+        assert result["total_files"] == 4
+        assert "zip_path" in result
+        assert result["zip_path"].endswith("-gerbers.zip")
+        # Verify the ZIP is valid and has the right contents
+        with zipfile.ZipFile(result["zip_path"]) as zf:
+            names = zf.namelist()
+            assert len(names) == 4
+            assert "test-F_Cu.gbr" in names
+            assert "test.drl" in names
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_no_zip_when_disabled(self, mock_run, mock_cli, export_server, tmp_path):
+        """create_zip=False should skip ZIP creation."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+        gerber_dir = tmp_path / "gerbers"
+        gerber_dir.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if "gerbers" in cmd:
+                (gerber_dir / "test-F_Cu.gbr").write_text("G04*")
+            elif "drill" in cmd:
+                (gerber_dir / "test.drl").write_text("M48")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export_gerbers")
+        result = fn(str(pcb), output_dir=str(gerber_dir), create_zip=False)
+
+        assert result["status"] == "ok"
+        assert "zip_path" not in result
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_default_output_dir(self, mock_run, mock_cli, export_server, tmp_path):
+        """Default output_dir should be 'gerbers/' next to the PCB file."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+
+        def fake_run(cmd, **kwargs):
+            # Extract output dir from command
+            out_idx = cmd.index("--output") + 1
+            out_dir = cmd[out_idx].rstrip("/")
+            os.makedirs(out_dir, exist_ok=True)
+            if "gerbers" in cmd:
+                open(os.path.join(out_dir, "test-F_Cu.gbr"), "w").write("G04*")
+            elif "drill" in cmd:
+                open(os.path.join(out_dir, "test.drl"), "w").write("M48")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export_gerbers")
+        result = fn(str(pcb))
+
+        assert result["status"] == "ok"
+        assert result["output_dir"] == str(tmp_path / "gerbers")

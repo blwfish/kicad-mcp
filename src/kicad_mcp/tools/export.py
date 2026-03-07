@@ -2,15 +2,21 @@
 Export tools for KiCad projects.
 """
 import asyncio
+import glob
+import logging
 import os
 import shutil
 import subprocess
+import zipfile
 from typing import Any, Dict
 
 from fastmcp import FastMCP, Context
 
 from kicad_mcp.config import KICAD_APP_PATH, system
 from kicad_mcp.utils.file_utils import get_project_files
+from kicad_mcp.utils.kicad_cli import get_kicad_cli_path
+
+logger = logging.getLogger(__name__)
 
 
 def register_export_tools(mcp: FastMCP) -> None:
@@ -19,6 +25,123 @@ def register_export_tools(mcp: FastMCP) -> None:
     Args:
         mcp: The FastMCP server instance
     """
+
+    @mcp.tool()
+    def export_gerbers(
+        pcb_path: str,
+        output_dir: str = "",
+        create_zip: bool = True,
+    ) -> Dict[str, Any]:
+        """Export Gerber fabrication files + Excellon drill files from a PCB.
+
+        Generates all files needed for PCB fabrication (e.g., JLCPCB upload).
+        Exports all copper, mask, silkscreen, paste, and edge layers as
+        Gerber files, plus drill files in Excellon format with mm units.
+
+        Optionally creates a ZIP file containing all outputs, ready for
+        direct upload to JLCPCB, PCBWay, OSH Park, etc.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            output_dir: Directory for output files. Default: "gerbers/"
+                subdirectory next to the PCB file.
+            create_zip: Create a ZIP file of all outputs (default True).
+
+        Returns:
+            Dictionary with output paths, file counts, and ZIP path.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        try:
+            kicad_cli = get_kicad_cli_path(required=True)
+        except Exception as e:
+            return {"error": str(e)}
+
+        # Default output directory
+        if not output_dir:
+            pcb_dir = os.path.dirname(os.path.abspath(pcb_path))
+            output_dir = os.path.join(pcb_dir, "gerbers")
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        errors = []
+
+        # Export Gerber files (all standard fab layers)
+        gerber_cmd = [
+            kicad_cli, "pcb", "export", "gerbers",
+            "--output", output_dir + "/",
+            pcb_path,
+        ]
+
+        try:
+            result = subprocess.run(
+                gerber_cmd, capture_output=True, text=True,
+                check=True, timeout=30,
+            )
+            logger.info("Gerber export: %s", result.stdout.strip())
+        except subprocess.CalledProcessError as e:
+            errors.append(f"Gerber export failed: {e.stderr or e.stdout}")
+        except subprocess.TimeoutExpired:
+            errors.append("Gerber export timed out after 30s")
+
+        # Export drill files (Excellon format, mm units)
+        drill_cmd = [
+            kicad_cli, "pcb", "export", "drill",
+            "--output", output_dir + "/",
+            "--format", "excellon",
+            "--excellon-units", "mm",
+            pcb_path,
+        ]
+
+        try:
+            result = subprocess.run(
+                drill_cmd, capture_output=True, text=True,
+                check=True, timeout=30,
+            )
+            logger.info("Drill export: %s", result.stdout.strip())
+        except subprocess.CalledProcessError as e:
+            errors.append(f"Drill export failed: {e.stderr or e.stdout}")
+        except subprocess.TimeoutExpired:
+            errors.append("Drill export timed out after 30s")
+
+        if errors:
+            return {"error": "; ".join(errors)}
+
+        # Collect output files
+        gerber_files = sorted(glob.glob(os.path.join(output_dir, "*.gbr")))
+        drill_files = sorted(
+            glob.glob(os.path.join(output_dir, "*.drl"))
+            + glob.glob(os.path.join(output_dir, "*.xln"))
+        )
+        all_files = gerber_files + drill_files
+
+        if not all_files:
+            return {"error": "No output files generated — PCB may be empty"}
+
+        result = {
+            "status": "ok",
+            "output_dir": output_dir,
+            "gerber_files": [os.path.basename(f) for f in gerber_files],
+            "drill_files": [os.path.basename(f) for f in drill_files],
+            "gerber_count": len(gerber_files),
+            "drill_count": len(drill_files),
+            "total_files": len(all_files),
+        }
+
+        # Create ZIP
+        if create_zip:
+            pcb_name = os.path.splitext(os.path.basename(pcb_path))[0]
+            zip_path = os.path.join(
+                os.path.dirname(output_dir), f"{pcb_name}-gerbers.zip"
+            )
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in all_files:
+                    zf.write(f, os.path.basename(f))
+            result["zip_path"] = zip_path
+            result["zip_size_bytes"] = os.path.getsize(zip_path)
+
+        return result
 
     @mcp.tool()
     async def generate_pcb_thumbnail(
