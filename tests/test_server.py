@@ -28,8 +28,8 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: currently 78 tools. Update if tools are added/removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 93, (
-            f"Expected 93 tools, got {len(tools)}. "
+        assert len(tools) == 96, (
+            f"Expected 96 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -47,6 +47,7 @@ class TestExpectedToolsExist:
         "move_footprint",
         "list_pcb_footprints",
         "get_pad_positions",
+        "get_footprint_dimensions",
         "search_footprints",
         # PCB net tools
         "add_net",
@@ -82,6 +83,7 @@ class TestExpectedToolsExist:
         "audit_pcb_placement",
         "audit_footprint_overlaps",
         "audit_all",
+        "pre_route_check",
         "auto_fix_placement",
         # PCB DRC fix tools
         "drc_autofix",
@@ -119,6 +121,7 @@ class TestExpectedToolsExist:
         "list_component_pins",
         "add_label_to_pin",
         "connect_pins_with_labels",
+        "check_pin_collisions",
         "validate_schematic",
         "get_schematic_info",
     ]

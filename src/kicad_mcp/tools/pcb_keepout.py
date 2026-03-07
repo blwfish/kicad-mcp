@@ -874,6 +874,213 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def pre_route_check(
+        pcb_path: str,
+        min_clearance_mm: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Single "is this board ready to route?" check combining all placement audits.
+
+        Runs in one subprocess call:
+        1. Footprint courtyard overlap check (``audit_footprint_overlaps``)
+        2. Keepout zone violation check (``audit_pcb_placement``)
+        3. Pad-to-pad clearance check (``check_pad_clearances``)
+        4. Board edge clearance check (pads/copper outside outline)
+
+        Returns a ``route_ready`` boolean — True only when there are zero
+        errors (warnings are OK).  Use this BEFORE calling ``autoroute_pcb``
+        to catch placement issues that would otherwise require expensive
+        re-routing iterations.
+
+        Args:
+            pcb_path: Path to the .kicad_pcb file.
+            min_clearance_mm: Minimum required clearance between pads of
+                different footprints in mm.  0 = use board design rule minimum.
+        """
+        if not os.path.exists(pcb_path):
+            return {"error": f"PCB file not found: {pcb_path}"}
+
+        script = f"""
+import pcbnew, json
+{_KEEPOUT_HELPER}
+board = pcbnew.LoadBoard({pcb_path!r})
+min_cl = {min_clearance_mm}
+
+# Use board design rule if no explicit clearance given
+if min_cl <= 0:
+    ds = board.GetDesignSettings()
+    min_cl = pcbnew.ToMM(ds.m_MinClearance)
+    if min_cl <= 0:
+        min_cl = 0.2
+
+errors = []
+warnings = []
+
+# --- 1. Courtyard overlap check ---
+def get_courtyard_bbox(fp):
+    x_min = float("inf"); y_min = float("inf")
+    x_max = float("-inf"); y_max = float("-inf")
+    found = False
+    for item in fp.GraphicalItems():
+        layer_name = board.GetLayerName(item.GetLayer())
+        if "CrtYd" in layer_name:
+            found = True
+            bbox = item.GetBoundingBox()
+            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
+            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
+            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
+            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
+    if found:
+        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
+                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
+    x_min = float("inf"); y_min = float("inf")
+    x_max = float("-inf"); y_max = float("-inf")
+    found = False
+    for pad in fp.Pads():
+        found = True
+        pos = pad.GetPosition(); size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
+        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
+    if found:
+        return {{"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
+                 "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}}
+    return None
+
+footprints = []
+for fp in board.GetFootprints():
+    tight_box = get_courtyard_bbox(fp)
+    if not tight_box:
+        fp_bbox = fp.GetBoundingBox(False, False)
+        tight_box = {{
+            "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+            "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+            "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+            "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+        }}
+    footprints.append({{"reference": fp.GetReference(), "bbox": tight_box}})
+
+courtyard_overlaps = []
+for i in range(len(footprints)):
+    a = footprints[i]; a_box = a["bbox"]
+    for j in range(i + 1, len(footprints)):
+        b = footprints[j]; b_box = b["bbox"]
+        if rects_overlap(a_box, b_box):
+            area = overlap_area(a_box, b_box)
+            courtyard_overlaps.append({{
+                "ref_a": a["reference"], "ref_b": b["reference"],
+                "overlap_mm2": area,
+            }})
+            errors.append(f"Courtyard overlap: {{a['reference']}} and {{b['reference']}} ({{area}} mm2)")
+
+# --- 2. Keepout zone check ---
+keepouts = extract_keepouts(board)
+outline = get_board_outline(board)
+keepout_violations = []
+
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    fp_bbox = fp.GetBoundingBox(False, False)
+    fp_rect = {{
+        "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+        "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+        "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+        "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+    }}
+    for kz in keepouts:
+        if kz["source"] == "footprint" and kz["source_ref"] == ref:
+            continue
+        kz_bb = kz["bounding_box"]
+        if not rects_overlap(fp_rect, kz_bb):
+            continue
+        c = kz["constraints"]
+        if c["no_footprints"]:
+            msg = f"Keepout violation: {{ref}} in keepout from {{kz['source_ref'] or kz['source']}}"
+            keepout_violations.append({{"reference": ref, "keepout": kz["source_ref"] or kz["source"]}})
+            errors.append(msg)
+    if outline and not rect_inside(fp_rect, outline):
+        msg = f"Board edge: {{ref}} extends outside board outline"
+        keepout_violations.append({{"reference": ref, "keepout": "board_outline"}})
+        warnings.append(msg)
+
+# --- 3. Pad clearance check ---
+all_pads = []
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    for pad in fp.Pads():
+        pos = pad.GetPosition(); size = pad.GetSize()
+        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+        all_pads.append({{
+            "ref": ref, "pad": pad.GetNumber(),
+            "x0": x - w/2, "y0": y - h/2,
+            "x1": x + w/2, "y1": y + h/2,
+        }})
+
+pad_violations = []
+n = len(all_pads)
+for i in range(n):
+    a = all_pads[i]
+    ax0 = a["x0"] - min_cl; ay0 = a["y0"] - min_cl
+    ax1 = a["x1"] + min_cl; ay1 = a["y1"] + min_cl
+    for j in range(i + 1, n):
+        b = all_pads[j]
+        if a["ref"] == b["ref"]:
+            continue
+        if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
+            continue
+        gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
+        gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
+        if gap_x < 0 and gap_y < 0:
+            gap = 0.0
+        else:
+            gap = max(0.0, gap_x, gap_y)
+        if gap < min_cl:
+            pad_violations.append({{
+                "pad_a": f"{{a['ref']}}:{{a['pad']}}",
+                "pad_b": f"{{b['ref']}}:{{b['pad']}}",
+                "gap_mm": round(gap, 3),
+            }})
+            if gap == 0.0:
+                errors.append(f"Pad overlap: {{a['ref']}}:{{a['pad']}} and {{b['ref']}}:{{b['pad']}}")
+            else:
+                errors.append(f"Pad clearance: {{a['ref']}}:{{a['pad']}} and {{b['ref']}}:{{b['pad']}} only {{round(gap, 3)}}mm apart (min {{min_cl}}mm)")
+
+# --- Summary ---
+route_ready = len(errors) == 0
+total_fp = len(footprints)
+
+parts = []
+if courtyard_overlaps:
+    parts.append(f"{{len(courtyard_overlaps)}} courtyard overlap(s)")
+if keepout_violations:
+    parts.append(f"{{len(keepout_violations)}} keepout/boundary issue(s)")
+if pad_violations:
+    parts.append(f"{{len(pad_violations)}} pad clearance violation(s)")
+if parts:
+    summary = "NOT ready to route: " + ", ".join(parts)
+else:
+    summary = f"Ready to route: {{total_fp}} footprints, {{n}} pads all clear"
+
+print(json.dumps({{
+    "status": "ok",
+    "route_ready": route_ready,
+    "total_footprints": total_fp,
+    "total_pads": n,
+    "min_clearance_mm": round(min_cl, 3),
+    "error_count": len(errors),
+    "warning_count": len(warnings),
+    "courtyard_overlaps": courtyard_overlaps,
+    "keepout_violations": keepout_violations,
+    "pad_violations": pad_violations[:30],
+    "errors": errors[:20],
+    "warnings": warnings[:20],
+    "summary": summary,
+}}))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
     def auto_fix_placement(
         pcb_path: str,
         spacing_mm: float = 0.5,

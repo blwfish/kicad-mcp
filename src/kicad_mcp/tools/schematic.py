@@ -817,6 +817,79 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         }
 
     # ------------------------------------------------------------------
+    # Pin collision detection
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    def check_pin_collisions() -> dict:
+        """Detect schematic pin position collisions that cause silent net merges.
+
+        Scans all placed component pins and flags any two pins from different
+        components that occupy the same schematic coordinates.  When two pins
+        collide, KiCad silently merges their nets — this is the root cause of
+        GND/+3V3 net loss bugs.
+
+        Run this after placing all components and before saving/exporting the
+        schematic.  Any collisions should be fixed by moving one component.
+
+        Returns:
+            A dict with ``collisions`` (list of pin pairs at the same position)
+            and ``collision_count``.
+        """
+        sch = _require_schematic()
+
+        # Build a map: (rounded_x, rounded_y) -> list of (reference, pin_number, pin_name)
+        position_map: dict[tuple[float, float], list[dict[str, Any]]] = {}
+
+        for comp in sch.components:
+            ref = comp.reference
+            for pin in comp.pins:
+                pin_pos = _kicad_pin_position(comp, pin.number)
+                if pin_pos is None:
+                    continue
+                key = (round(pin_pos.x, 2), round(pin_pos.y, 2))
+                position_map.setdefault(key, []).append({
+                    "reference": ref,
+                    "pin_number": pin.number,
+                    "pin_name": pin.name,
+                })
+
+        collisions = []
+        for pos, pins in position_map.items():
+            if len(pins) < 2:
+                continue
+            # Only report if pins are from DIFFERENT components
+            refs = {p["reference"] for p in pins}
+            if len(refs) < 2:
+                continue
+            collisions.append({
+                "position": [pos[0], pos[1]],
+                "pins": pins,
+                "component_count": len(refs),
+                "message": (
+                    f"{len(pins)} pins from {len(refs)} components collide at "
+                    f"({pos[0]}, {pos[1]}): "
+                    + ", ".join(f"{p['reference']}:{p['pin_number']}" for p in pins)
+                ),
+            })
+
+        if collisions:
+            summary = (
+                f"{len(collisions)} pin collision(s) found — these will cause "
+                f"silent net merges. Move components to separate the pins."
+            )
+        else:
+            total_pins = sum(len(v) for v in position_map.values())
+            summary = f"No pin collisions among {total_pins} pins"
+
+        return {
+            "status": "ok",
+            "collision_count": len(collisions),
+            "collisions": collisions,
+            "summary": summary,
+        }
+
+    # ------------------------------------------------------------------
     # Wire management
     # ------------------------------------------------------------------
 

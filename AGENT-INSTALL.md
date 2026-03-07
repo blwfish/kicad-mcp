@@ -4,7 +4,7 @@ This file is for you, the AI agent. It tells you what needs to be true on this s
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server providing 93 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
+kicad-mcp is a Model Context Protocol (MCP) server providing 96 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
 **Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 

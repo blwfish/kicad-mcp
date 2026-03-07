@@ -153,8 +153,17 @@ print(json.dumps({{
         min_via_diameter_mm: float = 0.6,
         min_via_drill_mm: float = 0.3,
         min_hole_to_hole_mm: float = 0.25,
+        min_through_hole_diameter_mm: float = 0.3,
+        min_copper_edge_clearance_mm: float = 0.5,
     ) -> Dict[str, Any]:
         """Set PCB design rules (DRC constraints).
+
+        Sets rules in both the PCB file (pcbnew design settings) and the
+        project file (.kicad_pro DRC rules section).  The project file rules
+        control DRC checks that pcbnew's DesignSettings doesn't cover, such
+        as ``min_through_hole_diameter`` (needed for ESP32 thermal vias at
+        0.2mm) and ``min_copper_edge_clearance`` (needed for edge-mounted
+        connectors).
 
         Args:
             pcb_path: Path to the .kicad_pcb file.
@@ -163,6 +172,12 @@ print(json.dumps({{
             min_via_diameter_mm: Minimum via pad diameter in mm (default 0.6).
             min_via_drill_mm: Minimum via drill diameter in mm (default 0.3).
             min_hole_to_hole_mm: Minimum hole-to-hole distance in mm (default 0.25).
+            min_through_hole_diameter_mm: Minimum through-hole drill diameter
+                in mm (default 0.3).  Set to 0.15 for boards with ESP32 modules
+                (their thermal vias use 0.2mm drills).
+            min_copper_edge_clearance_mm: Minimum clearance from copper to board
+                edge in mm (default 0.5).  Set to 0.0 for boards with edge-mounted
+                connectors (USB-C, Phoenix terminals).
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
@@ -190,7 +205,45 @@ print(json.dumps({{
         "min_via_diameter_mm": {min_via_diameter_mm},
         "min_via_drill_mm": {min_via_drill_mm},
         "min_hole_to_hole_mm": {min_hole_to_hole_mm},
+        "min_through_hole_diameter_mm": {min_through_hole_diameter_mm},
+        "min_copper_edge_clearance_mm": {min_copper_edge_clearance_mm},
     }},
 }}))
 """
-        return run_pcbnew_script(script)
+        result = run_pcbnew_script(script)
+
+        # Also update the .kicad_pro project file DRC rules
+        stem = os.path.splitext(pcb_path)[0]
+        pro_path = stem + ".kicad_pro"
+        pro_updated = False
+        if os.path.exists(pro_path):
+            try:
+                import json as _json
+                with open(pro_path, "r") as f:
+                    project = _json.load(f)
+                # Navigate to board.design_settings.rules
+                rules = (
+                    project
+                    .setdefault("board", {})
+                    .setdefault("design_settings", {})
+                    .setdefault("rules", {})
+                )
+                rules["min_through_hole_diameter"] = min_through_hole_diameter_mm
+                rules["min_copper_edge_clearance"] = min_copper_edge_clearance_mm
+                rules["min_track_width"] = min_track_width_mm
+                rules["min_clearance"] = min_clearance_mm
+                rules["min_hole_to_hole"] = min_hole_to_hole_mm
+                rules["min_via_diameter"] = min_via_diameter_mm
+                with open(pro_path, "w") as f:
+                    _json.dump(project, f, indent=2)
+                    f.write("\n")
+                pro_updated = True
+            except Exception as e:
+                logger.warning("Could not update .kicad_pro rules: %s", e)
+
+        if isinstance(result, dict) and "error" not in result:
+            result["project_rules_updated"] = pro_updated
+            if pro_updated:
+                result["project_file"] = pro_path
+
+        return result

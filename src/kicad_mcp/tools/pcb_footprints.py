@@ -325,6 +325,157 @@ print(json.dumps({{
         return run_pcbnew_script(script)
 
     @mcp.tool()
+    def get_footprint_dimensions(
+        library: str,
+        footprint_name: str,
+        rotation_deg: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Query a footprint's bounding box, pad span, and embedded keepout zones.
+
+        Loads the footprint from the KiCad library WITHOUT placing it on a PCB.
+        Use this BEFORE placing components to plan layout with actual dimensions
+        rather than guessing.  Returns body bounding box, courtyard, pad span
+        (extent of actual copper pads), and any embedded keepout zones (like
+        the ESP32 antenna keepout).
+
+        All dimensions are relative to the footprint origin (0,0) with the
+        specified rotation applied.
+
+        Args:
+            library: Footprint library name (e.g., "RF_Module").
+            footprint_name: Footprint name (e.g., "ESP32-WROOM-32E").
+            rotation_deg: Rotation to apply before measuring (default 0).
+        """
+        script = f"""
+import pcbnew, json, os
+
+lib_name = {library!r}
+fp_name = {footprint_name!r}
+
+lib_search_paths = [
+    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
+    os.path.expanduser("~/Documents/KiCad/footprints"),
+    "/usr/share/kicad/footprints",
+]
+lib_path = None
+for sp in lib_search_paths:
+    candidate = os.path.join(sp, lib_name + ".pretty")
+    if os.path.isdir(candidate):
+        lib_path = candidate
+        break
+if not lib_path:
+    print(json.dumps({{"error": f"Library '{{lib_name}}' not found"}}))
+    raise SystemExit(0)
+
+fp = pcbnew.FootprintLoad(lib_path, fp_name)
+if fp is None:
+    print(json.dumps({{"error": f"Footprint '{{fp_name}}' not found in '{{lib_name}}'"}}))
+    raise SystemExit(0)
+
+# Place at origin, apply rotation
+fp.SetPosition(pcbnew.VECTOR2I(0, 0))
+if {rotation_deg} != 0:
+    fp.SetOrientationDegrees({rotation_deg})
+
+# Body bounding box (excludes text)
+bb = fp.GetBoundingBox(False, False)
+body_bbox = {{
+    "x_min_mm": round(pcbnew.ToMM(bb.GetX()), 3),
+    "y_min_mm": round(pcbnew.ToMM(bb.GetY()), 3),
+    "x_max_mm": round(pcbnew.ToMM(bb.GetRight()), 3),
+    "y_max_mm": round(pcbnew.ToMM(bb.GetBottom()), 3),
+    "width_mm": round(pcbnew.ToMM(bb.GetWidth()), 3),
+    "height_mm": round(pcbnew.ToMM(bb.GetHeight()), 3),
+}}
+
+# Courtyard
+courtyard = None
+cx_min = float("inf"); cy_min = float("inf")
+cx_max = float("-inf"); cy_max = float("-inf")
+found_cy = False
+for item in fp.GraphicalItems():
+    layer_name = item.GetLayerName() if hasattr(item, 'GetLayerName') else ""
+    # Check both front and back courtyard
+    ly = item.GetLayer()
+    if ly in (pcbnew.F_CrtYd, pcbnew.B_CrtYd):
+        found_cy = True
+        cbb = item.GetBoundingBox()
+        cx_min = min(cx_min, pcbnew.ToMM(cbb.GetX()))
+        cy_min = min(cy_min, pcbnew.ToMM(cbb.GetY()))
+        cx_max = max(cx_max, pcbnew.ToMM(cbb.GetRight()))
+        cy_max = max(cy_max, pcbnew.ToMM(cbb.GetBottom()))
+if found_cy:
+    courtyard = {{
+        "x_min_mm": round(cx_min, 3), "y_min_mm": round(cy_min, 3),
+        "x_max_mm": round(cx_max, 3), "y_max_mm": round(cy_max, 3),
+        "width_mm": round(cx_max - cx_min, 3),
+        "height_mm": round(cy_max - cy_min, 3),
+    }}
+
+# Pad span (extent of actual copper pads)
+px_min = float("inf"); py_min = float("inf")
+px_max = float("-inf"); py_max = float("-inf")
+pad_count = 0
+for pad in fp.Pads():
+    pad_count += 1
+    pos = pad.GetPosition()
+    size = pad.GetSize()
+    x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
+    w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
+    px_min = min(px_min, x - w/2); py_min = min(py_min, y - h/2)
+    px_max = max(px_max, x + w/2); py_max = max(py_max, y + h/2)
+pad_span = None
+if pad_count > 0:
+    pad_span = {{
+        "x_min_mm": round(px_min, 3), "y_min_mm": round(py_min, 3),
+        "x_max_mm": round(px_max, 3), "y_max_mm": round(py_max, 3),
+        "width_mm": round(px_max - px_min, 3),
+        "height_mm": round(py_max - py_min, 3),
+    }}
+
+# Embedded keepout zones
+keepouts = []
+for zone in fp.Zones():
+    if not zone.GetIsRuleArea():
+        continue
+    zbb = zone.GetBoundingBox()
+    keepouts.append({{
+        "bounding_box": {{
+            "x_min_mm": round(pcbnew.ToMM(zbb.GetX()), 3),
+            "y_min_mm": round(pcbnew.ToMM(zbb.GetY()), 3),
+            "x_max_mm": round(pcbnew.ToMM(zbb.GetRight()), 3),
+            "y_max_mm": round(pcbnew.ToMM(zbb.GetBottom()), 3),
+            "width_mm": round(pcbnew.ToMM(zbb.GetWidth()), 3),
+            "height_mm": round(pcbnew.ToMM(zbb.GetHeight()), 3),
+        }},
+        "constraints": {{
+            "no_tracks": zone.GetDoNotAllowTracks(),
+            "no_vias": zone.GetDoNotAllowVias(),
+            "no_pads": zone.GetDoNotAllowPads(),
+            "no_copper_pour": zone.GetDoNotAllowCopperPour(),
+            "no_footprints": zone.GetDoNotAllowFootprints(),
+        }},
+    }})
+
+result = {{
+    "status": "ok",
+    "library": lib_name,
+    "footprint": fp_name,
+    "rotation_deg": {rotation_deg},
+    "pad_count": pad_count,
+    "body_bbox": body_bbox,
+    "pad_span": pad_span,
+}}
+if courtyard:
+    result["courtyard"] = courtyard
+if keepouts:
+    result["keepout_zones"] = keepouts
+    result["keepout_count"] = len(keepouts)
+print(json.dumps(result))
+"""
+        return run_pcbnew_script(script)
+
+    @mcp.tool()
     def search_footprints(
         query: str,
         library: Optional[str] = None,
