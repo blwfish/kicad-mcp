@@ -80,7 +80,12 @@ for kz in keepouts:
         src = kz["source_ref"] or kz["source"]
         placement_warnings.append(f"Overlaps keepout from {{src}} (blocks {{', '.join(blocked)}})")
 
-if outline and not rect_inside(fp_rect, outline):
+if outline is None:
+    placement_warnings.append(
+        "No board outline (Edge.Cuts) found — cannot validate footprint boundary. "
+        "Add a board outline before placing components."
+    )
+elif not rect_inside(fp_rect, outline):
     overhang_parts = []
     if fp_rect["x_min_mm"] < outline["x_min_mm"]:
         overhang_parts.append(f"left {{round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}}mm")
@@ -90,7 +95,10 @@ if outline and not rect_inside(fp_rect, outline):
         overhang_parts.append(f"top {{round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}}mm")
     if fp_rect["y_max_mm"] > outline["y_max_mm"]:
         overhang_parts.append(f"bottom {{round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}}mm")
-    placement_warnings.append(f"Extends beyond board outline ({{', '.join(overhang_parts)}})")
+    placement_warnings.append(
+        f"EXTENDS BEYOND BOARD OUTLINE ({{', '.join(overhang_parts)}}) — "
+        "move this footprint before routing or pads will be unreachable."
+    )
 """
 
         script = f"""
@@ -197,6 +205,8 @@ print(json.dumps(result))
         script = f"""
 import pcbnew, json
 
+{_KEEPOUT_HELPER}
+
 board = pcbnew.LoadBoard({pcb_path!r})
 
 fp = board.FindFootprintByReference({reference!r})
@@ -209,14 +219,46 @@ fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM({x_mm}), pcbnew.FromMM({y_mm})))
 
 board.Save({pcb_path!r})
 
+# Check new position against board boundary
 pos = fp.GetPosition()
-print(json.dumps({{
+placement_warnings = []
+fp_bbox = fp.GetBoundingBox(False, False)
+fp_rect = {{
+    "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+    "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+    "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+    "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+}}
+outline = get_board_outline(board)
+if outline is None:
+    placement_warnings.append(
+        "No board outline (Edge.Cuts) found — cannot validate footprint boundary."
+    )
+elif not rect_inside(fp_rect, outline):
+    overhang_parts = []
+    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
+        overhang_parts.append(f"left {{round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}}mm")
+    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
+        overhang_parts.append(f"right {{round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}}mm")
+    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
+        overhang_parts.append(f"top {{round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}}mm")
+    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
+        overhang_parts.append(f"bottom {{round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}}mm")
+    placement_warnings.append(
+        f"EXTENDS BEYOND BOARD OUTLINE ({{', '.join(overhang_parts)}}) — "
+        "move this footprint before routing or pads will be unreachable."
+    )
+
+result = {{
     "status": "ok",
     "reference": {reference!r},
     "x_mm": round(pcbnew.ToMM(pos.x), 3),
     "y_mm": round(pcbnew.ToMM(pos.y), 3),
     "rotation": fp.GetOrientationDegrees(),
-}}))
+}}
+if placement_warnings:
+    result["placement_warnings"] = placement_warnings
+print(json.dumps(result))
 """
         return run_pcbnew_script(script)
 

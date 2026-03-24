@@ -186,9 +186,17 @@ board.Save({pcb_path!r})
 tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
 vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
 
-# Count nets with unrouted connections
+# Count nets
 netinfo = board.GetNetInfo()
 net_count = netinfo.GetNetCount()
+
+# Ground-truth unconnected check — independent of FreeRouter's output parsing.
+# FreeRouter can report "0 incomplete" while leaving pads unreachable (e.g. a
+# pad sitting on the board edge).  RecalcNet() rebuilds the ratsnest from the
+# actual copper, so this count is authoritative.
+connectivity = board.GetConnectivity()
+connectivity.RecalcNet()
+unconnected = connectivity.GetUnconnectedCount()
 
 print(json.dumps({{
     "status": "ok",
@@ -196,6 +204,7 @@ print(json.dumps({{
     "tracks": tracks,
     "vias": vias,
     "net_count": net_count,
+    "unconnected_after_routing": unconnected,
 }}))
 """
     return run_pcbnew_script(import_script, timeout=30.0)
@@ -363,6 +372,21 @@ def _run_full_autoroute(
         if "error" in import_result:
             return {"error": f"SES import failed: {import_result['error']}"}
 
+        unconnected = import_result.get("unconnected_after_routing", 0)
+        if unconnected > 0:
+            note = (
+                f"WARNING: {unconnected} net(s) still unconnected after routing. "
+                "Check for pads outside the board outline or other placement errors. "
+                "Run run_drc_check and audit_pcb_placement to investigate."
+            )
+        elif remove_zones and export_result.get("zones_removed", 0) > 0:
+            note = (
+                "Copper zones were removed before routing. "
+                "Re-add them with add_copper_zone + fill_zones."
+            )
+        else:
+            note = "Routing complete."
+
         return {
             "status": "ok",
             "pcb_path": pcb_path,
@@ -373,17 +397,13 @@ def _run_full_autoroute(
             "tracks_after": import_result.get("tracks", 0),
             "vias_after": import_result.get("vias", 0),
             "net_count": import_result.get("net_count", 0),
+            "unconnected_after_routing": unconnected,
             "passes_run": len(pass_results),
             "best_incomplete": (
                 best_incomplete if best_incomplete != float("inf") else None
             ),
             "pass_results": pass_results,
-            "note": (
-                "Copper zones were removed before routing. "
-                "Re-add them with add_copper_zone + fill_zones."
-                if remove_zones and export_result.get("zones_removed", 0) > 0
-                else "Routing complete."
-            ),
+            "note": note,
         }
 
     finally:
