@@ -1,5 +1,4 @@
 """PCB net tools: add, assign, bulk assign, list, net classes, and sync from schematic."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import json as _json
 import logging
@@ -95,42 +94,53 @@ def register_pcb_net_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+reference = params["reference"]
+pad_number = params["pad_number"]
+net_name = params["net_name"]
 
-fp = board.FindFootprintByReference({reference!r})
+board = pcbnew.LoadBoard(pcb_path)
+
+fp = board.FindFootprintByReference(reference)
 if fp is None:
-    print(json.dumps({{"error": f"Footprint {reference!r} not found"}}))
+    print(json.dumps({"error": f"Footprint {reference!r} not found"}))
     raise SystemExit(0)
 
-net = board.FindNet({net_name!r})
+net = board.FindNet(net_name)
 if net is None or net.GetNetCode() == 0:
-    print(json.dumps({{"error": f"Net {net_name!r} not found"}}))
+    print(json.dumps({"error": f"Net {net_name!r} not found"}))
     raise SystemExit(0)
 
 pad_count = 0
 for pad in fp.Pads():
-    if pad.GetNumber() == {pad_number!r}:
+    if pad.GetNumber() == pad_number:
         pad.SetNet(net)
         pad_count += 1
 
 if pad_count == 0:
-    print(json.dumps({{"error": f"Pad {pad_number!r} not found on {reference!r}"}}))
+    print(json.dumps({"error": f"Pad {pad_number!r} not found on {reference!r}"}))
     raise SystemExit(0)
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "reference": {reference!r},
-    "pad": {pad_number!r},
-    "net": {net_name!r},
+    "reference": reference,
+    "pad": pad_number,
+    "net": net_name,
     "sub_pads": pad_count,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "reference": reference,
+            "pad_number": pad_number,
+            "net_name": net_name,
+        })
 
     @mcp.tool()
     def bulk_assign_pad_nets(
@@ -151,14 +161,15 @@ print(json.dumps({{
         if not assignments:
             return {"error": "No assignments provided"}
 
-        assignments_repr = repr(assignments)
+        script = """
+import pcbnew, json, sys
 
-        script = f"""
-import pcbnew, json
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
 
-board = pcbnew.LoadBoard({pcb_path!r})
+board = pcbnew.LoadBoard(pcb_path)
 
-assignments = {assignments_repr}
+assignments = params["assignments"]
 results = []
 errors = []
 created_nets = []
@@ -170,7 +181,7 @@ for a in assignments:
 
     fp = board.FindFootprintByReference(ref)
     if fp is None:
-        errors.append(f"Footprint {{ref}} not found")
+        errors.append(f"Footprint {ref} not found")
         continue
 
     net = board.FindNet(net_name)
@@ -180,7 +191,7 @@ for a in assignments:
         board.Add(net_info)
         net = board.FindNet(net_name)
         if net is None or net.GetNetCode() == 0:
-            errors.append(f"Net {{net_name}} not found and could not be created")
+            errors.append(f"Net {net_name} not found and could not be created")
             continue
         created_nets.append(net_name)
 
@@ -190,21 +201,24 @@ for a in assignments:
             pad.SetNet(net)
             pad_count += 1
     if pad_count > 0:
-        results.append({{"reference": ref, "pad": pad_num, "net": net_name, "sub_pads": pad_count}})
+        results.append({"reference": ref, "pad": pad_num, "net": net_name, "sub_pads": pad_count})
     else:
-        errors.append(f"Pad {{pad_num}} not found on {{ref}}")
+        errors.append(f"Pad {pad_num} not found on {ref}")
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "assigned": len(results),
     "nets_created": created_nets,
     "errors": errors,
     "results": results,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "assignments": assignments,
+        })
 
     @mcp.tool()
     def rename_net(
@@ -271,26 +285,29 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 nets = []
 for code, net in board.GetNetsByNetcode().items():
     if code > 0:
-        nets.append({{
+        nets.append({
             "code": code,
             "name": net.GetNetname(),
-        }})
+        })
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "net_count": len(nets),
     "nets": nets,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
     @mcp.tool()
     def update_pcb_from_schematic(
@@ -451,14 +468,15 @@ print(json.dumps({{
                     f.write(pcb_content)
 
         # Step 4: Assign nets to pads via pcbnew
-        assignments_repr = repr(pad_assignments)
+        script = """
+import pcbnew, json, sys
 
-        script = f"""
-import pcbnew, json
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
 
-board = pcbnew.LoadBoard({pcb_path!r})
+board = pcbnew.LoadBoard(pcb_path)
 
-assignments = {assignments_repr}
+assignments = params["assignments"]
 assigned = []
 assign_errors = []
 
@@ -469,12 +487,12 @@ for a in assignments:
 
     fp = board.FindFootprintByReference(ref)
     if fp is None:
-        assign_errors.append(f"Footprint {{ref}} not found in PCB")
+        assign_errors.append(f"Footprint {ref} not found in PCB")
         continue
 
     net = board.FindNet(net_name)
     if net is None or net.GetNetCode() == 0:
-        assign_errors.append(f"Net {{net_name}} not found")
+        assign_errors.append(f"Net {net_name} not found")
         continue
 
     pad_count = 0
@@ -487,18 +505,18 @@ for a in assignments:
             pad.SetNet(net)
             pad_count += 1
     if pad_count > 0:
-        assigned.append({{
+        assigned.append({
             "reference": ref,
             "pad": pad_num,
             "net": net_name,
             "pinfunction": pinfunc,
             "old_net": old_net,
             "sub_pads": pad_count,
-        }})
+        })
     else:
-        assign_errors.append(f"Pad {{pad_num}} not found on {{ref}}")
+        assign_errors.append(f"Pad {pad_num} not found on {ref}")
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
 # Verify nets
 final_nets = []
@@ -508,25 +526,28 @@ for code, net in board.GetNetsByNetcode().items():
 
 # Build a mapping summary for quick human verification
 # Format: "NET_NAME: REF:pad(function), REF:pad(function), ..."
-net_map = {{}}
+net_map = {}
 for a in assigned:
     net = a["net"]
-    entry = f"{{a['reference']}}:{{a['pad']}}"
+    entry = f"{a['reference']}:{a['pad']}"
     if a.get("pinfunction"):
-        entry += f"({{a['pinfunction']}})"
+        entry += f"({a['pinfunction']})"
     net_map.setdefault(net, []).append(entry)
-mapping_summary = {{net: ", ".join(entries) for net, entries in sorted(net_map.items())}}
+mapping_summary = {net: ", ".join(entries) for net, entries in sorted(net_map.items())}
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "total_nets_in_pcb": len(final_nets),
     "pads_assigned": len(assigned),
     "pad_assignments": assigned,
     "assignment_errors": assign_errors,
     "mapping_summary": mapping_summary,
-}}))
+}))
 """
-        pcbnew_result = run_pcbnew_script(script, timeout=60.0)
+        pcbnew_result = run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "assignments": pad_assignments,
+        }, timeout=60.0)
 
         # Merge file-editing results with pcbnew results
         pcbnew_result["schematic"] = sch_path

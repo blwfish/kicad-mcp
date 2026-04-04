@@ -1,5 +1,4 @@
 """PCB routing tools: traces, vias, and routing management."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
@@ -41,38 +40,50 @@ def register_pcb_routing_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 track = pcbnew.PCB_TRACK(board)
-track.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM({start_x_mm}), pcbnew.FromMM({start_y_mm})))
-track.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM({end_x_mm}), pcbnew.FromMM({end_y_mm})))
-track.SetWidth(pcbnew.FromMM({width_mm}))
-track.SetLayer(board.GetLayerID({layer!r}))
+track.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(params["start_x_mm"]), pcbnew.FromMM(params["start_y_mm"])))
+track.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(params["end_x_mm"]), pcbnew.FromMM(params["end_y_mm"])))
+track.SetWidth(pcbnew.FromMM(params["width_mm"]))
+track.SetLayer(board.GetLayerID(params["layer"]))
 
-net_name = {net_name!r}
+net_name = params["net_name"]
 if net_name:
     net = board.FindNet(net_name)
     if net:
         track.SetNet(net)
 
 board.Add(track)
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "trace": {{
-        "start": [{start_x_mm}, {start_y_mm}],
-        "end": [{end_x_mm}, {end_y_mm}],
-        "width_mm": {width_mm},
-        "layer": {layer!r},
+    "trace": {
+        "start": [params["start_x_mm"], params["start_y_mm"]],
+        "end": [params["end_x_mm"], params["end_y_mm"]],
+        "width_mm": params["width_mm"],
+        "layer": params["layer"],
         "net": net_name,
-    }},
-}}))
+    },
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "start_x_mm": start_x_mm,
+            "start_y_mm": start_y_mm,
+            "end_x_mm": end_x_mm,
+            "end_y_mm": end_y_mm,
+            "width_mm": width_mm,
+            "layer": layer,
+            "net_name": net_name,
+        })
 
     @mcp.tool()
     def add_via(
@@ -98,17 +109,20 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 via = pcbnew.PCB_VIA(board)
-via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM({x_mm}), pcbnew.FromMM({y_mm})))
-via.SetDrill(pcbnew.FromMM({drill_mm}))
-via.SetWidth(pcbnew.FromMM({size_mm}))
+via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(params["y_mm"])))
+via.SetDrill(pcbnew.FromMM(params["drill_mm"]))
+via.SetWidth(pcbnew.FromMM(params["size_mm"]))
 
-via_type = {via_type!r}
+via_type = params["via_type"]
 if via_type == "blind_buried":
     via.SetViaType(pcbnew.VIATYPE_BLIND_BURIED)
 elif via_type == "micro":
@@ -116,28 +130,36 @@ elif via_type == "micro":
 else:
     via.SetViaType(pcbnew.VIATYPE_THROUGH)
 
-net_name = {net_name!r}
+net_name = params["net_name"]
 if net_name:
     net = board.FindNet(net_name)
     if net:
         via.SetNet(net)
 
 board.Add(via)
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "via": {{
-        "x_mm": {x_mm},
-        "y_mm": {y_mm},
-        "drill_mm": {drill_mm},
-        "size_mm": {size_mm},
+    "via": {
+        "x_mm": params["x_mm"],
+        "y_mm": params["y_mm"],
+        "drill_mm": params["drill_mm"],
+        "size_mm": params["size_mm"],
         "type": via_type,
         "net": net_name,
-    }},
-}}))
+    },
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "x_mm": x_mm,
+            "y_mm": y_mm,
+            "drill_mm": drill_mm,
+            "size_mm": size_mm,
+            "via_type": via_type,
+            "net_name": net_name,
+        })
 
     @mcp.tool()
     def edit_trace_width(
@@ -160,14 +182,17 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
 
-net_filter = {net_name!r}
-layer_filter = {layer!r}
-new_width = pcbnew.FromMM({new_width_mm})
+board = pcbnew.LoadBoard(pcb_path)
+
+net_filter = params["net_name"]
+layer_filter = params["layer"]
+new_width = pcbnew.FromMM(params["new_width_mm"])
 updated = 0
 skipped = 0
 
@@ -184,18 +209,23 @@ for track in board.GetTracks():
     track.SetWidth(new_width)
     updated += 1
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "updated": updated,
     "skipped": skipped,
-    "new_width_mm": {new_width_mm},
+    "new_width_mm": params["new_width_mm"],
     "net_filter": net_filter or "(all)",
     "layer_filter": layer_filter or "(all)",
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "new_width_mm": new_width_mm,
+            "net_name": net_name,
+            "layer": layer,
+        })
 
     @mcp.tool()
     def clear_routing(
@@ -218,21 +248,24 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 tracks_removed = 0
 vias_removed = 0
 zones_removed = 0
 
-if {clear_tracks!r} or {clear_vias!r}:
+if params["clear_tracks"] or params["clear_vias"]:
     to_remove = []
     for track in board.GetTracks():
-        if {clear_tracks!r} and track.GetClass() == "PCB_TRACK":
+        if params["clear_tracks"] and track.GetClass() == "PCB_TRACK":
             to_remove.append(track)
-        elif {clear_vias!r} and track.GetClass() == "PCB_VIA":
+        elif params["clear_vias"] and track.GetClass() == "PCB_VIA":
             to_remove.append(track)
     for item in to_remove:
         if item.GetClass() == "PCB_VIA":
@@ -241,7 +274,7 @@ if {clear_tracks!r} or {clear_vias!r}:
             tracks_removed += 1
         board.Remove(item)
 
-if {clear_zones!r}:
+if params["clear_zones"]:
     # Collect zone references from Zones() iterator (not GetArea index)
     # and remove them. Using list() materialises the iterator before
     # we start mutating the board.
@@ -252,13 +285,18 @@ if {clear_zones!r}:
         board.Remove(zone)
         zones_removed += 1
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "tracks_removed": tracks_removed,
     "vias_removed": vias_removed,
     "zones_removed": zones_removed,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "clear_tracks": clear_tracks,
+            "clear_vias": clear_vias,
+            "clear_zones": clear_zones,
+        })

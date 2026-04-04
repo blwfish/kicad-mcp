@@ -5,7 +5,6 @@ poll_autoroute + cancel_autoroute) tools.  The async path avoids MCP timeouts
 by running FreeRouter in a background thread and letting the caller poll for
 completion.
 """
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import glob
 import json
@@ -149,60 +148,62 @@ def _export_dsn(
     pcb_path: str, dsn_path: str, remove_zones: bool
 ) -> Dict[str, Any]:
     """Export a PCB to Specctra DSN format (step 1 of the pipeline)."""
-    if remove_zones:
-        zone_removal_info = """
-# Remove copper pour zones (FreeRouter doesn't understand them)
+    export_script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.LoadBoard(params["pcb_path"])
+
+# Remove copper pour zones if requested (FreeRouter doesn't understand them)
 zones_removed = 0
-zones_to_remove = []
-for z in board.Zones():
-    if not z.GetIsRuleArea():
-        zones_to_remove.append(z)
-for z in zones_to_remove:
-    board.Remove(z)
-    zones_removed += 1
-"""
-    else:
-        zone_removal_info = "zones_removed = 0"
-
-    export_script = f"""
-import pcbnew, json
-
-board = pcbnew.LoadBoard({pcb_path!r})
-
-{zone_removal_info}
+if params["remove_zones"]:
+    zones_to_remove = []
+    for z in board.Zones():
+        if not z.GetIsRuleArea():
+            zones_to_remove.append(z)
+    for z in zones_to_remove:
+        board.Remove(z)
+        zones_removed += 1
 
 # Export Specctra DSN
-pcbnew.ExportSpecctraDSN(board, {dsn_path!r})
+pcbnew.ExportSpecctraDSN(board, params["dsn_path"])
 
 # Save board (with zones removed if applicable)
-board.Save({pcb_path!r})
+board.Save(params["pcb_path"])
 
 # Count tracks/vias before routing
 tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
 vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "dsn_exported": True,
-    "dsn_path": {dsn_path!r},
+    "dsn_path": params["dsn_path"],
     "zones_removed": zones_removed,
     "existing_tracks": tracks,
     "existing_vias": vias,
-}}))
+}))
 """
-    return run_pcbnew_script(export_script, timeout=30.0)
+    return run_pcbnew_script(export_script, params={
+        "pcb_path": pcb_path,
+        "dsn_path": dsn_path,
+        "remove_zones": remove_zones,
+    }, timeout=30.0)
 
 
 def _import_ses(pcb_path: str, ses_path: str) -> Dict[str, Any]:
     """Import a Specctra SES file back into the PCB (step 3 of the pipeline)."""
-    import_script = f"""
-import pcbnew, json
+    import_script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.LoadBoard(params["pcb_path"])
 
 # Import Specctra SES
-pcbnew.ImportSpecctraSES(board, {ses_path!r})
-board.Save({pcb_path!r})
+pcbnew.ImportSpecctraSES(board, params["ses_path"])
+board.Save(params["pcb_path"])
 
 # Count results
 tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
@@ -220,16 +221,19 @@ connectivity = board.GetConnectivity()
 connectivity.RecalcNet()
 unconnected = connectivity.GetUnconnectedCount()
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "ses_imported": True,
     "tracks": tracks,
     "vias": vias,
     "net_count": net_count,
     "unconnected_after_routing": unconnected,
-}}))
+}))
 """
-    return run_pcbnew_script(import_script, timeout=30.0)
+    return run_pcbnew_script(import_script, params={
+        "pcb_path": pcb_path,
+        "ses_path": ses_path,
+    }, timeout=30.0)
 
 
 def _run_freerouter_pass(
@@ -478,10 +482,12 @@ def _run_pre_route_check(pcb_path: str) -> Dict[str, Any]:
     Returns dict with 'route_ready' boolean and lists of issues found.
     Called internally by autoroute_pcb before launching FreeRouter.
     """
-    script = f"""
-import pcbnew, json
-{KEEPOUT_HELPER}
-board = pcbnew.LoadBoard({pcb_path!r})
+    script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+""" + KEEPOUT_HELPER + """
+board = pcbnew.LoadBoard(params["pcb_path"])
 
 ds = board.GetDesignSettings()
 min_cl = pcbnew.ToMM(ds.m_MinClearance)
@@ -491,20 +497,20 @@ if min_cl <= 0:
 errors = []
 
 # --- Courtyard overlap check ---
-{COURTYARD_BBOX_HELPER}
+""" + COURTYARD_BBOX_HELPER + """
 
 footprints = []
 for fp in board.GetFootprints():
     tight_box = get_courtyard_bbox(fp)
     if not tight_box:
         fp_bbox = fp.GetBoundingBox(False, False)
-        tight_box = {{
+        tight_box = {
             "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
             "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
             "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
             "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
-        }}
-    footprints.append({{"reference": fp.GetReference(), "bbox": tight_box}})
+        }
+    footprints.append({"reference": fp.GetReference(), "bbox": tight_box})
 
 courtyard_overlaps = []
 for i in range(len(footprints)):
@@ -512,10 +518,10 @@ for i in range(len(footprints)):
     for j in range(i + 1, len(footprints)):
         b = footprints[j]; b_box = b["bbox"]
         if rects_overlap(a_box, b_box):
-            courtyard_overlaps.append({{
+            courtyard_overlaps.append({
                 "ref_a": a["reference"], "ref_b": b["reference"],
-            }})
-            errors.append(f"Courtyard overlap: {{a['reference']}} and {{b['reference']}}")
+            })
+            errors.append(f"Courtyard overlap: {a['reference']} and {b['reference']}")
 
 # --- Pad clearance check ---
 all_pads = []
@@ -525,11 +531,11 @@ for fp in board.GetFootprints():
         pos = pad.GetPosition(); size = pad.GetSize()
         x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
         w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        all_pads.append({{
+        all_pads.append({
             "ref": ref, "pad": pad.GetNumber(),
             "x0": x - w/2, "y0": y - h/2,
             "x1": x + w/2, "y1": y + h/2,
-        }})
+        })
 
 pad_violations = []
 n = len(all_pads)
@@ -543,35 +549,37 @@ for i in range(n):
             continue
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
-        pad_violations.append(f"{{a['ref']}}:{{a['pad']}} vs {{b['ref']}}:{{b['pad']}}")
-        errors.append(f"Pad clearance: {{a['ref']}}:{{a['pad']}} and {{b['ref']}}:{{b['pad']}}")
+        pad_violations.append(f"{a['ref']}:{a['pad']} vs {b['ref']}:{b['pad']}")
+        errors.append(f"Pad clearance: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']}")
         if len(pad_violations) >= 10:
             break
     if len(pad_violations) >= 10:
         break
 
 route_ready = len(errors) == 0
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "route_ready": route_ready,
     "courtyard_overlaps": len(courtyard_overlaps),
     "pad_violations": len(pad_violations),
     "error_count": len(errors),
     "errors": errors[:20],
-}}))
+}))
 """
-    return run_pcbnew_script(script)
+    return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
 
 def _run_auto_fix_placement(pcb_path: str, spacing_mm: float = 0.5) -> Dict[str, Any]:
     """Nudge overlapping footprints apart.  Lightweight wrapper around pcbnew."""
-    script = f"""
-import pcbnew, json
+    script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
-spacing = {spacing_mm}
+params = json.loads(open(sys.argv[1]).read())
 
-{COURTYARD_BBOX_TUPLE_HELPER}
+board = pcbnew.LoadBoard(params["pcb_path"])
+spacing = params["spacing_mm"]
+
+""" + COURTYARD_BBOX_TUPLE_HELPER + """
 
 outline = None
 for dwg in board.GetDrawings():
@@ -633,16 +641,19 @@ for _pass in range(3):
         break
 
 if moved:
-    board.Save({pcb_path!r})
+    board.Save(params["pcb_path"])
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "components_moved": len(set(moved)),
     "moved": list(set(moved)),
     "unfixable": unfixable,
-}}))
+}))
 """
-    return run_pcbnew_script(script)
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "spacing_mm": spacing_mm,
+    })
 
 
 def register_pcb_autoroute_tools(mcp: FastMCP) -> None:

@@ -1,5 +1,4 @@
 """PCB pipeline tool: build a routed PCB from a schematic in one step."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import glob
 import logging
@@ -90,22 +89,26 @@ def _step_create_pcb_and_outline(
         auto_sized = True
 
     # Create the PCB file
-    script = f"""
-import pcbnew, json
+    script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.CreateEmptyBoard()
-board.Save({pcb_path!r})
-print(json.dumps({{"status": "ok"}}))
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok"}))
 """
-    result = run_pcbnew_script(script)
+    result = run_pcbnew_script(script, params={"pcb_path": pcb_path})
     if "error" in result:
         return result
 
     # Add board outline
-    script = f"""
-import pcbnew, json
+    script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.LoadBoard(params["pcb_path"])
 
 # Remove any existing Edge.Cuts
 to_remove = []
@@ -118,8 +121,8 @@ for dwg in to_remove:
 # Add rectangular outline
 x = pcbnew.FromMM(0)
 y = pcbnew.FromMM(0)
-w = pcbnew.FromMM({width_mm})
-h = pcbnew.FromMM({height_mm})
+w = pcbnew.FromMM(params["width_mm"])
+h = pcbnew.FromMM(params["height_mm"])
 
 corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
 for i in range(4):
@@ -133,10 +136,14 @@ for i in range(4):
     seg.SetEnd(pcbnew.VECTOR2I(x1, y1))
     board.Add(seg)
 
-board.Save({pcb_path!r})
-print(json.dumps({{"status": "ok"}}))
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok"}))
 """
-    result = run_pcbnew_script(script)
+    result = run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+    })
     if "error" in result:
         return result
 
@@ -150,16 +157,16 @@ print(json.dumps({{"status": "ok"}}))
 
 def _estimate_board_size(fp_specs: List[Dict[str, str]]) -> Dict[str, Any]:
     """Estimate board dimensions from footprint specs (same logic as estimate_board_size tool)."""
-    fp_list_repr = repr(fp_specs)
+    script = """
+import pcbnew, json, os, math, sys
 
-    script = f"""
-import pcbnew, json, os, math
+params = json.loads(open(sys.argv[1]).read())
 
-fp_specs = {fp_list_repr}
+fp_specs = params["fp_specs"]
 padding = 2.0
 routing_factor = 2.5
 
-{LIB_SEARCH_HELPER}
+""" + LIB_SEARCH_HELPER + """
 
 components = []
 errors = []
@@ -171,21 +178,21 @@ for spec in fp_specs:
     fp_name = spec["footprint_name"]
     lib_path = find_lib(lib_name)
     if not lib_path:
-        errors.append(f"Library '{{lib_name}}' not found")
+        errors.append(f"Library '{lib_name}' not found")
         continue
     fp = pcbnew.FootprintLoad(lib_path, fp_name)
     if fp is None:
-        errors.append(f"Footprint '{{fp_name}}' not found in '{{lib_name}}'")
+        errors.append(f"Footprint '{fp_name}' not found in '{lib_name}'")
         continue
     bbox = fp.GetBoundingBox(False, False)
     w = round(pcbnew.ToMM(bbox.GetWidth()), 2)
     h = round(pcbnew.ToMM(bbox.GetHeight()), 2)
     total_area += w * h
     max_dim = max(max_dim, w, h)
-    components.append({{"library": lib_name, "footprint": fp_name, "width_mm": w, "height_mm": h}})
+    components.append({"library": lib_name, "footprint": fp_name, "width_mm": w, "height_mm": h})
 
 if not components:
-    print(json.dumps({{"error": "No valid footprints found", "details": errors}}))
+    print(json.dumps({"error": "No valid footprints found", "details": errors}))
     raise SystemExit(0)
 
 needed_area = total_area * routing_factor
@@ -199,11 +206,11 @@ for label, ratio in [("square", 1.0), ("4:3", 4/3), ("3:2", 3/2)]:
     h = max(h, min_dim) + padding * 2
     w = math.ceil(w)
     h = math.ceil(h)
-    suggestions.append({{"label": label, "width_mm": w, "height_mm": h}})
+    suggestions.append({"label": label, "width_mm": w, "height_mm": h})
 
-print(json.dumps({{"status": "ok", "suggested_sizes": suggestions, "errors": errors}}))
+print(json.dumps({"status": "ok", "suggested_sizes": suggestions, "errors": errors}))
 """
-    return run_pcbnew_script(script)
+    return run_pcbnew_script(script, params={"fp_specs": fp_specs})
 
 
 def _step_load_footprints(
@@ -227,15 +234,15 @@ def _step_load_footprints(
             "value": info.get("value", ref),
         })
 
-    placements_repr = repr(placements)
+    script = """
+import pcbnew, json, os, sys
 
-    script = f"""
-import pcbnew, json, os
+params = json.loads(open(sys.argv[1]).read())
 
-board = pcbnew.LoadBoard({pcb_path!r})
-placements = {placements_repr}
+board = pcbnew.LoadBoard(params["pcb_path"])
+placements = params["placements"]
 
-{LIB_SEARCH_HELPER}
+""" + LIB_SEARCH_HELPER + """
 
 placed = []
 errors = []
@@ -244,12 +251,12 @@ errors = []
 for p in placements:
     lib_path = find_lib(p["library"])
     if not lib_path:
-        errors.append(f"Library '{{p['library']}}' not found for {{p['ref']}}")
+        errors.append(f"Library '{p['library']}' not found for {p['ref']}")
         continue
 
     fp = pcbnew.FootprintLoad(lib_path, p["footprint_name"])
     if fp is None:
-        errors.append(f"Footprint '{{p['footprint_name']}}' not found for {{p['ref']}}")
+        errors.append(f"Footprint '{p['footprint_name']}' not found for {p['ref']}")
         continue
 
     fp.SetReference(p["ref"])
@@ -258,15 +265,18 @@ for p in placements:
     board.Add(fp)
     placed.append(p["ref"])
 
-board.Save({pcb_path!r})
+board.Save(params["pcb_path"])
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "placed_count": len(placed),
     "errors": errors,
-}}))
+}))
 """
-    return run_pcbnew_script(script, timeout=30.0)
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "placements": placements,
+    }, timeout=30.0)
 
 
 def _step_inject_nets_and_assign_pads(
@@ -328,13 +338,13 @@ def _step_inject_nets_and_assign_pads(
                 f.write(pcb_content)
 
     # Assign pads via pcbnew
-    assignments_repr = repr(pad_assignments)
+    script = """
+import pcbnew, json, sys
 
-    script = f"""
-import pcbnew, json
+params = json.loads(open(sys.argv[1]).read())
 
-board = pcbnew.LoadBoard({pcb_path!r})
-assignments = {assignments_repr}
+board = pcbnew.LoadBoard(params["pcb_path"])
+assignments = params["assignments"]
 assigned = []
 assign_errors = []
 
@@ -345,12 +355,12 @@ for a in assignments:
 
     fp = board.FindFootprintByReference(ref)
     if fp is None:
-        assign_errors.append(f"Footprint {{ref}} not found in PCB")
+        assign_errors.append(f"Footprint {ref} not found in PCB")
         continue
 
     net = board.FindNet(net_name)
     if net is None or net.GetNetCode() == 0:
-        assign_errors.append(f"Net {{net_name}} not found")
+        assign_errors.append(f"Net {net_name} not found")
         continue
 
     pad_count = 0
@@ -359,19 +369,22 @@ for a in assignments:
             pad.SetNet(net)
             pad_count += 1
     if pad_count > 0:
-        assigned.append({{"reference": ref, "pad": pad_num, "net": net_name}})
+        assigned.append({"reference": ref, "pad": pad_num, "net": net_name})
     else:
-        assign_errors.append(f"Pad {{pad_num}} not found on {{ref}}")
+        assign_errors.append(f"Pad {pad_num} not found on {ref}")
 
-board.Save({pcb_path!r})
+board.Save(params["pcb_path"])
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "pads_assigned": len(assigned),
     "assignment_errors": assign_errors,
-}}))
+}))
 """
-    result = run_pcbnew_script(script, timeout=60.0)
+    result = run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "assignments": pad_assignments,
+    }, timeout=60.0)
 
     # Merge
     result["nets_created"] = len(nets_created)
@@ -404,18 +417,18 @@ def _step_smart_placement(
         if len(members) > 1:
             net_members[net_name] = members
 
-    nets_repr = repr(dict(net_members))
+    script = """
+import pcbnew, json, math, sys
 
-    script = f"""
-import pcbnew, json, math
-{KEEPOUT_HELPER}
+params = json.loads(open(sys.argv[1]).read())
+""" + KEEPOUT_HELPER + """
 
-board = pcbnew.LoadBoard({pcb_path!r})
-spacing = {spacing_mm}
+board = pcbnew.LoadBoard(params["pcb_path"])
+spacing = params["spacing_mm"]
 outline = get_board_outline(board)
 
 if not outline:
-    print(json.dumps({{"status": "ok", "message": "No board outline, skipping placement"}}))
+    print(json.dumps({"status": "ok", "message": "No board outline, skipping placement"}))
     raise SystemExit(0)
 
 POWER_PATS = ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5V", "+3", "+12", "VBUS"]
@@ -431,7 +444,7 @@ margin = max(0.5, spacing)
 # Track ASYMMETRIC extents from footprint origin (not symmetric half-sizes).
 # Footprint origins are often at pin 1, not bbox center — e.g. a 13mm
 # Phoenix connector with origin at pin 1 extends 3mm left and 10mm right.
-fp_info = {{}}
+fp_info = {}
 for fp in board.GetFootprints():
     ref = fp.GetReference()
     fp_pos = fp.GetPosition()
@@ -478,8 +491,8 @@ for fp in board.GetFootprints():
                 dx_max = pcbnew.ToMM(zbb.GetRight()) - fp_x
                 dy_max = pcbnew.ToMM(zbb.GetBottom()) - fp_y
                 keepout_rel = (dx_min, dy_min, dx_max, dy_max)
-                extents_map = {{"left": abs(dx_min), "right": abs(dx_max),
-                               "top": abs(dy_min), "bottom": abs(dy_max)}}
+                extents_map = {"left": abs(dx_min), "right": abs(dx_max),
+                               "top": abs(dy_min), "bottom": abs(dy_max)}
                 keepout_side = max(extents_map, key=extents_map.get)
                 # Merge keepout into envelope
                 ext_left  = max(ext_left, -dx_min)
@@ -491,23 +504,23 @@ for fp in board.GetFootprints():
 
     w = ext_left + ext_right
     h = ext_top + ext_bot
-    fp_info[ref] = {{
+    fp_info[ref] = {
         "ext_left": round(ext_left, 2), "ext_right": round(ext_right, 2),
         "ext_top": round(ext_top, 2), "ext_bot": round(ext_bot, 2),
         "width": round(w, 2), "height": round(h, 2),
         "has_keepout": has_keepout, "keepout_side": keepout_side,
         "keepout_rel": keepout_rel,
         "area": round(w * h, 2),
-    }}
+    }
 
 if not fp_info:
-    print(json.dumps({{"status": "ok", "message": "No footprints to place"}}))
+    print(json.dumps({"status": "ok", "message": "No footprints to place"}))
     raise SystemExit(0)
 
 # --- Build connectivity from netlist ---
-net_members = {nets_repr}
-connectivity = {{}}
-conn_score = {{ref: 0.0 for ref in fp_info}}
+net_members = params["net_members"]
+connectivity = {}
+conn_score = {ref: 0.0 for ref in fp_info}
 
 for net_name, members in net_members.items():
     is_power = any(p in net_name.upper() for p in POWER_PATS)
@@ -544,7 +557,7 @@ tier3.sort(key=sort_key)
 tier4.sort(key=sort_key)
 
 # --- Placement engine ---
-placements = {{}}
+placements = {}
 placed_boxes = []
 keepout_boxes = []  # absolute keepout zone bboxes
 
@@ -747,31 +760,35 @@ for ref, (px, py) in placements.items():
     fp = board.FindFootprintByReference(ref)
     if fp:
         fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(px), pcbnew.FromMM(py)))
-        moved.append({{"ref": ref, "x_mm": px, "y_mm": py}})
+        moved.append({"ref": ref, "x_mm": px, "y_mm": py})
 
 for ref in all_refs - placed_refs:
     failed.append(ref)
 
-board.Save({pcb_path!r})
+board.Save(params["pcb_path"])
 
 # Hub = most-connected component overall
 hub = max(conn_score, key=conn_score.get) if conn_score else None
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "components_placed": len(moved),
     "hub_component": hub,
-    "tiers": {{
+    "tiers": {
         "keepout": tier1,
         "edge": tier2,
         "ic": tier3,
         "passive": tier4,
-    }},
+    },
     "failed_placements": failed,
     "placements": moved[:10],
-}}))
+}))
 """
-    return run_pcbnew_script(script, timeout=60.0)
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "spacing_mm": spacing_mm,
+        "net_members": dict(net_members),
+    }, timeout=60.0)
 
 
 def _step_autoroute(pcb_path: str, passes: int = 1) -> Dict[str, Any]:
@@ -822,21 +839,24 @@ def _step_add_zones_and_fill(
     ground_net: str = "GND",
 ) -> Dict[str, Any]:
     """Step 7: Add GND copper zones on F.Cu and B.Cu, then fill all zones."""
-    script = f"""
-import pcbnew, json
+    script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
 
-net = board.FindNet({ground_net!r})
+board = pcbnew.LoadBoard(params["pcb_path"])
+ground_net = params["ground_net"]
+
+net = board.FindNet(ground_net)
 if net is None or net.GetNetCode() == 0:
     # GND net might not exist — skip zones, not an error
-    print(json.dumps({{"status": "ok", "message": "Ground net '{ground_net}' not found, skipping zones", "zones_added": 0}}))
+    print(json.dumps({"status": "ok", "message": f"Ground net {ground_net!r} not found, skipping zones", "zones_added": 0}))
     raise SystemExit(0)
 
 # Get board outline for zone boundary
 bb = board.GetBoardEdgesBoundingBox()
 if bb.GetWidth() == 0 or bb.GetHeight() == 0:
-    print(json.dumps({{"status": "ok", "message": "No board outline, skipping zones", "zones_added": 0}}))
+    print(json.dumps({"status": "ok", "message": "No board outline, skipping zones", "zones_added": 0}))
     raise SystemExit(0)
 
 x0 = round(pcbnew.ToMM(bb.GetX()), 2)
@@ -869,16 +889,19 @@ for z in board.Zones():
     zone_list.append(z)
 filler.Fill(zone_list)
 
-board.Save({pcb_path!r})
+board.Save(params["pcb_path"])
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "zones_added": zones_added,
-    "ground_net": {ground_net!r},
+    "ground_net": ground_net,
     "layers": ["F.Cu", "B.Cu"],
-}}))
+}))
 """
-    return run_pcbnew_script(script, timeout=60.0)
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "ground_net": ground_net,
+    }, timeout=60.0)
 
 
 def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:

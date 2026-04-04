@@ -1,5 +1,4 @@
 """PCB footprint tools: place, move, list, search, and get pad positions."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
@@ -56,17 +55,17 @@ def register_pcb_footprint_tools(mcp: FastMCP) -> None:
 
         keepout_code = ""
         if check_keepouts:
-            keepout_code = f"""
-{_KEEPOUT_HELPER}
+            keepout_code = """
+""" + _KEEPOUT_HELPER + """
 
 # Check placement against keepout zones and board boundary
 fp_bbox = fp.GetBoundingBox(False, False)
-fp_rect = {{
+fp_rect = {
     "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
     "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
     "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
     "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
-}}
+}
 keepouts = extract_keepouts(board)
 outline = get_board_outline(board)
 placement_warnings = []
@@ -79,7 +78,7 @@ for kz in keepouts:
     blocked = [k.replace("no_", "") for k, v in c.items() if v]
     if blocked:
         src = kz["source_ref"] or kz["source"]
-        placement_warnings.append(f"Overlaps keepout from {{src}} (blocks {{', '.join(blocked)}})")
+        placement_warnings.append(f"Overlaps keepout from {src} (blocks {', '.join(blocked)})")
 
 if outline is None:
     placement_warnings.append(
@@ -89,97 +88,110 @@ if outline is None:
 elif not rect_inside(fp_rect, outline):
     overhang_parts = []
     if fp_rect["x_min_mm"] < outline["x_min_mm"]:
-        overhang_parts.append(f"left {{round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}}mm")
+        overhang_parts.append(f"left {round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}mm")
     if fp_rect["x_max_mm"] > outline["x_max_mm"]:
-        overhang_parts.append(f"right {{round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}}mm")
+        overhang_parts.append(f"right {round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}mm")
     if fp_rect["y_min_mm"] < outline["y_min_mm"]:
-        overhang_parts.append(f"top {{round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}}mm")
+        overhang_parts.append(f"top {round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}mm")
     if fp_rect["y_max_mm"] > outline["y_max_mm"]:
-        overhang_parts.append(f"bottom {{round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}}mm")
+        overhang_parts.append(f"bottom {round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}mm")
     placement_warnings.append(
-        f"EXTENDS BEYOND BOARD OUTLINE ({{', '.join(overhang_parts)}}) — "
+        f"EXTENDS BEYOND BOARD OUTLINE ({', '.join(overhang_parts)}) — "
         "move this footprint before routing or pads will be unreachable."
     )
 """
 
-        script = f"""
-import pcbnew, json, os, glob
+        script = """
+import pcbnew, json, os, glob, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
 
-{LIB_SEARCH_HELPER}
-lib_name = {library!r}
-fp_name = {footprint_name!r}
+board = pcbnew.LoadBoard(pcb_path)
+
+""" + LIB_SEARCH_HELPER + """
+lib_name = params["library"]
+fp_name = params["footprint_name"]
 lib_path = find_lib(lib_name)
 if not lib_path:
-    print(json.dumps({{"error": f"Library '{{lib_name}}' not found"}}))
+    print(json.dumps({"error": f"Library '{lib_name}' not found"}))
     raise SystemExit(0)
 
 fp = pcbnew.FootprintLoad(lib_path, fp_name)
 if fp is None:
-    print(json.dumps({{"error": f"Footprint '{{fp_name}}' not found in '{{lib_name}}'"}}))
+    print(json.dumps({"error": f"Footprint '{fp_name}' not found in '{lib_name}'"}))
     raise SystemExit(0)
 
-fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM({x_mm}), pcbnew.FromMM({y_mm})))
-fp.SetReference({reference!r})
-fp.SetValue({value!r})
+fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(params["y_mm"])))
+fp.SetReference(params["reference"])
+fp.SetValue(params["value"])
 
-if {rotation_deg} != 0:
-    fp.SetOrientationDegrees({rotation_deg})
+if params["rotation_deg"] != 0:
+    fp.SetOrientationDegrees(params["rotation_deg"])
 
 # Add to board BEFORE flipping — Flip() calls GetBoard()->FlipLayer()
 # internally, which segfaults if the footprint isn't on a board yet.
 board.Add(fp)
 
-if {layer!r} == "B.Cu":
+if params["layer"] == "B.Cu":
     fp.Flip(fp.GetPosition(), False)
 
 placement_warnings = []
-{keepout_code}
+""" + keepout_code + """
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
 # Get bounding box dimensions for placement planning
 bbox = fp.GetBoundingBox(False, False)
-bbox_info = {{
+bbox_info = {
     "x_min_mm": round(pcbnew.ToMM(bbox.GetX()), 2),
     "y_min_mm": round(pcbnew.ToMM(bbox.GetY()), 2),
     "x_max_mm": round(pcbnew.ToMM(bbox.GetRight()), 2),
     "y_max_mm": round(pcbnew.ToMM(bbox.GetBottom()), 2),
     "width_mm": round(pcbnew.ToMM(bbox.GetWidth()), 2),
     "height_mm": round(pcbnew.ToMM(bbox.GetHeight()), 2),
-}}
+}
 
 # Try to get courtyard specifically (tighter than body bbox)
-courtyard_layer = pcbnew.F_CrtYd if {layer!r} == "F.Cu" else pcbnew.B_CrtYd
+courtyard_layer = pcbnew.F_CrtYd if params["layer"] == "F.Cu" else pcbnew.B_CrtYd
 cy_bb = fp.GetBoundingBox(False, True)  # include text=False, only courtyard
 if cy_bb.GetWidth() > 0:
-    bbox_info["courtyard"] = {{
+    bbox_info["courtyard"] = {
         "x_min_mm": round(pcbnew.ToMM(cy_bb.GetX()), 2),
         "y_min_mm": round(pcbnew.ToMM(cy_bb.GetY()), 2),
         "x_max_mm": round(pcbnew.ToMM(cy_bb.GetRight()), 2),
         "y_max_mm": round(pcbnew.ToMM(cy_bb.GetBottom()), 2),
         "width_mm": round(pcbnew.ToMM(cy_bb.GetWidth()), 2),
         "height_mm": round(pcbnew.ToMM(cy_bb.GetHeight()), 2),
-    }}
+    }
 
-result = {{
+result = {
     "status": "ok",
-    "placed": {{
-        "reference": {reference!r},
-        "footprint": f"{{lib_name}}:{{fp_name}}",
-        "x_mm": {x_mm},
-        "y_mm": {y_mm},
-        "rotation": {rotation_deg},
-        "layer": {layer!r},
-    }},
+    "placed": {
+        "reference": params["reference"],
+        "footprint": f"{lib_name}:{fp_name}",
+        "x_mm": params["x_mm"],
+        "y_mm": params["y_mm"],
+        "rotation": params["rotation_deg"],
+        "layer": params["layer"],
+    },
     "bounding_box": bbox_info,
-}}
+}
 if placement_warnings:
     result["placement_warnings"] = placement_warnings
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "library": library,
+            "footprint_name": footprint_name,
+            "reference": reference,
+            "value": value,
+            "x_mm": x_mm,
+            "y_mm": y_mm,
+            "rotation_deg": rotation_deg,
+            "layer": layer,
+        })
 
     @mcp.tool()
     def move_footprint(
@@ -201,35 +213,38 @@ print(json.dumps(result))
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        rot_code = f"fp.SetOrientationDegrees({rotation_deg})" if rotation_deg is not None else ""
+        script = """
+import pcbnew, json, sys
 
-        script = f"""
-import pcbnew, json
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+reference = params["reference"]
 
-{_KEEPOUT_HELPER}
+""" + _KEEPOUT_HELPER + """
 
-board = pcbnew.LoadBoard({pcb_path!r})
+board = pcbnew.LoadBoard(pcb_path)
 
-fp = board.FindFootprintByReference({reference!r})
+fp = board.FindFootprintByReference(reference)
 if fp is None:
-    print(json.dumps({{"error": f"Footprint {reference!r} not found"}}))
+    print(json.dumps({"error": f"Footprint {reference!r} not found"}))
     raise SystemExit(0)
 
-fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM({x_mm}), pcbnew.FromMM({y_mm})))
-{rot_code}
+fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(params["y_mm"])))
+if params["rotation_deg"] is not None:
+    fp.SetOrientationDegrees(params["rotation_deg"])
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
 # Check new position against board boundary
 pos = fp.GetPosition()
 placement_warnings = []
 fp_bbox = fp.GetBoundingBox(False, False)
-fp_rect = {{
+fp_rect = {
     "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
     "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
     "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
     "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
-}}
+}
 outline = get_board_outline(board)
 if outline is None:
     placement_warnings.append(
@@ -238,30 +253,36 @@ if outline is None:
 elif not rect_inside(fp_rect, outline):
     overhang_parts = []
     if fp_rect["x_min_mm"] < outline["x_min_mm"]:
-        overhang_parts.append(f"left {{round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}}mm")
+        overhang_parts.append(f"left {round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}mm")
     if fp_rect["x_max_mm"] > outline["x_max_mm"]:
-        overhang_parts.append(f"right {{round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}}mm")
+        overhang_parts.append(f"right {round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}mm")
     if fp_rect["y_min_mm"] < outline["y_min_mm"]:
-        overhang_parts.append(f"top {{round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}}mm")
+        overhang_parts.append(f"top {round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}mm")
     if fp_rect["y_max_mm"] > outline["y_max_mm"]:
-        overhang_parts.append(f"bottom {{round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}}mm")
+        overhang_parts.append(f"bottom {round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}mm")
     placement_warnings.append(
-        f"EXTENDS BEYOND BOARD OUTLINE ({{', '.join(overhang_parts)}}) — "
+        f"EXTENDS BEYOND BOARD OUTLINE ({', '.join(overhang_parts)}) — "
         "move this footprint before routing or pads will be unreachable."
     )
 
-result = {{
+result = {
     "status": "ok",
-    "reference": {reference!r},
+    "reference": reference,
     "x_mm": round(pcbnew.ToMM(pos.x), 3),
     "y_mm": round(pcbnew.ToMM(pos.y), 3),
     "rotation": fp.GetOrientationDegrees(),
-}}
+}
 if placement_warnings:
     result["placement_warnings"] = placement_warnings
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "reference": reference,
+            "x_mm": x_mm,
+            "y_mm": y_mm,
+            "rotation_deg": rotation_deg,
+        })
 
     @mcp.tool()
     def list_pcb_footprints(pcb_path: str) -> Dict[str, Any]:
@@ -273,10 +294,13 @@ print(json.dumps(result))
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 fp_list = []
 for fp in board.GetFootprints():
@@ -284,13 +308,13 @@ for fp in board.GetFootprints():
     pads = []
     for pad in fp.Pads():
         pad_pos = pad.GetPosition()
-        pads.append({{
+        pads.append({
             "number": pad.GetNumber(),
             "x_mm": round(pcbnew.ToMM(pad_pos.x), 3),
             "y_mm": round(pcbnew.ToMM(pad_pos.y), 3),
             "net": pad.GetNetname(),
-        }})
-    fp_list.append({{
+        })
+    fp_list.append({
         "reference": fp.GetReference(),
         "value": fp.GetValue(),
         "footprint": fp.GetFPID().GetUniStringLibItemName(),
@@ -299,15 +323,15 @@ for fp in board.GetFootprints():
         "rotation": fp.GetOrientationDegrees(),
         "layer": board.GetLayerName(fp.GetLayer()),
         "pads": pads,
-    }})
+    })
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "footprint_count": len(fp_list),
     "footprints": fp_list,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
     @mcp.tool()
     def get_pad_positions(
@@ -323,35 +347,42 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+reference = params["reference"]
 
-fp = board.FindFootprintByReference({reference!r})
+board = pcbnew.LoadBoard(pcb_path)
+
+fp = board.FindFootprintByReference(reference)
 if fp is None:
-    print(json.dumps({{"error": f"Footprint {reference!r} not found"}}))
+    print(json.dumps({"error": f"Footprint {reference!r} not found"}))
     raise SystemExit(0)
 
 pads = []
 for pad in fp.Pads():
     pos = pad.GetPosition()
-    pads.append({{
+    pads.append({
         "number": pad.GetNumber(),
         "x_mm": round(pcbnew.ToMM(pos.x), 3),
         "y_mm": round(pcbnew.ToMM(pos.y), 3),
         "net": pad.GetNetname(),
         "shape": str(pad.GetShape()),
-    }})
+    })
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "reference": {reference!r},
+    "reference": reference,
     "pad_count": len(pads),
     "pads": pads,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "reference": reference,
+        })
 
     @mcp.tool()
     def get_footprint_dimensions(
@@ -375,37 +406,39 @@ print(json.dumps({{
             footprint_name: Footprint name (e.g., "ESP32-WROOM-32E").
             rotation_deg: Rotation to apply before measuring (default 0).
         """
-        script = f"""
-import pcbnew, json, os
+        script = """
+import pcbnew, json, os, sys
 
-{LIB_SEARCH_HELPER}
-lib_name = {library!r}
-fp_name = {footprint_name!r}
+params = json.loads(open(sys.argv[1]).read())
+
+""" + LIB_SEARCH_HELPER + """
+lib_name = params["library"]
+fp_name = params["footprint_name"]
 lib_path = find_lib(lib_name)
 if not lib_path:
-    print(json.dumps({{"error": f"Library '{{lib_name}}' not found"}}))
+    print(json.dumps({"error": f"Library '{lib_name}' not found"}))
     raise SystemExit(0)
 
 fp = pcbnew.FootprintLoad(lib_path, fp_name)
 if fp is None:
-    print(json.dumps({{"error": f"Footprint '{{fp_name}}' not found in '{{lib_name}}'"}}))
+    print(json.dumps({"error": f"Footprint '{fp_name}' not found in '{lib_name}'"}))
     raise SystemExit(0)
 
 # Place at origin, apply rotation
 fp.SetPosition(pcbnew.VECTOR2I(0, 0))
-if {rotation_deg} != 0:
-    fp.SetOrientationDegrees({rotation_deg})
+if params["rotation_deg"] != 0:
+    fp.SetOrientationDegrees(params["rotation_deg"])
 
 # Body bounding box (excludes text)
 bb = fp.GetBoundingBox(False, False)
-body_bbox = {{
+body_bbox = {
     "x_min_mm": round(pcbnew.ToMM(bb.GetX()), 3),
     "y_min_mm": round(pcbnew.ToMM(bb.GetY()), 3),
     "x_max_mm": round(pcbnew.ToMM(bb.GetRight()), 3),
     "y_max_mm": round(pcbnew.ToMM(bb.GetBottom()), 3),
     "width_mm": round(pcbnew.ToMM(bb.GetWidth()), 3),
     "height_mm": round(pcbnew.ToMM(bb.GetHeight()), 3),
-}}
+}
 
 # Courtyard
 courtyard = None
@@ -424,12 +457,12 @@ for item in fp.GraphicalItems():
         cx_max = max(cx_max, pcbnew.ToMM(cbb.GetRight()))
         cy_max = max(cy_max, pcbnew.ToMM(cbb.GetBottom()))
 if found_cy:
-    courtyard = {{
+    courtyard = {
         "x_min_mm": round(cx_min, 3), "y_min_mm": round(cy_min, 3),
         "x_max_mm": round(cx_max, 3), "y_max_mm": round(cy_max, 3),
         "width_mm": round(cx_max - cx_min, 3),
         "height_mm": round(cy_max - cy_min, 3),
-    }}
+    }
 
 # Pad span (extent of actual copper pads)
 px_min = float("inf"); py_min = float("inf")
@@ -445,12 +478,12 @@ for pad in fp.Pads():
     px_max = max(px_max, x + w/2); py_max = max(py_max, y + h/2)
 pad_span = None
 if pad_count > 0:
-    pad_span = {{
+    pad_span = {
         "x_min_mm": round(px_min, 3), "y_min_mm": round(py_min, 3),
         "x_max_mm": round(px_max, 3), "y_max_mm": round(py_max, 3),
         "width_mm": round(px_max - px_min, 3),
         "height_mm": round(py_max - py_min, 3),
-    }}
+    }
 
 # Embedded keepout zones
 keepouts = []
@@ -458,33 +491,33 @@ for zone in fp.Zones():
     if not zone.GetIsRuleArea():
         continue
     zbb = zone.GetBoundingBox()
-    keepouts.append({{
-        "bounding_box": {{
+    keepouts.append({
+        "bounding_box": {
             "x_min_mm": round(pcbnew.ToMM(zbb.GetX()), 3),
             "y_min_mm": round(pcbnew.ToMM(zbb.GetY()), 3),
             "x_max_mm": round(pcbnew.ToMM(zbb.GetRight()), 3),
             "y_max_mm": round(pcbnew.ToMM(zbb.GetBottom()), 3),
             "width_mm": round(pcbnew.ToMM(zbb.GetWidth()), 3),
             "height_mm": round(pcbnew.ToMM(zbb.GetHeight()), 3),
-        }},
-        "constraints": {{
+        },
+        "constraints": {
             "no_tracks": zone.GetDoNotAllowTracks(),
             "no_vias": zone.GetDoNotAllowVias(),
             "no_pads": zone.GetDoNotAllowPads(),
             "no_copper_pour": zone.GetDoNotAllowCopperPour(),
             "no_footprints": zone.GetDoNotAllowFootprints(),
-        }},
-    }})
+        },
+    })
 
-result = {{
+result = {
     "status": "ok",
     "library": lib_name,
     "footprint": fp_name,
-    "rotation_deg": {rotation_deg},
+    "rotation_deg": params["rotation_deg"],
     "pad_count": pad_count,
     "body_bbox": body_bbox,
     "pad_span": pad_span,
-}}
+}
 if courtyard:
     result["courtyard"] = courtyard
 if keepouts:
@@ -492,7 +525,11 @@ if keepouts:
     result["keepout_count"] = len(keepouts)
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "library": library,
+            "footprint_name": footprint_name,
+            "rotation_deg": rotation_deg,
+        })
 
     @mcp.tool()
     def search_footprints(

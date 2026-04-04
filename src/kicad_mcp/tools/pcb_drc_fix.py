@@ -1,5 +1,4 @@
 """DRC auto-fix: compound tool that reads DRC, fixes violations, re-verifies."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import asyncio
 import logging
@@ -133,14 +132,16 @@ def register_pcb_drc_fix_tools(mcp: FastMCP) -> None:
         if fix_placement and groups["placement"]:
             # Call auto_fix_placement via its pcbnew script
             # (we inline the tool call to avoid MCP dispatch overhead)
-            result = run_pcbnew_script(f"""
-import pcbnew, json
+            result = run_pcbnew_script("""
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = 0.5
 max_passes = 3
 
-{COURTYARD_BBOX_TUPLE_HELPER}
+""" + COURTYARD_BBOX_TUPLE_HELPER + """
 
 outline = None
 try:
@@ -163,7 +164,7 @@ for pass_num in range(1, max_passes + 1):
         bbox = get_courtyard_bbox(fp)
         if bbox is None:
             continue
-        fp_data.append({{"ref": fp.GetReference(), "fp": fp, "bbox": bbox, "nets": signal_net_count(fp)}})
+        fp_data.append({"ref": fp.GetReference(), "fp": fp, "bbox": bbox, "nets": signal_net_count(fp)})
     pairs = []
     for i in range(len(fp_data)):
         a = fp_data[i]; ab = a["bbox"]
@@ -208,18 +209,19 @@ for pass_num in range(1, max_passes + 1):
     if not moved:
         break
 
-board.Save({pcb_path!r})
-print(json.dumps({{"status": "ok", "move_count": move_count}}))
-""")
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok", "move_count": move_count}))
+""", params={"pcb_path": pcb_path})
             if result.get("status") == "ok" and result.get("move_count", 0) > 0:
                 actions_taken.append(f"placement: nudged {result['move_count']} footprint(s)")
 
         # --- 2. Fix routing violations ---
         if fix_routing and groups["routing"]:
             # Clear existing routing
-            clear_result = run_pcbnew_script(f"""
-import pcbnew, json
-board = pcbnew.LoadBoard({pcb_path!r})
+            clear_result = run_pcbnew_script("""
+import pcbnew, json, sys
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
 removed = 0
 to_remove = []
 for track in board.GetTracks():
@@ -227,9 +229,9 @@ for track in board.GetTracks():
 for item in to_remove:
     board.Remove(item)
     removed += 1
-board.Save({pcb_path!r})
-print(json.dumps({{"status": "ok", "removed": removed}}))
-""")
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok", "removed": removed}))
+""", params={"pcb_path": pcb_path})
             tracks_cleared = clear_result.get("removed", 0)
 
             # Re-autoroute
@@ -262,21 +264,23 @@ print(json.dumps({{"status": "ok", "removed": removed}}))
 
         # --- 3. Fix silkscreen ---
         if fix_silkscreen and groups["silkscreen"]:
-            silk_result = run_pcbnew_script(f"""
-import pcbnew, json
+            silk_result = run_pcbnew_script("""
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.LoadBoard(params["pcb_path"])
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
 
 all_pads = []
 for fp in board.GetFootprints():
     for pad in fp.Pads():
         sz = pad.GetBoundingBox()
-        all_pads.append({{
+        all_pads.append({
             "reference": fp.GetReference(),
             "x_min": sz.GetX(), "y_min": sz.GetY(),
             "x_max": sz.GetRight(), "y_max": sz.GetBottom(),
-        }})
+        })
 
 all_silk = []
 for fp in board.GetFootprints():
@@ -284,12 +288,12 @@ for fp in board.GetFootprints():
     for _ft, _fo in [("reference", fp.Reference()), ("value", fp.Value())]:
         if not _fo.IsVisible() or _fo.GetLayer() not in silk_layer_ids:
             continue
-        all_silk.append({{"component": _ref, "obj": _fo, "layer": _fo.GetLayer()}})
+        all_silk.append({"component": _ref, "obj": _fo, "layer": _fo.GetLayer()})
 for drawing in board.GetDrawings():
     if hasattr(drawing, 'GetText') and drawing.GetLayer() in silk_layer_ids:
         _vis = drawing.IsVisible() if hasattr(drawing, 'IsVisible') else True
         if _vis:
-            all_silk.append({{"component": None, "obj": drawing, "layer": drawing.GetLayer()}})
+            all_silk.append({"component": None, "obj": drawing, "layer": drawing.GetLayer()})
 
 try:
     board_bb = board.GetBoardEdgesBoundingBox()
@@ -377,10 +381,10 @@ if copper_zones:
     filler = pcbnew.ZONE_FILLER(board)
     filler.Fill(board.Zones())
 
-board.Save({pcb_path!r})
-print(json.dumps({{"status": "ok", "moved": moved, "hidden": hidden_count,
-                    "zones_filled": len(copper_zones)}}))
-""", timeout=120.0)
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok", "moved": moved, "hidden": hidden_count,
+                    "zones_filled": len(copper_zones)}))
+""", params={"pcb_path": pcb_path}, timeout=120.0)
             if silk_result.get("status") == "ok":
                 m = silk_result.get("moved", 0)
                 h = silk_result.get("hidden", 0)

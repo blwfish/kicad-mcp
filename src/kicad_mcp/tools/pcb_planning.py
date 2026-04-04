@@ -1,5 +1,4 @@
 """PCB planning tools: board size estimation and suggested component placement."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
@@ -43,17 +42,16 @@ def register_pcb_planning_tools(mcp: FastMCP) -> None:
         if not footprints:
             return {"error": "No footprints provided"}
 
-        # Build the list as a Python literal for the subprocess
-        fp_list_repr = repr(footprints)
+        script = """
+import pcbnew, json, os, math, sys
 
-        script = f"""
-import pcbnew, json, os, math
+params = json.loads(open(sys.argv[1]).read())
 
-fp_specs = {fp_list_repr}
-padding = {padding_mm}
-routing_factor = {routing_factor}
+fp_specs = params["footprints"]
+padding = params["padding_mm"]
+routing_factor = params["routing_factor"]
 
-{LIB_SEARCH_HELPER}
+""" + LIB_SEARCH_HELPER + """
 
 components = []
 errors = []
@@ -66,11 +64,11 @@ for spec in fp_specs:
     fp_name = spec["footprint_name"]
     lib_path = find_lib(lib_name)
     if not lib_path:
-        errors.append(f"Library '{{lib_name}}' not found")
+        errors.append(f"Library '{lib_name}' not found")
         continue
     fp = pcbnew.FootprintLoad(lib_path, fp_name)
     if fp is None:
-        errors.append(f"Footprint '{{fp_name}}' not found in '{{lib_name}}'")
+        errors.append(f"Footprint '{fp_name}' not found in '{lib_name}'")
         continue
 
     # Get bounding box (body only, no text)
@@ -94,17 +92,17 @@ for spec in fp_specs:
     except AttributeError:
         pass
 
-    components.append({{
+    components.append({
         "library": lib_name,
         "footprint": fp_name,
         "width_mm": w,
         "height_mm": h,
         "area_mm2": area,
         "keepout_area_mm2": round(keepout_area, 2),
-    }})
+    })
 
 if not components:
-    print(json.dumps({{"error": "No valid footprints found", "details": errors}}))
+    print(json.dumps({"error": "No valid footprints found", "details": errors}))
     raise SystemExit(0)
 
 # Calculate suggested board size
@@ -127,17 +125,17 @@ for label, ratio in [("square", 1.0), ("4:3", 4/3), ("3:2", 3/2)]:
     # Round up to nearest mm
     w = math.ceil(w)
     h = math.ceil(h)
-    suggestions.append({{
+    suggestions.append({
         "label": label,
         "width_mm": w,
         "height_mm": h,
         "area_mm2": w * h,
-    }})
+    })
 
 # Sort components by area (largest first) for reference
 components.sort(key=lambda c: c["area_mm2"], reverse=True)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "component_count": len(components),
     "components": components,
@@ -145,16 +143,20 @@ print(json.dumps({{
     "total_keepout_area_mm2": round(total_keepout, 1),
     "routing_factor": routing_factor,
     "estimated_area_needed_mm2": round(needed_area, 1),
-    "largest_component": {{
+    "largest_component": {
         "footprint": components[0]["footprint"],
         "width_mm": components[0]["width_mm"],
         "height_mm": components[0]["height_mm"],
-    }},
+    },
     "suggested_sizes": suggestions,
     "errors": errors,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "footprints": footprints,
+            "padding_mm": padding_mm,
+            "routing_factor": routing_factor,
+        })
 
     @mcp.tool()
     def suggest_placement(
@@ -184,16 +186,18 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json, math
-{_KEEPOUT_HELPER}
+        script = """
+import pcbnew, json, math, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
-spacing = {spacing_mm}
+params = json.loads(open(sys.argv[1]).read())
+""" + _KEEPOUT_HELPER + """
+
+board = pcbnew.LoadBoard(params["pcb_path"])
+spacing = params["spacing_mm"]
 outline = get_board_outline(board)
 
 if not outline:
-    print(json.dumps({{"error": "No board outline found. Add a board outline first."}}))
+    print(json.dumps({"error": "No board outline found. Add a board outline first."}))
     raise SystemExit(0)
 
 board_w = outline["width_mm"]
@@ -202,7 +206,7 @@ board_cx = outline["x_min_mm"] + board_w / 2
 board_cy = outline["y_min_mm"] + board_h / 2
 
 # --- Collect footprint info ---
-fp_info = {{}}
+fp_info = {}
 for fp in board.GetFootprints():
     ref = fp.GetReference()
     bbox = fp.GetBoundingBox(False, False)
@@ -240,7 +244,7 @@ for fp in board.GetFootprints():
                 zr = pcbnew.ToMM(zbb.GetRight()) - pcbnew.ToMM(fp_pos.x)
                 zb = pcbnew.ToMM(zbb.GetBottom()) - pcbnew.ToMM(fp_pos.y)
                 # Determine which edge the keepout extends furthest toward
-                extents = {{"left": abs(zx), "right": abs(zr), "top": abs(zy), "bottom": abs(zb)}}
+                extents = {"left": abs(zx), "right": abs(zr), "top": abs(zy), "bottom": abs(zb)}
                 keepout_side = max(extents, key=extents.get)
     except AttributeError:
         pass
@@ -252,7 +256,7 @@ for fp in board.GetFootprints():
         if net and not net.startswith("unconnected-"):
             pad_nets.add(net)
 
-    fp_info[ref] = {{
+    fp_info[ref] = {
         "width": round(w, 2),
         "height": round(h, 2),
         "area": round(w * h, 2),
@@ -261,30 +265,30 @@ for fp in board.GetFootprints():
         "has_keepout": has_keepout,
         "keepout_side": keepout_side,
         "value": fp.GetValue(),
-    }}
+    }
 
 if not fp_info:
-    print(json.dumps({{"error": "No footprints found on board"}}))
+    print(json.dumps({"error": "No footprints found on board"}))
     raise SystemExit(0)
 
 # --- Build connectivity graph ---
 # For each pair of components, count shared nets (higher = more connected)
-connectivity = {{}}
+connectivity = {}
 refs = list(fp_info.keys())
 for i in range(len(refs)):
     for j in range(i + 1, len(refs)):
         a, b = refs[i], refs[j]
         shared = fp_info[a]["nets"] & fp_info[b]["nets"]
         # Filter out power nets (GND, VCC, +3V3 etc) - they don't constrain placement
-        signal_shared = {{n for n in shared if not any(
-            p in n.upper() for p in ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5", "+3"])}}
+        signal_shared = {n for n in shared if not any(
+            p in n.upper() for p in ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5", "+3"])}
         if signal_shared:
             key = (a, b)
             connectivity[key] = len(signal_shared)
 
 # --- Rank components by connectivity ---
 # Total signal connections per component
-conn_score = {{ref: 0 for ref in refs}}
+conn_score = {ref: 0 for ref in refs}
 for (a, b), count in connectivity.items():
     conn_score[a] += count
     conn_score[b] += count
@@ -293,7 +297,7 @@ for (a, b), count in connectivity.items():
 sorted_refs = sorted(refs, key=lambda r: (conn_score[r], fp_info[r]["area"]), reverse=True)
 
 # --- Place components ---
-placements = {{}}
+placements = {}
 placed_boxes = []  # list of (x_min, y_min, x_max, y_max) for collision detection
 
 def box_collides(bx, placed, gap):
@@ -304,7 +308,6 @@ def box_collides(bx, placed, gap):
     return False
 
 def clamp_to_board(x, y, w, h, info):
-    \"\"\"Clamp position to keep component within board outline.\"\"\"
     half_w, half_h = w / 2, h / 2
     x = max(outline["x_min_mm"] + half_w + spacing, min(x, outline["x_max_mm"] - half_w - spacing))
     y = max(outline["y_min_mm"] + half_h + spacing, min(y, outline["y_max_mm"] - half_h - spacing))
@@ -330,7 +333,7 @@ if sorted_refs:
 
     cx, cy = clamp_to_board(cx, cy, info["width"], info["height"], info)
     hw, hh = info["width"] / 2, info["height"] / 2
-    placements[hub] = {{"x_mm": round(cx, 2), "y_mm": round(cy, 2), "reason": "hub (most connected)"}}
+    placements[hub] = {"x_mm": round(cx, 2), "y_mm": round(cy, 2), "reason": "hub (most connected)"}
     placed_boxes.append((cx - hw, cy - hh, cx + hw, cy + hh))
 
     # Place remaining components around the hub
@@ -352,7 +355,7 @@ if sorted_refs:
         if best_target:
             tx = placements[best_target]["x_mm"]
             ty = placements[best_target]["y_mm"]
-            reason = f"near {{best_target}} ({{best_score}} shared signal nets)"
+            reason = f"near {best_target} ({best_score} shared signal nets)"
         else:
             tx, ty = board_cx, board_cy
             reason = "no signal connections, placed in available space"
@@ -379,7 +382,7 @@ if sorted_refs:
                     continue
 
                 if not box_collides(box, placed_boxes, spacing):
-                    placements[ref] = {{"x_mm": round(px, 2), "y_mm": round(py, 2), "reason": reason}}
+                    placements[ref] = {"x_mm": round(px, 2), "y_mm": round(py, 2), "reason": reason}
                     placed_boxes.append(box)
                     placed = True
                     break
@@ -392,27 +395,27 @@ if sorted_refs:
                 for gy in range(int(outline["y_min_mm"] + hh + 1), int(outline["y_max_mm"] - hh), 2):
                     box = (gx - hw, gy - hh, gx + hw, gy + hh)
                     if not box_collides(box, placed_boxes, spacing):
-                        placements[ref] = {{
+                        placements[ref] = {
                             "x_mm": round(float(gx), 2),
                             "y_mm": round(float(gy), 2),
                             "reason": "fallback grid placement",
-                        }}
+                        }
                         placed_boxes.append(box)
                         placed = True
                         break
             if not placed:
-                placements[ref] = {{
+                placements[ref] = {
                     "x_mm": round(board_cx, 2),
                     "y_mm": round(board_cy, 2),
                     "reason": "WARNING: could not find non-overlapping position",
-                }}
+                }
 
 # --- Build output ---
 placement_list = []
 for ref in sorted_refs:
-    p = placements.get(ref, {{}})
+    p = placements.get(ref, {})
     info = fp_info[ref]
-    placement_list.append({{
+    placement_list.append({
         "reference": ref,
         "value": info["value"],
         "x_mm": p.get("x_mm", board_cx),
@@ -421,14 +424,14 @@ for ref in sorted_refs:
         "height_mm": info["height"],
         "signal_connections": conn_score[ref],
         "reason": p.get("reason", ""),
-    }})
+    })
 
 # Connectivity summary
 conn_summary = []
 for (a, b), count in sorted(connectivity.items(), key=lambda x: -x[1]):
-    conn_summary.append(f"{{a}} <-> {{b}}: {{count}} signal nets")
+    conn_summary.append(f"{a} <-> {b}: {count} signal nets")
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "board_outline": outline,
     "component_count": len(placement_list),
@@ -436,6 +439,9 @@ print(json.dumps({{
     "connectivity": conn_summary[:20],
     "hub_component": sorted_refs[0] if sorted_refs else None,
     "note": "These are SUGGESTIONS. Apply with move_footprint, then run audit_all to verify.",
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "spacing_mm": spacing_mm,
+        })

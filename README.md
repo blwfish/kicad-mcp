@@ -52,6 +52,17 @@ ruff check src/ tests/
 
 See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 
+## Security
+
+This MCP server runs KiCad operations on your behalf, including reading and writing PCB, schematic, and export files anywhere on your filesystem. You should be aware of the implications:
+
+- **Unrestricted file access**: Tools accept arbitrary filesystem paths for PCBs, schematics, Gerber exports, and BOMs. The server can read and write any file your user account can access.
+- **Subprocess execution**: PCB operations run KiCad's Python interpreter as subprocesses. Parameters are passed via JSON temp files to avoid injection, but the underlying mechanism executes code.
+- **Local-only transport**: The server uses stdio transport (stdin/stdout). It does not bind any network socket and is not exposed to the network.
+- **No secrets**: The server stores no credentials and makes no network connections beyond the local filesystem and KiCad CLI.
+
+**This tool is intended for local development use on a single-user machine.** Do not expose it to untrusted networks or users.
+
 ## License
 
 MIT

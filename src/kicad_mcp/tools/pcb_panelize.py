@@ -1,5 +1,4 @@
 """PCB panelization via KiKit CLI."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
@@ -201,10 +200,12 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
             return {"error": f"Panel file was not created at {output_path}"}
 
         # Read back panel dimensions using pcbnew
-        info_script = f"""
-import pcbnew, json
+        info_script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({output_path!r})
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.LoadBoard(params["output_path"])
 
 # Get board outline bounding box
 bbox = board.GetBoardEdgesBoundingBox()
@@ -216,16 +217,16 @@ fp_count = len(board.GetFootprints())
 net_count = board.GetNetInfo().GetNetCount()
 track_count = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
 
-print(json.dumps({{
+print(json.dumps({
     "width_mm": width_mm,
     "height_mm": height_mm,
     "footprint_count": fp_count,
     "net_count": net_count,
     "track_count": track_count,
-}}))
+}))
 """
         try:
-            panel_info = run_pcbnew_script(info_script, timeout=15.0)
+            panel_info = run_pcbnew_script(info_script, params={"output_path": output_path}, timeout=15.0)
         except Exception as e:
             logger.warning("Could not read panel info: %s", e)
             panel_info = {}

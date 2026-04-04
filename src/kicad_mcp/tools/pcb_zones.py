@@ -1,5 +1,4 @@
 """PCB copper zone tools: add zones and fill zones."""
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
@@ -45,20 +44,21 @@ def register_pcb_zone_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        corners_repr = repr(corners)
+        script = """
+import pcbnew, json, sys
 
-        script = f"""
-import pcbnew, json
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
 
-board = pcbnew.LoadBoard({pcb_path!r})
+board = pcbnew.LoadBoard(pcb_path)
 
-net = board.FindNet({net_name!r})
+net = board.FindNet(params["net_name"])
 if net is None or net.GetNetCode() == 0:
-    print(json.dumps({{"error": f"Net {net_name!r} not found"}}))
+    print(json.dumps({"error": f"Net {params['net_name']!r} not found"}))
     raise SystemExit(0)
 
 # Determine zone corners
-corners = {corners_repr}
+corners = params["corners"]
 auto_outline = False
 if len(corners) < 3:
     # Auto-derive from board outline (Edge.Cuts bounding box)
@@ -71,20 +71,20 @@ if len(corners) < 3:
         corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
         auto_outline = True
     else:
-        print(json.dumps({{"error": "No corners provided and no board outline (Edge.Cuts) found"}}))
+        print(json.dumps({"error": "No corners provided and no board outline (Edge.Cuts) found"}))
         raise SystemExit(0)
 
 zone = pcbnew.ZONE(board)
 zone.SetNet(net)
-zone.SetLayer(board.GetLayerID({layer!r}))
-zone.SetAssignedPriority({priority})
+zone.SetLayer(board.GetLayerID(params["layer"]))
+zone.SetAssignedPriority(params["priority"])
 
 # Set clearance and minimum width
-zone.SetLocalClearance(pcbnew.FromMM({clearance_mm}))
-zone.SetMinThickness(pcbnew.FromMM({min_width_mm}))
+zone.SetLocalClearance(pcbnew.FromMM(params["clearance_mm"]))
+zone.SetMinThickness(pcbnew.FromMM(params["min_width_mm"]))
 
 # Set pad connection type
-connect = {connect_pads!r}
+connect = params["connect_pads"]
 if connect == "solid":
     zone.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
 elif connect == "none":
@@ -108,26 +108,35 @@ for z in zones:
     zone_list.append(z)
 filler.Fill(zone_list)
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-result = {{
+result = {
     "status": "ok",
-    "zone": {{
-        "net": {net_name!r},
-        "layer": {layer!r},
+    "zone": {
+        "net": params["net_name"],
+        "layer": params["layer"],
         "corners": corners,
-        "clearance_mm": {clearance_mm},
-        "min_width_mm": {min_width_mm},
+        "clearance_mm": params["clearance_mm"],
+        "min_width_mm": params["min_width_mm"],
         "connect_pads": connect,
-        "priority": {priority},
-    }},
-}}
+        "priority": params["priority"],
+    },
+}
 if auto_outline:
     result["auto_outline"] = True
     result["note"] = "Zone corners auto-derived from board outline (Edge.Cuts)"
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script, timeout=60.0)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "net_name": net_name,
+            "layer": layer,
+            "corners": corners,
+            "clearance_mm": clearance_mm,
+            "min_width_mm": min_width_mm,
+            "connect_pads": connect_pads,
+            "priority": priority,
+        }, timeout=60.0)
 
     @mcp.tool()
     def fill_zones(pcb_path: str) -> Dict[str, Any]:
@@ -143,10 +152,13 @@ print(json.dumps(result))
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 # Count copper zones (skip rule areas)
 copper_zones = []
@@ -155,7 +167,7 @@ for z in board.Zones():
         copper_zones.append(z)
 
 if not copper_zones:
-    print(json.dumps({{"status": "ok", "message": "No copper zones to fill", "zones_filled": 0}}))
+    print(json.dumps({"status": "ok", "message": "No copper zones to fill", "zones_filled": 0}))
     raise SystemExit(0)
 
 # Unfill first to force recomputation
@@ -172,20 +184,20 @@ zone_info = []
 for z in copper_zones:
     layer_set = z.GetLayerSet()
     layer_name = "F.Cu" if layer_set.Contains(pcbnew.F_Cu) else "B.Cu" if layer_set.Contains(pcbnew.B_Cu) else "unknown"
-    zone_info.append({{
+    zone_info.append({
         "net": z.GetNetname(),
         "layer": layer_name,
         "filled": z.IsFilled(),
         "filled_area_mm2": round(pcbnew.ToMM(z.GetFilledArea()), 1),
-    }})
+    })
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "fill_success": success,
     "zones_filled": len(copper_zones),
     "zones": zone_info,
-}}))
+}))
 """
-        return run_pcbnew_script(script, timeout=60.0)
+        return run_pcbnew_script(script, params={"pcb_path": pcb_path}, timeout=60.0)
