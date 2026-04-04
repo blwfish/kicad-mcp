@@ -1,4 +1,5 @@
 """PCB copper zone tools: add zones and fill zones."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os

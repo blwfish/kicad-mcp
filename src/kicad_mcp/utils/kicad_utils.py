@@ -40,7 +40,7 @@ def find_kicad_projects() -> List[Dict[str, Any]]:
             continue
 
         logger.info("Scanning expanded directory: %s", search_dir)
-        for root, _, files in os.walk(search_dir, followlinks=True):
+        for root, _, files in os.walk(search_dir):
             for file in files:
                 if file.endswith(config.KICAD_EXTENSIONS["project"]):
                     project_path = os.path.join(root, file)
@@ -102,7 +102,7 @@ def open_kicad_project(project_path: str) -> Dict[str, Any]:
         else:
             return {"success": False, "error": f"Unsupported operating system: {sys.platform}"}
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
         return {
             "success": result.returncode == 0,

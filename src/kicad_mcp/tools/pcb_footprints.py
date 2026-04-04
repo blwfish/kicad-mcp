@@ -1,4 +1,5 @@
 """PCB footprint tools: place, move, list, search, and get pad positions."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os

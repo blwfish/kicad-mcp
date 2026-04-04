@@ -1,4 +1,5 @@
 """DRC auto-fix: compound tool that reads DRC, fixes violations, re-verifies."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import asyncio
 import logging

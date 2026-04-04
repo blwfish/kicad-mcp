@@ -24,34 +24,37 @@ def register_pcb_board_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"File not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 footprints = board.GetFootprints()
 tracks = board.GetTracks()
 
 fp_list = []
 for fp in footprints:
     pos = fp.GetPosition()
-    fp_list.append({{
+    fp_list.append({
         "reference": fp.GetReference(),
         "value": fp.GetValue(),
         "footprint": fp.GetFPID().GetUniStringLibItemName(),
         "x_mm": pcbnew.ToMM(pos.x),
         "y_mm": pcbnew.ToMM(pos.y),
         "layer": board.GetLayerName(fp.GetLayer()),
-    }})
+    })
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "file": {pcb_path!r},
+    "file": pcb_path,
     "footprint_count": len(fp_list),
     "track_count": len(tracks),
     "footprints": fp_list,
-}}))
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
     @mcp.tool()
     def create_pcb(pcb_path: str) -> Dict[str, Any]:
@@ -60,19 +63,22 @@ print(json.dumps({{
         Args:
             pcb_path: Absolute path for the new PCB file.
         """
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
 
 board = pcbnew.CreateEmptyBoard()
-board.SetFileName({pcb_path!r})
-board.Save({pcb_path!r})
+board.SetFileName(pcb_path)
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "file": {pcb_path!r},
-}}))
+    "file": pcb_path,
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
     @mcp.tool()
     def add_board_outline(
@@ -97,10 +103,17 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+x_mm = params["x_mm"]
+y_mm = params["y_mm"]
+width_mm = params["width_mm"]
+height_mm = params["height_mm"]
+
+board = pcbnew.LoadBoard(pcb_path)
 
 # Remove existing Edge.Cuts segments so outline can be replaced
 edge_cuts_id = pcbnew.Edge_Cuts
@@ -112,10 +125,10 @@ removed_count = len(to_remove)
 for item in to_remove:
     board.Remove(item)
 
-x = pcbnew.FromMM({x_mm})
-y = pcbnew.FromMM({y_mm})
-w = pcbnew.FromMM({width_mm})
-h = pcbnew.FromMM({height_mm})
+x = pcbnew.FromMM(x_mm)
+y = pcbnew.FromMM(y_mm)
+w = pcbnew.FromMM(width_mm)
+h = pcbnew.FromMM(height_mm)
 
 corners = [
     (x, y), (x + w, y), (x + w, y + h), (x, y + h)
@@ -130,20 +143,26 @@ for i in range(4):
     seg.SetWidth(pcbnew.FromMM(0.1))
     board.Add(seg)
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
     "previous_edge_cuts_removed": removed_count,
-    "outline": {{
-        "x_mm": {x_mm},
-        "y_mm": {y_mm},
-        "width_mm": {width_mm},
-        "height_mm": {height_mm},
-    }},
-}}))
+    "outline": {
+        "x_mm": x_mm,
+        "y_mm": y_mm,
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+    },
+}))
 """
-        return run_pcbnew_script(script)
+        return run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "x_mm": x_mm,
+            "y_mm": y_mm,
+            "width_mm": width_mm,
+            "height_mm": height_mm,
+        })
 
     @mcp.tool()
     def set_design_rules(
@@ -182,35 +201,47 @@ print(json.dumps({{
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = f"""
-import pcbnew, json
+        script = """
+import pcbnew, json, sys
 
-board = pcbnew.LoadBoard({pcb_path!r})
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
 ds = board.GetDesignSettings()
 
 ds.SetCopperLayerCount(2)
-ds.m_TrackMinWidth = pcbnew.FromMM({min_track_width_mm})
-ds.m_MinClearance = pcbnew.FromMM({min_clearance_mm})
-ds.m_ViasMinSize = pcbnew.FromMM({min_via_diameter_mm})
-ds.m_ViasMinDrill = pcbnew.FromMM({min_via_drill_mm})
-ds.m_HoleToHoleMin = pcbnew.FromMM({min_hole_to_hole_mm})
+ds.m_TrackMinWidth = pcbnew.FromMM(params["min_track_width_mm"])
+ds.m_MinClearance = pcbnew.FromMM(params["min_clearance_mm"])
+ds.m_ViasMinSize = pcbnew.FromMM(params["min_via_diameter_mm"])
+ds.m_ViasMinDrill = pcbnew.FromMM(params["min_via_drill_mm"])
+ds.m_HoleToHoleMin = pcbnew.FromMM(params["min_hole_to_hole_mm"])
 
-board.Save({pcb_path!r})
+board.Save(pcb_path)
 
-print(json.dumps({{
+print(json.dumps({
     "status": "ok",
-    "design_rules": {{
-        "min_track_width_mm": {min_track_width_mm},
-        "min_clearance_mm": {min_clearance_mm},
-        "min_via_diameter_mm": {min_via_diameter_mm},
-        "min_via_drill_mm": {min_via_drill_mm},
-        "min_hole_to_hole_mm": {min_hole_to_hole_mm},
-        "min_through_hole_diameter_mm": {min_through_hole_diameter_mm},
-        "min_copper_edge_clearance_mm": {min_copper_edge_clearance_mm},
-    }},
-}}))
+    "design_rules": {
+        "min_track_width_mm": params["min_track_width_mm"],
+        "min_clearance_mm": params["min_clearance_mm"],
+        "min_via_diameter_mm": params["min_via_diameter_mm"],
+        "min_via_drill_mm": params["min_via_drill_mm"],
+        "min_hole_to_hole_mm": params["min_hole_to_hole_mm"],
+        "min_through_hole_diameter_mm": params["min_through_hole_diameter_mm"],
+        "min_copper_edge_clearance_mm": params["min_copper_edge_clearance_mm"],
+    },
+}))
 """
-        result = run_pcbnew_script(script)
+        result = run_pcbnew_script(script, params={
+            "pcb_path": pcb_path,
+            "min_track_width_mm": min_track_width_mm,
+            "min_clearance_mm": min_clearance_mm,
+            "min_via_diameter_mm": min_via_diameter_mm,
+            "min_via_drill_mm": min_via_drill_mm,
+            "min_hole_to_hole_mm": min_hole_to_hole_mm,
+            "min_through_hole_diameter_mm": min_through_hole_diameter_mm,
+            "min_copper_edge_clearance_mm": min_copper_edge_clearance_mm,
+        })
 
         # Also update the .kicad_pro project file DRC rules
         stem = os.path.splitext(pcb_path)[0]

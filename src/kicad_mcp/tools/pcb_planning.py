@@ -1,4 +1,5 @@
 """PCB planning tools: board size estimation and suggested component placement."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os

@@ -1,4 +1,5 @@
 """PCB net tools: add, assign, bulk assign, list, net classes, and sync from schematic."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import json as _json
 import logging

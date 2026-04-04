@@ -1,4 +1,5 @@
 """PCB silkscreen tools: add text, list items, update items, check overlaps."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os

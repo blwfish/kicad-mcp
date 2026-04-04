@@ -7,6 +7,7 @@ loaded instance until a different schematic is loaded.
 The underlying library is kicad-sch-api (PyPI), which provides lossless
 round-trip parsing of .kicad_sch files.
 """
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 from __future__ import annotations
 

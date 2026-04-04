@@ -61,7 +61,7 @@ async def run_drc_via_cli(
             ]
 
             print(f"Running command: {' '.join(cmd)}")
-            process = subprocess.run(cmd, capture_output=True, text=True)
+            process = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
             if process.returncode != 0:
                 print(f"DRC command failed with code {process.returncode}")

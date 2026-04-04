@@ -1,4 +1,5 @@
 """PCB routing tools: traces, vias, and routing management."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os

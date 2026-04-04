@@ -5,6 +5,7 @@ poll_autoroute + cancel_autoroute) tools.  The async path avoids MCP timeouts
 by running FreeRouter in a background thread and letting the caller poll for
 completion.
 """
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import glob
 import json
@@ -43,6 +44,27 @@ _FREEROUTER_SEARCH_PATHS = [
 # Async job tracking: job_id -> {status, started, result, error, ...}
 _autoroute_jobs: Dict[str, Dict[str, Any]] = {}
 _autoroute_lock = threading.Lock()
+
+# Maximum number of concurrent async autoroute jobs
+MAX_CONCURRENT_JOBS = 3
+# Completed jobs older than this (seconds) are removed during cleanup
+_JOB_TTL_SECONDS = 30 * 60  # 30 minutes
+
+
+def _cleanup_stale_jobs() -> None:
+    """Remove completed/errored jobs older than _JOB_TTL_SECONDS.
+
+    Must be called while holding _autoroute_lock.
+    """
+    now = time.time()
+    stale = [
+        jid
+        for jid, j in _autoroute_jobs.items()
+        if j["status"] in ("done", "error", "cancelled")
+        and (now - j["started"]) > _JOB_TTL_SECONDS
+    ]
+    for jid in stale:
+        del _autoroute_jobs[jid]
 
 
 def _find_freerouter_jar(explicit_path: Optional[str] = None) -> Optional[str]:
@@ -286,6 +308,13 @@ def _run_full_autoroute(
     work_dir = tempfile.mkdtemp(prefix="kicad_autoroute_")
     dsn_path = os.path.join(work_dir, f"{pcb_basename}.dsn")
     ses_path = os.path.join(work_dir, f"{pcb_basename}.ses")
+
+    # Store work_dir in the job dict so cleanup code can find it
+    if job_id:
+        with _autoroute_lock:
+            job = _autoroute_jobs.get(job_id)
+            if job:
+                job["work_dir"] = work_dir
 
     # 30 minutes per pass — FreeRouter on complex boards can take 10-20+ min
     per_pass_timeout = 1800.0
@@ -657,6 +686,9 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
+        if not (1 <= passes <= 10):
+            return {"error": f"passes must be between 1 and 10, got {passes}"}
+
         jar_path = _find_freerouter_jar(freerouter_jar or None)
         if not jar_path:
             return {
@@ -818,6 +850,9 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
+        if not (1 <= passes <= 10):
+            return {"error": f"passes must be between 1 and 10, got {passes}"}
+
         jar_path = _find_freerouter_jar(freerouter_jar or None)
         if not jar_path:
             return {
@@ -831,6 +866,21 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
         java_path = _find_java()
         if not java_path:
             return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
+
+        # Enforce concurrent job limit and clean up stale jobs
+        with _autoroute_lock:
+            _cleanup_stale_jobs()
+            active = sum(
+                1 for j in _autoroute_jobs.values() if j["status"] == "running"
+            )
+            if active >= MAX_CONCURRENT_JOBS:
+                return {
+                    "error": (
+                        f"Too many concurrent autoroute jobs ({active}). "
+                        f"Maximum is {MAX_CONCURRENT_JOBS}. "
+                        "Wait for a job to finish or cancel one."
+                    )
+                }
 
         job_id = uuid.uuid4().hex[:8]
 

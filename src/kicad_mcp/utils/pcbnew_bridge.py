@@ -78,7 +78,11 @@ def _filter_stderr(stderr: str) -> str:
     return "\n".join(filtered).strip()
 
 
-def run_pcbnew_script(script: str, timeout: float = 30.0) -> Dict[str, Any]:
+def run_pcbnew_script(
+    script: str,
+    timeout: float = 30.0,
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Run a Python script using KiCad's Python with pcbnew available.
 
     The script MUST print a single JSON object to stdout as its final output.
@@ -87,6 +91,15 @@ def run_pcbnew_script(script: str, timeout: float = 30.0) -> Dict[str, Any]:
     Args:
         script: Python source code to execute.
         timeout: Maximum execution time in seconds.
+        params: Optional dict of parameters to pass to the script.  When
+            provided, the dict is JSON-serialized and written to a temp file.
+            The script can read it via::
+
+                import json, sys
+                params = json.loads(open(sys.argv[1]).read())
+
+            Using *params* avoids interpolating untrusted values directly
+            into the script string (which risks injection).
 
     Returns:
         Parsed JSON dict from the script's stdout.
@@ -105,13 +118,25 @@ def run_pcbnew_script(script: str, timeout: float = 30.0) -> Dict[str, Any]:
         f.write(script)
         script_path = f.name
 
+    # Write params to a separate temp file if provided
+    params_path = None
+    if params is not None:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as pf:
+            json.dump(params, pf)
+            params_path = pf.name
+
     logger.debug("Executing pcbnew script %s (timeout=%.1fs)", script_path, timeout)
     start_time = time.monotonic()
 
     try:
         env = _get_kicad_env()
+        cmd = [kicad_python, script_path]
+        if params_path:
+            cmd.append(params_path)
         result = subprocess.run(
-            [kicad_python, script_path],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -163,3 +188,8 @@ def run_pcbnew_script(script: str, timeout: float = 30.0) -> Dict[str, Any]:
         raise RuntimeError(f"pcbnew script timed out after {timeout}s")
     finally:
         os.unlink(script_path)
+        if params_path:
+            try:
+                os.unlink(params_path)
+            except OSError:
+                pass

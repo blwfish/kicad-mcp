@@ -1,4 +1,5 @@
 """PCB pipeline tool: build a routed PCB from a schematic in one step."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import glob
 import logging

@@ -1,4 +1,5 @@
 """PCB panelization via KiKit CLI."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
@@ -87,6 +88,23 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+
+        # Validate string enum parameters
+        VALID_CUT_TYPES = {"vcuts", "mousebites"}
+        VALID_FRAMING = {"none", "railstb", "railslr", "frame"}
+        VALID_TOOLING = {"none", "3hole", "4hole"}
+        if cut_type not in VALID_CUT_TYPES:
+            return {"error": f"Invalid cut_type {cut_type!r}. Must be one of: {', '.join(sorted(VALID_CUT_TYPES))}"}
+        if framing not in VALID_FRAMING:
+            return {"error": f"Invalid framing {framing!r}. Must be one of: {', '.join(sorted(VALID_FRAMING))}"}
+        if tooling not in VALID_TOOLING:
+            return {"error": f"Invalid tooling {tooling!r}. Must be one of: {', '.join(sorted(VALID_TOOLING))}"}
+
+        # Validate numeric ranges
+        if not (1 <= rows <= 100):
+            return {"error": f"rows must be between 1 and 100, got {rows}"}
+        if not (1 <= cols <= 100):
+            return {"error": f"cols must be between 1 and 100, got {cols}"}
 
         kikit_bin = _find_kikit()
         if not kikit_bin:

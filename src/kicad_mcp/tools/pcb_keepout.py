@@ -1,4 +1,5 @@
 """PCB keepout validation tools: zones, constraints, placement validation, audit."""
+# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 import logging
 import os
