@@ -136,7 +136,8 @@ class TestGetKeepoutZones:
         script = mock_run.call_args[0][0]
         assert "extract_keepouts" in script
         assert "GetIsRuleArea" in script
-        assert pcb_file in script
+        params = mock_run.call_args[1]["params"]
+        assert params["pcb_path"] == pcb_file
 
 
 # -- get_board_constraints tests ---------------------------------------------
@@ -311,10 +312,11 @@ class TestValidatePlacement:
         fn(pcb_file, "Resistor_SMD", "R_0805_2012Metric", 100.0, 100.0, 45.0)
         script = mock_run.call_args[0][0]
         assert "FootprintLoad" in script
-        assert "Resistor_SMD" in script
-        assert "R_0805_2012Metric" in script
         assert "SetPosition" in script
-        assert "45.0" in script
+        params = mock_run.call_args[1]["params"]
+        assert params["library"] == "Resistor_SMD"
+        assert params["footprint_name"] == "R_0805_2012Metric"
+        assert params["rotation_deg"] == 45.0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_library_not_found(self, mock_run, keepout_server, pcb_file):
@@ -710,8 +712,8 @@ class TestAuditFootprintOverlaps:
         }
         fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
         fn(pcb_file)
-        script = mock_run.call_args[0][0]
-        assert "min_clearance = 0.0" in script or "min_clearance = 0" in script
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == 0.0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_use_courtyard_default_true(self, mock_run, keepout_server, pcb_file):
@@ -729,10 +731,11 @@ class TestAuditFootprintOverlaps:
         fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
         fn(pcb_file)
         script = mock_run.call_args[0][0]
-        assert "use_courtyard = True" in script
         assert "get_courtyard_bbox" in script
         assert "CrtYd" in script
         assert "Pads()" in script
+        params = mock_run.call_args[1]["params"]
+        assert params["use_courtyard"] is True
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_use_courtyard_false_uses_body_bbox(self, mock_run, keepout_server, pcb_file):
@@ -749,8 +752,8 @@ class TestAuditFootprintOverlaps:
         }
         fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
         fn(pcb_file, use_courtyard=False)
-        script = mock_run.call_args[0][0]
-        assert "use_courtyard = False" in script
+        params = mock_run.call_args[1]["params"]
+        assert params["use_courtyard"] is False
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_bbox_source_reported(self, mock_run, keepout_server, pcb_file):

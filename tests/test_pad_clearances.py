@@ -105,8 +105,8 @@ class TestCheckPadClearancesScript:
         }
         fn = _get_tool_fn(keepout_server, "check_pad_clearances")
         fn(pcb_file, min_clearance_mm=0.5)
-        script = mock_run.call_args[0][0]
-        assert "min_cl = 0.5" in script
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == 0.5
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_script_skips_same_footprint(self, mock_run, keepout_server, pcb_file):

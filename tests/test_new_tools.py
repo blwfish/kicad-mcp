@@ -203,8 +203,8 @@ class TestGetFootprintDimensions:
         mock_run.return_value = {"status": "ok", "rotation_deg": 90}
         fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
         fn(library="Resistor_SMD", footprint_name="R_0603_1608Metric", rotation_deg=90)
-        script = mock_run.call_args[0][0]
-        assert "90" in script
+        params = mock_run.call_args[1]["params"]
+        assert params["rotation_deg"] == 90
 
 
 # -- pre_route_check tests --------------------------------------------------
@@ -354,9 +354,9 @@ class TestSetDesignRulesProjectFile:
         mock_run.return_value = {"status": "ok", "design_rules": {}}
         fn = _get_tool_fn(board_server, "set_design_rules")
         fn(pcb_file)
-        script = mock_run.call_args[0][0]
-        # Script should contain the default via drill value
-        assert "0.3" in script  # min_via_drill_mm default
+        params = mock_run.call_args[1]["params"]
+        # Params should contain the default via drill value
+        assert params["min_via_drill_mm"] == 0.3
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
     def test_creates_rules_section_if_missing(self, mock_run, board_server, tmp_path):
