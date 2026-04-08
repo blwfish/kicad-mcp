@@ -43,12 +43,14 @@ The server uses [FastMCP](https://github.com/jlowin/fastmcp) and delegates PCB o
 ### For Developers
 
 ```bash
-# 199 tests, no KiCad installation required
+# 479 tests, no KiCad installation required — runs in ~9 seconds
 pytest
 
 # Lint
 ruff check src/ tests/
 ```
+
+Tests cover all 98 tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
 
 See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 
