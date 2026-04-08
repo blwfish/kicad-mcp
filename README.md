@@ -28,7 +28,11 @@ The agent knows the full workflow — schematic → board sizing → component p
 
 ## Background
 
-I built this for myself. I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
+I built this because I need it. I'm not an electrical engineer — I build things for my model railroad that need custom PCBs, and I can't design circuits without this tool and Claude. This is how I actually get boards made: I describe what I need, Claude drives KiCad through this server, and I send the Gerbers to fab. It's not a demo or a hackathon project.
+
+That means reliability matters. The test suite (479 tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
+
+I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
 
 ### What's Under the Hood
 
