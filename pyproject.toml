@@ -45,7 +45,7 @@ packages = ["src/kicad_mcp"]
 
 [dependency-groups]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.23.0",
     "pytest-mock>=3.10.0",
     "pytest-cov>=4.0.0",
