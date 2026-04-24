@@ -10,3 +10,9 @@ htmlcov/
 .coverage
 .pytest_cache/
 .mypy_cache/
+
+# Local scaffolding (not tracked in repo)
+CLAUDE.md
+.claude/
+.claude.json
+.DS_Store
