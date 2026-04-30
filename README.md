@@ -34,7 +34,7 @@ That means reliability matters. The test suite (479 tests) exists because I depe
 
 I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
 
-If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/new) — I'd rather know than not. Agents fail silently; you'll see "Claude is broken" rather than the real cause.
+If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/new) — I'd rather know than not. Agents fail silently; you'll see "Claude is broken" rather than the real cause. (GitHub Discussions are intentionally off — issues are the single channel. See [CONTRIBUTING.md](CONTRIBUTING.md) for what makes a useful report.)
 
 ### What's Under the Hood
 
