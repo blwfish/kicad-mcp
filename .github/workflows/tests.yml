@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install KiCad symbol libraries
+        # 13 tests load symbols (Device:R, etc.) via kicad-sch-api, which
+        # looks up symbol files at /usr/share/kicad/symbols. Without these
+        # the tests fail with "Symbol 'Device:R' not found in KiCAD
+        # libraries". Locally the user has full KiCad installed; CI
+        # only needs the symbol library package.
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends kicad-symbols
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -34,4 +42,6 @@ jobs:
           uv pip install --system pytest pytest-asyncio
 
       - name: Run tests
+        env:
+          KICAD_SYMBOL_DIR: /usr/share/kicad/symbols
         run: python -m pytest tests/ -q
