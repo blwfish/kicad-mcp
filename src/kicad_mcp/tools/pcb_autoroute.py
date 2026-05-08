@@ -32,11 +32,9 @@ from kicad_mcp.utils.keepout_helpers import (
 
 logger = logging.getLogger(__name__)
 
-# Known locations for the FreeRouter JAR
+# Known locations for the FreeRouter JAR (exact-name fallbacks before the glob search below)
 _FREEROUTER_SEARCH_PATHS = [
-    os.path.expanduser("~/freerouting-2.1.0.jar"),
     os.path.expanduser("~/freerouting.jar"),
-    os.path.expanduser("~/Downloads/freerouting-2.1.0.jar"),
     os.path.expanduser("~/Downloads/freerouting.jar"),
 ]
 

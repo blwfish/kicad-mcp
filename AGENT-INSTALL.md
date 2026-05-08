@@ -56,21 +56,25 @@ Required for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Jav
 
 ### 4. FreeRouter JAR (recommended)
 
-The FreeRouter autorouter. If Java is present but FreeRouter is not found, download it:
+The FreeRouter autorouter.
+
+> **⚠️ Version matters — use v2.2.3 or later.**
+> v2.2.3 is **10–30× faster** than v2.1.0 and produces **deterministic results** (same board, same result every run). v2.1.0 is non-deterministic — the same board can route to 1 unrouted connection one run and 13 the next, depending on JVM timing. If you're on v2.1.0, upgrade.
+
+Download v2.2.3:
 
 ```bash
-curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.1.0/freerouting-2.1.0.jar
+curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.2.3/freerouting-2.2.3.jar
 ```
 
-The server auto-detects these locations:
-- `~/freerouting-2.1.0.jar`
+The server auto-detects these locations (newest version name wins when multiple JARs are present):
+- `~/freerouting-2.2.3.jar` (or any `~/freerouting*.jar`)
 - `~/freerouting.jar`
-- `~/Downloads/freerouting-2.1.0.jar`
-- `~/Downloads/freerouting.jar`
+- `~/Downloads/freerouting*.jar`
 - `freerouting` on the system PATH
 - The `FREEROUTER_JAR` environment variable
 
-If the release URL above is stale, find the current `.jar` at https://github.com/freerouting/freerouting/releases and download it to `~/freerouting.jar`.
+If the URL above is stale, find the current `.jar` at https://github.com/freerouting/freerouting/releases and download it to `~/freerouting.jar`.
 
 ## Installation
 
