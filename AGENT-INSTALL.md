@@ -150,6 +150,16 @@ The file `CLAUDE.md` in the repo root is your primary reference for **using** th
 
 If you are registered as an MCP server for a project that does KiCad work, the project's claude configuration should include kicad-mcp's `CLAUDE.md` so you always have it in context.
 
+### Model & Interface Selection
+
+**For Claude users:** Use **Claude Opus** with **subagents** for PCB design tasks. The combination is powerful because Opus handles complex multi-step workflows while subagents allow parallel exploration (component research, footprint selection, placement suggestions) without inflating the main conversation. This is the most efficient approach for KiCad design work.
+
+**For most users:** The **Claude Code desktop/web app or CLI** is the right interface. These automatically optimize prompt caching, which is critical for KiCad workflows that rerun planning and design steps across multiple tool calls. Caching dramatically reduces latency and cost for multi-step tasks like placement iteration, autorouting, and DRC fixes. You get the benefit without any configuration.
+
+**For developers using Claude API directly:** Be aware of prompt caching implications. KiCad design workflows involve repeated context (CLAUDE.md rules, board state, DRC results) across multiple tool calls. You should enable prompt caching to avoid re-processing the same context repeatedly. See the [Prompt Caching guide](https://docs.anthropic.com/en/docs/build-a-system-with-claude/prompt-caching) for details.
+
+**For other agents:** Consult your agent's documentation for equivalent caching and model selection guidance. The same principles apply: larger, more capable models handle complex workflows better, and caching provides significant benefits for iterative tool-based tasks.
+
 ### The Workflow in Brief
 
 ```

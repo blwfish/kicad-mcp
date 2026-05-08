@@ -16,6 +16,8 @@ Tell your AI agent:
 
 Your agent will handle the rest — installing prerequisites, cloning the repo, downloading the autorouter, and registering itself. Once setup is complete, you can ask your agent to design PCBs.
 
+**For best results:** Use Claude Opus (not Haiku or Sonnet) with the ability to spawn subagents. The combination of a capable model and parallel exploration (component research, placement suggestions) dramatically improves PCB design workflows. [Claude Code](https://claude.ai/code) provides automatic prompt caching that speeds up iterative design tasks.
+
 ## What You Can Ask Your Agent To Do
 
 - **Design a PCB from a description** — "I need a board with an ATmega328, three LEDs, and a USB-C connector"
