@@ -1,9 +1,10 @@
 """Bridge to KiCad's pcbnew Python API.
 
-Runs pcbnew operations via KiCad's bundled Python 3.9 as a subprocess,
+Runs pcbnew operations via KiCad's bundled Python as a subprocess,
 since pcbnew is a compiled C++ module that only works with KiCad's own Python.
 """
 
+import glob
 import json
 import logging
 import os
@@ -30,12 +31,17 @@ def _get_kicad_python() -> Optional[str]:
     system = platform.system()
 
     if system == "Darwin":
-        candidates = [
-            "/Applications/KiCad/KiCad.app/Contents/Frameworks/"
-            "Python.framework/Versions/3.9/bin/python3.9",
-            "/Applications/KiCad/KiCad.app/Contents/Frameworks/"
-            "Python.framework/Versions/3.9/bin/python3",
-        ]
+        fw = (
+            "/Applications/KiCad/KiCad.app/Contents/Frameworks"
+            "/Python.framework/Versions"
+        )
+        # Discover any bundled 3.x version, prefer highest
+        version_dirs = sorted(glob.glob(f"{fw}/3.*"), reverse=True)
+        candidates = []
+        for vdir in version_dirs:
+            ver = os.path.basename(vdir)
+            candidates.append(f"{vdir}/bin/python{ver}")
+            candidates.append(f"{vdir}/bin/python3")
     elif system == "Linux":
         candidates = ["/usr/bin/python3"]
     elif system == "Windows":
@@ -57,10 +63,15 @@ def _get_kicad_env() -> Dict[str, str]:
 
     if system == "Darwin":
         kicad_app = "/Applications/KiCad/KiCad.app"
-        env["PYTHONPATH"] = (
-            f"{kicad_app}/Contents/Frameworks/Python.framework"
-            f"/Versions/3.9/lib/python3.9/site-packages"
-        )
+        fw = f"{kicad_app}/Contents/Frameworks/Python.framework/Versions"
+        version_dirs = sorted(glob.glob(f"{fw}/3.*"), reverse=True)
+        if version_dirs:
+            vdir = version_dirs[0]
+            ver = os.path.basename(vdir)
+            site_packages = f"{vdir}/lib/python{ver}/site-packages"
+        else:
+            site_packages = f"{fw}/Current/lib/python3/site-packages"
+        env["PYTHONPATH"] = site_packages
         env["DYLD_FRAMEWORK_PATH"] = f"{kicad_app}/Contents/Frameworks"
 
     return env

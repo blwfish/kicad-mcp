@@ -213,11 +213,19 @@ net_count = netinfo.GetNetCount()
 
 # Ground-truth unconnected check — independent of FreeRouter's output parsing.
 # FreeRouter can report "0 incomplete" while leaving pads unreachable (e.g. a
-# pad sitting on the board edge).  RecalcNet() rebuilds the ratsnest from the
-# actual copper, so this count is authoritative.
+# pad sitting on the board edge).  Rebuild the ratsnest from actual copper.
+# RecalcNet() was removed in KiCad 10; BuildConnectivity() is the replacement.
 connectivity = board.GetConnectivity()
-connectivity.RecalcNet()
-unconnected = connectivity.GetUnconnectedCount()
+if hasattr(connectivity, 'RecalcNet'):
+    connectivity.RecalcNet()
+else:
+    board.BuildConnectivity()
+    connectivity = board.GetConnectivity()
+# KiCad 10 added a required aVisibleOnly argument; KiCad 9 takes none.
+try:
+    unconnected = connectivity.GetUnconnectedCount(False)
+except TypeError:
+    unconnected = connectivity.GetUnconnectedCount()
 
 print(json.dumps({
     "status": "ok",

@@ -62,10 +62,19 @@ def register_pcb_net_tools(mcp: FastMCP) -> None:
 
         if last_net_match:
             insert_pos = last_net_match.end()
-            new_net_line = f'\n\t(net {next_code} "{net_name}")'
-            content = content[:insert_pos] + new_net_line + content[insert_pos:]
         else:
-            return {"error": "Could not find net definitions in PCB file"}
+            # KiCad 10 omits the default (net 0 "") line in fresh PCBs.
+            # Fall back to inserting before the first footprint (or before the
+            # file's closing paren if there are no footprints yet).
+            fp_match = _re.search(r'\n\t\(footprint\b', content)
+            if fp_match:
+                insert_pos = fp_match.start()
+            else:
+                insert_pos = content.rfind('\n)')
+                if insert_pos == -1:
+                    return {"error": "Could not find insertion point in PCB file"}
+        new_net_line = f'\n\t(net {next_code} "{net_name}")'
+        content = content[:insert_pos] + new_net_line + content[insert_pos:]
 
         with open(pcb_path, "w") as f:
             f.write(content)
@@ -456,16 +465,24 @@ print(json.dumps({
 
             if last_net_match:
                 insert_pos = last_net_match.end()
-                new_lines = ""
-                for net_name in nets_created:
-                    code = existing_nets[net_name]
-                    new_lines += f'\n\t(net {code} "{net_name}")'
-                pcb_content = (
-                    pcb_content[:insert_pos] + new_lines + pcb_content[insert_pos:]
-                )
+            else:
+                # KiCad 10 omits the default (net 0 "") line in fresh PCBs.
+                fp_match = _re.search(r'\n\t\(footprint\b', pcb_content)
+                if fp_match:
+                    insert_pos = fp_match.start()
+                else:
+                    insert_pos = pcb_content.rfind('\n)')
 
-                with open(pcb_path, "w") as f:
-                    f.write(pcb_content)
+            new_lines = ""
+            for net_name in nets_created:
+                code = existing_nets[net_name]
+                new_lines += f'\n\t(net {code} "{net_name}")'
+            pcb_content = (
+                pcb_content[:insert_pos] + new_lines + pcb_content[insert_pos:]
+            )
+
+            with open(pcb_path, "w") as f:
+                f.write(pcb_content)
 
         # Step 4: Assign nets to pads via pcbnew
         script = """

@@ -40,7 +40,7 @@ async def run_drc_via_cli(
                     "kicad-cli not found in PATH or common installation locations"
                 )
                 results["error"] = (
-                    "kicad-cli not found. Please ensure KiCad 9.0+ is installed "
+                    "kicad-cli not found. Please ensure KiCad is installed "
                     "and kicad-cli is available."
                 )
                 return results
