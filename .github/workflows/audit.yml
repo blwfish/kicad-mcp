@@ -15,8 +15,5 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Upgrade pip
-        run: uv pip install --upgrade pip
-
       - name: Run audit
         run: uv run pip-audit --desc
