@@ -51,7 +51,7 @@ dev = [
     "pytest-mock>=3.10.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.1.0",
-    "mypy>=1.8.0",
+    "mypy>=2.0.0",
     "pip-audit>=2.10.0",
 ]
 
