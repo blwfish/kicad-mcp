@@ -44,7 +44,7 @@ Both `_get_kicad_python()` and `_get_kicad_env()` in `pcbnew_bridge.py` use this
 
 **Acceptance:**
 - `KICAD_APP_PATH=/Applications/KiCad/KiCad.app python -c "from kicad_mcp.utils.pcbnew_bridge import _get_kicad_python; print(_get_kicad_python())"` returns the expected python3 path
-- `KICAD_APP_PATH=$HOME/kicad-versions/10.0/KiCad.app ...` returns a path under that directory
+- `KICAD_APP_PATH=/Volumes/Files/claude/kicad-versions/10.0/KiCad.app ...` returns a path under that directory
 - `grep -r '/Applications/KiCad' src/` returns zero results
 - Existing mocked tests still pass
 
@@ -56,16 +56,16 @@ Document the install workflow:
 
 ```bash
 # Download KiCad 9.0.x and 10.0.x .dmg installers from kicad.org/downloads/
-mkdir -p $HOME/kicad-versions/9.0 $HOME/kicad-versions/10.0
+mkdir -p /Volumes/Files/claude/kicad-versions/9.0 /Volumes/Files/claude/kicad-versions/10.0
 
 # Mount each .dmg, copy KiCad.app to the version dir (do NOT drag to /Applications)
-cp -R /Volumes/KiCad/KiCad.app $HOME/kicad-versions/9.0/
+cp -R /Volumes/KiCad/KiCad.app /Volumes/Files/claude/kicad-versions/9.0/
 
 # Remove Gatekeeper quarantine (one-time, per install)
-xattr -dr com.apple.quarantine $HOME/kicad-versions/9.0/KiCad.app
+xattr -dr com.apple.quarantine /Volumes/Files/claude/kicad-versions/9.0/KiCad.app
 
 # Verify
-KICAD_APP_PATH=$HOME/kicad-versions/9.0/KiCad.app uv run python -c \
+KICAD_APP_PATH=/Volumes/Files/claude/kicad-versions/9.0/KiCad.app uv run python -c \
     "from kicad_mcp.utils.pcbnew_bridge import _get_kicad_python; print(_get_kicad_python())"
 ```
 
@@ -126,15 +126,14 @@ strategy:
     kicad: ["9.0", "10.0"]
 ```
 
-Steps:
-1. Restore cached `~/kicad-versions/${{ matrix.kicad }}/KiCad.app` (or download+install if cache miss)
-2. `xattr -dr com.apple.quarantine` the install
-3. `uv sync`
-4. `KICAD_INTEGRATION=1 KICAD_APP_PATH=~/kicad-versions/${{ matrix.kicad }}/KiCad.app uv run pytest tests/integration/ -v`
+Steps (self-hosted runner — versions are pre-installed):
+1. Verify `/Volumes/Files/claude/kicad-versions/${{ matrix.kicad }}/KiCad.app` exists
+2. `uv sync`
+3. `KICAD_INTEGRATION=1 KICAD_APP_PATH=/Volumes/Files/claude/kicad-versions/${{ matrix.kicad }}/KiCad.app uv run pytest tests/integration/ -v`
 
 Mark the job `continue-on-error: false` for the daily-driver version (10.0) and `continue-on-error: true` for the trailing version (9.0) so a 9.0-only regression doesn't block PRs but is visible.
 
-**Use a self-hosted macOS runner.** Keep both KiCad versions pre-installed at `$HOME/kicad-versions/{9.0,10.0}/KiCad.app` on the runner host. This skips the download/install/quarantine dance on every job and makes the per-PR runtime fast. GitHub-hosted macOS runners are slow, expensive, and require re-installing KiCad on every run — not viable for a per-PR gate.
+**Use a self-hosted macOS runner.** Keep both KiCad versions pre-installed at `/Volumes/Files/claude/kicad-versions/{9.0,10.0}/KiCad.app` on the runner host. This skips the download/install/quarantine dance on every job and makes the per-PR runtime fast. GitHub-hosted macOS runners are slow, expensive, and require re-installing KiCad on every run — not viable for a per-PR gate.
 
 ## Verification
 
@@ -142,7 +141,7 @@ After all phases land:
 
 1. `uv run pytest` (no env vars) — passes, 479 tests, ~9s, identical to today
 2. `KICAD_INTEGRATION=1 uv run pytest tests/integration/` against `/Applications/KiCad/KiCad.app` (10.0) — passes
-3. `KICAD_INTEGRATION=1 KICAD_APP_PATH=~/kicad-versions/9.0/KiCad.app uv run pytest tests/integration/` — passes (or surfaces real regressions)
+3. `KICAD_INTEGRATION=1 KICAD_APP_PATH=/Volumes/Files/claude/kicad-versions/9.0/KiCad.app uv run pytest tests/integration/` — passes (or surfaces real regressions)
 4. Open a no-op PR — both matrix cells run, green
 5. Open a PR that intentionally breaks the bridge — both cells go red
 

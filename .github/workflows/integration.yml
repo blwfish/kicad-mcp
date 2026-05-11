@@ -28,7 +28,7 @@ jobs:
 
       - name: Verify KiCad install
         run: |
-          kicad_app="$HOME/kicad-versions/${{ matrix.kicad }}/KiCad.app"
+          kicad_app="/Volumes/Files/claude/kicad-versions/${{ matrix.kicad }}/KiCad.app"
           if [ ! -d "$kicad_app" ]; then
             echo "KiCad ${{ matrix.kicad }} not found at $kicad_app"
             echo "See docs/MULTI_VERSION_TESTING.md for install instructions."

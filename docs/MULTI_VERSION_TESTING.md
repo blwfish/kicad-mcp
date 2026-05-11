@@ -6,16 +6,16 @@ How to install side-by-side KiCad versions and run integration tests against eac
 
 ```bash
 # Download KiCad 9.0.x and 10.0.x .dmg installers from kicad.org/downloads/
-mkdir -p $HOME/kicad-versions/9.0 $HOME/kicad-versions/10.0
+mkdir -p /Volumes/Files/claude/kicad-versions/9.0 /Volumes/Files/claude/kicad-versions/10.0
 
 # Mount each .dmg, copy KiCad.app to the version dir — do NOT drag to /Applications
-cp -R /Volumes/KiCad/KiCad.app $HOME/kicad-versions/9.0/
+cp -R /Volumes/KiCad/KiCad.app /Volumes/Files/claude/kicad-versions/9.0/
 
 # Remove Gatekeeper quarantine (one-time per install)
-xattr -dr com.apple.quarantine $HOME/kicad-versions/9.0/KiCad.app
+xattr -dr com.apple.quarantine /Volumes/Files/claude/kicad-versions/9.0/KiCad.app
 
 # Verify the bridge can find the Python interpreter
-KICAD_APP_PATH=$HOME/kicad-versions/9.0/KiCad.app uv run python -c \
+KICAD_APP_PATH=/Volumes/Files/claude/kicad-versions/9.0/KiCad.app uv run python -c \
     "from kicad_mcp.utils.pcbnew_bridge import _get_kicad_python; print(_get_kicad_python())"
 ```
 
@@ -28,7 +28,7 @@ KICAD_APP_PATH=$HOME/kicad-versions/9.0/KiCad.app uv run python -c \
 KICAD_INTEGRATION=1 uv run pytest tests/integration/ -v
 
 # Against a specific version
-KICAD_INTEGRATION=1 KICAD_APP_PATH=$HOME/kicad-versions/9.0/KiCad.app \
+KICAD_INTEGRATION=1 KICAD_APP_PATH=/Volumes/Files/claude/kicad-versions/9.0/KiCad.app \
     uv run pytest tests/integration/ -v
 ```
 
@@ -36,6 +36,6 @@ The `KICAD_INTEGRATION=1` guard prevents `pytest` (no args) from collecting the 
 
 ## CI (self-hosted runner)
 
-The integration workflow runs on a self-hosted macOS runner with both KiCad versions pre-installed at `$HOME/kicad-versions/{9.0,10.0}/KiCad.app`. See `.github/workflows/integration.yml`.
+The integration workflow runs on a self-hosted macOS runner with both KiCad versions pre-installed at `/Volumes/Files/claude/kicad-versions/{9.0,10.0}/KiCad.app`. See `.github/workflows/integration.yml`.
 
 The 10.0 matrix cell is `continue-on-error: false` (blocks PRs). The 9.0 cell is `continue-on-error: true` (visible but non-blocking).
