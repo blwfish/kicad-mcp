@@ -203,8 +203,9 @@ def signal_net_count(fp):
 # Requires: os in scope
 # ---------------------------------------------------------------------------
 LIB_SEARCH_HELPER = """
+_kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
 lib_search_paths = [
-    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
+    _kicad_app + "/Contents/SharedSupport/footprints",
     os.path.expanduser("~/Documents/KiCad/footprints"),
     "/usr/share/kicad/footprints",
 ]

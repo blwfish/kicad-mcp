@@ -13,7 +13,7 @@ system = platform.system()
 
 if system == "Darwin":
     KICAD_USER_DIR = os.path.expanduser("~/Documents/KiCad")
-    KICAD_APP_PATH = "/Applications/KiCad/KiCad.app"
+    KICAD_APP_PATH = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
     KICAD_CLI = os.path.join(KICAD_APP_PATH, "Contents/MacOS/kicad-cli")
     KICAD_PYTHON = os.path.join(
         KICAD_APP_PATH,
@@ -44,7 +44,7 @@ elif system == "Linux":
 else:
     # Default to macOS paths
     KICAD_USER_DIR = os.path.expanduser("~/Documents/KiCad")
-    KICAD_APP_PATH = "/Applications/KiCad/KiCad.app"
+    KICAD_APP_PATH = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
     KICAD_CLI = os.path.join(KICAD_APP_PATH, "Contents/MacOS/kicad-cli")
     KICAD_PYTHON = ""
     FOOTPRINT_DIRS = []

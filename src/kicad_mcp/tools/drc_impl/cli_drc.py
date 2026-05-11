@@ -146,8 +146,9 @@ def _find_kicad_cli() -> Optional[str]:
             r"C:\Program Files (x86)\KiCad\bin\kicad-cli.exe",
         ]
     elif system == "Darwin":
+        kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
         potential_paths = [
-            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+            f"{kicad_app}/Contents/MacOS/kicad-cli",
             "/Applications/KiCad/kicad-cli",
         ]
     else:  # Linux

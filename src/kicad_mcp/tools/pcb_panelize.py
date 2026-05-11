@@ -19,10 +19,14 @@ def _find_kikit() -> Optional[str]:
     system = platform.system()
 
     if system == "Darwin":
-        candidates = [
-            "/Applications/KiCad/KiCad.app/Contents/Frameworks/"
-            "Python.framework/Versions/3.9/bin/kikit",
-        ]
+        import glob as _glob
+        kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
+        fw = f"{kicad_app}/Contents/Frameworks/Python.framework/Versions"
+        kikit_candidates = []
+        for vdir in sorted(_glob.glob(f"{fw}/3.*"), reverse=True):
+            ver = os.path.basename(vdir)
+            kikit_candidates.append(f"{vdir}/bin/kikit")
+        candidates = kikit_candidates
     elif system == "Linux":
         candidates = ["/usr/local/bin/kikit"]
     elif system == "Windows":

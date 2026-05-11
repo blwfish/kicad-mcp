@@ -34,7 +34,8 @@ def _get_kicad_share_path() -> Optional[str]:
     """Find KiCad's SharedSupport/share directory."""
     system = platform.system()
     if system == "Darwin":
-        p = "/Applications/KiCad/KiCad.app/Contents/SharedSupport"
+        kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
+        p = f"{kicad_app}/Contents/SharedSupport"
         if os.path.isdir(p):
             return p
     elif system == "Linux":

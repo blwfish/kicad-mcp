@@ -26,13 +26,18 @@ _SAFE_STDERR_PATTERNS = [
 ]
 
 
+def _get_kicad_app_path() -> str:
+    """Return the KiCad .app path, honoring KICAD_APP_PATH env var."""
+    return os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
+
+
 def _get_kicad_python() -> Optional[str]:
     """Find KiCad's bundled Python interpreter."""
     system = platform.system()
 
     if system == "Darwin":
         fw = (
-            "/Applications/KiCad/KiCad.app/Contents/Frameworks"
+            f"{_get_kicad_app_path()}/Contents/Frameworks"
             "/Python.framework/Versions"
         )
         # Discover any bundled 3.x version, prefer highest
@@ -62,7 +67,7 @@ def _get_kicad_env() -> Dict[str, str]:
     system = platform.system()
 
     if system == "Darwin":
-        kicad_app = "/Applications/KiCad/KiCad.app"
+        kicad_app = _get_kicad_app_path()
         fw = f"{kicad_app}/Contents/Frameworks/Python.framework/Versions"
         version_dirs = sorted(glob.glob(f"{fw}/3.*"), reverse=True)
         if version_dirs:
