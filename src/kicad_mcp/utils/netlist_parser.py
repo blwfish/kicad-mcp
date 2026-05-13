@@ -441,21 +441,61 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
             if not ref:
                 continue
             info: Dict[str, Any] = {"reference": ref}
+
+            # DNP attribute (KiCad 7+)
+            dnp = comp_elem.get("dnp")
+            if dnp is not None:
+                info["dnp"] = dnp.lower() in ("1", "true", "yes")
+
             val_elem = comp_elem.find("value")
             if val_elem is not None and val_elem.text:
                 info["value"] = val_elem.text
+
             fp_elem = comp_elem.find("footprint")
             if fp_elem is not None and fp_elem.text:
                 info["footprint"] = fp_elem.text
+
+            ds_elem = comp_elem.find("datasheet")
+            if ds_elem is not None and ds_elem.text:
+                info["datasheet"] = ds_elem.text
+
+            desc_elem = comp_elem.find("description")
+            if desc_elem is not None and desc_elem.text:
+                info["description"] = desc_elem.text
+
             libsrc = comp_elem.find("libsource")
             if libsrc is not None:
                 lib = libsrc.get("lib", "")
                 part = libsrc.get("part", "")
                 if lib and part:
                     info["lib_id"] = f"{lib}:{part}"
-                desc = libsrc.get("description", "")
-                if desc:
-                    info["properties"] = {"Description": desc}
+                # Description may also appear as libsource attr
+                if "description" not in info:
+                    desc = libsrc.get("description", "")
+                    if desc:
+                        info["description"] = desc
+
+            # Collect all extra properties into info["properties"]
+            props: Dict[str, str] = {}
+
+            # <fields><field name="...">value</field></fields>
+            fields_elem = comp_elem.find("fields")
+            if fields_elem is not None:
+                for field in fields_elem.findall("field"):
+                    name = field.get("name", "")
+                    if name and field.text:
+                        props[name] = field.text
+
+            # KiCad 7+ inline <property name="..." value="..."/>
+            for prop_elem in comp_elem.findall("property"):
+                name = prop_elem.get("name", "")
+                value = prop_elem.get("value", "")
+                if name:
+                    props[name] = value
+
+            if props:
+                info["properties"] = props
+
             component_info[ref] = info
 
     # Extract nets from <nets>
