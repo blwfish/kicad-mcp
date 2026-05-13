@@ -3,9 +3,12 @@ Bill of Materials (BOM) processing tools for KiCad projects.
 """
 import csv
 import json
+import logging
 import os
 import subprocess
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     import pandas as pd
@@ -350,12 +353,12 @@ def _parse_bom_file(
 
                     for row in reader:
                         components.append(dict(row))
-            except Exception:
-                print(f"Failed to parse unknown file format: {file_path}")
-                return [], {"detected_format": "unsupported"}
+            except Exception as e:
+                logger.warning("Failed to parse unknown file format %s: %s", file_path, e)
+                return [], {"detected_format": "unsupported", "error": str(e)}
 
     except Exception as e:
-        print(f"Error parsing BOM file: {e}")
+        logger.warning("Error parsing BOM file %s: %s", file_path, e, exc_info=True)
         return [], {"error": str(e)}
 
     if not components:
@@ -563,8 +566,8 @@ def _analyze_bom_data(
 
                     if "currency" not in results:
                         results["currency"] = "USD"
-            except Exception:
-                print("Failed to parse cost data")
+            except Exception as e:
+                logger.warning("Failed to parse cost data: %s", e, exc_info=True)
 
         if ref_col and value_col:
             value_counts = df[value_col].value_counts()
