@@ -154,6 +154,20 @@ The file `CLAUDE.md` in the repo root is your primary reference for **using** th
 
 If you are registered as an MCP server for a project that does KiCad work, the project's claude configuration should include kicad-mcp's `CLAUDE.md` so you always have it in context.
 
+### Client Compatibility
+
+**Stop here if you are not running inside Claude Code.**
+
+Many MCP clients impose hard limits on how many tools a server can expose. kicad-mcp requires more tools than several popular clients support. When a client's limit is exceeded, tools are silently dropped — the agent proceeds without them, fails in confusing ways, and produces incorrect results. There is no graceful degradation: a PCB layout tool with half its tools missing is not a slower PCB layout tool, it is a broken one.
+
+| Client | Tool limit | Status |
+|--------|-----------|--------|
+| Claude Code | None (tested to 1000+) | Supported |
+| Gemini | ~100 | Not supported |
+| Cursor | 40 | Not supported |
+
+If you are not running inside Claude Code, stop. This server will not work correctly in your client.
+
 ### Model & Interface Selection
 
 **For Claude users:** Use **Claude Opus** with **subagents** for PCB design tasks. The combination is powerful because Opus handles complex multi-step workflows while subagents allow parallel exploration (component research, footprint selection, placement suggestions) without inflating the main conversation. This is the most efficient approach for KiCad design work.

@@ -18,6 +18,8 @@ Your agent will handle the rest — installing prerequisites, cloning the repo, 
 
 **For best results:** Use Claude Opus (not Haiku or Sonnet) with the ability to spawn subagents. For autorouting, use [FreeRouter v2.2.3+](https://github.com/freerouting/freerouting/releases) — v2.2.3 is 10–30× faster than v2.1.0 and deterministic; see [AGENT-INSTALL.md](AGENT-INSTALL.md) for details. The combination of a capable model and parallel exploration (component research, placement suggestions) dramatically improves PCB design workflows. [Claude Code](https://claude.ai/code) provides automatic prompt caching that speeds up iterative design tasks.
 
+**Client compatibility — read this first:** Many MCP clients impose hard limits on the number of tools a server can expose. kicad-mcp requires more tools than several popular clients support. If your client has a hard tool count limit that is lower than what this server exposes, it **will not work** — tools will be silently dropped and the agent will fail in ways that are confusing and hard to diagnose. Cursor (40-tool limit) and Gemini (100-tool limit) are both below this server's tool count and are not supported. Claude Code has no hard tool count limit (tested to 1000+ tools) and is the required client.
+
 ## What You Can Ask Your Agent To Do
 
 - **Design a PCB from a description** — "I need a board with an ATmega328, three LEDs, and a USB-C connector"
