@@ -55,8 +55,9 @@ class TestFilterStderr:
 class TestGetKicadPython:
 
     @patch("kicad_mcp.utils.pcbnew_bridge.platform.system", return_value="Darwin")
+    @patch("kicad_mcp.utils.pcbnew_bridge.glob.glob", return_value=["/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9"])
     @patch("kicad_mcp.utils.pcbnew_bridge.os.path.isfile")
-    def test_finds_macos_python(self, mock_isfile, mock_system):
+    def test_finds_macos_python(self, mock_isfile, mock_glob, mock_system):
         mock_isfile.return_value = True
         result = _get_kicad_python()
         assert result is not None
