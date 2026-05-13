@@ -75,6 +75,102 @@ def _get_symbol_lib_path() -> Optional[str]:
     return None
 
 
+def _kicad_user_config_dir() -> Optional[str]:
+    """Return the per-user KiCad config directory (highest version found)."""
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("APPDATA", "")
+    elif system == "Darwin":
+        base = os.path.expanduser("~/Library/Preferences")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+
+    kicad_base = os.path.join(base, "kicad")
+    if not os.path.isdir(kicad_base):
+        return None
+
+    # Pick the highest numeric version directory (e.g. "9.0", "10.0")
+    versions = sorted(
+        [e.name for e in os.scandir(kicad_base) if e.is_dir()
+         and re.match(r"^\d+", e.name)],
+        key=lambda v: [int(x) for x in re.findall(r"\d+", v)],
+        reverse=True,
+    )
+    for v in versions:
+        candidate = os.path.join(kicad_base, v)
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def _parse_lib_table_uris(table_path: str) -> List[str]:
+    """Extract URI values from a KiCad fp-lib-table or sym-lib-table file.
+
+    Only returns absolute paths (skips entries with ${VARIABLE} substitutions
+    that we cannot resolve here).
+
+    Returns:
+        List of absolute URI strings.
+    """
+    uris: List[str] = []
+    if not os.path.isfile(table_path):
+        return uris
+    try:
+        with open(table_path, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return uris
+
+    for m in re.finditer(r'\(uri\s+"?([^"\)]+)"?\)', content):
+        uri = m.group(1).strip()
+        # Skip entries with unresolved KiCad variable substitutions
+        if "${" in uri:
+            continue
+        if os.path.exists(uri):
+            uris.append(uri)
+    return uris
+
+
+def _get_extra_footprint_lib_dirs() -> List[str]:
+    """Return extra footprint library dirs from KICAD_USER_LIB and fp-lib-table."""
+    extra: List[str] = []
+
+    user_lib = os.environ.get("KICAD_USER_LIB")
+    if user_lib and os.path.isdir(user_lib):
+        extra.append(user_lib)
+
+    cfg = _kicad_user_config_dir()
+    if cfg:
+        table = os.path.join(cfg, "fp-lib-table")
+        for uri in _parse_lib_table_uris(table):
+            # Each entry is an individual .pretty dir — add its parent so the
+            # rebuild loop can scan it as a "dir of .pretty libs"
+            parent = os.path.dirname(uri)
+            if os.path.isdir(parent) and parent not in extra:
+                extra.append(parent)
+
+    return extra
+
+
+def _get_extra_symbol_lib_dirs() -> List[str]:
+    """Return extra symbol library dirs from KICAD_USER_LIB and sym-lib-table."""
+    extra: List[str] = []
+
+    user_lib = os.environ.get("KICAD_USER_LIB")
+    if user_lib and os.path.isdir(user_lib):
+        extra.append(user_lib)
+
+    cfg = _kicad_user_config_dir()
+    if cfg:
+        table = os.path.join(cfg, "sym-lib-table")
+        for uri in _parse_lib_table_uris(table):
+            parent = os.path.dirname(uri)
+            if os.path.isdir(parent) and parent not in extra:
+                extra.append(parent)
+
+    return extra
+
+
 # ---------------------------------------------------------------------------
 # .kicad_mod parser (footprints)
 # ---------------------------------------------------------------------------
@@ -185,6 +281,9 @@ class LibraryIndex:
         self.db_path = db_path
         self.footprint_lib_path = footprint_lib_path or _get_footprint_lib_path()
         self.symbol_lib_path = symbol_lib_path or _get_symbol_lib_path()
+        # Additional directories discovered from lib-tables / KICAD_USER_LIB
+        self.extra_footprint_dirs: List[str] = _get_extra_footprint_lib_dirs()
+        self.extra_symbol_dirs: List[str] = _get_extra_symbol_lib_dirs()
         self._ensure_db_dir()
         self._ensure_tables()
 
@@ -251,22 +350,30 @@ class LibraryIndex:
         """)
 
         count = 0
-        for lib_dir in sorted(os.scandir(self.footprint_lib_path), key=lambda e: e.name):
-            if not lib_dir.name.endswith(".pretty") or not lib_dir.is_dir():
-                continue
-            library = lib_dir.name[:-7]  # strip ".pretty"
-            for mod_file in sorted(os.scandir(lib_dir.path), key=lambda e: e.name):
-                if not mod_file.name.endswith(".kicad_mod"):
+        scan_dirs = [self.footprint_lib_path] + [
+            d for d in self.extra_footprint_dirs if os.path.isdir(d)
+        ]
+        seen_libs: set = set()
+        for scan_root in scan_dirs:
+            for lib_dir in sorted(os.scandir(scan_root), key=lambda e: e.name):
+                if not lib_dir.name.endswith(".pretty") or not lib_dir.is_dir():
                     continue
-                meta = _parse_kicad_mod(mod_file.path)
-                if not meta["name"]:
-                    meta["name"] = mod_file.name[:-10]
-                conn.execute(
-                    "INSERT INTO footprints (library, name, description, tags, pad_count) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (library, meta["name"], meta["description"], meta["tags"], meta["pad_count"]),
-                )
-                count += 1
+                library = lib_dir.name[:-7]  # strip ".pretty"
+                if library in seen_libs:
+                    continue  # system lib takes precedence
+                seen_libs.add(library)
+                for mod_file in sorted(os.scandir(lib_dir.path), key=lambda e: e.name):
+                    if not mod_file.name.endswith(".kicad_mod"):
+                        continue
+                    meta = _parse_kicad_mod(mod_file.path)
+                    if not meta["name"]:
+                        meta["name"] = mod_file.name[:-10]
+                    conn.execute(
+                        "INSERT INTO footprints (library, name, description, tags, pad_count) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (library, meta["name"], meta["description"], meta["tags"], meta["pad_count"]),
+                    )
+                    count += 1
 
         conn.execute("""
             INSERT INTO footprints_fts (rowid, library, name, description, tags)
@@ -377,24 +484,33 @@ class LibraryIndex:
         """)
 
         count = 0
-        for entry in sorted(os.scandir(self.symbol_lib_path), key=lambda e: e.name):
-            if not entry.name.endswith(".kicad_sym"):
-                continue
-            for sym in _parse_kicad_sym(entry.path):
-                lib_id = f"{sym['library']}:{sym['name']}"
-                conn.execute(
-                    "INSERT INTO symbols (library, name, lib_id, description, keywords, pin_count) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        sym["library"],
-                        sym["name"],
-                        lib_id,
-                        sym["description"],
-                        sym["keywords"],
-                        sym["pin_count"],
-                    ),
-                )
-                count += 1
+        scan_dirs = [self.symbol_lib_path] + [
+            d for d in self.extra_symbol_dirs if os.path.isdir(d)
+        ]
+        seen_libs: set = set()
+        for scan_root in scan_dirs:
+            for entry in sorted(os.scandir(scan_root), key=lambda e: e.name):
+                if not entry.name.endswith(".kicad_sym"):
+                    continue
+                lib_name = entry.name[:-10]  # strip ".kicad_sym"
+                if lib_name in seen_libs:
+                    continue  # system lib takes precedence
+                seen_libs.add(lib_name)
+                for sym in _parse_kicad_sym(entry.path):
+                    lib_id = f"{sym['library']}:{sym['name']}"
+                    conn.execute(
+                        "INSERT INTO symbols (library, name, lib_id, description, keywords, pin_count) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            sym["library"],
+                            sym["name"],
+                            lib_id,
+                            sym["description"],
+                            sym["keywords"],
+                            sym["pin_count"],
+                        ),
+                    )
+                    count += 1
 
         conn.execute("""
             INSERT INTO symbols_fts (rowid, library, name, lib_id, description, keywords)
