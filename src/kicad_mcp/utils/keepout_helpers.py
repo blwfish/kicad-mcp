@@ -56,7 +56,10 @@ def extract_keepouts(board):
                 "no_vias": zone.GetDoNotAllowVias(),
                 "no_pads": zone.GetDoNotAllowPads(),
                 "no_footprints": zone.GetDoNotAllowFootprints(),
-                "no_copper_pour": zone.GetDoNotAllowCopperPour(),
+                # KiCad 10 renamed GetDoNotAllowCopperPour → GetDoNotAllowZoneFills
+                "no_copper_pour": (zone.GetDoNotAllowZoneFills()
+                                   if hasattr(zone, "GetDoNotAllowZoneFills")
+                                   else zone.GetDoNotAllowCopperPour()),
             },
             "bounding_box": {
                 "x_min_mm": round(pcbnew.ToMM(bbox.GetX()), 3),
