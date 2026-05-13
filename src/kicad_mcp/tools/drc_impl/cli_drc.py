@@ -89,13 +89,16 @@ async def run_drc_via_cli(
                 await ctx.report_progress(70, 100)
                 ctx.info(f"DRC completed with {violation_count} violations")
 
-            # Categorize violations by type
+            # Categorize violations by rule_id (stable) with message fallback
             error_types: dict[str, int] = {}
             for violation in violations:
-                error_type = violation.get("message", "Unknown")
-                if error_type not in error_types:
-                    error_types[error_type] = 0
-                error_types[error_type] += 1
+                # rule_id is stable across KiCad versions; message text can change
+                error_type = (
+                    violation.get("rule_id")
+                    or violation.get("type")
+                    or violation.get("message", "Unknown")
+                )
+                error_types[error_type] = error_types.get(error_type, 0) + 1
 
             results = {
                 "success": True,
