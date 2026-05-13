@@ -293,7 +293,8 @@ def _run_freerouter_pass(
                 return {"status": "cancelled"}
 
     if proc.returncode != 0:
-        return {"status": "error", "error": stderr[:500]}
+        # Keep up to 8 kB; FreeRouter error messages can be verbose
+        return {"status": "error", "error": stderr[:8192]}
 
     if not os.path.exists(ses_path):
         return {"status": "no_output"}
