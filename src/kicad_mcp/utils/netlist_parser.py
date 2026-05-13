@@ -1,10 +1,13 @@
 """
 KiCad schematic netlist extraction utilities.
 """
+import logging
 import os
 import re
 from collections import defaultdict
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 class SchematicParser:
@@ -553,12 +556,25 @@ def extract_netlist(schematic_path: str) -> Dict[str, Any]:
     if cli_result is not None:
         return cli_result
 
-    # Fallback to regex parser (CI environments without KiCad)
+    # Fallback to regex parser (CI environments without KiCad).
+    # WARNING: this parser reads only the top-level .kicad_sch file and
+    # cannot follow hierarchical sheet references — components and nets in
+    # sub-schematics will be missing from the result.
+    logger.warning(
+        "kicad-cli not available; falling back to regex parser for %s. "
+        "Hierarchical sub-schematics will NOT be included — results may be incomplete.",
+        schematic_path,
+    )
     try:
         parser = SchematicParser(schematic_path)
-        return parser.parse()
+        result = parser.parse()
+        result["incomplete"] = True
+        result["incomplete_reason"] = (
+            "regex fallback: hierarchical sub-schematics not resolved"
+        )
+        return result
     except Exception as e:
-        print(f"Error extracting netlist: {e}")
+        logger.warning("Error extracting netlist from %s: %s", schematic_path, e, exc_info=True)
         return {
             "error": str(e),
             "components": {},
