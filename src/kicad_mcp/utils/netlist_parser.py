@@ -515,14 +515,16 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
             for node in net_elem.findall("node"):
                 node_ref = node.get("ref", "")
                 pin = node.get("pin", "")
-                pinfunction = node.get("pinfunction", "")
                 if node_ref and pin:
                     entry: Dict[str, str] = {
                         "component": node_ref,
                         "pin": pin,
                     }
-                    if pinfunction:
-                        entry["pinfunction"] = pinfunction
+                    # Capture all remaining node attributes (pinfunction,
+                    # pintype/electrical-type, alt names, voltage class, etc.)
+                    for attr, val in node.attrib.items():
+                        if attr not in ("ref", "pin") and val:
+                            entry[attr] = val
                     pins.append(entry)
             nets[clean_name] = pins
 
