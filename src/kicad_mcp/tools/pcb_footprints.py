@@ -302,18 +302,46 @@ pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
 
+PAD_SHAPE = {
+    pcbnew.PAD_SHAPE_CIRCLE:    "circle",
+    pcbnew.PAD_SHAPE_RECT:      "rect",
+    pcbnew.PAD_SHAPE_OVAL:      "oval",
+    pcbnew.PAD_SHAPE_TRAPEZOID: "trapezoid",
+    pcbnew.PAD_SHAPE_ROUNDRECT: "roundrect",
+    pcbnew.PAD_SHAPE_CHAMFERED_RECT: "chamfered_rect",
+}
+
 fp_list = []
 for fp in board.GetFootprints():
     pos = fp.GetPosition()
     pads = []
     for pad in fp.Pads():
         pad_pos = pad.GetPosition()
-        pads.append({
+        size = pad.GetSize()
+        drill = pad.GetDrillSize()
+        # Collect copper layer names this pad covers
+        lset = pad.GetLayerSet()
+        copper_layers = []
+        for layer_id in range(pcbnew.F_Cu, pcbnew.B_Cu + 1):
+            if lset.Contains(layer_id):
+                copper_layers.append(board.GetLayerName(layer_id))
+
+        pad_info = {
             "number": pad.GetNumber(),
             "x_mm": round(pcbnew.ToMM(pad_pos.x), 3),
             "y_mm": round(pcbnew.ToMM(pad_pos.y), 3),
             "net": pad.GetNetname(),
-        })
+            "shape": PAD_SHAPE.get(pad.GetShape(), str(pad.GetShape())),
+            "size_x_mm": round(pcbnew.ToMM(size.x), 3),
+            "size_y_mm": round(pcbnew.ToMM(size.y), 3),
+            "copper_layers": copper_layers,
+        }
+        # Drill info only for through-hole pads
+        if drill.x > 0:
+            pad_info["drill_x_mm"] = round(pcbnew.ToMM(drill.x), 3)
+            pad_info["drill_y_mm"] = round(pcbnew.ToMM(drill.y), 3)
+        pads.append(pad_info)
+
     fp_list.append({
         "reference": fp.GetReference(),
         "value": fp.GetValue(),
