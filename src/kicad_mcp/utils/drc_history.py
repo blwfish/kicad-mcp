@@ -60,6 +60,7 @@ def save_drc_result(project_path: str, drc_result: Dict[str, Any]) -> None:
         "datetime": formatted_time,
         "total_violations": drc_result.get("total_violations", 0),
         "violation_categories": drc_result.get("violation_categories", {}),
+        "raw_violations": drc_result.get("violations", []),
     }
 
     if os.path.exists(history_path):
