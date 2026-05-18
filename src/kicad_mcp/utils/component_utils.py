@@ -152,6 +152,22 @@ def extract_resistance_value(value: str) -> Tuple[Optional[float], Optional[str]
     Returns:
         Tuple of (numeric value, unit) or (None, None) if parsing fails
     """
+    # Handle "4k7" (means 4.7k) FIRST -- the looser pattern below would
+    # otherwise greedily match "4"+"k" and return (4.0, "K"), silently
+    # dropping the .7.  Same shadow pattern as LM7905 (see
+    # extract_voltage_from_regulator).
+    match = re.search(r"(\d+)([kKmM])(\d+)", value)
+    if match:
+        try:
+            value1 = int(match.group(1))
+            value2 = int(match.group(3))
+            resistance = float(f"{value1}.{value2}")
+            unit_letter = match.group(2).lower()
+            unit = "k" if unit_letter == "k" else "M"
+            return resistance, unit
+        except ValueError:
+            pass
+
     match = re.search(r"(\d+\.?\d*)([kKmMrR\u03a9]?)", value)
     if match:
         try:
@@ -161,22 +177,6 @@ def extract_resistance_value(value: str) -> Tuple[Optional[float], Optional[str]
             if unit == "R" or unit == "":
                 unit = "\u03a9"
 
-            return resistance, unit
-        except ValueError:
-            pass
-
-    # Handle "4k7" (means 4.7k)
-    match = re.search(r"(\d+)[kKmM](\d+)", value)
-    if match:
-        try:
-            value1 = int(match.group(1))
-            value2 = int(match.group(2))
-            resistance = float(f"{value1}.{value2}")
-            unit = (
-                "k"
-                if "k" in value.lower()
-                else "M" if "m" in value.lower() else "\u03a9"
-            )
             return resistance, unit
         except ValueError:
             pass
@@ -193,6 +193,30 @@ def extract_capacitance_value(value: str) -> Tuple[Optional[float], Optional[str
     Returns:
         Tuple of (numeric value, unit) or (None, None) if parsing fails
     """
+    # Handle "4n7" (means 4.7nF) FIRST -- the looser pattern below would
+    # otherwise greedily match "4"+"n" and return (4.0, "nF"), silently
+    # dropping the .7.  Same shadow pattern as LM7905.
+    match = re.search(r"(\d+)([pPnNuU\u03bc])(\d+)", value)
+    if match:
+        try:
+            value1 = int(match.group(1))
+            value2 = int(match.group(3))
+            capacitance = float(f"{value1}.{value2}")
+
+            unit_char = match.group(2).lower()
+            if unit_char == "p":
+                unit = "pF"
+            elif unit_char == "n":
+                unit = "nF"
+            elif unit_char in ("u", "\u03bc"):
+                unit = "\u03bcF"
+            else:
+                unit = "F"
+
+            return capacitance, unit
+        except ValueError:
+            pass
+
     match = re.search(r"(\d+\.?\d*)([pPnNuU\u03bcF]+)", value)
     if match:
         try:
@@ -204,27 +228,6 @@ def extract_capacitance_value(value: str) -> Tuple[Optional[float], Optional[str
             elif "n" in unit or "nf" in unit:
                 unit = "nF"
             elif "u" in unit or "\u03bc" in unit or "uf" in unit or "\u03bcf" in unit:
-                unit = "\u03bcF"
-            else:
-                unit = "F"
-
-            return capacitance, unit
-        except ValueError:
-            pass
-
-    # Handle "4n7" (means 4.7nF)
-    match = re.search(r"(\d+)[pPnNuU\u03bc](\d+)", value)
-    if match:
-        try:
-            value1 = int(match.group(1))
-            value2 = int(match.group(2))
-            capacitance = float(f"{value1}.{value2}")
-
-            if "p" in value.lower():
-                unit = "pF"
-            elif "n" in value.lower():
-                unit = "nF"
-            elif "u" in value.lower() or "\u03bc" in value:
                 unit = "\u03bcF"
             else:
                 unit = "F"
