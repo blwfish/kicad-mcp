@@ -29,6 +29,48 @@ Welcome, but a couple of preflight things:
 4. **One concern per PR.** Bug fix and unrelated cleanup go in separate PRs.
 5. **Update `EXPECTED_TOOLS` in `tests/test_server.py`** if you're adding, removing, or renaming an MCP tool. The docs-check CI workflow will fail otherwise (and TOOLS.md / README.md tool counts need to match too).
 
+## Testing discipline for `utils/` and `tools/` helpers
+
+Most existing tests in this repo verify the Python function returned
+the expected shape on a round input.  That's not enough for code that
+feeds `pcbnew`, KiCad's DRC engine, or FreeRouter — the consumer often
+flips behaviour on threshold values the test never exercised.  When
+you add or change tests for helpers with internal numeric thresholds
+or strict-inequality comparisons, follow these rules.
+
+**Cover every threshold the function flips on.**  For
+`rects_overlap`, `rect_inside`, `_aabb_hit`, `in_board`, the
+`voltage < 50` cap in `extract_voltage_from_regulator`, the
+`freq >= 1000` cascade in `extract_frequency_from_value`, the
+`min_clearance > 0` gate in `audit_footprint_overlaps`: include a
+parametrize case for the threshold value itself, one unit below, and
+one unit above.  Round numbers far from the threshold catch
+arithmetic errors but never the comparison itself.
+
+**Use the consumer's tolerance, not the producer's.**  KiCad's
+`ToMM` rounds to 1µm-ish; `pytest.approx(x, abs=0.001)` is **too
+loose** for a strict-inequality check — it accepts 1µm coincidence,
+which is what KiCad's DRC will then flag as a clearance violation.
+Use `abs=1e-9` or exact equality for boundary tests.
+
+**At least one input that is not a docstring example.**  Implementation
+examples were the development inputs; they were chosen because they're
+easy to think about, not because they exercise the corners.  Pick a
+real KiCad library footprint name or a real value from a `.kicad_pcb`
+you've worked with.
+
+**Test what the consumer sees, not just the producer's return.**  If
+`rects_overlap` returns `False` for touching edges, the test that
+matters is "would KiCad's DRC flag this layout?", not "does the
+function return False?".  When the consumer is a subprocess we can't
+run in CI, assert the invariant the consumer needs — e.g. that the
+gap between any two footprints is reported as either strictly positive
+or strictly negative, never silently zero.
+
+The boundary-coverage tests added in `test_component_utils.py`,
+`test_pcb_keepout.py`, and `test_keepout_rect_helpers.py` model this
+pattern.
+
 ## Will feature requests be accepted?
 
 Maybe. The project is scoped to what I personally need — small to medium hobbyist boards, microcontroller circuits, model-railroad-grade reliability. If your request overlaps with that (more component types, better DRC autofix, footprint discovery improvements), it's likely. If it's far outside (RF design tools, multi-board assemblies, complex panelization), I'll probably point you at a fork instead.
