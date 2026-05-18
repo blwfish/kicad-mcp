@@ -194,10 +194,27 @@ class TestExtractResistance:
         assert unit.upper() == expected_unit.upper()
 
     def test_4k7_notation(self):
+        """'4k7' is European shorthand for 4.7k -- the decimal point is replaced
+        by the unit letter.  The first regex (\\d+\\.?\\d*)([kKmMrR]?) greedily
+        matches '4' + 'k' and returns before the dedicated '4k7' branch runs,
+        same shadow pattern as the LM7905 bug.  Consumer-visible effect: a 4.7k
+        pull-up gets normalized to 4k, off by 700 ohms.
+        """
         val, unit = extract_resistance_value("4k7")
-        # First regex matches "4" with unit "k"; the 4k7 pattern is secondary
-        assert val is not None
-        assert unit is not None
+        assert val == 4.7
+        assert unit.lower() == "k"
+
+    @pytest.mark.parametrize("value,expected_val", [
+        ("4k7", 4.7),
+        ("2k2", 2.2),
+        ("1k5", 1.5),
+        ("4K7", 4.7),  # uppercase K should also work
+        ("2M2", 2.2),  # megaohm shorthand
+    ])
+    def test_european_shorthand_notation(self, value, expected_val):
+        """European resistor shorthand: 4k7 == 4.7k, 2k2 == 2.2k, etc."""
+        val, _unit = extract_resistance_value(value)
+        assert val == expected_val, f"{value!r} should parse to {expected_val}, got {val}"
 
     def test_unparseable(self):
         val, unit = extract_resistance_value("hello")
@@ -219,10 +236,27 @@ class TestExtractCapacitance:
         assert unit == expected_unit
 
     def test_4n7_notation(self):
+        """'4n7' is European shorthand for 4.7nF.  Same shadow as the 4k7 bug:
+        the first regex (\\d+\\.?\\d*)([pPnNuU]+) greedily matches '4'+'n' and
+        returns (4, 'nF') before the '4n7' branch runs.  Consumer-visible
+        effect: a 4.7nF decoupling cap reads as 4nF -- off by 700pF, which
+        moves real filter corner frequencies.
+        """
         val, unit = extract_capacitance_value("4n7")
-        # First regex matches "4" with unit; the shorthand pattern is secondary
-        assert val is not None
-        assert unit is not None
+        assert val == 4.7
+        assert unit == "nF"
+
+    @pytest.mark.parametrize("value,expected_val,expected_unit", [
+        ("4n7", 4.7, "nF"),
+        ("2u2", 2.2, "μF"),
+        ("1p5", 1.5, "pF"),
+        ("3n3", 3.3, "nF"),
+    ])
+    def test_european_shorthand_notation(self, value, expected_val, expected_unit):
+        """European cap shorthand: 4n7 == 4.7nF, 2u2 == 2.2uF, etc."""
+        val, unit = extract_capacitance_value(value)
+        assert val == expected_val, f"{value!r} should parse to {expected_val}, got {val}"
+        assert unit == expected_unit, f"{value!r} should have unit {expected_unit}, got {unit}"
 
 
 # -- extract_inductance_value tests ------------------------------------------
