@@ -49,6 +49,78 @@ class TestExtractVoltage:
         result = extract_voltage_from_regulator("7899")
         assert result == "unknown"
 
+    # -- Threshold-boundary coverage for `if voltage < 50` ------------------
+    # The 78xx/79xx branch caps the matched voltage at 50V (anything ≥50V is
+    # rejected as not a regulator part).  The round-number test_known_regulators
+    # set never touches the threshold; these do.
+    @pytest.mark.parametrize("value,expected", [
+        ("7849", "49V"),   # just below threshold -- accepted as a 49V part
+        ("7850", "unknown"),  # exactly at threshold -- rejected (strict <)
+        ("7851", "unknown"),  # just above threshold -- rejected
+    ])
+    def test_voltage_threshold_50v_78xx(self, value, expected):
+        assert extract_voltage_from_regulator(value) == expected
+
+    @pytest.mark.parametrize("value,expected", [
+        ("7949", "49V"),
+        ("7950", "unknown"),
+        ("7951", "unknown"),
+    ])
+    def test_voltage_threshold_50v_79xx(self, value, expected):
+        assert extract_voltage_from_regulator(value) == expected
+
+    # -- Generic "(\d+)V" threshold: `0 < voltage < 50` ---------------------
+    @pytest.mark.parametrize("value,expected", [
+        ("0V", "unknown"),    # threshold low: strict >0 -- rejected
+        ("1V", "1V"),
+        ("49V", "49V"),
+        ("50V", "unknown"),   # threshold high: strict <50 -- rejected
+        ("100V", "unknown"),
+    ])
+    def test_generic_voltage_thresholds(self, value, expected):
+        assert extract_voltage_from_regulator(value) == expected
+
+
+# -- Real-bug regression tests for extract_voltage_from_regulator ------------
+# These cases come from KiCad library symbols, not the function's docstring
+# examples.  Each one exercises a path that round-number tests never reach.
+
+class TestExtractVoltageRealBugs:
+    """Inputs drawn from real KiCad libraries that the existing tests miss."""
+
+    def test_lm7905_is_negative(self):
+        """LM7905 is the -5V regulator -- the regulator dict entry is "-5V".
+
+        The 78xx/79xx numeric branch catches "7905" and returns "5V" before
+        the dict lookup runs, silently stripping the sign.  Consumers
+        (BOM rendering, schematic labels) get the wrong polarity.
+        """
+        assert extract_voltage_from_regulator("LM7905") == "-5V"
+
+    def test_lm7912_is_negative(self):
+        """LM7912 is the -12V regulator."""
+        assert extract_voltage_from_regulator("LM7912") == "-12V"
+
+    def test_7800_returns_unknown_not_0v(self):
+        """'7800' is not a real part -- the 78xx branch should reject it.
+
+        The current implementation extracts '00', evaluates `0 < 50`, and
+        returns '0V'.  A 0V regulator is nonsensical; this is the same kind
+        of off-by-one as the upper threshold check.
+        """
+        assert extract_voltage_from_regulator("7800") == "unknown"
+
+    def test_negative_voltage_string_preserves_sign(self):
+        """A description containing '-3V' should not silently strip the sign.
+
+        The current implementation has a `-(\\d+\\.?\\d*)V` pattern in its
+        list but the unsigned pattern matches first and discards the minus.
+        """
+        # We assert the consumer-visible behaviour: the sign survives.
+        result = extract_voltage_from_regulator("REG -3V output")
+        assert result.startswith("-") or result == "unknown", \
+            f"Expected sign-preserving or 'unknown', got {result!r}"
+
 
 # -- extract_frequency_from_value tests --------------------------------------
 
