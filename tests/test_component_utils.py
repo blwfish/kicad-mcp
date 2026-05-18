@@ -138,6 +138,45 @@ class TestExtractFrequency:
     def test_unknown_returns_unknown(self):
         assert extract_frequency_from_value("100nF") == "unknown"
 
+    # -- Threshold coverage for the `>=1000` unit-promotion cascade ---------
+    # extract_frequency_from_value promotes Hz->kHz, kHz->MHz, MHz->GHz when
+    # the numeric value is >= 1000.  These boundaries are not covered by the
+    # round-number tests above; a regression that flipped >= to > would slip
+    # through the existing suite.
+    @pytest.mark.parametrize("value,expected", [
+        ("999Hz", "999.000Hz"),    # just below Hz->kHz threshold
+        ("1000Hz", "1.000kHz"),    # exactly at threshold -- promote
+        ("1001Hz", "1.001kHz"),    # just above threshold
+    ])
+    def test_frequency_hz_to_khz_threshold(self, value, expected):
+        assert extract_frequency_from_value(value) == expected
+
+    @pytest.mark.parametrize("value,expected", [
+        ("999kHz", "999.000kHz"),  # just below kHz->MHz threshold
+        ("1000kHz", "1.000MHz"),   # exactly at threshold -- promote
+        ("1001kHz", "1.001MHz"),
+    ])
+    def test_frequency_khz_to_mhz_threshold(self, value, expected):
+        assert extract_frequency_from_value(value) == expected
+
+    @pytest.mark.parametrize("value,expected", [
+        ("999MHz", "999.000MHz"),  # just below MHz->GHz threshold
+        ("1000MHz", "1.000GHz"),   # exactly at threshold -- promote
+        ("1001MHz", "1.001GHz"),
+    ])
+    def test_frequency_mhz_to_ghz_threshold(self, value, expected):
+        assert extract_frequency_from_value(value) == expected
+
+    # Real-world crystal frequencies pulled from KiCad symbol library
+    # (Device:Crystal_GND2_Small etc) -- separate from the docstring examples.
+    @pytest.mark.parametrize("value,expected", [
+        ("11.0592MHz", "11.059MHz"),  # MCU UART baud-rate crystal
+        ("4.194304MHz", "4.194MHz"),  # RTC binary divisor crystal
+        ("3.579545MHz", "3.580MHz"),  # NTSC colour-burst crystal
+    ])
+    def test_frequency_real_crystal_values(self, value, expected):
+        assert extract_frequency_from_value(value) == expected
+
 
 # -- extract_resistance_value tests ------------------------------------------
 
