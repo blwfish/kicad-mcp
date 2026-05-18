@@ -14,35 +14,43 @@ def extract_voltage_from_regulator(value: str) -> str:
     Returns:
         Extracted voltage as a string or "unknown" if not found
     """
-    # 78xx/79xx series
+    # 78xx/79xx series.  78xx is positive output; 79xx is negative output.
+    # The numeric value after the family prefix is the output voltage in volts
+    # (e.g. 7805 -> 5V, 7912 -> 12V).  We require `0 < voltage < 50` because
+    # values outside that range aren't real regulator part numbers and were
+    # producing nonsense like "7800 -> 0V" before this guard.
     match = re.search(r"78(\d\d)|79(\d\d)", value, re.IGNORECASE)
     if match:
+        is_negative = match.group(2) is not None
         group = match.group(1) or match.group(2)
         try:
             voltage = int(group)
-            if voltage < 50:
-                return f"{voltage}V"
+            if 0 < voltage < 50:
+                sign = "-" if is_negative else ""
+                return f"{sign}{voltage}V"
         except ValueError:
             pass
 
-    # Look for common voltage indicators
+    # Look for common voltage indicators.  The signed pattern must come
+    # before the unsigned one or "-3V" silently loses its minus sign.
     voltage_patterns = [
-        r"(\d+\.?\d*)V",
-        r"-(\d+\.?\d*)V",
-        r"(\d+\.?\d*)[_-]?V",
-        r"[_-](\d+\.?\d*)",
+        (r"-(\d+\.?\d*)V", True),
+        (r"(\d+\.?\d*)V", False),
+        (r"(\d+\.?\d*)[_-]?V", False),
+        (r"[_-](\d+\.?\d*)", False),
     ]
 
-    for pattern in voltage_patterns:
+    for pattern, negative in voltage_patterns:
         match = re.search(pattern, value, re.IGNORECASE)
         if match:
             try:
                 voltage = float(match.group(1))
                 if 0 < voltage < 50:
+                    sign = "-" if negative else ""
                     if voltage.is_integer():
-                        return f"{int(voltage)}V"
+                        return f"{sign}{int(voltage)}V"
                     else:
-                        return f"{voltage}V"
+                        return f"{sign}{voltage}V"
             except ValueError:
                 pass
 

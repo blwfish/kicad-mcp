@@ -27,7 +27,7 @@ class TestExtractVoltage:
     @pytest.mark.parametrize("value,expected", [
         ("7805", "5V"),
         ("7812", "12V"),
-        ("7905", "5V"),
+        ("7905", "-5V"),  # 79xx is the negative-voltage family
         ("LM7805", "5V"),
         ("LM7812", "12V"),
         ("LM1117-3.3", "3.3V"),
@@ -62,7 +62,7 @@ class TestExtractVoltage:
         assert extract_voltage_from_regulator(value) == expected
 
     @pytest.mark.parametrize("value,expected", [
-        ("7949", "49V"),
+        ("7949", "-49V"),  # 79xx is negative -- sign preserved
         ("7950", "unknown"),
         ("7951", "unknown"),
     ])
