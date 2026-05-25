@@ -5,6 +5,10 @@ on:
     - cron: '0 9 * * 1'  # Every Monday 09:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -16,4 +20,54 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Run audit
-        run: uv run pip-audit --desc
+        id: audit
+        run: |
+          if uv run pip-audit --desc; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Auto-fix vulnerable packages
+        if: steps.audit.outputs.clean == 'false'
+        run: |
+          uv run pip-audit --format=json -o /tmp/audit.json || true
+          python3 - <<'EOF'
+          import json, subprocess, sys
+          data = json.load(open("/tmp/audit.json"))
+          pkgs = [dep["name"] for dep in data.get("dependencies", []) if dep.get("vulns")]
+          print("Vulnerable packages to upgrade:", pkgs, flush=True)
+          for pkg in pkgs:
+              subprocess.run(["uv", "lock", "--upgrade-package", pkg], check=True)
+          EOF
+
+      - name: Open PR with fixed lock file
+        if: steps.audit.outputs.clean == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet uv.lock; then
+            echo "::error::Vulnerabilities found but uv lock upgrade produced no changes — manual fix required"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="dep-audit/fix-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git add uv.lock
+          git commit -m "fix(deps): bump vulnerable packages from dep audit"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "fix(deps): bump vulnerable packages ($(date +%Y-%m-%d))" \
+            --body "$(cat /tmp/audit.json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          lines = ['Automated fix from weekly dependency audit.\n']
+          for dep in data.get('dependencies', []):
+              for v in dep.get('vulns', []):
+                  fixes = ', '.join(v.get('fix_versions', ['none']))
+                  lines.append(f\"- **{dep['name']}** {dep['version']}: {v['id']} → fix in {fixes}\")
+          print('\n'.join(lines))
+          ")" \
+            --base main \
+            --head "$BRANCH"
