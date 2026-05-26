@@ -86,11 +86,13 @@ class TestCleanupStaleJobs:
             _autoroute_jobs["old-job"] = {
                 "status": "done",
                 "started": time.time() - 7200,  # 2 hours ago
+                "passes": 2,
                 "result": {},
             }
             _autoroute_jobs["new-job"] = {
                 "status": "done",
                 "started": time.time(),
+                "passes": 2,
                 "result": {},
             }
             _cleanup_stale_jobs()
@@ -102,6 +104,7 @@ class TestCleanupStaleJobs:
             _autoroute_jobs["running-job"] = {
                 "status": "running",
                 "started": time.time() - 7200,
+                "passes": 2,
             }
             _cleanup_stale_jobs()
             assert "running-job" in _autoroute_jobs
@@ -140,6 +143,7 @@ class TestListAutorouteJobs:
                 "status": "running",
                 "started": time.time(),
                 "pcb_path": "/tmp/test.kicad_pcb",
+                "passes": 2,
             }
         fn = _get_tool_fn(route_server, "list_autoroute_jobs")
         result = fn()
@@ -162,6 +166,7 @@ class TestCancelAutoroute:
                 "status": "running",
                 "started": time.time(),
                 "pcb_path": "/tmp/test.kicad_pcb",
+                "passes": 2,
                 "process": MagicMock(),
             }
         fn = _get_tool_fn(route_server, "cancel_autoroute")
@@ -184,6 +189,7 @@ class TestPollAutoroute:
                 "status": "running",
                 "started": time.time(),
                 "pcb_path": "/tmp/test.kicad_pcb",
+                "passes": 2,
             }
         fn = _get_tool_fn(route_server, "poll_autoroute")
         result = fn("running")
@@ -195,6 +201,7 @@ class TestPollAutoroute:
                 "status": "done",
                 "started": time.time(),
                 "pcb_path": "/tmp/test.kicad_pcb",
+                "passes": 2,
                 "result": {"traces_added": 50, "unrouted": 0},
             }
         fn = _get_tool_fn(route_server, "poll_autoroute")

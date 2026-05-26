@@ -32,6 +32,22 @@ from kicad_mcp.utils.keepout_helpers import (
 
 logger = logging.getLogger(__name__)
 
+# KiCad internal class names for track/via discrimination.
+# Single source of truth — referenced in both _export_dsn and _import_ses scripts.
+_PCB_TRACK_CLASS = "PCB_TRACK"
+_PCB_VIA_CLASS = "PCB_VIA"
+
+_EDGE_CUTS_LAYER = "Edge.Cuts"
+
+
+def _jar_version_key(path: str) -> tuple:
+    """Return a (major, minor, patch) tuple for sorting freerouting JAR paths."""
+    name = os.path.basename(path)
+    m = re.search(r"freerouting[^0-9]*(\d+)\.(\d+)(?:\.(\d+))?", name)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+    return (0, 0, 0)
+
 # Known locations for the FreeRouter JAR (exact-name fallbacks before the glob search below)
 _FREEROUTER_SEARCH_PATHS = [
     os.path.expanduser("~/freerouting.jar"),
@@ -91,7 +107,7 @@ def _find_freerouter_jar(explicit_path: Optional[str] = None) -> Optional[str]:
             os.path.join(search_dir, "freerouting*.jar"),
             os.path.join(search_dir, "*", "freerouting*.jar"),
         ]:
-            matches = sorted(glob.glob(pattern), reverse=True)  # newest version first
+            matches = sorted(glob.glob(pattern), key=_jar_version_key, reverse=True)
             if matches:
                 return matches[0]
 
@@ -121,24 +137,26 @@ def _find_java() -> Optional[str]:
     return None
 
 
+_FREEROUTER_INCOMPLETE_PATTERNS = [
+    re.compile(r"(\d+)\s+connections?\s+not\s+found", re.IGNORECASE),
+    re.compile(r"(\d+)\s+incomplete", re.IGNORECASE),
+]
+
+
 def _parse_freerouter_incomplete(stdout: str) -> int:
     """Parse FreeRouter stdout to find the number of incomplete connections.
 
+    Patterns are tried in priority order; the first match across all lines wins.
     FreeRouter prints lines like:
         "0 connections not found"
         "3 connections not found"
     """
-    for line in reversed(stdout.split("\n")):
-        m = re.search(r"(\d+)\s+connections?\s+not\s+found", line, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-
-    # Also check for "x incomplete" pattern
-    for line in reversed(stdout.split("\n")):
-        m = re.search(r"(\d+)\s+incomplete", line, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-
+    lines = stdout.split("\n")
+    for pattern in _FREEROUTER_INCOMPLETE_PATTERNS:
+        for line in reversed(lines):
+            m = pattern.search(line)
+            if m:
+                return int(m.group(1))
     return 0  # Assume success if no indication of failure
 
 
@@ -171,8 +189,8 @@ pcbnew.ExportSpecctraDSN(board, params["dsn_path"])
 board.Save(params["pcb_path"])
 
 # Count tracks/vias before routing
-tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
-vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
+tracks = sum(1 for t in board.GetTracks() if t.GetClass() == params["track_class"])
+vias = sum(1 for t in board.GetTracks() if t.GetClass() == params["via_class"])
 
 print(json.dumps({
     "status": "ok",
@@ -187,6 +205,8 @@ print(json.dumps({
         "pcb_path": pcb_path,
         "dsn_path": dsn_path,
         "remove_zones": remove_zones,
+        "track_class": _PCB_TRACK_CLASS,
+        "via_class": _PCB_VIA_CLASS,
     }, timeout=30.0)
 
 
@@ -204,8 +224,8 @@ pcbnew.ImportSpecctraSES(board, params["ses_path"])
 board.Save(params["pcb_path"])
 
 # Count results
-tracks = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_TRACK")
-vias = sum(1 for t in board.GetTracks() if t.GetClass() == "PCB_VIA")
+tracks = sum(1 for t in board.GetTracks() if t.GetClass() == params["track_class"])
+vias = sum(1 for t in board.GetTracks() if t.GetClass() == params["via_class"])
 
 # Count nets
 netinfo = board.GetNetInfo()
@@ -239,6 +259,8 @@ print(json.dumps({
     return run_pcbnew_script(import_script, params={
         "pcb_path": pcb_path,
         "ses_path": ses_path,
+        "track_class": _PCB_TRACK_CLASS,
+        "via_class": _PCB_VIA_CLASS,
     }, timeout=30.0)
 
 
@@ -412,7 +434,9 @@ def _run_full_autoroute(
         if "error" in import_result:
             return {"error": f"SES import failed: {import_result['error']}"}
 
-        unconnected = import_result.get("unconnected_after_routing", 0)
+        if "unconnected_after_routing" not in import_result:
+            return {"error": "SES import did not report unconnected count — routing result unknown"}
+        unconnected = import_result["unconnected_after_routing"]
         if unconnected > 0:
             note = (
                 f"WARNING: {unconnected} net(s) still unconnected after routing. "
@@ -592,7 +616,7 @@ spacing = params["spacing_mm"]
 outline = None
 for dwg in board.GetDrawings():
     layer_name = board.GetLayerName(dwg.GetLayer())
-    if "Edge.Cuts" in layer_name:
+    if layer_name == _EDGE_CUTS_LAYER:
         bbox = dwg.GetBoundingBox()
         if outline is None:
             outline = [pcbnew.ToMM(bbox.GetX()), pcbnew.ToMM(bbox.GetY()),
@@ -752,7 +776,8 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
 
             ns = project["net_settings"]
             classes = ns.get("classes", [])
-            assignments = ns.get("netclass_assignments") or {}
+            _raw_assignments = ns.get("netclass_assignments")
+            assignments = _raw_assignments if _raw_assignments is not None else {}
 
             for cls_name, cls_def in net_classes.items():
                 nets = cls_def.get("nets", [])
@@ -972,7 +997,7 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
                     "elapsed_s": elapsed,
                     "phase": job.get("phase", "unknown"),
                     "current_pass": job.get("current_pass", 0),
-                    "total_passes": job.get("passes", 1),
+                    "total_passes": job["passes"],
                 }
 
             # Done, error, or cancelled — retrieve and clean up
