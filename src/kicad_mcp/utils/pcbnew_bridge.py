@@ -101,6 +101,66 @@ def _get_kicad_env() -> Dict[str, str]:
     return env
 
 
+def _extract_last_json_object(stdout: str) -> Optional[Dict[str, Any]]:
+    """Find the last balanced ``{...}`` block in *stdout* and parse it as JSON.
+
+    Walks forward through the string tracking brace depth AND string-literal
+    state, so braces inside JSON string values (e.g. ``"path": "{a}/{b}"``)
+    don't affect nesting.  Handles escape sequences inside strings (``\\"``,
+    ``\\\\``, etc.) by skipping the escaped char.
+
+    Returns the last balanced object that parses successfully, or ``None``
+    if none found.  This is robust to:
+
+    - single-line JSON output (``print(json.dumps(result))``)
+    - multi-line indented JSON (``json.dumps(result, indent=2)``)
+    - JSON followed by SWIG/GTK warnings on stdout
+    - multiple JSON objects in stdout (returns the last that parses)
+    - braces inside string values
+
+    An earlier ``startswith("{")`` line-scan approach only handled single-line
+    output and silently failed for indented JSON.
+    """
+    last_parsed: Optional[Dict[str, Any]] = None
+    i = 0
+    n = len(stdout)
+    while i < n:
+        if stdout[i] != "{":
+            i += 1
+            continue
+        # Candidate opening brace — scan forward for the matching close.
+        depth = 1
+        in_string = False
+        j = i + 1
+        while j < n and depth > 0:
+            c = stdout[j]
+            if in_string:
+                if c == "\\":
+                    # Skip escape sequence ("\\\\", "\\\"", "\\n", etc.)
+                    j += 2
+                    continue
+                if c == '"':
+                    in_string = False
+            else:
+                if c == '"':
+                    in_string = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+            j += 1
+        if depth == 0:
+            try:
+                last_parsed = json.loads(stdout[i:j])
+            except json.JSONDecodeError:
+                pass
+            i = j  # advance past this balanced span
+        else:
+            # Unbalanced from this {, try the next position
+            i += 1
+    return last_parsed
+
+
 def _filter_stderr(stderr: str) -> str:
     """Remove known-safe KiCad warnings from stderr, keep real errors."""
     lines = stderr.split("\n")
@@ -198,23 +258,15 @@ def run_pcbnew_script(
         if not stdout:
             raise RuntimeError("pcbnew script produced no output")
 
-        # Find the JSON object in stdout.  SWIG memory-leak warnings
-        # (e.g. "swig/python detected a memory leak of type 'ZONE *'")
-        # can appear on stdout after the script's print(), so we scan
-        # backwards for the first line that parses as JSON.
-        parsed = None
-        for line in reversed(stdout.split("\n")):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    parsed = json.loads(line)
-                    break
-                except json.JSONDecodeError:
-                    continue
+        # Extract the last balanced JSON object from stdout. SWIG/GTK
+        # warnings can appear on stdout before or after the script's
+        # print(); the scanner correctly handles indented JSON, multiple
+        # objects, and braces inside string values.
+        parsed = _extract_last_json_object(stdout)
         if parsed is None:
             truncated = "  (...truncated)" if len(stdout) > 2000 else ""
             raise RuntimeError(
-                f"pcbnew script output contains no valid JSON line\n"
+                f"pcbnew script output contains no valid JSON object\n"
                 f"Output was: {stdout[:2000]}{truncated}"
             )
 

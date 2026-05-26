@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from kicad_mcp.utils.pcbnew_bridge import (
+    _extract_last_json_object,
     _filter_stderr,
     _get_kicad_python,
     run_pcbnew_script,
@@ -205,3 +206,87 @@ class TestRunPcbnewScript:
         run_pcbnew_script('pass', params={"key": "value"})
         for f in created_files:
             assert not os.path.exists(f), f"Temp file not cleaned up: {f}"
+
+
+# -- _extract_last_json_object tests ----------------------------------------
+
+class TestExtractLastJsonObject:
+    """The JSON extractor handles scripts that produce JSON in various shapes,
+    mixed with SWIG/GTK diagnostic chatter on stdout."""
+
+    def test_single_line_json(self):
+        result = _extract_last_json_object('{"status": "ok"}')
+        assert result == {"status": "ok"}
+
+    def test_multi_line_indented_json(self):
+        stdout = '{\n  "status": "ok",\n  "data": [1, 2, 3]\n}'
+        result = _extract_last_json_object(stdout)
+        assert result == {"status": "ok", "data": [1, 2, 3]}
+
+    def test_json_preceded_by_swig_warning(self):
+        stdout = "swig/python detected memory leak\n{\"status\": \"ok\"}"
+        assert _extract_last_json_object(stdout) == {"status": "ok"}
+
+    def test_json_followed_by_swig_warning(self):
+        stdout = '{"status": "ok"}\nswig/python detected memory leak'
+        assert _extract_last_json_object(stdout) == {"status": "ok"}
+
+    def test_multiple_objects_returns_last(self):
+        stdout = '{"first": 1}\n{"second": 2}'
+        assert _extract_last_json_object(stdout) == {"second": 2}
+
+    def test_brace_inside_string_value(self):
+        """Braces inside a JSON string literal must NOT affect depth tracking."""
+        stdout = '{"path": "/tmp/{a}/{b}", "valid": true}'
+        result = _extract_last_json_object(stdout)
+        assert result == {"path": "/tmp/{a}/{b}", "valid": True}
+
+    def test_escaped_quote_inside_string(self):
+        """\\" inside a string value must not be treated as string-end."""
+        stdout = '{"msg": "He said \\"hi\\" loudly"}'
+        result = _extract_last_json_object(stdout)
+        assert result == {"msg": 'He said "hi" loudly'}
+
+    def test_escaped_backslash_then_quote(self):
+        r"""\\\\ then \" — backslash escapes, then quote ends string."""
+        stdout = r'{"path": "C:\\test\\"}'
+        result = _extract_last_json_object(stdout)
+        assert result == {"path": "C:\\test\\"}
+
+    def test_no_json_returns_none(self):
+        assert _extract_last_json_object("no json here") is None
+        assert _extract_last_json_object("") is None
+
+    def test_unbalanced_braces_returns_none(self):
+        """Unclosed { should not return a partial parse."""
+        assert _extract_last_json_object('{"status": "ok"') is None
+
+    def test_invalid_json_in_balanced_braces_returns_none(self):
+        """{not valid json} is balanced but doesn't parse."""
+        assert _extract_last_json_object("{not valid json}") is None
+
+    def test_invalid_then_valid_returns_valid(self):
+        """An earlier invalid object doesn't block a later valid one."""
+        stdout = '{not valid}\n{"status": "ok"}'
+        assert _extract_last_json_object(stdout) == {"status": "ok"}
+
+    def test_nested_objects(self):
+        stdout = '{"outer": {"inner": {"deep": "value"}}, "list": [1, 2]}'
+        result = _extract_last_json_object(stdout)
+        assert result == {"outer": {"inner": {"deep": "value"}}, "list": [1, 2]}
+
+    def test_pretty_printed_with_strings_containing_braces(self):
+        """Realistic case: pretty-printed JSON whose values contain { and }."""
+        stdout = (
+            'Some warning\n'
+            '{\n'
+            '  "status": "ok",\n'
+            '  "message": "couldn\'t find {symbol} in library",\n'
+            '  "data": {"nested": 1}\n'
+            '}\n'
+            'trailing warning'
+        )
+        result = _extract_last_json_object(stdout)
+        assert result["status"] == "ok"
+        assert result["data"] == {"nested": 1}
+        assert "{symbol}" in result["message"]
