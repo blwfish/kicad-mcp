@@ -437,6 +437,7 @@ print(json.dumps({
     "component_count": len(placement_list),
     "placements": placement_list,
     "connectivity": conn_summary[:20],
+    "connectivity_truncated": len(conn_summary) > 20,
     "hub_component": sorted_refs[0] if sorted_refs else None,
     "note": "These are SUGGESTIONS. Apply with move_footprint, then run audit_all to verify.",
 }))

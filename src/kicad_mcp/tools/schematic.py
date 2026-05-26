@@ -147,7 +147,8 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             "issues": len(issues),
             "errors": errors,
             "warnings": warnings,
-            "details": details[:20],  # cap output size
+            "details": details[:20],
+            "details_truncated": len(details) > 20,
         }
 
     @mcp.tool()

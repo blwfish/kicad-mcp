@@ -782,6 +782,7 @@ print(json.dumps({
     },
     "failed_placements": failed,
     "placements": moved[:10],
+    "placements_truncated": len(moved) > 10,
 }))
 """
     return run_pcbnew_script(script, params={
@@ -1041,9 +1042,12 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         pipeline_result["net_count"] = step["net_count"]
 
         if step["skipped_count"] > 0:
+            _missing = step["components_without_footprint"]
+            _extra = len(_missing) - 10
+            _suffix = f" (and {_extra} more)" if _extra > 0 else ""
             pipeline_result["warnings"] = [
                 f"{step['skipped_count']} component(s) skipped (no footprint): "
-                f"{', '.join(step['components_without_footprint'][:10])}"
+                f"{', '.join(_missing[:10])}{_suffix}"
             ]
 
         if not components:

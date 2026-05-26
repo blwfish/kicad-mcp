@@ -1012,8 +1012,11 @@ print(json.dumps({
     "courtyard_overlaps": courtyard_overlaps,
     "keepout_violations": keepout_violations,
     "pad_violations": pad_violations[:30],
+    "pad_violations_truncated": len(pad_violations) > 30,
     "errors": errors[:20],
+    "errors_truncated": len(errors) > 20,
     "warnings": warnings[:20],
+    "warnings_truncated": len(warnings) > 20,
     "summary": summary,
 }))
 """

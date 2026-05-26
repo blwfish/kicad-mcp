@@ -571,6 +571,7 @@ print(json.dumps({
     "pad_violations": len(pad_violations),
     "error_count": len(errors),
     "errors": errors[:20],
+    "errors_truncated": len(errors) > 20,
 }))
 """
     return run_pcbnew_script(script, params={"pcb_path": pcb_path})
@@ -814,7 +815,9 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
                 recheck = _run_pre_route_check(pcb_path)
                 if recheck.get("status") == "ok" and not recheck.get("route_ready", True):
                     # Still have issues (likely pad clearance, not just courtyards)
-                    preflight_info["errors_after_fix"] = recheck.get("errors", [])[:10]
+                    _errors_raw = recheck.get("errors", [])
+                    preflight_info["errors_after_fix"] = _errors_raw[:10]
+                    preflight_info["errors_after_fix_truncated"] = len(_errors_raw) > 10
                     preflight_info["route_ready_after_fix"] = False
                     # Continue anyway — FreeRouter may still produce a usable result
                     logger.warning("Pre-route: still %d error(s) after fix, routing anyway",
@@ -824,7 +827,9 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
             else:
                 # Pad clearance issues only — can't auto-fix, but warn and continue
                 preflight_info["pad_violations"] = preflight.get("pad_violations", 0)
-                preflight_info["errors"] = preflight.get("errors", [])[:10]
+                _errors_raw = preflight.get("errors", [])
+                preflight_info["errors"] = _errors_raw[:10]
+                preflight_info["errors_truncated"] = len(_errors_raw) > 10
                 logger.warning("Pre-route: %d error(s) (no courtyard overlaps to fix)",
                                preflight.get("error_count", 0))
 
