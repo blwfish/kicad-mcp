@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 _current_schematic: Any | None = None
 
+SCHEMATIC_GRID_MM = 1.27  # KiCad schematic grid (50 mils)
+
 
 def _require_schematic() -> Any:
     """Return the current schematic or raise."""
@@ -203,6 +205,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         if len(position) != 2:
             return {"error": "position must be [x, y]"}
 
+        position = list(_snap(position[0], position[1]))
         comp = sch.components.add(
             lib_id=lib_id,
             reference=reference,
@@ -665,6 +668,11 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         # Fallback: return first component (it has all pins in its pin list)
         return all_comps[0]
 
+    def _snap(x: float, y: float) -> tuple[float, float]:
+        """Round both coordinates to the nearest KiCad schematic grid step."""
+        g = SCHEMATIC_GRID_MM
+        return (round(round(x / g) * g, 6), round(round(y / g) * g, 6))
+
     def _kicad_pin_position(comp, pin_number: str):
         """Return the absolute pin-tip position as KiCad computes it.
 
@@ -818,6 +826,76 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             "label_uuids": label_uuids,
         }
 
+    @mcp.tool()
+    def add_wire_between_pins(
+        comp1_ref: str,
+        pin1: str,
+        comp2_ref: str,
+        pin2: str,
+    ) -> dict:
+        """Route a wire directly between two component pins.
+
+        Looks up the physical pin-tip positions, emits a short stub from
+        each pin, then connects the stubs with a Manhattan (L-shaped) path.
+        All coordinates are snapped to the KiCad 1.27 mm grid.
+
+        Use this instead of add_wire when you want the wire to connect two
+        specific pins without computing coordinates manually.
+
+        Args:
+            comp1_ref: First component reference (e.g., R1).
+            pin1: First component pin number (e.g., "1").
+            comp2_ref: Second component reference (e.g., C1).
+            pin2: Second component pin number (e.g., "1").
+        """
+        sch = _require_schematic()
+
+        segments: list[dict] = []
+
+        def _wire(x1: float, y1: float, x2: float, y2: float) -> str | None:
+            if abs(x1 - x2) < 1e-6 and abs(y1 - y2) < 1e-6:
+                return None
+            uuid = sch.add_wire(start=(x1, y1), end=(x2, y2))
+            segments.append({"start": [x1, y1], "end": [x2, y2], "uuid": uuid})
+            return uuid
+
+        results = []
+        pin_tips = []
+        stub_ends = []
+
+        for ref, pin_num in [(comp1_ref, pin1), (comp2_ref, pin2)]:
+            comp = _find_component_for_pin(sch, ref, pin_num)
+            if comp is None:
+                return {"error": f"Component {ref!r} not found"}
+            tip = _kicad_pin_position(comp, pin_num)
+            if tip is None:
+                return {"error": f"Pin {pin_num!r} not found on {ref!r}"}
+            dx, dy = _pin_wire_offset(comp, pin_num, 2.54)
+            sx, sy = _snap(tip.x + dx, tip.y + dy)
+            tx, ty = _snap(tip.x, tip.y)
+            _wire(tx, ty, sx, sy)
+            pin_tips.append((tx, ty))
+            stub_ends.append((sx, sy))
+            results.append({"ref": ref, "pin": pin_num, "tip": [tx, ty], "stub_end": [sx, sy]})
+
+        (x1, y1), (x2, y2) = stub_ends
+
+        if abs(x1 - x2) < 1e-6 or abs(y1 - y2) < 1e-6:
+            # Straight horizontal or vertical — single segment
+            _wire(x1, y1, x2, y2)
+        else:
+            # L-shape: horizontal first, then vertical
+            elbow_x, elbow_y = _snap(x2, y1)
+            _wire(x1, y1, elbow_x, elbow_y)
+            _wire(elbow_x, elbow_y, x2, y2)
+
+        return {
+            "status": "ok",
+            "pins": results,
+            "segments": segments,
+            "segment_count": len(segments),
+        }
+
     # ------------------------------------------------------------------
     # Pin collision detection
     # ------------------------------------------------------------------
@@ -907,6 +985,8 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         if len(start_pos) != 2 or len(end_pos) != 2:
             return {"error": "Positions must be [x, y] coordinates"}
 
+        start_pos = list(_snap(start_pos[0], start_pos[1]))
+        end_pos = list(_snap(end_pos[0], end_pos[1]))
         wire_uuid = sch.add_wire(start=tuple(start_pos), end=tuple(end_pos))
         return {
             "status": "ok",
@@ -951,6 +1031,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         if len(position) != 2:
             return {"error": "Position must be [x, y] coordinates"}
 
+        position = list(_snap(position[0], position[1]))
         label_uuid = sch.add_label(
             text=text, position=tuple(position), rotation=rotation, size=size
         )
@@ -1098,6 +1179,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
 
         comp = matches[0]
         old_pos = [comp.position.x, comp.position.y] if comp.position else None
+        position = list(_snap(position[0], position[1]))
         comp.position = tuple(position)
 
         return {

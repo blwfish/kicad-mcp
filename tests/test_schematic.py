@@ -80,13 +80,13 @@ class TestAddAndListComponents:
             lib_id="Device:R",
             reference="R1",
             value="10k",
-            position=[100.0, 100.0],
+            position=[101.6, 101.6],  # 80 × 1.27 — exactly on-grid
         )
         assert result["status"] == "ok"
         assert result["reference"] == "R1"
         assert result["lib_id"] == "Device:R"
         assert result["value"] == "10k"
-        assert result["position"] == [100.0, 100.0]
+        assert result["position"] == [101.6, 101.6]
 
     def test_add_component_with_footprint(self, sch_server):
         fn = _get_tool_fn(sch_server, "add_component")
@@ -158,11 +158,12 @@ class TestAddWire:
 
     def test_add_wire_basic(self, sch_server):
         fn = _get_tool_fn(sch_server, "add_wire")
-        result = fn(start_pos=[100.0, 100.0], end_pos=[200.0, 100.0])
+        # 101.6 = 80 × 1.27, 203.2 = 160 × 1.27 — both exactly on-grid
+        result = fn(start_pos=[101.6, 101.6], end_pos=[203.2, 101.6])
         assert result["status"] == "ok"
         assert "wire_uuid" in result
-        assert result["start"] == [100.0, 100.0]
-        assert result["end"] == [200.0, 100.0]
+        assert result["start"] == [101.6, 101.6]
+        assert result["end"] == [203.2, 101.6]
 
     def test_add_wire_bad_positions(self, sch_server):
         fn = _get_tool_fn(sch_server, "add_wire")
@@ -195,10 +196,10 @@ class TestAddLabel:
 
     def test_add_label_basic(self, sch_server):
         fn = _get_tool_fn(sch_server, "add_label")
-        result = fn(text="GND", position=[100.0, 100.0])
+        result = fn(text="GND", position=[101.6, 101.6])  # 80 × 1.27 — on-grid
         assert result["status"] == "ok"
         assert result["text"] == "GND"
-        assert result["position"] == [100.0, 100.0]
+        assert result["position"] == [101.6, 101.6]
         assert "label_uuid" in result
 
     def test_add_label_with_rotation(self, sch_server):
@@ -225,6 +226,90 @@ class TestAddLabel:
         rm_fn = _get_tool_fn(sch_server, "remove_label")
         result = rm_fn(label_uuid="nonexistent-uuid")
         assert "error" in result
+
+
+# -- grid snap tests ---------------------------------------------------------
+
+class TestGridSnap:
+    """Coordinates passed to schematic tools are snapped to the 1.27 mm KiCad grid."""
+
+    @pytest.fixture(autouse=True)
+    def _create_schematic(self, sch_server):
+        _get_tool_fn(sch_server, "create_schematic")(name="test")
+
+    def test_add_component_on_grid_unchanged(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_component")
+        result = fn(lib_id="Device:R", reference="R1", value="10k", position=[101.6, 101.6])
+        assert result["position"] == [101.6, 101.6]
+
+    def test_add_component_off_grid_snaps(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_component")
+        # 100.0 / 1.27 = 78.74 → 79 → 79 × 1.27 = 100.33
+        result = fn(lib_id="Device:R", reference="R1", value="10k", position=[100.0, 100.0])
+        assert result["position"] == [100.33, 100.33]
+
+    def test_add_wire_on_grid_unchanged(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_wire")
+        result = fn(start_pos=[101.6, 101.6], end_pos=[203.2, 101.6])
+        assert result["start"] == [101.6, 101.6]
+        assert result["end"] == [203.2, 101.6]
+
+    def test_add_wire_off_grid_snaps(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_wire")
+        # 100.0 → 100.33 (79 × 1.27);  200.0 → 199.39 (157 × 1.27)
+        result = fn(start_pos=[100.0, 100.0], end_pos=[200.0, 100.0])
+        assert result["start"] == [100.33, 100.33]
+        assert result["end"] == [199.39, 100.33]
+
+    def test_add_label_on_grid_unchanged(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_label")
+        result = fn(text="GND", position=[101.6, 101.6])
+        assert result["position"] == [101.6, 101.6]
+
+    def test_add_label_off_grid_snaps(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_label")
+        result = fn(text="GND", position=[100.0, 100.0])
+        assert result["position"] == [100.33, 100.33]
+
+    def test_snap_rounds_down(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_label")
+        # 0.5 / 1.27 = 0.394 → rounds to 0 → 0.0
+        result = fn(text="X", position=[0.5, 0.0])
+        assert result["position"] == [0.0, 0.0]
+
+    def test_snap_rounds_up(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_label")
+        # 1.0 / 1.27 = 0.787 → rounds to 1 → 1.27
+        result = fn(text="X", position=[1.0, 0.0])
+        assert result["position"] == [1.27, 0.0]
+
+
+# -- add_wire_between_pins tests ---------------------------------------------
+
+class TestAddWireBetweenPins:
+
+    @pytest.fixture(autouse=True)
+    def _create_schematic(self, sch_server):
+        _get_tool_fn(sch_server, "create_schematic")(name="test")
+
+    def test_error_first_component_not_found(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_wire_between_pins")
+        result = fn(comp1_ref="R99", pin1="1", comp2_ref="R2", pin2="1")
+        assert "error" in result
+        assert "R99" in result["error"]
+
+    def test_error_second_component_not_found(self, sch_server):
+        add_fn = _get_tool_fn(sch_server, "add_component")
+        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[101.6, 101.6])
+        fn = _get_tool_fn(sch_server, "add_wire_between_pins")
+        # R1 exists but its pin lookup either returns None (no KiCad library)
+        # or succeeds; either way R2 definitely doesn't exist → error
+        result = fn(comp1_ref="R1", pin1="1", comp2_ref="R99", pin2="1")
+        assert "error" in result
+
+    def test_tool_is_registered(self, sch_server):
+        fn = _get_tool_fn(sch_server, "add_wire_between_pins")
+        assert fn is not None
 
 
 # -- No schematic loaded tests -----------------------------------------------
