@@ -1075,7 +1075,15 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             "passive": HierarchicalLabelShape.PASSIVE,
             "unspecified": HierarchicalLabelShape.UNSPECIFIED,
         }
-        shape_enum = shape_map.get(shape.lower(), HierarchicalLabelShape.INPUT)
+        # Reject unknown shape explicitly — a silent default-to-INPUT
+        # would hide caller typos (e.g. "inptu" → input) and the wrong
+        # shape would land on the schematic with no feedback.
+        shape_key = shape.lower()
+        if shape_key not in shape_map:
+            return {
+                "error": f"Unknown shape {shape!r}. Valid: {sorted(shape_map)}"
+            }
+        shape_enum = shape_map[shape_key]
 
         label_uuid = sch.add_hierarchical_label(
             text=text, position=tuple(position), shape=shape_enum, rotation=rotation, size=size
