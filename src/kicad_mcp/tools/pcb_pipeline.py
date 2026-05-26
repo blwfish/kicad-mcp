@@ -581,23 +581,26 @@ def get_extents(ref):
     return info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"]
 
 def fits_on_board(cx, cy, el, er, et, eb):
-    return (cx - el >= board_xmin + margin and cx + er <= board_xmax - margin and
-            cy - et >= board_ymin + margin and cy + eb <= board_ymax - margin)
-
-def box_overlaps(a, b):
-    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+    # Strict containment via canonical aabb_inside — touching the margin
+    # boundary counts as not fitting (consistent with rect_inside semantics
+    # in geometry.py). The footprint box must be strictly inside the
+    # margin-shrunk board outline.
+    fp_box = (cx - el, cy - et, cx + er, cy + eb)
+    safe = (board_xmin + margin, board_ymin + margin,
+            board_xmax - margin, board_ymax - margin)
+    return aabb_inside(fp_box, safe)
 
 def collides(cx, cy, el, er, et, eb):
     box = (cx - el - spacing, cy - et - spacing, cx + er + spacing, cy + eb + spacing)
     for pb in placed_boxes:
-        if box_overlaps(box, pb):
+        if aabb_overlap(box, pb):
             return True
     return False
 
 def hits_keepout(cx, cy, el, er, et, eb):
     box = (cx - el, cy - et, cx + er, cy + eb)
     for kz in keepout_boxes:
-        if box_overlaps(box, kz):
+        if aabb_overlap(box, kz):
             return True
     return False
 

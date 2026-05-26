@@ -449,33 +449,24 @@ class TestHelperLogic:
 
     @pytest.fixture(autouse=True)
     def setup_helpers(self):
-        """Execute the KEEPOUT_HELPER code to get geometry functions."""
+        """Execute the live GEOMETRY_HELPER (embedded into KEEPOUT_HELPER) to
+        get the actual geometry primitives that pcbnew subprocess scripts run.
+
+        Comprehensive boundary coverage for these primitives lives in
+        ``test_geometry.py``; the cases here are smoke tests that the helper
+        is wired into KEEPOUT_HELPER and behaves with the strict semantics
+        the rest of the codebase relies on.
+        """
+        from kicad_mcp.utils.geometry import GEOMETRY_HELPER
         from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
 
-        # The KEEPOUT_HELPER string defines functions that use pcbnew internally
-        # (extract_keepouts, get_board_outline), but the geometry helpers are
-        # pure Python. We exec just the geometry functions.
-        namespace = {}
-        exec(
-            "def rects_overlap(a, b):\n"
-            '    return (a["x_min_mm"] < b["x_max_mm"] and a["x_max_mm"] > b["x_min_mm"] and\n'
-            '            a["y_min_mm"] < b["y_max_mm"] and a["y_max_mm"] > b["y_min_mm"])\n'
-            "\n"
-            "def overlap_area(a, b):\n"
-            '    dx = max(0, min(a["x_max_mm"], b["x_max_mm"]) - max(a["x_min_mm"], b["x_min_mm"]))\n'
-            '    dy = max(0, min(a["y_max_mm"], b["y_max_mm"]) - max(a["y_min_mm"], b["y_min_mm"]))\n'
-            "    return round(dx * dy, 2)\n"
-            "\n"
-            "def rect_inside(inner, outer):\n"
-            '    return (inner["x_min_mm"] >= outer["x_min_mm"] and inner["x_max_mm"] <= outer["x_max_mm"] and\n'
-            '            inner["y_min_mm"] >= outer["y_min_mm"] and inner["y_max_mm"] <= outer["y_max_mm"])\n',
-            namespace,
-        )
+        namespace: dict = {}
+        exec(GEOMETRY_HELPER, namespace)
         self.rects_overlap = namespace["rects_overlap"]
         self.overlap_area = namespace["overlap_area"]
         self.rect_inside = namespace["rect_inside"]
 
-        # Also verify these functions exist in the actual KEEPOUT_HELPER string
+        # The same primitives must be accessible to embedded scripts via KEEPOUT_HELPER
         assert "rects_overlap" in KEEPOUT_HELPER
         assert "overlap_area" in KEEPOUT_HELPER
         assert "rect_inside" in KEEPOUT_HELPER
@@ -533,9 +524,15 @@ class TestHelperLogic:
         assert self.rect_inside(inner, outer) is False
 
     def test_exactly_on_boundary(self):
+        """Strict semantics: a rect coincident with its outer is NOT inside.
+
+        Touching the boundary is treated as the clean (non-inside) case so
+        that the audit only flags clear-cut violations; touching geometry
+        falls through to KiCad's DRC for final adjudication.
+        """
         inner = self._rect(0, 0, 100, 100)
         outer = self._rect(0, 0, 100, 100)
-        assert self.rect_inside(inner, outer) is True
+        assert self.rect_inside(inner, outer) is False
 
     def test_completely_outside(self):
         inner = self._rect(200, 200, 210, 210)

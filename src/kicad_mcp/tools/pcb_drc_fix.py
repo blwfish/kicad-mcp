@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from fastmcp import FastMCP
 
+from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.keepout_helpers import COURTYARD_BBOX_TUPLE_HELPER
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = 0.5
 max_passes = 3
 
-""" + COURTYARD_BBOX_TUPLE_HELPER + """
+""" + COURTYARD_BBOX_TUPLE_HELPER + GEOMETRY_HELPER + """
 
 outline = None
 try:
@@ -155,7 +156,7 @@ except Exception:
 def bbox_inside_board(bx0, by0, bx1, by1):
     if outline is None:
         return True
-    return bx0 >= outline[0] and by0 >= outline[1] and bx1 <= outline[2] and by1 <= outline[3]
+    return aabb_inside((bx0, by0, bx1, by1), outline)
 
 move_count = 0
 for pass_num in range(1, max_passes + 1):
@@ -301,19 +302,20 @@ try:
 except Exception:
     board_valid = False
 
-def _aabb_hit(a, bx_min, by_min, bx_max, by_max):
-    return (a.GetX() < bx_max and a.GetRight() > bx_min and
-            a.GetY() < by_max and a.GetBottom() > by_min)
+def _bbox_to_tuple(b):
+    return (b.GetX(), b.GetY(), b.GetRight(), b.GetBottom())
 
 def has_pad_overlap(text_bbox, own_ref):
+    text_t = _bbox_to_tuple(text_bbox)
     for pad in all_pads:
         if pad["reference"] == own_ref:
             continue
-        if _aabb_hit(text_bbox, pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
+        if aabb_overlap(text_t, (pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"])):
             return True
     return False
 
 def has_text_overlap(text_bbox, own_ref, own_layer, own_obj):
+    text_t = _bbox_to_tuple(text_bbox)
     for si in all_silk:
         if si["obj"] is own_obj:
             continue
@@ -324,8 +326,7 @@ def has_text_overlap(text_bbox, own_ref, own_layer, own_obj):
         visible = si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else True
         if not visible:
             continue
-        ob = si["obj"].GetBoundingBox()
-        if _aabb_hit(text_bbox, ob.GetX(), ob.GetY(), ob.GetRight(), ob.GetBottom()):
+        if aabb_overlap(text_t, _bbox_to_tuple(si["obj"].GetBoundingBox())):
             return True
     return False
 
@@ -335,10 +336,7 @@ def has_any_overlap(text_bbox, own_ref, own_layer, own_obj):
 def in_board(text_bbox):
     if not board_valid:
         return True
-    return (board_bb.GetX() <= text_bbox.GetX() and
-            text_bbox.GetRight() <= board_bb.GetRight() and
-            board_bb.GetY() <= text_bbox.GetY() and
-            text_bbox.GetBottom() <= board_bb.GetBottom())
+    return aabb_inside(_bbox_to_tuple(text_bbox), _bbox_to_tuple(board_bb))
 
 MARGIN = pcbnew.FromMM(0.3)
 moved = 0; hidden_count = 0

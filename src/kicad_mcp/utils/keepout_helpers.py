@@ -16,15 +16,24 @@ Usage in f-string scripts:
     \"\"\"
 
 If you modify these helpers, all consumers pick up the change automatically.
+
+The pure-geometry primitives (rects_overlap, rect_inside, overlap_area,
+signed_gap_mm, aabb_overlap, aabb_inside) live in ``utils.geometry`` and
+are made available to embedded scripts by prepending
+:data:`~kicad_mcp.utils.geometry.GEOMETRY_HELPER` to KEEPOUT_HELPER.  Both
+the Python-side ``import`` and the embedded-script string reference the
+same source.
 """
+
+from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 
 # ---------------------------------------------------------------------------
 # Keepout zone helpers
-# Provides: extract_keepouts(), get_board_outline(), rects_overlap(),
-#           overlap_area(), rect_inside()
+# Provides: extract_keepouts(), get_board_outline(), and (via GEOMETRY_HELPER)
+#           rects_overlap(), overlap_area(), rect_inside(), signed_gap_mm()
 # Requires: pcbnew in scope (imported inside functions)
 # ---------------------------------------------------------------------------
-KEEPOUT_HELPER = """
+KEEPOUT_HELPER = GEOMETRY_HELPER + """
 def extract_keepouts(board):
     import pcbnew
     keepouts = []
@@ -104,18 +113,6 @@ def get_board_outline(board):
         "height_mm": round(max(ys) - min(ys), 3),
     }
 
-def rects_overlap(a, b):
-    return (a["x_min_mm"] < b["x_max_mm"] and a["x_max_mm"] > b["x_min_mm"] and
-            a["y_min_mm"] < b["y_max_mm"] and a["y_max_mm"] > b["y_min_mm"])
-
-def overlap_area(a, b):
-    dx = max(0, min(a["x_max_mm"], b["x_max_mm"]) - max(a["x_min_mm"], b["x_min_mm"]))
-    dy = max(0, min(a["y_max_mm"], b["y_max_mm"]) - max(a["y_min_mm"], b["y_min_mm"]))
-    return round(dx * dy, 2)
-
-def rect_inside(inner, outer):
-    return (inner["x_min_mm"] >= outer["x_min_mm"] and inner["x_max_mm"] <= outer["x_max_mm"] and
-            inner["y_min_mm"] >= outer["y_min_mm"] and inner["y_max_mm"] <= outer["y_max_mm"])
 """
 
 # ---------------------------------------------------------------------------

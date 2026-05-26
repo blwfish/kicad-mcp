@@ -777,17 +777,18 @@ for i in range(n):
         # Fast AABB rejection with clearance expansion
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
-        # Compute actual gap between pad bounding boxes
+        # Signed gap between pad bounding boxes.
+        # positive = clearance, zero = touching, negative = penetration depth.
+        # Earlier code collapsed all overlap to 0.0, losing the sign and
+        # conflating "touching exactly" with "embedded by 2 mm".
         gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
         gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
-        # If both gaps are negative, pads overlap — gap is 0 (or negative)
-        if gap_x < 0 and gap_y < 0:
-            gap = 0.0  # actual overlap
+        if gap_x >= 0 and gap_y >= 0:
+            gap = min(gap_x, gap_y)            # separated; binding clearance
+        elif gap_x >= 0 or gap_y >= 0:
+            gap = max(gap_x, gap_y)            # separated on one axis only
         else:
-            # Gap is the Chebyshev distance (max of axis-aligned gaps)
-            # For non-overlapping: distance = max(gap_x, gap_y) if one is positive
-            # For partially overlapping on one axis: distance = max(0, gap_x, gap_y)
-            gap = max(0.0, gap_x, gap_y)
+            gap = max(gap_x, gap_y)            # overlap; less-negative = penetration on easier-to-fix axis
         if gap < min_cl:
             violations.append({
                 "pad_a": f"{a['ref']}:{a['pad']}",
@@ -796,7 +797,7 @@ for i in range(n):
                 "net_b": b["net"],
                 "gap_mm": round(gap, 3),
                 "min_clearance_mm": round(min_cl, 3),
-                "overlap": gap == 0.0,
+                "overlap": gap < 0,
                 "pad_a_center": [round(a["x"], 3), round(a["y"], 3)],
                 "pad_b_center": [round(b["x"], 3), round(b["y"], 3)],
             })
@@ -977,20 +978,23 @@ for i in range(n):
             continue
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
+        # Signed gap — see check_pad_clearances above for the convention.
         gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
         gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
-        if gap_x < 0 and gap_y < 0:
-            gap = 0.0
+        if gap_x >= 0 and gap_y >= 0:
+            gap = min(gap_x, gap_y)
+        elif gap_x >= 0 or gap_y >= 0:
+            gap = max(gap_x, gap_y)
         else:
-            gap = max(0.0, gap_x, gap_y)
+            gap = max(gap_x, gap_y)
         if gap < min_cl:
             pad_violations.append({
                 "pad_a": f"{a['ref']}:{a['pad']}",
                 "pad_b": f"{b['ref']}:{b['pad']}",
                 "gap_mm": round(gap, 3),
             })
-            if gap == 0.0:
-                errors.append(f"Pad overlap: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']}")
+            if gap < 0:
+                errors.append(f"Pad overlap: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']} (penetration {round(-gap, 3)}mm)")
             else:
                 errors.append(f"Pad clearance: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']} only {round(gap, 3)}mm apart (min {min_cl}mm)")
 

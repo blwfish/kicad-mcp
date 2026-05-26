@@ -301,9 +301,10 @@ placements = {}
 placed_boxes = []  # list of (x_min, y_min, x_max, y_max) for collision detection
 
 def box_collides(bx, placed, gap):
+    # Expand bx by `gap` on all sides and test overlap against each placed box.
+    expanded = (bx[0] - gap, bx[1] - gap, bx[2] + gap, bx[3] + gap)
     for pb in placed:
-        if (bx[0] - gap < pb[2] and bx[2] + gap > pb[0] and
-            bx[1] - gap < pb[3] and bx[3] + gap > pb[1]):
+        if aabb_overlap(expanded, pb):
             return True
     return False
 
