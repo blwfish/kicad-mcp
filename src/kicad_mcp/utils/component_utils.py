@@ -19,10 +19,13 @@ def extract_voltage_from_regulator(value: str) -> str:
     # (e.g. 7805 -> 5V, 7912 -> 12V).  We require `0 < voltage < 50` because
     # values outside that range aren't real regulator part numbers and were
     # producing nonsense like "7800 -> 0V" before this guard.
-    match = re.search(r"78(\d\d)|79(\d\d)", value, re.IGNORECASE)
+    # Named groups so the sign is tied to the family prefix, not to alternation
+    # order. Reordering the alternatives would silently invert positive/negative
+    # if we used group(1)/group(2) instead.
+    match = re.search(r"78(?P<pos>\d\d)|79(?P<neg>\d\d)", value, re.IGNORECASE)
     if match:
-        is_negative = match.group(2) is not None
-        group = match.group(1) or match.group(2)
+        is_negative = match.group("neg") is not None
+        group = match.group("pos") or match.group("neg")
         try:
             voltage = int(group)
             if 0 < voltage < 50:
@@ -269,21 +272,25 @@ def extract_inductance_value(value: str) -> Tuple[Optional[float], Optional[str]
         except ValueError:
             pass
 
-    # Handle "4u7" (means 4.7uH)
-    match = re.search(r"(\d+)[pPnNuU\u03bcmM](\d+)[hH]", value)
+    # Handle "4u7" (means 4.7uH).  Capture the unit character so we don't
+    # search the raw input string \u2014 otherwise "4m7H Panasonic" would return
+    # "nH" because the value contains "n" elsewhere.
+    match = re.search(r"(\d+)([pPnNuU\u03bcmM])(\d+)[hH]", value)
     if match:
         try:
             value1 = int(match.group(1))
-            value2 = int(match.group(2))
+            unit_char = match.group(2)
+            value2 = int(match.group(3))
             inductance = float(f"{value1}.{value2}")
 
-            if "p" in value.lower():
+            unit_lower = unit_char.lower()
+            if unit_lower == "p":
                 unit = "pH"
-            elif "n" in value.lower():
+            elif unit_lower == "n":
                 unit = "nH"
-            elif "u" in value.lower() or "\u03bc" in value:
+            elif unit_lower == "u" or unit_char == "\u03bc":
                 unit = "\u03bcH"
-            elif "m" in value.lower():
+            elif unit_lower == "m":
                 unit = "mH"
             else:
                 unit = "H"

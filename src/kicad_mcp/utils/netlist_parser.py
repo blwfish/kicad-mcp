@@ -10,6 +10,21 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+# Single source of truth for power-net detection — used in analyze_netlist
+# and importable by other modules that need the same classification.
+_POWER_NET_PREFIXES = ("VCC", "VDD", "VSS", "VBUS", "GND", "+", "-")
+
+
+def is_power_net(net_name: str) -> bool:
+    """Heuristic classifier: does this net name designate a power/ground rail?
+
+    Matches common KiCad power-symbol naming conventions: VCC/VDD/VSS/VBUS/GND
+    prefixes, and signed-voltage prefixes like ``+3V3``, ``+5V``, ``-12V``.
+    """
+    upper = net_name.upper()
+    return any(upper.startswith(p) for p in _POWER_NET_PREFIXES)
+
+
 class SchematicParser:
     """Parser for KiCad schematic files to extract netlist information."""
 
@@ -428,8 +443,12 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
 
         tree = ET.parse(netlist_path)
         root = tree.getroot()
-    except Exception as e:
-        print(f"kicad-cli netlist export/parse failed: {e}")
+    except (ET.ParseError, subprocess.TimeoutExpired, OSError) as e:
+        # ParseError = malformed XML; TimeoutExpired = kicad-cli hung;
+        # OSError = kicad-cli vanished or netlist tmpfile missing. Anything
+        # else (e.g. AttributeError in our own code) propagates.
+        logger.warning("kicad-cli netlist export/parse failed (%s): %s",
+                       type(e).__name__, e)
         return None
     finally:
         if os.path.exists(netlist_path):
@@ -437,11 +456,13 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
 
     # Extract components from <components>
     component_info: Dict[str, Dict] = {}
+    malformed_components_skipped = 0
     comps_element = root.find("components")
     if comps_element is not None:
         for comp_elem in comps_element.findall("comp"):
             ref = comp_elem.get("ref", "")
             if not ref:
+                malformed_components_skipped += 1
                 continue
             info: Dict[str, Any] = {"reference": ref}
 
@@ -503,11 +524,13 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
 
     # Extract nets from <nets>
     nets: Dict[str, List] = {}
+    malformed_nets_skipped = 0
     nets_element = root.find("nets")
     if nets_element is not None:
         for net_elem in nets_element.findall("net"):
             net_name = net_elem.get("name", "")
             if not net_name:
+                malformed_nets_skipped += 1
                 continue
             # Strip leading "/" from local label net names
             clean_name = net_name.lstrip("/")
@@ -536,6 +559,8 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
         "nets": nets,
         "component_count": len(component_info),
         "net_count": len(nets),
+        "malformed_components_skipped": malformed_components_skipped,
+        "malformed_nets_skipped": malformed_nets_skipped,
     }
 
 
@@ -600,16 +625,20 @@ def analyze_netlist(netlist_data: Dict[str, Any]) -> Dict[str, Any]:
         "power_nets": [],
     }
 
+    # Propagate the incomplete flag from the parser so callers know that
+    # total_pin_connections from the regex fallback will be 0 (the parser
+    # records nets-by-label but does not trace connectivity).
+    if netlist_data.get("incomplete"):
+        results["incomplete"] = True
+        results["incomplete_reason"] = netlist_data.get("incomplete_reason", "")
+
     for ref in netlist_data.get("components", {}):
         comp_type = re.match(r"^([A-Za-z_]+)", ref)
         if comp_type:
             results["component_types"][comp_type.group(1)] += 1
 
     for net_name in netlist_data.get("nets", {}):
-        if any(
-            net_name.startswith(prefix)
-            for prefix in ["VCC", "VDD", "GND", "+5V", "+3V3", "+12V"]
-        ):
+        if is_power_net(net_name):
             results["power_nets"].append(net_name)
 
     total_pins = sum(

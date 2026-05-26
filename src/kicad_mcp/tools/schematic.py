@@ -728,13 +728,11 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         dx = distance * math.cos(away_rad)
         dy = distance * math.sin(away_rad)
 
-        # Snap near-zero values to 0 to keep coordinates on the 1.27mm grid
-        if abs(dx) < 0.01:
-            dx = 0.0
-        if abs(dy) < 0.01:
-            dy = 0.0
-
-        return (round(dx, 3), round(dy, 3))
+        # Snap to the schematic grid so the stub endpoint lands on-grid for
+        # any pin angle. An earlier 0.01mm threshold left near-axis stubs
+        # (e.g. pin rotation 89°) off-grid by tens of micrometres — enough
+        # for KiCad's ERC to flag the pin as unconnected.
+        return _snap(dx, dy)
 
     @mcp.tool()
     def add_label_to_pin(

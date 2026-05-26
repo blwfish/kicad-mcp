@@ -119,12 +119,16 @@ def rect_inside(inner, outer):
 """
 
 # ---------------------------------------------------------------------------
-# Courtyard bounding box helper (dict return)
-# Provides: get_courtyard_bbox(fp) -> dict or None
-# Requires: pcbnew, board in scope
+# Courtyard bounding box helpers
+#
+# Two flavors are exposed because different embedded scripts want different
+# return types: COURTYARD_BBOX_HELPER returns a dict with named fields,
+# COURTYARD_BBOX_TUPLE_HELPER returns a tuple plus POWER_NETS/signal_net_count.
+# Both share the same underlying geometry through _GET_BBOX_TUPLE_BODY — a
+# single source of truth for "compute the courtyard bbox of a footprint."
 # ---------------------------------------------------------------------------
-COURTYARD_BBOX_HELPER = """
-def get_courtyard_bbox(fp):
+_GET_BBOX_TUPLE_BODY = """
+def _get_courtyard_bbox_tuple(fp):
     x_min = float("inf"); y_min = float("inf")
     x_max = float("-inf"); y_max = float("-inf")
     found = False
@@ -138,11 +142,7 @@ def get_courtyard_bbox(fp):
             x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
             y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
     if found:
-        return {"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
+        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
     for pad in fp.Pads():
         found = True
         pos = pad.GetPosition(); size = pad.GetSize()
@@ -151,45 +151,23 @@ def get_courtyard_bbox(fp):
         x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
         x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
     if found:
-        return {"x_min_mm": round(x_min, 3), "y_min_mm": round(y_min, 3),
-                "x_max_mm": round(x_max, 3), "y_max_mm": round(y_max, 3)}
+        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
     return None
 """
 
-# ---------------------------------------------------------------------------
-# Courtyard bounding box helper (tuple return)
-# Provides: get_courtyard_bbox(fp) -> (x_min, y_min, x_max, y_max) or None,
-#           POWER_NETS, signal_net_count(fp)
-# Requires: pcbnew, board in scope
-# ---------------------------------------------------------------------------
+COURTYARD_BBOX_HELPER = _GET_BBOX_TUPLE_BODY + """
+def get_courtyard_bbox(fp):
+    bbox = _get_courtyard_bbox_tuple(fp)
+    if bbox is None:
+        return None
+    return {"x_min_mm": bbox[0], "y_min_mm": bbox[1],
+            "x_max_mm": bbox[2], "y_max_mm": bbox[3]}
+"""
+
 COURTYARD_BBOX_TUPLE_HELPER = """
 POWER_NETS = {"", "GND", "+5V", "+3V3", "+3.3V", "+12V", "VCC", "VDD", "VSS", "VBUS"}
-
-def get_courtyard_bbox(fp):
-    x_min = float("inf"); y_min = float("inf")
-    x_max = float("-inf"); y_max = float("-inf")
-    found = False
-    for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
-            found = True
-            bbox = item.GetBoundingBox()
-            x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))
-            y_min = min(y_min, pcbnew.ToMM(bbox.GetY()))
-            x_max = max(x_max, pcbnew.ToMM(bbox.GetRight()))
-            y_max = max(y_max, pcbnew.ToMM(bbox.GetBottom()))
-    if found:
-        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
-    for pad in fp.Pads():
-        found = True
-        pos = pad.GetPosition(); size = pad.GetSize()
-        x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
-        w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
-        x_min = min(x_min, x - w/2); y_min = min(y_min, y - h/2)
-        x_max = max(x_max, x + w/2); y_max = max(y_max, y + h/2)
-    if found:
-        return (round(x_min, 3), round(y_min, 3), round(x_max, 3), round(y_max, 3))
-    return None
+""" + _GET_BBOX_TUPLE_BODY + """
+get_courtyard_bbox = _get_courtyard_bbox_tuple
 
 def signal_net_count(fp):
     nets = set()

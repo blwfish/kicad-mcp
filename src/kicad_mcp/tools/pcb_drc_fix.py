@@ -321,7 +321,8 @@ def has_text_overlap(text_bbox, own_ref, own_layer, own_obj):
             continue
         if si["layer"] != own_layer:
             continue
-        if not si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else False:
+        visible = si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else True
+        if not visible:
             continue
         ob = si["obj"].GetBoundingBox()
         if _aabb_hit(text_bbox, ob.GetX(), ob.GetY(), ob.GetRight(), ob.GetBottom()):

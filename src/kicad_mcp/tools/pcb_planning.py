@@ -374,11 +374,13 @@ if sorted_refs:
                 px, py = clamp_to_board(px, py, info["width"], info["height"], info)
                 box = (px - hw, py - hh, px + hw, py + hh)
 
-                # Check within board
-                if (box[0] < outline["x_min_mm"] + 0.1 or
-                    box[2] > outline["x_max_mm"] - 0.1 or
-                    box[1] < outline["y_min_mm"] + 0.1 or
-                    box[3] > outline["y_max_mm"] - 0.1):
+                # Check within board — use same margin (spacing) that clamp_to_board
+                # enforces. A hardcoded 0.1 would reject every clamped position when
+                # spacing < 0.1, turning the spiral into an infinite continue loop.
+                if (box[0] < outline["x_min_mm"] + spacing or
+                    box[2] > outline["x_max_mm"] - spacing or
+                    box[1] < outline["y_min_mm"] + spacing or
+                    box[3] > outline["y_max_mm"] - spacing):
                     continue
 
                 if not box_collides(box, placed_boxes, spacing):

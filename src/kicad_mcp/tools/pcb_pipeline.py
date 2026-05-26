@@ -31,8 +31,11 @@ def _step_extract_netlist(sch_path: str) -> Dict[str, Any]:
     if netlist is None:
         return {"error": "kicad-cli not available for netlist export"}
 
-    components = netlist.get("components", {})
-    nets = netlist.get("nets", {})
+    if "components" not in netlist or "nets" not in netlist:
+        return {"error": f"netlist extraction returned malformed result (keys: {sorted(netlist.keys())})"}
+
+    components = netlist["components"]
+    nets = netlist["nets"]
 
     # Separate components with/without footprints
     with_fp = {}
@@ -481,7 +484,10 @@ for fp in board.GetFootprints():
     has_keepout = False
     keepout_side = None
     keepout_rel = None  # relative bbox (dx_min, dy_min, dx_max, dy_max)
-    try:
+    # Guard fp.Zones() — absent on older pcbnew API. Other AttributeErrors
+    # (e.g. zone.GetIsRuleArea missing) propagate rather than silently dropping
+    # keepout classification, which would mistier components into tier 4.
+    if hasattr(fp, 'Zones'):
         for zone in fp.Zones():
             if zone.GetIsRuleArea():
                 has_keepout = True
@@ -499,8 +505,6 @@ for fp in board.GetFootprints():
                 ext_right = max(ext_right, dx_max)
                 ext_top   = max(ext_top, -dy_min)
                 ext_bot   = max(ext_bot, dy_max)
-    except AttributeError:
-        pass
 
     w = ext_left + ext_right
     h = ext_top + ext_bot
@@ -535,15 +539,26 @@ for net_name, members in net_members.items():
             conn_score[b] = conn_score.get(b, 0.0) + weight
 
 # --- Classify into tiers ---
-EDGE_PREFIXES = ("J", "SW", "H", "USB")
+# Tier classification by KiCad designator class — the letter prefix before
+# the first digit. `startswith("H")` would match "HV1" (HV regulator) etc.;
+# the designator class for "HV1" is "HV", not "H".
+EDGE_CLASSES = {"J", "SW", "H", "USB"}
+
+def _ref_class(ref):
+    for i, c in enumerate(ref):
+        if c.isdigit():
+            return ref[:i]
+    return ref
+
 tier1, tier2, tier3, tier4 = [], [], [], []
 
 for ref, info in fp_info.items():
+    cls = _ref_class(ref)
     if info["has_keepout"]:
         tier1.append(ref)
-    elif any(ref.startswith(p) for p in EDGE_PREFIXES):
+    elif cls in EDGE_CLASSES:
         tier2.append(ref)
-    elif (ref.startswith("U") or ref.startswith("Q")) and info["area"] > 50:
+    elif cls in ("U", "Q") and info["area"] > 50:
         tier3.append(ref)
     else:
         tier4.append(ref)
@@ -814,12 +829,18 @@ def _step_autoroute(pcb_path: str, passes: int = 1) -> Dict[str, Any]:
     preflight = _run_pre_route_check(pcb_path)
     preflight_info = {}
 
-    if preflight.get("status") == "ok" and not preflight.get("route_ready", True):
-        overlaps = preflight.get("courtyard_overlaps", 0)
-        if overlaps > 0:
-            logger.info("Pipeline pre-route: %d overlap(s), auto-fixing", overlaps)
-            _run_auto_fix_placement(pcb_path)
-            preflight_info["auto_fix_applied"] = True
+    if preflight.get("status") == "ok":
+        if "route_ready" not in preflight:
+            logger.warning("preflight result missing 'route_ready' key; assuming not ready")
+            route_ready = False
+        else:
+            route_ready = preflight["route_ready"]
+        if not route_ready:
+            overlaps = preflight.get("courtyard_overlaps", 0)
+            if overlaps > 0:
+                logger.info("Pipeline pre-route: %d overlap(s), auto-fixing", overlaps)
+                _run_auto_fix_placement(pcb_path)
+                preflight_info["auto_fix_applied"] = True
 
     result = _run_full_autoroute(
         pcb_path=pcb_path,

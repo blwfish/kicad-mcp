@@ -725,12 +725,16 @@ params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
 min_cl = params["min_clearance_mm"]
 
-# Use board design rule if no explicit clearance given
+# Use board design rule if no explicit clearance given. Track source so the
+# caller can tell whether the value came from board design rules or a fallback.
+min_cl_source = "caller"
 if min_cl <= 0:
     ds = board.GetDesignSettings()
     min_cl = pcbnew.ToMM(ds.m_MinClearance)
+    min_cl_source = "board"
     if min_cl <= 0:
         min_cl = 0.2  # fallback
+        min_cl_source = "default_fallback"
 
 # Collect all pads with their absolute position and size
 all_pads = []
@@ -826,6 +830,7 @@ print(json.dumps({
     "status": "ok",
     "total_pads": n,
     "min_clearance_mm": round(min_cl, 3),
+    "min_clearance_source": min_cl_source,
     "violation_count": len(violations),
     "footprint_pairs_affected": len(fp_summaries),
     "footprint_pair_summary": fp_summaries,
@@ -873,12 +878,16 @@ params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
 min_cl = params["min_clearance_mm"]
 
-# Use board design rule if no explicit clearance given
+# Use board design rule if no explicit clearance given. Track source so the
+# caller can tell whether the value came from board design rules or a fallback.
+min_cl_source = "caller"
 if min_cl <= 0:
     ds = board.GetDesignSettings()
     min_cl = pcbnew.ToMM(ds.m_MinClearance)
+    min_cl_source = "board"
     if min_cl <= 0:
         min_cl = 0.2
+        min_cl_source = "default_fallback"
 
 errors = []
 warnings = []
@@ -1007,6 +1016,7 @@ print(json.dumps({
     "total_footprints": total_fp,
     "total_pads": n,
     "min_clearance_mm": round(min_cl, 3),
+    "min_clearance_source": min_cl_source,
     "error_count": len(errors),
     "warning_count": len(warnings),
     "courtyard_overlaps": courtyard_overlaps,
