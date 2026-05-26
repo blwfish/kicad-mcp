@@ -25,6 +25,20 @@ def is_power_net(net_name: str) -> bool:
     return any(upper.startswith(p) for p in _POWER_NET_PREFIXES)
 
 
+# Injectable source for embedded pcbnew scripts that need the same classifier.
+# Mirrors is_power_net above — same prefixes, same prefix-match semantics.
+# Embedded scripts cannot import from this module; they string-concatenate
+# POWER_NET_HELPER into their source. Update both sides together if the
+# prefix list ever changes (a comment guard is the only enforcement).
+POWER_NET_HELPER = f"""
+_POWER_NET_PREFIXES = {_POWER_NET_PREFIXES!r}
+
+def is_power_net(net_name):
+    upper = net_name.upper()
+    return any(upper.startswith(p) for p in _POWER_NET_PREFIXES)
+"""
+
+
 class SchematicParser:
     """Parser for KiCad schematic files to extract netlist information."""
 

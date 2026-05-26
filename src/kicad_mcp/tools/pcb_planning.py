@@ -8,6 +8,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
+from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ print(json.dumps({
 import pcbnew, json, math, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + _KEEPOUT_HELPER + """
+""" + _KEEPOUT_HELPER + POWER_NET_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
@@ -276,9 +277,11 @@ for i in range(len(refs)):
     for j in range(i + 1, len(refs)):
         a, b = refs[i], refs[j]
         shared = fp_info[a]["nets"] & fp_info[b]["nets"]
-        # Filter out power nets (GND, VCC, +3V3 etc) - they don't constrain placement
-        signal_shared = {n for n in shared if not any(
-            p in n.upper() for p in ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5", "+3"])}
+        # Filter out power nets — they connect everything and don't constrain
+        # placement. is_power_net (injected via POWER_NET_HELPER) is the
+        # single source of truth for power-net classification, shared with
+        # Python-side analyze_netlist via netlist_parser.is_power_net.
+        signal_shared = {n for n in shared if not is_power_net(n)}
         if signal_shared:
             key = (a, b)
             connectivity[key] = len(signal_shared)
