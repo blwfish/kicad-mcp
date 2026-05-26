@@ -59,16 +59,16 @@ Required for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Jav
 The FreeRouter autorouter.
 
 > **⚠️ Version matters — use v2.2.3 or later.**
-> v2.2.3 is **10–30× faster** than v2.1.0 and produces **deterministic results** (same board, same result every run). v2.1.0 is non-deterministic — the same board can route to 1 unrouted connection one run and 13 the next, depending on JVM timing. If you're on v2.1.0, upgrade.
+> v2.2.3+ is **10–30× faster** than v2.1.0 and produces **deterministic results** (same board, same result every run). v2.1.0 is non-deterministic — the same board can route to 1 unrouted connection one run and 13 the next, depending on JVM timing. If you're on v2.1.0, upgrade.
 
-Download v2.2.3:
+Download v2.2.4:
 
 ```bash
-curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.2.3/freerouting-2.2.3.jar
+curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.2.4/freerouting-2.2.4.jar
 ```
 
 The server auto-detects these locations (newest version name wins when multiple JARs are present):
-- `~/freerouting-2.2.3.jar` (or any `~/freerouting*.jar`)
+- `~/freerouting-2.2.4.jar` (or any `~/freerouting*.jar`)
 - `~/freerouting.jar`
 - `~/Downloads/freerouting*.jar`
 - `freerouting` on the system PATH
