@@ -485,11 +485,12 @@ class TestHelperLogic:
         b = self._rect(20, 20, 30, 30)
         assert self.rects_overlap(a, b) is False
 
-    def test_touching_edge_not_overlapping(self):
-        """Rects that share an edge but don't overlap."""
+    def test_touching_edge_is_overlap(self):
+        """Non-strict semantics: rects sharing an edge count as overlapping
+        (matches KiCad DRC, which treats any contact as a clearance violation)."""
         a = self._rect(0, 0, 10, 10)
         b = self._rect(10, 0, 20, 10)
-        assert self.rects_overlap(a, b) is False
+        assert self.rects_overlap(a, b) is True
 
     def test_contained_rect(self):
         outer = self._rect(0, 0, 100, 100)
@@ -524,15 +525,14 @@ class TestHelperLogic:
         assert self.rect_inside(inner, outer) is False
 
     def test_exactly_on_boundary(self):
-        """Strict semantics: a rect coincident with its outer is NOT inside.
+        """Non-strict semantics: a rect coincident with its outer IS inside.
 
-        Touching the boundary is treated as the clean (non-inside) case so
-        that the audit only flags clear-cut violations; touching geometry
-        falls through to KiCad's DRC for final adjudication.
+        Matches KiCad DRC's boundary semantics — touching/coincident
+        geometry is the violating case, not the clean case.
         """
         inner = self._rect(0, 0, 100, 100)
         outer = self._rect(0, 0, 100, 100)
-        assert self.rect_inside(inner, outer) is False
+        assert self.rect_inside(inner, outer) is True
 
     def test_completely_outside(self):
         inner = self._rect(200, 200, 210, 210)

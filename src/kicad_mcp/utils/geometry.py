@@ -9,16 +9,16 @@ Dict variants conventionally hold mm; tuple variants are used both for mm
 coordinates (placement engines) and KiCad internal nanometer coordinates
 (pcbnew bounding boxes).
 
-**Strict semantics throughout.** Touching edges are treated as the clean
-(non-violating) case:
+**Non-strict semantics throughout.** Touching edges and coincident boundaries
+are treated as the violating case:
 
-- Two rects sharing an edge → ``rects_overlap`` returns ``False``
-- A rect with an edge coincident with the outer → ``rect_inside`` returns ``False``
+- Two rects sharing an edge → ``rects_overlap`` returns ``True``
+- A rect with an edge coincident with the outer → ``rect_inside`` returns ``True``
 
-This is the more permissive interpretation: our checks flag only clear
-violations and let touching cases fall through to KiCad's DRC for final
-adjudication.  See the project's ``CLAUDE.md`` for the boundary-semantics
-rationale.
+This matches KiCad's DRC engine, which flags any gap below ``min_clearance`` as
+a violation (and zero gap is always below any positive clearance).  Our audit
+flags the same geometry KiCad would, eliminating the false-negative gap where
+our tool reported a placement clean but DRC then rejected it.
 
 Embedded scripts that run inside pcbnew's Python interpreter cannot
 ``import`` from this module; they inject :data:`GEOMETRY_HELPER` (a source
@@ -33,30 +33,32 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 def rects_overlap(a: dict, b: dict) -> bool:
-    """Strict overlap test on dict-format rects.
+    """Non-strict overlap test on dict-format rects.
 
-    Two rects sharing an edge return ``False``.  Two rects with any positive
-    intersection area return ``True``.
+    Two rects sharing an edge return ``True`` (touching counts as overlap).
+    Matches KiCad DRC's notion of "any contact is a clearance violation."
     """
-    return (a["x_min_mm"] < b["x_max_mm"] and a["x_max_mm"] > b["x_min_mm"] and
-            a["y_min_mm"] < b["y_max_mm"] and a["y_max_mm"] > b["y_min_mm"])
+    return (a["x_min_mm"] <= b["x_max_mm"] and a["x_max_mm"] >= b["x_min_mm"] and
+            a["y_min_mm"] <= b["y_max_mm"] and a["y_max_mm"] >= b["y_min_mm"])
 
 
 def rect_inside(inner: dict, outer: dict) -> bool:
-    """Strict containment on dict-format rects.
+    """Non-strict containment on dict-format rects.
 
-    ``inner`` must be strictly inside ``outer``; touching the boundary returns
-    ``False``.  Use :func:`rect_inside_inclusive` if touching should count
-    as inside.
+    ``inner`` is inside ``outer`` if every edge of ``inner`` is at or inside
+    the corresponding edge of ``outer``.  Touching the boundary counts as
+    inside.
     """
-    return (inner["x_min_mm"] > outer["x_min_mm"] and inner["x_max_mm"] < outer["x_max_mm"] and
-            inner["y_min_mm"] > outer["y_min_mm"] and inner["y_max_mm"] < outer["y_max_mm"])
+    return (inner["x_min_mm"] >= outer["x_min_mm"] and inner["x_max_mm"] <= outer["x_max_mm"] and
+            inner["y_min_mm"] >= outer["y_min_mm"] and inner["y_max_mm"] <= outer["y_max_mm"])
 
 
 def overlap_area(a: dict, b: dict) -> float:
     """Area of overlap between two dict-format rects, clipped to ``>= 0``.
 
-    Returns ``0.0`` when rects do not overlap or only touch.
+    Returns ``0.0`` when rects do not overlap or only touch.  Sign of overlap
+    (i.e. the touching vs embedded distinction) is carried by
+    :func:`signed_gap_mm`, not this function.
     """
     dx = max(0.0, min(a["x_max_mm"], b["x_max_mm"]) - max(a["x_min_mm"], b["x_min_mm"]))
     dy = max(0.0, min(a["y_max_mm"], b["y_max_mm"]) - max(a["y_min_mm"], b["y_min_mm"]))
@@ -93,21 +95,20 @@ def signed_gap_mm(a: dict, b: dict) -> float:
 # ---------------------------------------------------------------------------
 
 def aabb_overlap(a: tuple, b: tuple) -> bool:
-    """Strict overlap test on tuple-format rects ``(x_min, y_min, x_max, y_max)``.
+    """Non-strict overlap test on tuple-format rects ``(x_min, y_min, x_max, y_max)``.
 
-    Two rects sharing an edge return ``False``.
+    Two rects sharing an edge return ``True``.
     """
-    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+    return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
 
 
 def aabb_inside(inner: tuple, outer: tuple) -> bool:
-    """Strict containment on tuple-format rects.
+    """Non-strict containment on tuple-format rects.
 
-    ``inner`` must be strictly inside ``outer``; touching the boundary
-    returns ``False``.
+    Touching the boundary counts as inside.
     """
-    return (inner[0] > outer[0] and inner[2] < outer[2] and
-            inner[1] > outer[1] and inner[3] < outer[3])
+    return (inner[0] >= outer[0] and inner[2] <= outer[2] and
+            inner[1] >= outer[1] and inner[3] <= outer[3])
 
 
 # ---------------------------------------------------------------------------
@@ -121,19 +122,19 @@ def aabb_inside(inner: tuple, outer: tuple) -> bool:
 
 GEOMETRY_HELPER = """
 def aabb_overlap(a, b):
-    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+    return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
 
 def aabb_inside(inner, outer):
-    return (inner[0] > outer[0] and inner[2] < outer[2] and
-            inner[1] > outer[1] and inner[3] < outer[3])
+    return (inner[0] >= outer[0] and inner[2] <= outer[2] and
+            inner[1] >= outer[1] and inner[3] <= outer[3])
 
 def rects_overlap(a, b):
-    return (a["x_min_mm"] < b["x_max_mm"] and a["x_max_mm"] > b["x_min_mm"] and
-            a["y_min_mm"] < b["y_max_mm"] and a["y_max_mm"] > b["y_min_mm"])
+    return (a["x_min_mm"] <= b["x_max_mm"] and a["x_max_mm"] >= b["x_min_mm"] and
+            a["y_min_mm"] <= b["y_max_mm"] and a["y_max_mm"] >= b["y_min_mm"])
 
 def rect_inside(inner, outer):
-    return (inner["x_min_mm"] > outer["x_min_mm"] and inner["x_max_mm"] < outer["x_max_mm"] and
-            inner["y_min_mm"] > outer["y_min_mm"] and inner["y_max_mm"] < outer["y_max_mm"])
+    return (inner["x_min_mm"] >= outer["x_min_mm"] and inner["x_max_mm"] <= outer["x_max_mm"] and
+            inner["y_min_mm"] >= outer["y_min_mm"] and inner["y_max_mm"] <= outer["y_max_mm"])
 
 def overlap_area(a, b):
     dx = max(0.0, min(a["x_max_mm"], b["x_max_mm"]) - max(a["x_min_mm"], b["x_min_mm"]))

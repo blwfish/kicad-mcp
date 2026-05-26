@@ -797,7 +797,7 @@ for i in range(n):
                 "net_b": b["net"],
                 "gap_mm": round(gap, 3),
                 "min_clearance_mm": round(min_cl, 3),
-                "overlap": gap < 0,
+                "overlap": gap <= 0,
                 "pad_a_center": [round(a["x"], 3), round(a["y"], 3)],
                 "pad_b_center": [round(b["x"], 3), round(b["y"], 3)],
             })
@@ -995,6 +995,8 @@ for i in range(n):
             })
             if gap < 0:
                 errors.append(f"Pad overlap: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']} (penetration {round(-gap, 3)}mm)")
+            elif gap == 0:
+                errors.append(f"Pad contact: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']} (touching, min {min_cl}mm required)")
             else:
                 errors.append(f"Pad clearance: {a['ref']}:{a['pad']} and {b['ref']}:{b['pad']} only {round(gap, 3)}mm apart (min {min_cl}mm)")
 

@@ -1,11 +1,11 @@
 """Boundary tests for the canonical geometry primitives in utils/geometry.
 
-These tests pin the STRICT-inequality semantics: touching edges/boundaries
-are treated as the clean case (no overlap, not inside). The CLAUDE.md
-Threshold-Boundary Testing Rule requires at/just-below/just-above
-coverage for any threshold, and the consumer-asymmetry rule requires that
-results are monotonic across the boundary (no flat region where both
-"overlapping" and "not separated" are false).
+These tests pin the NON-STRICT-inequality semantics: touching edges and
+coincident boundaries are treated as the violating case (match KiCad
+DRC).  The CLAUDE.md Threshold-Boundary Testing Rule requires
+at/just-below/just-above coverage for any threshold, and the
+consumer-asymmetry rule requires that results are monotonic across the
+boundary.
 
 The 1µm epsilon matches the sub-micrometre noise KiCad's ``ToMM``
 produces after FromMM/ToMM round-trips; tests at coarser tolerance miss
@@ -34,7 +34,7 @@ def _r(x1, y1, x2, y2):
 
 
 # ---------------------------------------------------------------------------
-# rects_overlap — strict
+# rects_overlap — non-strict (touching counts as overlap)
 # ---------------------------------------------------------------------------
 
 class TestRectsOverlap:
@@ -44,9 +44,9 @@ class TestRectsOverlap:
         ("bottom", _r(0, 10, 10, 20)),
         ("top",    _r(0, -10, 10, 0)),
     ])
-    def test_touching_each_edge_returns_false(self, edge, b):
+    def test_touching_each_edge_returns_true(self, edge, b):
         a = _r(0, 0, 10, 10)
-        assert rects_overlap(a, b) is False, f"Touching {edge} edge must not overlap"
+        assert rects_overlap(a, b) is True, f"Touching {edge} edge must overlap (non-strict)"
 
     @pytest.mark.parametrize("corner,b", [
         ("top-right",    _r(10, -10, 20, 0)),
@@ -54,9 +54,9 @@ class TestRectsOverlap:
         ("bottom-right", _r(10, 10, 20, 20)),
         ("bottom-left",  _r(-10, 10, 0, 20)),
     ])
-    def test_touching_each_corner_returns_false(self, corner, b):
+    def test_touching_each_corner_returns_true(self, corner, b):
         a = _r(0, 0, 10, 10)
-        assert rects_overlap(a, b) is False, f"Touching {corner} corner must not overlap"
+        assert rects_overlap(a, b) is True, f"Touching {corner} corner must overlap (non-strict)"
 
     def test_overlap_by_epsilon_returns_true(self):
         a = _r(0, 0, 10, 10)
@@ -74,14 +74,14 @@ class TestRectsOverlap:
 
 
 # ---------------------------------------------------------------------------
-# rect_inside — strict (touching boundary returns False)
+# rect_inside — non-strict (touching boundary counts as inside)
 # ---------------------------------------------------------------------------
 
-class TestRectInsideStrict:
-    def test_exact_match_returns_false(self):
-        """Strict containment: a rect equal to its outer is NOT strictly inside."""
+class TestRectInside:
+    def test_exact_match_returns_true(self):
+        """Non-strict containment: a rect equal to its outer counts as inside."""
         rect = _r(0, 0, 100, 100)
-        assert rect_inside(rect, rect) is False
+        assert rect_inside(rect, rect) is True
 
     @pytest.mark.parametrize("edge,inner", [
         ("left",   _r(0, 50, 10, 60)),
@@ -89,15 +89,15 @@ class TestRectInsideStrict:
         ("top",    _r(50, 0, 60, 10)),
         ("bottom", _r(50, 90, 60, 100)),
     ])
-    def test_flush_against_each_edge_returns_false(self, edge, inner):
+    def test_flush_against_each_edge_returns_true(self, edge, inner):
         outer = _r(0, 0, 100, 100)
-        assert rect_inside(inner, outer) is False, (
-            f"Inner flush against {edge} edge must NOT count as inside (strict)"
+        assert rect_inside(inner, outer) is True, (
+            f"Inner flush against {edge} edge counts as inside (non-strict)"
         )
 
-    def test_inner_inside_by_epsilon_returns_true(self):
+    def test_inner_strictly_inside_returns_true(self):
         outer = _r(0, 0, 100, 100)
-        inner = _r(0 + EPS, 0 + EPS, 100 - EPS, 100 - EPS)
+        inner = _r(1, 1, 99, 99)
         assert rect_inside(inner, outer) is True
 
     def test_inner_outside_by_epsilon_returns_false(self):
@@ -107,11 +107,14 @@ class TestRectInsideStrict:
 
 
 # ---------------------------------------------------------------------------
-# overlap_area — touching = 0.0
+# overlap_area — touching = 0.0 (touching has no shared area even if classified as overlap)
 # ---------------------------------------------------------------------------
 
 class TestOverlapArea:
     def test_touching_returns_zero(self):
+        """Touching rects classify as overlapping (rects_overlap True) but
+        share zero area — sign of overlap lives in signed_gap_mm, depth
+        of overlap lives in overlap_area."""
         assert overlap_area(_r(0, 0, 10, 10), _r(10, 0, 20, 10)) == 0.0
 
     def test_disjoint_returns_zero(self):
@@ -163,21 +166,27 @@ class TestSignedGap:
 
 
 # ---------------------------------------------------------------------------
-# aabb_overlap / aabb_inside — tuple format, same strict semantics
+# aabb_overlap / aabb_inside — tuple format, same non-strict semantics
 # ---------------------------------------------------------------------------
 
 class TestAabbTuple:
-    def test_overlap_touching_returns_false(self):
-        assert aabb_overlap((0, 0, 10, 10), (10, 0, 20, 10)) is False
+    def test_overlap_touching_returns_true(self):
+        assert aabb_overlap((0, 0, 10, 10), (10, 0, 20, 10)) is True
 
     def test_overlap_just_inside_returns_true(self):
         assert aabb_overlap((0, 0, 10, 10), (10 - EPS, 0, 20, 10)) is True
 
-    def test_inside_flush_returns_false(self):
-        assert aabb_inside((0, 50, 10, 60), (0, 0, 100, 100)) is False
+    def test_overlap_just_past_returns_false(self):
+        assert aabb_overlap((0, 0, 10, 10), (10 + EPS, 0, 20, 10)) is False
+
+    def test_inside_flush_returns_true(self):
+        assert aabb_inside((0, 50, 10, 60), (0, 0, 100, 100)) is True
 
     def test_inside_strictly_returns_true(self):
         assert aabb_inside((1, 1, 99, 99), (0, 0, 100, 100)) is True
+
+    def test_inside_past_edge_returns_false(self):
+        assert aabb_inside((-EPS, 0, 100, 100), (0, 0, 100, 100)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -203,13 +212,19 @@ class TestGeometryHelperSource:
             f"GEOMETRY_HELPER missing {name!r} — embedded scripts will NameError"
         )
 
-    def test_helper_strict_semantics(self):
+    def test_helper_non_strict_semantics(self):
         """Exec the helper source and verify it behaves identically to the Python module."""
         namespace: dict = {}
         exec(GEOMETRY_HELPER, namespace)
         a = _r(0, 0, 10, 10)
         b = _r(10, 0, 20, 10)
+        # Touching: both Python and helper agree (both True under non-strict)
         assert namespace["rects_overlap"](a, b) is rects_overlap(a, b)
+        assert namespace["rects_overlap"](a, b) is True
+        # Self-containment: both True under non-strict
         assert namespace["rect_inside"](a, a) is rect_inside(a, a)
+        assert namespace["rect_inside"](a, a) is True
+        # Touching area: 0.0 regardless of strictness
         assert namespace["overlap_area"](a, b) == overlap_area(a, b)
+        # Signed gap: 0.0 for touching, sign preserved
         assert namespace["signed_gap_mm"](a, b) == signed_gap_mm(a, b)
