@@ -37,8 +37,24 @@ PLACEMENT_VIOLATIONS = {
 }
 
 
+_ROUTING_KEYWORDS = ("clearance", "crossing", "shorting", "track too close")
+_SILKSCREEN_KEYWORDS = ("silk", "silkscreen")
+_PLACEMENT_KEYWORDS = ("courtyard",)
+
+
 def _categorize_violations(categories: Dict[str, int]) -> Dict[str, list]:
-    """Sort DRC violation categories into fixable groups."""
+    """Sort DRC violation categories into fixable groups.
+
+    Two-tier matching:
+      1. Exact membership in ROUTING/SILKSCREEN/PLACEMENT_VIOLATIONS sets
+         (authoritative for known violation IDs/messages).
+      2. Substring keyword fallback (catches new variants until added
+         to the sets explicitly).
+
+    When KiCad introduces a new violation type the keyword fallback
+    keeps things working; when we observe its exact string, add it to
+    the appropriate set for the explicit-match path.
+    """
     routing = []
     silkscreen = []
     placement = []
@@ -46,14 +62,22 @@ def _categorize_violations(categories: Dict[str, int]) -> Dict[str, list]:
 
     for msg, count in categories.items():
         msg_lower = msg.lower()
-        if any(kw in msg_lower for kw in ("clearance", "crossing", "shorting", "track too close")):
-            routing.append({"message": msg, "count": count})
-        elif any(kw in msg_lower for kw in ("silk", "silkscreen")):
-            silkscreen.append({"message": msg, "count": count})
-        elif "courtyard" in msg_lower:
-            placement.append({"message": msg, "count": count})
+        entry = {"message": msg, "count": count}
+
+        if msg in ROUTING_VIOLATIONS or msg_lower in {v.lower() for v in ROUTING_VIOLATIONS}:
+            routing.append(entry)
+        elif msg in SILKSCREEN_VIOLATIONS or msg_lower in {v.lower() for v in SILKSCREEN_VIOLATIONS}:
+            silkscreen.append(entry)
+        elif msg in PLACEMENT_VIOLATIONS or msg_lower in {v.lower() for v in PLACEMENT_VIOLATIONS}:
+            placement.append(entry)
+        elif any(kw in msg_lower for kw in _ROUTING_KEYWORDS):
+            routing.append(entry)
+        elif any(kw in msg_lower for kw in _SILKSCREEN_KEYWORDS):
+            silkscreen.append(entry)
+        elif any(kw in msg_lower for kw in _PLACEMENT_KEYWORDS):
+            placement.append(entry)
         else:
-            other.append({"message": msg, "count": count})
+            other.append(entry)
 
     return {
         "routing": routing,
