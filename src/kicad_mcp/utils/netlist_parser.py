@@ -86,6 +86,7 @@ class SchematicParser:
         self._build_netlist()
 
         result = {
+            "parser_path": "regex",
             "components": self.component_info,
             "nets": dict(self.nets),
             "labels": self.labels,
@@ -580,12 +581,23 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
             nets[clean_name] = pins
 
     return {
+        "parser_path": "cli",
         "components": component_info,
         "nets": nets,
         "component_count": len(component_info),
         "net_count": len(nets),
         "malformed_components_skipped": malformed_components_skipped,
         "malformed_nets_skipped": malformed_nets_skipped,
+        # Geometric fields are regex-only — kicad-cli's netlist export
+        # exposes connectivity, not canvas positions. Return None
+        # sentinels so callers see a uniform shape across paths and can
+        # check parser_path to know whether geometry is available.
+        "labels": None,
+        "wires": None,
+        "junctions": None,
+        "power_symbols": None,
+        "incomplete": False,
+        "incomplete_reason": None,
     }
 
 
@@ -625,12 +637,21 @@ def extract_netlist(schematic_path: str) -> Dict[str, Any]:
         return result
     except Exception as e:
         logger.warning("Error extracting netlist from %s: %s", schematic_path, e, exc_info=True)
+        # Uniform shape even on error — callers can check 'error' key but
+        # don't have to special-case missing keys.
         return {
+            "parser_path": "error",
             "error": str(e),
             "components": {},
             "nets": {},
             "component_count": 0,
             "net_count": 0,
+            "labels": None,
+            "wires": None,
+            "junctions": None,
+            "power_symbols": None,
+            "incomplete": True,
+            "incomplete_reason": f"parse error: {e}",
         }
 
 
