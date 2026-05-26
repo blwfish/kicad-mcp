@@ -181,12 +181,12 @@ for kz in keepouts:
             "keepout_source": kz["source"],
             "keepout_ref": kz["source_ref"],
             "overlap_mm2": area,
-            "blocked": [k.replace("no_", "") for k, v in c.items() if v],
+            "blocked": blocked_constraints(c),
             "message": "Footprint overlaps keepout zone"
                        + (f" from {kz['source_ref']}" if kz["source_ref"] else ""),
         })
     else:
-        blocked = [k.replace("no_", "") for k, v in c.items() if v]
+        blocked = blocked_constraints(c)
         if blocked:
             warnings.append({
                 "type": "routing_keepout_overlap",
@@ -429,7 +429,7 @@ for fp in board.GetFootprints():
             continue
         area = overlap_area(fp_rect, kz_bb)
         c = kz["constraints"]
-        blocked = [k.replace("no_", "") for k, v in c.items() if v]
+        blocked = blocked_constraints(c)
         severity = "violation" if c["no_footprints"] else "warning"
         issues.append({
             "type": "keepout_overlap",
@@ -569,7 +569,7 @@ for fp in board.GetFootprints():
         if not rects_overlap(fp_rect, kz_bb):
             continue
         c = kz["constraints"]
-        blocked = [k.replace("no_", "") for k, v in c.items() if v]
+        blocked = blocked_constraints(c)
         if blocked:
             keepout_violations.append({
                 "reference": ref,
@@ -1077,15 +1077,15 @@ max_passes = params["max_passes"]
 
 """ + _COURTYARD_BBOX_TUPLE + """
 
-# Board outline
+# Board outline. Use hasattr guard so unknown failures propagate rather
+# than silently leaving outline=None (which makes bbox_inside_board return
+# True unconditionally — components could be moved off-board).
 outline = None
-try:
+if hasattr(board, 'GetBoardEdgesBoundingBox'):
     bb = board.GetBoardEdgesBoundingBox()
     if bb.GetWidth() > 0:
         outline = (pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY()),
                    pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
-except Exception:
-    pass
 
 def bbox_inside_board(bx0, by0, bx1, by1):
     if outline is None:

@@ -51,9 +51,12 @@ def extract_keepouts(board):
             for i in range(ol.PointCount()):
                 pt = ol.CPoint(i)
                 pts.append([round(pcbnew.ToMM(pt.x), 3), round(pcbnew.ToMM(pt.y), 3)])
-        try:
+        # Narrow to AttributeError — older pcbnew versions may not expose
+        # m_Uuid. Anything else (RuntimeError, etc.) propagates rather than
+        # silently producing an empty UUID that breaks downstream dedup.
+        if hasattr(zone, 'm_Uuid'):
             uuid_str = zone.m_Uuid.AsString()
-        except Exception:
+        else:
             uuid_str = ""
         return {
             "source": source,
@@ -83,14 +86,33 @@ def extract_keepouts(board):
         if info:
             keepouts.append(info)
     for fp in board.GetFootprints():
-        try:
+        # Guard fp.Zones() — absent on older pcbnew API. Other
+        # AttributeErrors propagate rather than silently dropping all
+        # footprint-level keepouts.
+        if hasattr(fp, 'Zones'):
             for zone in fp.Zones():
                 info = process_zone(zone, "footprint", fp.GetReference())
                 if info:
                     keepouts.append(info)
-        except AttributeError:
-            pass
     return keepouts
+
+_BLOCKED_CONSTRAINT_LABELS = {
+    "no_tracks": "tracks",
+    "no_vias": "vias",
+    "no_pads": "pads",
+    "no_footprints": "footprints",
+    "no_copper_pour": "copper_pour",
+}
+
+def blocked_constraints(c):
+    \"\"\"Return labels for True-valued constraint keys.
+
+    Explicit mapping rather than `k.replace("no_", "")` so a new constraint
+    key without the "no_" prefix (or one with "no_" in a different position)
+    fails loudly instead of silently producing a wrong label.
+    \"\"\"
+    return [_BLOCKED_CONSTRAINT_LABELS[k] for k, v in c.items()
+            if v and k in _BLOCKED_CONSTRAINT_LABELS]
 
 def get_board_outline(board):
     import pcbnew

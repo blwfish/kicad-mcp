@@ -109,7 +109,11 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         sch = _require_schematic()
         try:
             summary = sch.get_summary()
-        except Exception:
+        except Exception as e:
+            # kicad-sch-api raises various exception types depending on
+            # the underlying parser state; log so we know when summary is
+            # missing rather than silently returning {}.
+            logger.warning("sch.get_summary() failed: %s", e)
             summary = {}
 
         info: dict[str, Any] = {
@@ -619,6 +623,11 @@ def register_schematic_tools(mcp: FastMCP) -> None:
                 if style != 1:  # Skip DeMorgan variants
                     continue
             except ValueError:
+                # Malformed sub-symbol name (expected "<lib>_<unit>_<style>").
+                # Log so multi-unit symbols with broken metadata can be
+                # diagnosed; the resulting unit_pins mapping will be
+                # incomplete for any affected unit.
+                logger.debug("Skipped malformed sub-symbol name %r in unit-pin mapping", name)
                 continue
             pins: list[str] = []
             for sub in item:

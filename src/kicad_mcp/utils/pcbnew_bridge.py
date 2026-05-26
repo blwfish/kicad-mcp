@@ -18,17 +18,29 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Known-safe stderr patterns from KiCad that can be filtered out.
-# Be precise — never filter by broad substrings like "assert".
+# Be precise — never filter by broad substrings like "assert" alone.
+# Patterns are matched with re.search (unanchored); use ^ / $ to anchor.
 _SAFE_STDERR_PATTERNS = [
-    re.compile(r".*assert.*IsOk.*wxApp.*", re.IGNORECASE),
-    re.compile(r".*Gtk-WARNING.*"),
-    re.compile(r"^\s*$"),
+    re.compile(r"assert.*IsOk.*wxApp", re.IGNORECASE),  # KiCad wxApp assertion
+    re.compile(r"Gtk-WARNING"),                          # GTK warning chatter
+    re.compile(r"^\s*$"),                                # blank lines
 ]
 
 
 def _get_kicad_app_path() -> str:
     """Return the KiCad .app path, honoring KICAD_APP_PATH env var."""
     return os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
+
+
+def _bundled_python_versions(framework_versions_dir: str) -> list:
+    """Discover bundled KiCad Python 3.x version directories, newest first.
+
+    Single source of truth — both _get_kicad_python and _get_kicad_env need
+    the same version selection.  Earlier code duplicated the glob, with the
+    risk that they could drift and the Python binary could end up pointing
+    at a different version than the site-packages path.
+    """
+    return sorted(glob.glob(f"{framework_versions_dir}/3.*"), reverse=True)
 
 
 def _get_kicad_python() -> Optional[str]:
@@ -40,10 +52,8 @@ def _get_kicad_python() -> Optional[str]:
             f"{_get_kicad_app_path()}/Contents/Frameworks"
             "/Python.framework/Versions"
         )
-        # Discover any bundled 3.x version, prefer highest
-        version_dirs = sorted(glob.glob(f"{fw}/3.*"), reverse=True)
         candidates = []
-        for vdir in version_dirs:
+        for vdir in _bundled_python_versions(fw):
             ver = os.path.basename(vdir)
             candidates.append(f"{vdir}/bin/python{ver}")
             candidates.append(f"{vdir}/bin/python3")
@@ -69,13 +79,22 @@ def _get_kicad_env() -> Dict[str, str]:
     if system == "Darwin":
         kicad_app = _get_kicad_app_path()
         fw = f"{kicad_app}/Contents/Frameworks/Python.framework/Versions"
-        version_dirs = sorted(glob.glob(f"{fw}/3.*"), reverse=True)
+        version_dirs = _bundled_python_versions(fw)
         if version_dirs:
             vdir = version_dirs[0]
             ver = os.path.basename(vdir)
             site_packages = f"{vdir}/lib/python{ver}/site-packages"
         else:
+            # No bundled Python version directory found. Fall back to the
+            # legacy "Current" symlink path — but log a warning so callers
+            # can diagnose `import pcbnew` failures inside the subprocess
+            # (which would otherwise surface as opaque JSON-parse errors).
             site_packages = f"{fw}/Current/lib/python3/site-packages"
+            logger.warning(
+                "No bundled Python 3.x version found at %s; falling back to "
+                "Current/lib/python3/site-packages (PYTHONPATH may not work)",
+                fw,
+            )
         env["PYTHONPATH"] = site_packages
         env["DYLD_FRAMEWORK_PATH"] = f"{kicad_app}/Contents/Frameworks"
 
@@ -87,7 +106,7 @@ def _filter_stderr(stderr: str) -> str:
     lines = stderr.split("\n")
     filtered = []
     for line in lines:
-        if any(p.match(line) for p in _SAFE_STDERR_PATTERNS):
+        if any(p.search(line) for p in _SAFE_STDERR_PATTERNS):
             continue
         if line.strip():
             filtered.append(line)
@@ -163,11 +182,13 @@ def run_pcbnew_script(
 
         if result.returncode != 0:
             error_msg = _filter_stderr(result.stderr)
+            truncated = "  (...truncated)" if len(error_msg) > 2000 else ""
             logger.error(
-                "pcbnew script failed (exit %d, %.2fs): %s",
+                "pcbnew script failed (exit %d, %.2fs): %s%s",
                 result.returncode,
                 elapsed,
                 error_msg[:2000],
+                truncated,
             )
             raise RuntimeError(
                 f"pcbnew script failed (exit {result.returncode}): {error_msg}"
@@ -191,9 +212,10 @@ def run_pcbnew_script(
                 except json.JSONDecodeError:
                     continue
         if parsed is None:
+            truncated = "  (...truncated)" if len(stdout) > 2000 else ""
             raise RuntimeError(
                 f"pcbnew script output contains no valid JSON line\n"
-                f"Output was: {stdout[:2000]}"
+                f"Output was: {stdout[:2000]}{truncated}"
             )
 
         logger.debug("pcbnew script completed in %.2fs", elapsed)

@@ -82,15 +82,13 @@ for spec in fp_specs:
 
     # Check for embedded keepout zones (like ESP32 antenna)
     keepout_area = 0.0
-    try:
+    if hasattr(fp, 'Zones'):
         for zone in fp.Zones():
             if zone.GetIsRuleArea():
                 zbb = zone.GetBoundingBox()
                 kw = pcbnew.ToMM(zbb.GetWidth())
                 kh = pcbnew.ToMM(zbb.GetHeight())
                 keepout_area += kw * kh
-    except AttributeError:
-        pass
 
     components.append({
         "library": lib_name,
@@ -150,6 +148,7 @@ print(json.dumps({
     },
     "suggested_sizes": suggestions,
     "errors": errors,
+    "error_count": len(errors),
 }))
 """
         return run_pcbnew_script(script, params={
@@ -233,7 +232,7 @@ for fp in board.GetFootprints():
     # Check for embedded keepout zones (e.g., ESP32 antenna)
     has_keepout = False
     keepout_side = None  # which side the keepout extends to
-    try:
+    if hasattr(fp, 'Zones'):
         for zone in fp.Zones():
             if zone.GetIsRuleArea():
                 has_keepout = True
@@ -246,8 +245,6 @@ for fp in board.GetFootprints():
                 # Determine which edge the keepout extends furthest toward
                 extents = {"left": abs(zx), "right": abs(zr), "top": abs(zy), "bottom": abs(zb)}
                 keepout_side = max(extents, key=extents.get)
-    except AttributeError:
-        pass
 
     # Collect pad nets
     pad_nets = set()
@@ -415,19 +412,36 @@ if sorted_refs:
 
 # --- Build output ---
 placement_list = []
+unplaced = []
 for ref in sorted_refs:
-    p = placements.get(ref, {})
     info = fp_info[ref]
-    placement_list.append({
-        "reference": ref,
-        "value": info["value"],
-        "x_mm": p.get("x_mm", board_cx),
-        "y_mm": p.get("y_mm", board_cy),
-        "width_mm": info["width"],
-        "height_mm": info["height"],
-        "signal_connections": conn_score[ref],
-        "reason": p.get("reason", ""),
-    })
+    if ref in placements:
+        p = placements[ref]
+        placement_list.append({
+            "reference": ref,
+            "value": info["value"],
+            "x_mm": p["x_mm"],
+            "y_mm": p["y_mm"],
+            "width_mm": info["width"],
+            "height_mm": info["height"],
+            "signal_connections": conn_score[ref],
+            "reason": p["reason"],
+        })
+    else:
+        # Spiral search exhausted without finding a spot. Place at board
+        # center with an explicit reason so callers know this is a fallback,
+        # not a confident placement.
+        unplaced.append(ref)
+        placement_list.append({
+            "reference": ref,
+            "value": info["value"],
+            "x_mm": board_cx,
+            "y_mm": board_cy,
+            "width_mm": info["width"],
+            "height_mm": info["height"],
+            "signal_connections": conn_score[ref],
+            "reason": "no placement found - dropped at board center as fallback",
+        })
 
 # Connectivity summary
 conn_summary = []

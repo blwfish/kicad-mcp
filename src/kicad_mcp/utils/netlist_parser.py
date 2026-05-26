@@ -135,6 +135,16 @@ class SchematicParser:
 
                 current_pos += 1
 
+            # Skip s-expressions that never closed (unbalanced parens or
+            # truncated file) — keeping them would mean s_exp == rest of
+            # file and silently produce spurious downstream matches.
+            if depth != 0:
+                logger.warning(
+                    "Unbalanced parens at position %d (depth=%d at EOF); skipping s-expression",
+                    pos, depth,
+                )
+                continue
+
             matches.append(s_exp)
 
         return matches
@@ -145,13 +155,28 @@ class SchematicParser:
 
         symbols = self._extract_s_expressions(r"\(symbol\s+")
 
+        skipped_no_reference = 0
         for symbol in symbols:
             component = self._parse_component(symbol)
-            if component:
-                self.components.append(component)
-                ref = component.get("reference", "Unknown")
-                self.component_info[ref] = component
+            if not component:
+                continue
+            ref = component.get("reference")
+            if not ref:
+                # Library-definition symbol blocks lack (at ...) and
+                # Reference property; the old code clobbered them all under
+                # the single "Unknown" key (last write wins). Skip + count
+                # so callers can detect the silent loss.
+                skipped_no_reference += 1
+                continue
+            self.components.append(component)
+            self.component_info[ref] = component
 
+        if skipped_no_reference:
+            logger.info(
+                "Skipped %d symbol blocks with no Reference property "
+                "(likely library-definition blocks inside (lib_symbols ...))",
+                skipped_no_reference,
+            )
         print(f"Extracted {len(self.components)} components")
 
     def _parse_component(self, symbol_expr: str) -> Dict[str, Any]:
@@ -618,9 +643,17 @@ def analyze_netlist(netlist_data: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dictionary with analysis results
     """
+    # Recompute counts from the actual collections rather than reading
+    # netlist_data["component_count"]/"net_count" with a 0 default. A
+    # default of 0 would silently misreport counts when a caller passes
+    # a dict missing those keys (legitimate use — callers may construct
+    # their own netlist_data) while still populating components/nets.
+    components_dict = netlist_data.get("components", {})
+    nets_dict = netlist_data.get("nets", {})
+
     results: dict[str, Any] = {
-        "component_count": netlist_data.get("component_count", 0),
-        "net_count": netlist_data.get("net_count", 0),
+        "component_count": len(components_dict),
+        "net_count": len(nets_dict),
         "component_types": defaultdict(int),
         "power_nets": [],
     }
@@ -632,18 +665,15 @@ def analyze_netlist(netlist_data: Dict[str, Any]) -> Dict[str, Any]:
         results["incomplete"] = True
         results["incomplete_reason"] = netlist_data.get("incomplete_reason", "")
 
-    for ref in netlist_data.get("components", {}):
+    for ref in components_dict:
         comp_type = re.match(r"^([A-Za-z_]+)", ref)
         if comp_type:
             results["component_types"][comp_type.group(1)] += 1
 
-    for net_name in netlist_data.get("nets", {}):
+    for net_name in nets_dict:
         if is_power_net(net_name):
             results["power_nets"].append(net_name)
 
-    total_pins = sum(
-        len(pins) for pins in netlist_data.get("nets", {}).values()
-    )
-    results["total_pin_connections"] = total_pins
+    results["total_pin_connections"] = sum(len(pins) for pins in nets_dict.values())
 
     return results

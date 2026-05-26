@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
-from kicad_mcp.utils.kicad_cli import get_kicad_cli_path
+from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
@@ -211,7 +211,7 @@ for label, ratio in [("square", 1.0), ("4:3", 4/3), ("3:2", 3/2)]:
     h = math.ceil(h)
     suggestions.append({"label": label, "width_mm": w, "height_mm": h})
 
-print(json.dumps({"status": "ok", "suggested_sizes": suggestions, "errors": errors}))
+print(json.dumps({"status": "ok", "suggested_sizes": suggestions, "errors": errors, "error_count": len(errors)}))
 """
     return run_pcbnew_script(script, params={"fp_specs": fp_specs})
 
@@ -274,6 +274,7 @@ print(json.dumps({
     "status": "ok",
     "placed_count": len(placed),
     "errors": errors,
+    "error_count": len(errors),
 }))
 """
     return run_pcbnew_script(script, params={
@@ -933,7 +934,7 @@ def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
     """Step 8 (optional): Export Gerber + drill files and create ZIP."""
     try:
         kicad_cli = get_kicad_cli_path(required=True)
-    except Exception as e:
+    except KiCadCLIError as e:
         return {"error": str(e)}
 
     pcb_dir = os.path.dirname(os.path.abspath(pcb_path))
@@ -1118,9 +1119,18 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         if not _record("autoroute", step):
             return pipeline_result
 
-        pipeline_result["tracks"] = step.get("tracks_after", 0)
-        pipeline_result["vias"] = step.get("vias_after", 0)
-        pipeline_result["incomplete_nets"] = step.get("best_incomplete", 0)
+        # Surface None when keys are absent rather than 0 — defaulting to 0
+        # would silently report "fully routed, no incompletes" if the
+        # autoroute step ever changes its return shape.
+        pipeline_result["tracks"] = step.get("tracks_after")
+        pipeline_result["vias"] = step.get("vias_after")
+        pipeline_result["incomplete_nets"] = step.get("best_incomplete")
+        if any(v is None for v in (pipeline_result["tracks"],
+                                    pipeline_result["vias"],
+                                    pipeline_result["incomplete_nets"])):
+            pipeline_result.setdefault("warnings", []).append(
+                f"autoroute step result missing expected counts (keys: {sorted(step.keys())})"
+            )
 
         # Step 7: Copper zones + fill
         step = _step_add_zones_and_fill(pcb_path, ground_net)

@@ -116,8 +116,13 @@ def register_pcb_drc_fix_tools(mcp: FastMCP) -> None:
         if not before_drc.get("success"):
             return {"error": f"Initial DRC failed: {before_drc.get('error', 'unknown')}"}
 
-        before_total = before_drc.get("total_violations", 0)
-        before_cats = before_drc.get("violation_categories", {})
+        # DRC result schema: success=True implies total_violations present.
+        # Default 0 here would silently misreport "fully clean" if the key
+        # ever goes missing (schema change, partial result, etc.).
+        if "total_violations" not in before_drc:
+            return {"error": f"DRC result missing 'total_violations' key (have: {sorted(before_drc.keys())})"}
+        before_total = before_drc["total_violations"]
+        before_cats = before_drc.get("violation_categories", {})  # empty dict is a legitimate value
         groups = _categorize_violations(before_cats)
 
         if before_total == 0:
@@ -145,13 +150,11 @@ max_passes = 3
 """ + COURTYARD_BBOX_TUPLE_HELPER + GEOMETRY_HELPER + """
 
 outline = None
-try:
+if hasattr(board, 'GetBoardEdgesBoundingBox'):
     bb = board.GetBoardEdgesBoundingBox()
     if bb.GetWidth() > 0:
         outline = (pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY()),
                    pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
-except Exception:
-    pass
 
 def bbox_inside_board(bx0, by0, bx1, by1):
     if outline is None:
@@ -177,7 +180,10 @@ for pass_num in range(1, max_passes + 1):
         break
     moved = False
     for a, b in pairs:
-        if a["nets"] <= b["nets"]:
+        # Move the footprint with fewer signal nets (less routing disruption).
+        # On ties, break by reference for determinism — board.GetFootprints()
+        # iteration order is not stable across pcbnew versions.
+        if (a["nets"], a["ref"]) <= (b["nets"], b["ref"]):
             mover, anchor = a, b
         else:
             mover, anchor = b, a
@@ -233,7 +239,12 @@ for item in to_remove:
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "removed": removed}))
 """, params={"pcb_path": pcb_path})
-            tracks_cleared = clear_result.get("removed", 0)
+            # Subprocess returned {"status": "ok", "removed": N} or {"error": ...}.
+            # Default-to-0 would silently re-autoroute an uncleared board, masking
+            # the failure with an optimistic action log entry.
+            if "error" in clear_result:
+                return {"error": f"Failed to clear existing routing: {clear_result['error']}"}
+            tracks_cleared = clear_result["removed"]
 
             # Re-autoroute
             from kicad_mcp.tools.pcb_autoroute import (
@@ -296,10 +307,11 @@ for drawing in board.GetDrawings():
         if _vis:
             all_silk.append({"component": None, "obj": drawing, "layer": drawing.GetLayer()})
 
-try:
+if hasattr(board, 'GetBoardEdgesBoundingBox'):
     board_bb = board.GetBoardEdgesBoundingBox()
     board_valid = board_bb.GetWidth() > 0
-except Exception:
+else:
+    board_bb = None
     board_valid = False
 
 def _bbox_to_tuple(b):

@@ -129,19 +129,21 @@ def extract_frequency_from_value(value: str) -> str:
             except ValueError:
                 pass
 
-    # Check for common crystal frequencies
-    if "32.768" in value or "32768" in value:
-        return "32.768kHz"
-    elif "16M" in value or "16MHZ" in value.upper():
-        return "16MHz"
-    elif "8M" in value or "8MHZ" in value.upper():
-        return "8MHz"
-    elif "20M" in value or "20MHZ" in value.upper():
-        return "20MHz"
-    elif "27M" in value or "27MHZ" in value.upper():
-        return "27MHz"
-    elif "25M" in value or "25MHZ" in value.upper():
-        return "25MHz"
+    # Common crystal frequencies — use negative-lookbehind anchors so "8M"
+    # doesn't match "128MHz". Substring tests would silently misclassify
+    # any value that happens to contain these digits as a fragment.
+    _CRYSTAL_PATTERNS = [
+        (r"(?<!\d)32\.768(?!\d)", "32.768kHz"),
+        (r"(?<!\d)32768(?!\d)",   "32.768kHz"),
+        (r"(?<!\d)16\s*M(?!\w)",  "16MHz"),
+        (r"(?<!\d)8\s*M(?!\w)",   "8MHz"),
+        (r"(?<!\d)20\s*M(?!\w)",  "20MHz"),
+        (r"(?<!\d)25\s*M(?!\w)",  "25MHz"),
+        (r"(?<!\d)27\s*M(?!\w)",  "27MHz"),
+    ]
+    for pattern, label in _CRYSTAL_PATTERNS:
+        if re.search(pattern, value, re.IGNORECASE):
+            return label
 
     return "unknown"
 
@@ -226,11 +228,12 @@ def extract_capacitance_value(value: str) -> Tuple[Optional[float], Optional[str
             capacitance = float(match.group(1))
             unit = match.group(2).lower()
 
-            if "p" in unit or "pf" in unit:
+            # The "pf"/"nf"/"uf" sub-cases are dead \u2014 "p"/"n"/"u" already match.
+            if "p" in unit:
                 unit = "pF"
-            elif "n" in unit or "nf" in unit:
+            elif "n" in unit:
                 unit = "nF"
-            elif "u" in unit or "\u03bc" in unit or "uf" in unit or "\u03bcf" in unit:
+            elif "u" in unit or "\u03bc" in unit:
                 unit = "\u03bcF"
             else:
                 unit = "F"
