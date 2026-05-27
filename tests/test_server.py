@@ -29,12 +29,14 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: update when tools are intentionally added or removed.
 
-        Tool-consolidation in progress (see docs/SPEC_Tool_Consolidation.md).
-        Target: 14 tools. Current count tracks the in-progress migration.
-        Phase 2: 90-12+3=81.
-        Phase 3: audit router replaces 9 keepout tools → 81-9+1=73.
-        Phase 4: pcb router replaces 29 individual pcb_* tools → 73-29+1=45.
-        Phase 5: schematic router replaces 32 schematic + 1 netlist → 45-33+1=13.
+        Tool-consolidation complete (see docs/SPEC_Tool_Consolidation.md).
+        Final surface: 9 routers + 4 standalones = 13 tools.
+          Phase 1: library + analyze + export routers (10 → 3)
+          Phase 2: project + drc + autoroute routers (12 → 3)
+          Phase 3: audit router replaces 9 keepout tools → 73 total
+          Phase 4: pcb router replaces 27 individual pcb_* tools → 45 total
+          Phase 5: schematic router replaces 32 schematic tools + find_component_connections → 13 total
+          Phase 6: no-op stubs deleted; final count confirmed at 13.
         """
         tools = asyncio.run(mcp_server.list_tools())
         assert len(tools) == 13, (

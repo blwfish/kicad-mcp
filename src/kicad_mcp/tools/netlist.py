@@ -10,7 +10,7 @@ import os
 import re
 from typing import Any, Dict
 
-from fastmcp import FastMCP, Context
+from fastmcp import Context
 
 logger = logging.getLogger(__name__)
 
@@ -416,10 +416,3 @@ async def _op_find_component_connections(
         return {"success": False, "error": str(e)}
 
 
-def register_netlist_tools(mcp: FastMCP) -> None:
-    """No-op stub — find_component_connections moved to schematic router (phase 5)."""
-    # Previously registered find_component_connections as a standalone tool.
-    # Phase 5 folds it into the schematic router; this function is kept as a
-    # no-op so any existing callers of register_netlist_tools don't break at
-    # import time.
-    pass

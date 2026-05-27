@@ -16,7 +16,6 @@ def create_server() -> FastMCP:
     from kicad_mcp.tools.pcb_autoroute import register_pcb_autoroute_tools
     from kicad_mcp.tools.pcb_panelize import register_pcb_panelize_tools
     from kicad_mcp.tools.pcb_planning import register_pcb_planning_tools
-    from kicad_mcp.tools.pcb_drc_fix import register_pcb_drc_fix_tools
     from kicad_mcp.tools.pcb_pipeline import register_pipeline_tools
 
     register_pcb_tools(mcp)
@@ -24,7 +23,6 @@ def create_server() -> FastMCP:
     register_pcb_autoroute_tools(mcp)
     register_pcb_panelize_tools(mcp)
     register_pcb_planning_tools(mcp)
-    register_pcb_drc_fix_tools(mcp)
     register_pipeline_tools(mcp)
 
     # Domain routers (phase 1: library + analyze + export)
@@ -47,7 +45,7 @@ def create_server() -> FastMCP:
     # Note: register_pcb_keepout_tools is imported above and already called.
 
     # Schematic router (phase 5: replaces 32 individual schematic tools + find_component_connections)
-    from kicad_mcp.tools.schematic_router import register_schematic_router
+    from kicad_mcp.tools.schematic import register_schematic_router
 
     register_schematic_router(mcp)
 

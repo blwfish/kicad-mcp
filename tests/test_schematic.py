@@ -11,8 +11,8 @@ import asyncio
 import pytest
 from fastmcp import FastMCP
 
-from kicad_mcp.tools.schematic_router import register_schematic_router
-import kicad_mcp.tools.schematic as sch_module
+from kicad_mcp.tools.schematic import register_schematic_router
+import kicad_mcp.tools.schematic_impl as sch_module
 
 
 # -- Fixtures ----------------------------------------------------------------

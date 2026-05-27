@@ -5,7 +5,6 @@ import logging
 import os
 from typing import Any, Dict
 
-from fastmcp import FastMCP
 
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.keepout_helpers import COURTYARD_BBOX_TUPLE_HELPER
@@ -425,9 +424,3 @@ print(json.dumps({"status": "ok", "moved": moved, "hidden": hidden_count,
     }
 
 
-def register_pcb_drc_fix_tools(mcp: FastMCP) -> None:
-    """No-op: drc_autofix has moved to the drc router (see drc.py).
-
-    Kept so server.py import/call doesn't break during migration.
-    """
-    pass

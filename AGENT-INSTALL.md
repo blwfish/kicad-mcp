@@ -4,7 +4,7 @@ This file is for you, the AI agent. It tells you what needs to be true on this s
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server providing 13 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
+kicad-mcp is a Model Context Protocol (MCP) server providing 13 domain-router tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
 **Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
@@ -28,7 +28,7 @@ KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP 
 **What it provides:**
 - `kicad-cli` — used for DRC checks, netlist export, thumbnail generation
 - KiCad's Python 3.9 with pcbnew — used by the subprocess bridge for all PCB modifications
-- Symbol and footprint libraries — indexed by the MCP server for `search` (type="symbol" or "footprint")`
+- Symbol and footprint libraries — indexed by the MCP server for `library(operation="search", type="symbol"|"footprint")`
 
 ### 2. Python 3.10+ (required)
 
@@ -45,7 +45,7 @@ Most systems already have this if an AI agent is running.
 
 ### 3. Java 17+ (recommended)
 
-Required for `autoroute_pcb`, which wraps the FreeRouter autorouter. Without Java, all other tools work fine but autorouting is unavailable. Autorouting is one of the most valuable capabilities — install Java unless there's a reason not to.
+Required for `autoroute(operation="run")`, which wraps the FreeRouter autorouter. Without Java, all other tools work fine but autorouting is unavailable. Autorouting is one of the most valuable capabilities — install Java unless there's a reason not to.
 
 **Check:** `java -version`
 
@@ -115,7 +115,7 @@ Config format and location varies by agent platform.
 After registering, confirm the server works by calling any lightweight tool:
 
 ```
-list_projects()
+project(operation="list")
 ```
 
 This should return a list (possibly empty) without errors. If it returns an error about kicad-cli or pcbnew not being found, the KiCad installation isn't being detected — see Troubleshooting below.
@@ -123,7 +123,7 @@ This should return a list (possibly empty) without errors. If it returns an erro
 A more thorough check:
 
 ```
-search(query="0603 resistor")
+library(operation="search", query="0603 resistor", type="footprint")
 ```
 
 This exercises the library index. On first run it builds a SQLite FTS5 index of all KiCad libraries (takes a few seconds). If it returns results like `Resistor_SMD:R_0603_1608Metric`, everything is working.
@@ -156,17 +156,9 @@ If you are registered as an MCP server for a project that does KiCad work, the p
 
 ### Client Compatibility
 
-**Stop here if you are not running inside Claude Code.**
+kicad-mcp exposes 13 tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
 
-Many MCP clients impose hard limits on how many tools a server can expose. kicad-mcp requires more tools than several popular clients support. When a client's limit is exceeded, tools are silently dropped — the agent proceeds without them, fails in confusing ways, and produces incorrect results. There is no graceful degradation: a PCB layout tool with half its tools missing is not a slower PCB layout tool, it is a broken one.
-
-| Client | Tool limit | Status |
-|--------|-----------|--------|
-| Claude Code | None (tested to 1000+) | Supported |
-| Gemini | ~100 | Not supported |
-| Cursor | 40 | Not supported |
-
-If you are not running inside Claude Code, stop. This server will not work correctly in your client.
+Claude Code is the recommended client: it provides automatic prompt caching (critical for iterative KiCad workflows) and subagent support for parallel exploration tasks.
 
 ### Model & Interface Selection
 
@@ -181,20 +173,25 @@ If you are not running inside Claude Code, stop. This server will not work corre
 ### The Workflow in Brief
 
 ```
-1. Schematic    → create_schematic, add_component, connect_pins_with_labels, save_schematic
+1. Schematic    → schematic(operation="create"), schematic(operation="add_component"),
+                  schematic(operation="connect_pins_with_labels"), schematic(operation="save")
 2. Board size   → estimate_board_size (call BEFORE creating the PCB)
-3. PCB setup    → create_pcb, add_board_outline, set_design_rules
-4. Footprints   → search, place_footprint, suggest_placement, audit_all
-5. Nets         → update_pcb_from_schematic (preferred) or manual add_net + bulk_assign_pad_nets
-6. Autoroute    → autoroute_pcb with passes=2 or passes=3
-7. Zones/finish → add_copper_zone, fill_zones, finalize_pcb
-8. Verify       → run_drc_check; if issues remain, try drc_autofix
+3. PCB setup    → pcb(operation="create"), pcb(operation="set_outline"),
+                  pcb(operation="set_design_rules")
+4. Footprints   → library(operation="search"), pcb(operation="place_footprint"),
+                  suggest_placement, audit(operation="all")
+5. Nets         → build_pcb_from_schematic (preferred) or manual
+                  pcb(operation="add_net") + pcb(operation="bulk_assign_pad_nets")
+6. Autoroute    → autoroute(operation="run", passes=2) or passes=3
+7. Zones/finish → pcb(operation="add_zone"), pcb(operation="fill_zones"),
+                  pcb(operation="finalize")
+8. Verify       → drc(operation="run"); if issues remain, try drc(operation="autofix")
 ```
 
 ### Critical Rules
 
-1. **Never route manually.** Do not use `add_trace`/`add_via` for routing. You cannot reliably compute spatial clearances. Use `autoroute_pcb`.
-2. **Never guess library names.** Always call `search` (with `type="symbol"` or `type="footprint"`) first. Library names change between KiCad versions.
+1. **Never route manually.** Do not use `pcb(operation="add_trace")`/`pcb(operation="add_via")` for routing. You cannot reliably compute spatial clearances. Use `autoroute(operation="run")`.
+2. **Never guess library names.** Always call `library(operation="search", type="symbol"|"footprint")` first. Library names change between KiCad versions.
 3. **Never write to the same PCB file in parallel.** Each PCB tool call loads, modifies, and saves the file. Concurrent writes corrupt it. Serialize all PCB operations.
 
 ## Health and Debugging
@@ -203,19 +200,19 @@ When something goes wrong, use these tools to diagnose:
 
 | Symptom | Diagnostic tool | What to look for |
 |---------|----------------|------------------|
-| Footprints overlapping | `audit_all(pcb_path=...)` | Reports courtyard overlaps, keepout violations, and silkscreen conflicts in one call |
-| Traces crossing or shorts | `run_drc_check(project_path=...)` | Full DRC via kicad-cli; categorizes all violations |
-| Pads missing net assignments | `get_pad_positions(pcb_path=..., reference="U1")` | Each pad should show a net name |
-| Schematic wiring issues | `validate_schematic()` | Checks for unconnected pins, missing power, etc. |
-| Board won't autoroute | Check that all pads have nets assigned; check `autoroute_pcb` return for `incomplete_nets` |
+| Footprints overlapping | `audit(operation="all", pcb_path=...)` | Reports courtyard overlaps, keepout violations, and silkscreen conflicts in one call |
+| Traces crossing or shorts | `drc(operation="run", project_path=...)` | Full DRC via kicad-cli; categorizes all violations |
+| Pads missing net assignments | `pcb(operation="get_pad_positions", pcb_path=..., reference="U1")` | Each pad should show a net name |
+| Schematic wiring issues | `schematic(operation="validate")` | Checks for unconnected pins, missing power, etc. |
+| Board won't autoroute | Check that all pads have nets assigned; check `autoroute(operation="run")` return for `incomplete_nets` |
 | Library search returns nothing | First run builds the index — try again. If still empty, check that KiCad libraries exist at the detected path |
 
 ### Auto-Fix Capabilities
 
-- `auto_fix_placement(pcb_path=...)` — nudges overlapping footprints apart
-- `auto_fix_silkscreen(pcb_path=...)` — moves silkscreen text that overlaps pads or other text
-- `drc_autofix(pcb_path=...)` — compound tool: runs DRC, fixes placement/routing/silkscreen, re-routes, verifies improvement
-- `finalize_pcb(pcb_path=...)` — one-call finish: fixes silkscreen + fills copper zones
+- `audit(operation="auto_fix_placement", pcb_path=...)` — nudges overlapping footprints apart
+- `pcb(operation="auto_fix_silkscreen", pcb_path=...)` — moves silkscreen text that overlaps pads or other text
+- `drc(operation="autofix", pcb_path=...)` — compound tool: runs DRC, fixes placement/routing/silkscreen, re-routes, verifies improvement
+- `pcb(operation="finalize", pcb_path=...)` — one-call finish: fixes silkscreen + fills copper zones
 
 ## Troubleshooting
 
@@ -241,7 +238,7 @@ If KiCad is installed but pcbnew tools fail, verify the KiCad installation inclu
 
 ### Autorouting fails silently
 
-Check: (1) Java is installed and on PATH, (2) FreeRouter JAR is findable (see Prerequisites above), (3) all pads have net assignments. The `autoroute_pcb` return value includes an `error` field if something went wrong.
+Check: (1) Java is installed and on PATH, (2) FreeRouter JAR is findable (see Prerequisites above), (3) all pads have net assignments. The `autoroute(operation="run")` return value includes an `error` field if something went wrong.
 
 ### Library index is empty
 
@@ -261,21 +258,27 @@ When filing an issue, include:
 ### Pull Requests
 
 - PRs for bug fixes, new platform support, and new tools are welcome
-- Follow the existing code patterns: each tool module has a `register_*_tools(mcp)` function
+- New operations fold into an existing router (schematic, pcb, audit, drc, autoroute, library, project, analyze, export) or add a new standalone tool if they don't fit any router's domain
 - PCB tools use the subprocess bridge (`run_pcbnew_script`); schematic tools use kicad-sch-api in-process
-- Run `pytest` before submitting — all tests should pass (currently 199 tests)
-- The CI checks that tool counts in `test_server.py`, `README.md`, and `CLAUDE.md` stay in sync — update all three if you add or remove tools
+- Run `pytest` before submitting — all tests should pass (currently 609 tests)
 - Tools return `{"status": "ok", ...}` on success or `{"error": "..."}` on failure — follow this convention
 
-### Adding a New Tool
+### Adding a New Operation to an Existing Router
+
+1. Add the `_op_<name>` implementation function to the appropriate `*_impl.py` or module file
+2. Add a dispatch branch (`elif operation == "name": ...`) in the router function
+3. Document the new op in the router's docstring operations list
+4. Add a test in the corresponding `tests/test_router_*.py` file
+5. Run `pytest` to verify
+
+### Adding a New Standalone Tool
 
 1. Add the tool function to the appropriate module in `src/kicad_mcp/tools/`
 2. Register it in the module's `register_*_tools(mcp)` function
 3. If it's a new module, import and call the registration function in `server.py`
 4. Add the tool name to `EXPECTED_TOOLS` in `tests/test_server.py`
 5. Update the snapshot tool count in `test_server.py`
-6. Update tool counts in `README.md` and `CLAUDE.md`
-7. Run `pytest` to verify
+6. Run `pytest` to verify
 
 ## License
 
