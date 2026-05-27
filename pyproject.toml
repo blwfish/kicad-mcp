@@ -33,7 +33,14 @@ dependencies = [
     "pyyaml>=6.0.3",
     "defusedxml>=0.7.1",
     "python-multipart>=0.0.29",
+    "mcp-events>=0.1.0",
 ]
+
+[tool.uv.sources]
+# Local dev: use the workspace copy of mcp-events. CI / downstream users
+# resolve from PyPI per the version constraint above. kicad-mcp itself is
+# distributed via AGENT-INSTALL.md, not PyPI.
+mcp-events = { path = "/Volumes/Files/claude/mcp-events", editable = true }
 
 [project.scripts]
 kicad-mcp = "kicad_mcp.server:main"
@@ -103,4 +110,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pandas", "defusedxml.*", "sexpdata"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# mcp-events 0.1.0 doesn't ship a py.typed marker yet. Remove this override
+# when the upstream package adds typing markers.
+module = ["mcp_events"]
 ignore_missing_imports = true
