@@ -7,7 +7,6 @@ loaded instance until a different schematic is loaded.
 The underlying library is kicad-sch-api (PyPI), which provides lossless
 round-trip parsing of .kicad_sch files.
 """
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 from __future__ import annotations
 
@@ -167,20 +166,6 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         sch = _require_schematic()
         backup_path = sch.backup(suffix)
         return {"status": "ok", "backup_path": str(backup_path)}
-
-    @mcp.tool()
-    def clone_schematic(new_name: str | None = None) -> dict:
-        """Create a copy of the current schematic.
-
-        The clone is NOT loaded as the current schematic.
-
-        Args:
-            new_name: Name for cloned schematic (optional).
-        """
-        sch = _require_schematic()
-        cloned = sch.clone(new_name)
-        comp_count = len(list(cloned.components))
-        return {"status": "ok", "name": new_name or "Clone", "components": comp_count}
 
     # ------------------------------------------------------------------
     # Component management
@@ -392,13 +377,18 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             footprint: Filter by footprint.
         """
         sch = _require_schematic()
+        # kicad-sch-api filter() only recognizes: lib_id, value, value_pattern,
+        # reference_pattern, footprint, in_area, has_property.  Passing a key
+        # it doesn't recognize is silently dropped — the public-facing
+        # `reference` arg here is mapped to `reference_pattern` (regex) on the
+        # way in.  The docstring above already describes it as a "pattern".
         criteria: dict[str, str] = {}
         if lib_id:
             criteria["lib_id"] = lib_id
         if value:
             criteria["value"] = value
         if reference:
-            criteria["reference"] = reference
+            criteria["reference_pattern"] = reference
         if footprint:
             criteria["footprint"] = footprint
 
@@ -1294,25 +1284,49 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         sheet_uuid: str,
         name: str,
         pin_type: str,
-        position: list[float],
+        edge: str,
+        position_along_edge: float,
     ) -> dict:
-        """Add pin to hierarchical sheet.
+        """Add pin to hierarchical sheet using edge-based positioning.
 
         Args:
             sheet_uuid: UUID of sheet to add pin to.
             name: Pin name.
-            pin_type: Pin type (input, output, bidirectional).
-            position: [x, y] coordinates relative to sheet.
+            pin_type: Pin type (input, output, bidirectional, tri_state, passive).
+            edge: Which edge to place the pin on (right, bottom, left, top).
+                Pin orientation follows the edge: right=0°, bottom=270°,
+                left=180°, top=90°.
+            position_along_edge: Distance along the edge from the reference
+                corner in mm (0.0 to the edge length).
         """
         sch = _require_schematic()
-        if len(position) != 2:
-            return {"error": "Position must be [x, y] coordinates"}
 
-        pin_uuid = sch.add_sheet_pin(sheet_uuid, name, pin_type, tuple(position))
+        # Reject unknown pin_type explicitly — silent default-substitution by
+        # the underlying library would hide caller typos (mirrors the
+        # add_hierarchical_label guard pattern).
+        valid_pin_types = {"input", "output", "bidirectional", "tri_state", "passive"}
+        pin_type_key = pin_type.lower()
+        if pin_type_key not in valid_pin_types:
+            return {
+                "error": f"Unknown pin_type {pin_type!r}. Valid: {sorted(valid_pin_types)}"
+            }
+
+        valid_edges = {"right", "bottom", "left", "top"}
+        edge_key = edge.lower()
+        if edge_key not in valid_edges:
+            return {
+                "error": f"Unknown edge {edge!r}. Valid: {sorted(valid_edges)}"
+            }
+
+        pin_uuid = sch.add_sheet_pin(
+            sheet_uuid, name, pin_type_key, edge_key, position_along_edge
+        )
         return {
             "status": "ok",
             "pin_uuid": pin_uuid,
             "name": name,
-            "pin_type": pin_type,
+            "pin_type": pin_type_key,
+            "edge": edge_key,
+            "position_along_edge": position_along_edge,
             "sheet_uuid": sheet_uuid,
         }

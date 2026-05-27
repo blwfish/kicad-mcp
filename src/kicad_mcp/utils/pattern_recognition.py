@@ -111,9 +111,14 @@ def identify_amplifiers(
     """
     amplifiers = []
 
-    # Look for op-amps
+    # Look for op-amps.  The outer filter must match every IC family that
+    # the inner specific branches handle — otherwise the inner branch is
+    # dead code.  INA\d+ (instrumentation amps like INA128) and AD\d{4}
+    # (AD8221/AD8429 — 4-digit Analog Devices instrumentation amps) were
+    # missing from the outer filter, making the instrumentation sub-branch
+    # unreachable for those values.
     opamp_patterns = [
-        r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP\d{3}|AD\d{3}|LT\d{4}|OPA\d{3}",
+        r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP\d{3}|AD\d{3,}|LT\d{4}|OPA\d{3}|INA\d+",
         r"Opamp|Op-Amp|OpAmp|Operational Amplifier",
     ]
 
@@ -522,6 +527,12 @@ def identify_sensor_interfaces(
         List of identified sensor interface circuits
     """
     sensor_interfaces: list[dict[str, Any]] = []
+    # Track refs matched by the main sensor_patterns loop so the
+    # designator-prefix passes below (thermistors RT/TH, photosensors
+    # PD/LDR, potentiometers RV/POT) don't double-classify a component
+    # already labelled by value pattern — e.g. an "RT1" with value "LM35"
+    # would otherwise appear as both temperature_sensor and thermistor.
+    classified_refs: set[str] = set()
 
     # Common sensor IC patterns
     sensor_patterns = {
@@ -535,7 +546,12 @@ def identify_sensor_interfaces(
         "light": r"BH1750|TSL\d+|MAX4\d+|VEML\d+|APDS9960|LTR329|OPT\d+",
         "air_quality": r"CCS811|BME680|SGP\d+|SEN\d+|MQ\d+|MiCS",
         "current": r"ACS\d+|INA\d+|MAX\d+|ZXCT\d+",
-        "voltage": r"INA\d+|MCP\d+|ADS\d+",
+        # ADS\d+ removed from "voltage" — the entire ADS family (ADS1115,
+        # ADS1015, ADS8688, ...) belongs in "ADC".  Without this fix the
+        # ADS1115-specific branch in the ADC handler (with resolution and
+        # channel count) was unreachable because dict iteration order put
+        # "voltage" before "ADC".
+        "voltage": r"INA\d+|MCP\d+",
         "ADC": r"ADS\d+|MCP33\d+|MCP32\d+|LTC\d+|NAU7802|HX711",
         "GPS": r"NEO-[67]M|L80|MTK\d+|SIM\d+|SAM-M8Q|MAX-M8",
     }
@@ -698,11 +714,16 @@ def identify_sensor_interfaces(
                         "component": ref,
                     })
 
+                classified_refs.add(ref)
                 break
 
-    # Thermistors
+    # Thermistors — designator refs must be {RT|TH}<digits>, not bare prefix.
+    # The old startswith("RT") fired on Ethernet PHY refs like "RTL8211F";
+    # require a digit-only suffix so only true designators (RT1, TH42) match.
+    _thermistor_re = re.compile(r"^(RT|TH)\d+$")
     thermistor_refs = [
-        ref for ref in components.keys() if ref.startswith("RT") or ref.startswith("TH")
+        ref for ref in components.keys()
+        if _thermistor_re.match(ref) and ref not in classified_refs
     ]
     for ref in thermistor_refs:
         component = components[ref]
@@ -714,11 +735,14 @@ def identify_sensor_interfaces(
             "interface": "Analog",
         })
 
-    # Photodiodes, photoresistors
+    # Photodiodes, photoresistors — same digit-suffix discipline as
+    # thermistors to avoid catching unrelated refs (PDIP packages, LDR-prefixed
+    # part numbers, etc.).
+    _photosensor_re = re.compile(r"^(PD|LDR)\d+$")
     photosensor_refs = [
         ref
         for ref in components.keys()
-        if ref.startswith("PD") or ref.startswith("LDR")
+        if _photosensor_re.match(ref) and ref not in classified_refs
     ]
     for ref in photosensor_refs:
         component = components[ref]
@@ -730,11 +754,12 @@ def identify_sensor_interfaces(
             "interface": "Analog",
         })
 
-    # Potentiometers
+    # Potentiometers — same digit-suffix discipline.
+    _pot_re = re.compile(r"^(RV|POT)\d+$")
     pot_refs = [
         ref
         for ref in components.keys()
-        if ref.startswith("RV") or ref.startswith("POT")
+        if _pot_re.match(ref) and ref not in classified_refs
     ]
     for ref in pot_refs:
         component = components[ref]
@@ -897,7 +922,12 @@ def identify_microcontrollers(
 
     # Look for development boards
     dev_board_patterns = {
-        "Arduino": r"ARDUINO|UNO|NANO|MEGA|LEONARDO|DUE",
+        # (?<!AT)MEGA: match the Arduino board name "Mega" but NOT the
+        # ATmega328P / ATmega32U4 MCUs, where "MEGA" appears as a substring
+        # of "ATMEGA".  Without the negative lookbehind, every ATmega chip
+        # was double-classified as both a microcontroller and an Arduino
+        # dev_board (substring trap — CLAUDE.md Rule 3).
+        "Arduino": r"ARDUINO|UNO|NANO|(?<!AT)MEGA|LEONARDO|DUE",
         "ESP32 Dev Board": r"ESP32-DEVKIT|NODEMCU-32S|ESP-WROOM-32",
         "ESP8266 Dev Board": r"NODEMCU|WEMOS|D1_MINI|ESP-01",
         "STM32 Dev Board": r"NUCLEO|DISCOVERY|BLUEPILL",

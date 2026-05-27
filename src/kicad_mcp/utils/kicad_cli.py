@@ -155,9 +155,9 @@ class KiCadCLIManager:
         paths = []
 
         if self._system == "Darwin":
-            kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
+            from kicad_mcp.config import KICAD_APP_PATH
             paths.extend([
-                f"{kicad_app}/Contents/MacOS/kicad-cli",
+                f"{KICAD_APP_PATH}/Contents/MacOS/kicad-cli",
                 "/Applications/KiCad/kicad-cli",
                 "/usr/local/bin/kicad-cli",
                 "/opt/homebrew/bin/kicad-cli",

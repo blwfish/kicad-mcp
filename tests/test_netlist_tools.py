@@ -172,3 +172,45 @@ class TestAnalyzeProjectPatterns:
             operation="project_patterns", ctx=None, project_path=str(pro),
         ))
         assert result["success"] is False
+
+
+# -- _unescape_sexpr unit tests ----------------------------------------------
+
+
+class TestUnescapeSexpr:
+    """Unit tests for the KiCad S-expression string unescaper."""
+
+    @pytest.fixture(autouse=True)
+    def import_fn(self):
+        from kicad_mcp.utils.netlist_parser import _unescape_sexpr
+        self._fn = _unescape_sexpr
+
+    def test_no_escapes_unchanged(self):
+        """Plain string with no backslash is returned as-is."""
+        assert self._fn("hello") == "hello"
+
+    def test_escaped_double_quote(self):
+        r"""\" → "  (escaped quote)."""
+        assert self._fn('a\\"b') == 'a"b'
+
+    def test_escaped_backslash(self):
+        r"""\\ → \  (escaped backslash)."""
+        assert self._fn("a\\\\b") == "a\\b"
+
+    def test_escaped_newline(self):
+        r"""\n → newline character."""
+        assert self._fn("a\\nb") == "a\nb"
+
+    def test_unknown_escape_takes_literal_next_char(self):
+        r"""Unknown escape \x → 'x' (take the literal next char, drop the backslash)."""
+        assert self._fn("\\x") == "x"
+
+    def test_empty_string(self):
+        """Empty string passes through without error."""
+        assert self._fn("") == ""
+
+    def test_trailing_backslash(self):
+        """Lone trailing backslash (malformed input): kept as-is since i+1 is OOB."""
+        # Per the implementation: `if c == "\\" and i + 1 < len(s)` — trailing
+        # backslash falls into the else branch and is appended literally.
+        assert self._fn("abc\\") == "abc\\"

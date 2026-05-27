@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from fastmcp import FastMCP
 
+from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
 logger = logging.getLogger(__name__)
@@ -415,6 +416,7 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+""" + GEOMETRY_HELPER + """
 
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
 
@@ -470,17 +472,19 @@ for fp in board.GetFootprints():
             "y_max": sz.GetBottom(),
         })
 
-def aabb_overlap(ax_min, ay_min, ax_max, ay_max, bx_min, by_min, bx_max, by_max):
-    return ax_min < bx_max and ax_max > bx_min and ay_min < by_max and ay_max > by_min
+# aabb_overlap is injected from GEOMETRY_HELPER (non-strict — touching edges
+# count as overlap, matching KiCad DRC's silk_over_copper semantics).
+# Items expose ("bbox" / "bbox_x_min"...) keys; we pass 4-tuples to the helper.
 
 # Check text-over-pad overlaps (skip text overlapping own component)
 pad_overlaps = []
 for si in silk_items:
+    si_bb = (si["bbox_x_min"], si["bbox_y_min"], si["bbox_x_max"], si["bbox_y_max"])
     for pad in pads:
         if si["component"] == pad["reference"]:
             continue
-        if aabb_overlap(si["bbox_x_min"], si["bbox_y_min"], si["bbox_x_max"], si["bbox_y_max"],
-                        pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
+        pad_bb = (pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"])
+        if aabb_overlap(si_bb, pad_bb):
             pad_overlaps.append({
                 "silk_type": si["type"],
                 "silk_component": si["component"],
@@ -494,14 +498,15 @@ for si in silk_items:
 text_overlaps = []
 for i in range(len(silk_items)):
     a = silk_items[i]
+    a_bb = (a["bbox_x_min"], a["bbox_y_min"], a["bbox_x_max"], a["bbox_y_max"])
     for j in range(i + 1, len(silk_items)):
         b = silk_items[j]
         if a["component"] is not None and a["component"] == b["component"]:
             continue
         if a["layer"] != b["layer"]:
             continue
-        if aabb_overlap(a["bbox_x_min"], a["bbox_y_min"], a["bbox_x_max"], a["bbox_y_max"],
-                        b["bbox_x_min"], b["bbox_y_min"], b["bbox_x_max"], b["bbox_y_max"]):
+        b_bb = (b["bbox_x_min"], b["bbox_y_min"], b["bbox_x_max"], b["bbox_y_max"])
+        if aabb_overlap(a_bb, b_bb):
             text_overlaps.append({
                 "text_a_type": a["type"], "text_a_component": a["component"], "text_a": a["text"],
                 "text_b_type": b["type"], "text_b_component": b["component"], "text_b": b["text"],

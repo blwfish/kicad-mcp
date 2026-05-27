@@ -34,8 +34,8 @@ def _get_kicad_share_path() -> Optional[str]:
     """Find KiCad's SharedSupport/share directory."""
     system = platform.system()
     if system == "Darwin":
-        kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
-        p = f"{kicad_app}/Contents/SharedSupport"
+        from kicad_mcp.config import KICAD_APP_PATH
+        p = f"{KICAD_APP_PATH}/Contents/SharedSupport"
         if os.path.isdir(p):
             return p
     elif system == "Linux":
@@ -681,11 +681,25 @@ class LibraryIndex:
 
     @staticmethod
     def _build_fts_query(query: str) -> str:
-        """Build FTS5 query with prefix matching on last term."""
+        """Build FTS5 query with prefix matching on last term.
+
+        FTS5 treats ``AND``/``OR``/``NOT``/``NEAR`` as keywords and ``*``/``^``
+        as operators outside double-quoted strings. We wrap each term in
+        double quotes and escape embedded quotes (``"`` → ``""``), which
+        turns the whole term into an FTS5 phrase literal — operators inside
+        a phrase literal are treated as text. ``)`` and other punctuation
+        are also neutralized by the phrase wrapping.
+        """
         terms = query.strip().split()
         fts_terms = []
         for i, term in enumerate(terms):
-            safe = term.replace('"', '""')
+            # Strip any characters that can break out of phrase-literal
+            # context: FTS5 has no escape for stray backslash before a
+            # closing quote in all builds. Replace with space (term boundary).
+            cleaned = term.replace("\\", " ")
+            safe = cleaned.replace('"', '""')
+            if not safe.strip():
+                continue
             if i == len(terms) - 1:
                 fts_terms.append(f'"{safe}"*')
             else:

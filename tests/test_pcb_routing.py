@@ -200,3 +200,128 @@ class TestClearRouting:
         assert params["clear_tracks"] is False
         assert params["clear_vias"] is False
         assert params["clear_zones"] is True
+
+
+# -- Threshold-boundary tests ------------------------------------------------
+# Each `<= 0` guard needs three cases: value=0 (boundary, rejected),
+# value=-0.1 (below, rejected), value=0.1 (above, accepted).
+# The `drill >= size` guard needs: drill==size (boundary, rejected),
+# drill slightly above size (rejected), drill slightly below size (accepted).
+
+
+class TestAddTraceWidthBoundary:
+    """Threshold tests for add_trace.width_mm <= 0 guard."""
+
+    def test_zero_width_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "add_trace")
+        result = fn(pcb_file, 0, 0, 10, 10, width_mm=0)
+        assert "error" in result
+        assert "width_mm" in result["error"]
+
+    def test_negative_width_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "add_trace")
+        result = fn(pcb_file, 0, 0, 10, 10, width_mm=-0.1)
+        assert "error" in result
+        assert "width_mm" in result["error"]
+
+    @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
+    def test_small_positive_width_accepted(self, mock_run, routing_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "trace": {}}
+        fn = _get_tool_fn(routing_server, "add_trace")
+        result = fn(pcb_file, 0, 0, 10, 10, width_mm=0.01)
+        assert "error" not in result
+
+
+class TestEditTraceWidthBoundary:
+    """Threshold tests for edit_trace_width.new_width_mm <= 0 guard."""
+
+    def test_zero_new_width_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "edit_trace_width")
+        result = fn(pcb_file, 0)
+        assert "error" in result
+        assert "new_width_mm" in result["error"]
+
+    def test_negative_new_width_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "edit_trace_width")
+        result = fn(pcb_file, -0.1)
+        assert "error" in result
+        assert "new_width_mm" in result["error"]
+
+    @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
+    def test_small_positive_new_width_accepted(self, mock_run, routing_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "updated": 0, "skipped": 0,
+                                  "new_width_mm": 0.01, "net_filter": "(all)",
+                                  "layer_filter": "(all)"}
+        fn = _get_tool_fn(routing_server, "edit_trace_width")
+        result = fn(pcb_file, 0.01)
+        assert "error" not in result
+
+
+class TestAddViaBoundary:
+    """Threshold tests for add_via guards:
+      - drill_mm <= 0
+      - size_mm <= 0
+      - drill_mm >= size_mm
+    """
+
+    # drill_mm <= 0
+    def test_zero_drill_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0, size_mm=0.6)
+        assert "error" in result
+        assert "drill_mm" in result["error"]
+
+    def test_negative_drill_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=-0.1, size_mm=0.6)
+        assert "error" in result
+        assert "drill_mm" in result["error"]
+
+    @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
+    def test_small_positive_drill_accepted(self, mock_run, routing_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "via": {}}
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.01, size_mm=0.6)
+        assert "error" not in result
+
+    # size_mm <= 0
+    def test_zero_size_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.3, size_mm=0)
+        assert "error" in result
+        assert "size_mm" in result["error"]
+
+    def test_negative_size_rejected(self, routing_server, pcb_file):
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.3, size_mm=-0.1)
+        assert "error" in result
+        assert "size_mm" in result["error"]
+
+    @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
+    def test_small_positive_size_accepted(self, mock_run, routing_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "via": {}}
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.01, size_mm=0.1)
+        assert "error" not in result
+
+    # drill_mm >= size_mm: drill must be strictly less than size
+    def test_drill_equal_size_rejected(self, routing_server, pcb_file):
+        """At the boundary: drill == size → no annular ring → rejected."""
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.5, size_mm=0.5)
+        assert "error" in result
+        assert "annular" in result["error"].lower() or "drill" in result["error"].lower()
+
+    def test_drill_exceeds_size_rejected(self, routing_server, pcb_file):
+        """Just above boundary: drill > size → rejected."""
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.6, size_mm=0.5)
+        assert "error" in result
+
+    @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
+    def test_drill_just_below_size_accepted(self, mock_run, routing_server, pcb_file):
+        """Just below boundary: drill < size → accepted."""
+        mock_run.return_value = {"status": "ok", "via": {}}
+        fn = _get_tool_fn(routing_server, "add_via")
+        result = fn(pcb_file, 10, 10, drill_mm=0.49, size_mm=0.5)
+        assert "error" not in result

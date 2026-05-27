@@ -88,6 +88,74 @@ class TestSaveDrcResult:
             data = json.load(f)
         assert len(data["entries"]) <= 10
 
+    def test_nine_entries_all_kept(self, tmp_path, monkeypatch):
+        """Just-below boundary: 9 entries saved → all 9 kept (no trim)."""
+        monkeypatch.setattr("kicad_mcp.utils.drc_history.DRC_HISTORY_DIR", str(tmp_path))
+        project = "/fake/project.kicad_pro"
+        for i in range(9):
+            save_drc_result(project, {"total_violations": i, "violation_categories": {}})
+        files = list(tmp_path.glob("*.json"))
+        with open(files[0]) as f:
+            data = json.load(f)
+        assert len(data["entries"]) == 9
+
+    def test_exactly_10_entries_all_kept(self, tmp_path, monkeypatch):
+        """At boundary: exactly 10 entries saved → all 10 kept."""
+        monkeypatch.setattr("kicad_mcp.utils.drc_history.DRC_HISTORY_DIR", str(tmp_path))
+        project = "/fake/project.kicad_pro"
+        for i in range(10):
+            save_drc_result(project, {"total_violations": i, "violation_categories": {}})
+        files = list(tmp_path.glob("*.json"))
+        with open(files[0]) as f:
+            data = json.load(f)
+        assert len(data["entries"]) == 10
+
+    def test_11_entries_trimmed_to_10(self, tmp_path, monkeypatch):
+        """Just-above boundary: 11 entries saved → trimmed to exactly 10."""
+        monkeypatch.setattr("kicad_mcp.utils.drc_history.DRC_HISTORY_DIR", str(tmp_path))
+        project = "/fake/project.kicad_pro"
+        for i in range(11):
+            save_drc_result(project, {"total_violations": i, "violation_categories": {}})
+        files = list(tmp_path.glob("*.json"))
+        with open(files[0]) as f:
+            data = json.load(f)
+        assert len(data["entries"]) == 10
+
+    def test_12_entries_newest_10_kept_oldest_dropped(self, tmp_path, monkeypatch):
+        """Verify 'drop oldest' ordering: after 12 saves, the first write is gone
+        and the last 10 (violations 2..11) are retained.
+
+        We patch `time.time` in the drc_history module so each call returns a
+        strictly-incrementing timestamp, making entry ordering deterministic.
+        """
+        monkeypatch.setattr("kicad_mcp.utils.drc_history.DRC_HISTORY_DIR", str(tmp_path))
+        import kicad_mcp.utils.drc_history as drc_hist_mod
+
+        project = "/fake/project.kicad_pro"
+        call_counter = [0]
+        base_time = 1_000_000.0
+
+        def fake_time():
+            t = base_time + call_counter[0]
+            call_counter[0] += 1
+            return t
+
+        monkeypatch.setattr(drc_hist_mod.time, "time", fake_time)
+
+        for i in range(12):
+            save_drc_result(project, {"total_violations": i, "violation_categories": {}})
+
+        files = list(tmp_path.glob("*.json"))
+        with open(files[0]) as f:
+            data = json.load(f)
+
+        violations = {e["total_violations"] for e in data["entries"]}
+        assert len(data["entries"]) == 10
+        # The very first save (violations=0, lowest timestamp) must be dropped
+        assert 0 not in violations
+        # The last 10 saves (violations 2..11) must all be present
+        assert violations == set(range(2, 12))
+
 
 class TestGetDrcHistory:
 

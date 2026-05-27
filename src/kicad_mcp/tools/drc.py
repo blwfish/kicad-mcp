@@ -1,10 +1,13 @@
 """
 Design Rule Check (DRC) tools for KiCad PCB files.
 """
+import logging
 import os
 from typing import Any, Dict
 
 from fastmcp import FastMCP, Context
+
+logger = logging.getLogger(__name__)
 
 from kicad_mcp.tools.drc_impl.cli_drc import run_drc_via_cli
 from kicad_mcp.utils.drc_history import (
@@ -32,10 +35,10 @@ def register_drc_tools(mcp: FastMCP) -> None:
         Returns:
             Dictionary with DRC history entries
         """
-        print(f"Getting DRC history for project: {project_path}")
+        logger.debug("Getting DRC history for project: %s", project_path)
 
         if not os.path.exists(project_path):
-            print(f"Project not found: {project_path}")
+            logger.warning("Project not found: %s", project_path)
             return {"success": False, "error": f"Project not found: {project_path}"}
 
         history_entries = get_drc_history(project_path)
@@ -77,19 +80,19 @@ def register_drc_tools(mcp: FastMCP) -> None:
         Returns:
             Dictionary with DRC results and statistics
         """
-        print(f"Running DRC check for project: {project_path}")
+        logger.debug("Running DRC check for project: %s", project_path)
 
         if not os.path.exists(project_path):
-            print(f"Project not found: {project_path}")
+            logger.warning("Project not found: %s", project_path)
             return {"success": False, "error": f"Project not found: {project_path}"}
 
         files = get_project_files(project_path)
         if "pcb" not in files:
-            print("PCB file not found in project")
+            logger.warning("PCB file not found in project")
             return {"success": False, "error": "PCB file not found in project"}
 
         pcb_file = files["pcb"]
-        print(f"Found PCB file: {pcb_file}")
+        logger.debug("Found PCB file: %s", pcb_file)
 
         if ctx:
             await ctx.report_progress(10, 100)
@@ -97,7 +100,7 @@ def register_drc_tools(mcp: FastMCP) -> None:
 
         drc_results = None
 
-        print("Using kicad-cli for DRC")
+        logger.debug("Using kicad-cli for DRC")
         if ctx:
             await ctx.info("Using KiCad CLI for DRC check...")
         drc_results = await run_drc_via_cli(pcb_file, ctx)

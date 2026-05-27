@@ -33,8 +33,8 @@ class TestCreateServer:
         Target: 14 tools. Current count tracks the in-progress migration.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 90, (
-            f"Expected 90 tools, got {len(tools)}. "
+        assert len(tools) == 89, (
+            f"Expected 89 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 

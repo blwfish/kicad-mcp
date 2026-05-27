@@ -144,23 +144,23 @@ async def _op_thumbnail(
     project_path: str, ctx: Context | None
 ) -> Dict[str, Any]:
     try:
-        print(f"Generating thumbnail via CLI for project: {project_path}")
+        logger.debug("Generating thumbnail via CLI for project: %s", project_path)
 
         if not os.path.exists(project_path):
-            print(f"Project not found: {project_path}")
+            logger.warning("Project not found: %s", project_path)
             if ctx:
                 await ctx.info(f"Project not found: {project_path}")
             return {"error": f"Project not found: {project_path}"}
 
         files = get_project_files(project_path)
         if "pcb" not in files:
-            print("PCB file not found in project")
+            logger.warning("PCB file not found in project")
             if ctx:
                 await ctx.info("PCB file not found in project")
             return {"error": "PCB file not found in project"}
 
         pcb_file = files["pcb"]
-        print(f"Found PCB file: {pcb_file}")
+        logger.debug("Found PCB file: %s", pcb_file)
 
         if ctx:
             await ctx.report_progress(10, 100)
@@ -174,10 +174,10 @@ async def _op_thumbnail(
             # would falsely accept {} as success; require "status": "ok"
             # so we can't confuse "no error key" with "success".
             if isinstance(result, dict) and result.get("status") == "ok":
-                print("Thumbnail generated successfully via CLI.")
+                logger.info("Thumbnail generated successfully via CLI.")
                 return result
             else:
-                print("_generate_thumbnail_with_cli returned error or empty result")
+                logger.warning("_generate_thumbnail_with_cli returned error or empty result")
                 if ctx:
                     await ctx.info(
                         "Failed to generate thumbnail using kicad-cli."
@@ -186,7 +186,7 @@ async def _op_thumbnail(
                     return result
                 return {"error": "Failed to generate thumbnail using kicad-cli"}
         except Exception as e:
-            print(f"Error calling _generate_thumbnail_with_cli: {e}")
+            logger.error("Error calling _generate_thumbnail_with_cli: %s", e)
             if ctx:
                 await ctx.info(
                     f"Error generating thumbnail with kicad-cli: {e}"
@@ -194,10 +194,10 @@ async def _op_thumbnail(
             return {"error": f"Error generating thumbnail with kicad-cli: {e}"}
 
     except asyncio.CancelledError:
-        print("Thumbnail generation cancelled")
+        logger.debug("Thumbnail generation cancelled")
         raise
     except Exception as e:
-        print(f"Unexpected error in thumbnail generation: {e}")
+        logger.error("Unexpected error in thumbnail generation: %s", e)
         if ctx:
             await ctx.info(f"Error: {e}")
         return {"error": f"Unexpected error in thumbnail generation: {e}"}
@@ -208,7 +208,7 @@ async def _generate_thumbnail_with_cli(
 ):
     """Generate PCB thumbnail using command line tools."""
     try:
-        print("Attempting to generate thumbnail using KiCad CLI tools")
+        logger.debug("Attempting to generate thumbnail using KiCad CLI tools")
         if ctx:
             await ctx.report_progress(20, 100)
 
@@ -226,7 +226,7 @@ async def _generate_thumbnail_with_cli(
             elif shutil.which("kicad-cli") is not None:
                 kicad_cli = "kicad-cli"
             else:
-                print(f"kicad-cli not found at {kicad_cli_path} or in PATH")
+                logger.warning("kicad-cli not found at %s or in PATH", kicad_cli_path)
                 return {"error": f"kicad-cli not found at {kicad_cli_path} or in PATH"}
         elif system == "Windows":
             kicad_cli_path = os.path.join(KICAD_APP_PATH, "bin", "kicad-cli.exe")
@@ -237,15 +237,15 @@ async def _generate_thumbnail_with_cli(
             elif shutil.which("kicad-cli") is not None:
                 kicad_cli = "kicad-cli"
             else:
-                print(f"kicad-cli not found at {kicad_cli_path} or in PATH")
+                logger.warning("kicad-cli not found at %s or in PATH", kicad_cli_path)
                 return {"error": f"kicad-cli not found at {kicad_cli_path} or in PATH"}
         elif system == "Linux":
             kicad_cli = shutil.which("kicad-cli")
             if not kicad_cli:
-                print("kicad-cli not found in PATH")
+                logger.warning("kicad-cli not found in PATH")
                 return {"error": "kicad-cli not found in PATH"}
         else:
-            print(f"Unsupported operating system: {system}")
+            logger.warning("Unsupported operating system: %s", system)
             return {"error": f"Unsupported operating system: {system}"}
 
         if ctx:
@@ -266,7 +266,7 @@ async def _generate_thumbnail_with_cli(
             pcb_file,
         ]
 
-        print(f"Running command: {' '.join(cmd)}")
+        logger.debug("Running command: %s", " ".join(cmd))
         if ctx:
             await ctx.report_progress(50, 100)
 
@@ -274,20 +274,18 @@ async def _generate_thumbnail_with_cli(
             process = subprocess.run(
                 cmd, capture_output=True, text=True, check=True, timeout=30
             )
-            print(f"Command successful: {process.stdout}")
+            logger.debug("Command successful: %s", process.stdout)
 
             if ctx:
                 await ctx.report_progress(70, 100)
 
             if not os.path.exists(output_file):
-                print(f"Output file not created: {output_file}")
+                logger.warning("Output file not created: %s", output_file)
                 return {"error": f"Output file not created: {output_file}"}
 
             file_size = os.path.getsize(output_file)
 
-            print(
-                f"Successfully generated thumbnail with CLI, size: {file_size} bytes"
-            )
+            logger.info("Successfully generated thumbnail with CLI, size: %d bytes", file_size)
             if ctx:
                 await ctx.report_progress(90, 100)
                 await ctx.info(f"Thumbnail generated ({file_size} bytes)")
@@ -298,9 +296,9 @@ async def _generate_thumbnail_with_cli(
             }
 
         except subprocess.CalledProcessError as e:
-            print(f"Command '{' '.join(e.cmd)}' failed with code {e.returncode}")
-            print(f"Stderr: {e.stderr}")
-            print(f"Stdout: {e.stdout}")
+            logger.error("Command '%s' failed with code %d", " ".join(e.cmd), e.returncode)
+            logger.error("Stderr: %s", e.stderr)
+            logger.error("Stdout: %s", e.stdout)
             # Concatenate both streams — kicad-cli writes errors to stdout
             # on some builds; `or` would silently drop the real error.
             parts = [s.strip() for s in (e.stderr, e.stdout) if s and s.strip()]
@@ -309,21 +307,21 @@ async def _generate_thumbnail_with_cli(
                 await ctx.info(f"KiCad CLI command failed: {err_msg}")
             return {"error": f"KiCad CLI command failed: {err_msg}"}
         except subprocess.TimeoutExpired:
-            print(f"Command timed out after 30 seconds: {' '.join(cmd)}")
+            logger.warning("Command timed out after 30 seconds: %s", " ".join(cmd))
             if ctx:
                 await ctx.info("KiCad CLI command timed out")
             return {"error": "KiCad CLI command timed out after 30 seconds"}
         except Exception as e:
-            print(f"Error running CLI command: {e}")
+            logger.error("Error running CLI command: %s", e)
             if ctx:
                 await ctx.info(f"Error running KiCad CLI: {e}")
             return {"error": f"Error running KiCad CLI: {e}"}
 
     except asyncio.CancelledError:
-        print("CLI thumbnail generation cancelled")
+        logger.debug("CLI thumbnail generation cancelled")
         raise
     except Exception as e:
-        print(f"Unexpected error in CLI thumbnail generation: {e}")
+        logger.error("Unexpected error in CLI thumbnail generation: %s", e)
         if ctx:
             await ctx.info(f"Unexpected error: {e}")
         return {"error": f"Unexpected error in CLI thumbnail generation: {e}"}
