@@ -9,6 +9,7 @@ from kicad_mcp.utils.component_utils import (
     extract_frequency_from_value,
     extract_voltage_from_regulator,
 )
+from kicad_mcp.utils.netlist_parser import is_power_net
 
 
 def identify_power_supplies(
@@ -118,7 +119,12 @@ def identify_amplifiers(
     # missing from the outer filter, making the instrumentation sub-branch
     # unreachable for those values.
     opamp_patterns = [
-        r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP\d{3}|AD\d{3,}|LT\d{4}|OPA\d{3}|INA\d+",
+        # MCP6\d{2,3} matches MCP602/604/6001/6002/etc — the actual MCP op-amp
+        # families. Previously MCP\d{3} also matched MCP9808 (temp), MCP1525
+        # (vref), MCP4725 (DAC), MCP3221 (ADC). AD\d{3,} stays widened to
+        # catch 4-digit AD parts; INA\d+ keeps the instrumentation branch
+        # reachable. Mirror change in identify_filters opamp detection below.
+        r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP6\d{2,3}|AD\d{3,}|LT\d{4}|OPA\d{3}|INA\d+",
         r"Opamp|Op-Amp|OpAmp|Operational Amplifier",
     ]
 
@@ -257,7 +263,14 @@ def identify_filters(
     """
     filters = []
 
-    # Look for RC low-pass filters
+    # Look for RC low-pass filters.
+    #
+    # A real RC low-pass has R between signal-in and signal-out (both
+    # non-power) and C between signal-out and ground. Skip when any of
+    # R's nets is a power rail — that's a pull-up/pull-down, not a
+    # filter. Without this guard, an I²C pull-up resistor + an unrelated
+    # decoupling cap on the same VCC net produced a spurious "rc_low_pass"
+    # classification.
     resistor_refs = [ref for ref in components.keys() if ref.startswith("R")]
 
     for r_ref in resistor_refs:
@@ -265,6 +278,12 @@ def identify_filters(
         for net_name, pins in nets.items():
             if any(pin.get("component") == r_ref for pin in pins):
                 r_nets.append(net_name)
+
+        # Filter R must straddle signal nets only. If either terminal is
+        # on power, this is a pull-up / pull-down / current-limit, not
+        # a low-pass.
+        if any(is_power_net(n) for n in r_nets):
+            continue
 
         for net_name in r_nets:
             connected_caps = []
@@ -299,7 +318,9 @@ def identify_filters(
         component_lib = component.get("lib_id", "").upper()
 
         if re.search(
-            r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP\d{3}|AD\d{3}|LT\d{4}|OPA\d{3}",
+            # Same MCP6\d{2,3} narrowing as identify_amplifiers above — keeps
+            # MCP-op-amp detection in the active-filter path consistent.
+            r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP6\d{2,3}|AD\d{3}|LT\d{4}|OPA\d{3}",
             component_value,
             re.IGNORECASE,
         ) or "OP_AMP" in component_lib:
@@ -330,22 +351,16 @@ def identify_filters(
                 "value": components[op_ref].get("value", ""),
             })
 
-    # Look for crystal filters or ceramic filters
+    # Ceramic / mechanical filters — components explicitly named as filters.
+    #
+    # Crystals (Y*/X* refs and lib_ids containing CRYSTAL/XTAL) used to be
+    # classified here as well, which double-counted them since they also
+    # appear in identify_oscillators. They almost always serve as oscillator
+    # elements, not filters. Removed here; identify_oscillators is the
+    # single source of truth for crystal classification.
     for ref, component in components.items():
         component_value = component.get("value", "").upper()
         component_lib = component.get("lib_id", "").upper()
-
-        if (
-            ref.startswith("Y")
-            or ref.startswith("X")
-            or "CRYSTAL" in component_lib
-            or "XTAL" in component_lib
-        ):
-            filters.append({
-                "type": "crystal_filter",
-                "component": ref,
-                "value": component_value,
-            })
 
         if (
             "FILTER" in component_lib
@@ -461,11 +476,31 @@ def identify_digital_interfaces(
         sig_upper = {s.upper() for s in signals}
         return [n for n in nets.keys() if _net_tokens(n) & sig_upper]
 
+    def _components_on_nets(net_names: list) -> list:
+        """Collect unique component refs whose pins touch any of the given nets.
+
+        Returned in sorted order for deterministic output. Used so downstream
+        cluster-labeling code can map a detected interface back to the
+        components implementing it — previously results were keyed only by
+        net name and the components were invisible.
+        """
+        refs: set[str] = set()
+        for n in net_names:
+            for pin in nets.get(n, []):
+                ref = pin.get("component")
+                if ref:
+                    refs.add(ref)
+        return sorted(refs)
+
     # I2C interface detection
     i2c_signals = {"SCL", "SDA", "I2C_SCL", "I2C_SDA"}
     i2c_nets = _matching_nets(i2c_signals)
     if i2c_nets:
-        interfaces.append({"type": "i2c_interface", "signals_found": i2c_nets})
+        interfaces.append({
+            "type": "i2c_interface",
+            "signals_found": i2c_nets,
+            "components": _components_on_nets(i2c_nets),
+        })
 
     # SPI interface detection
     spi_signals = {
@@ -473,43 +508,63 @@ def identify_digital_interfaces(
     }
     spi_nets = _matching_nets(spi_signals)
     if spi_nets:
-        interfaces.append({"type": "spi_interface", "signals_found": spi_nets})
+        interfaces.append({
+            "type": "spi_interface",
+            "signals_found": spi_nets,
+            "components": _components_on_nets(spi_nets),
+        })
 
     # UART interface detection
     uart_signals = {"TX", "RX", "TXD", "RXD", "UART_TX", "UART_RX"}
     uart_nets = _matching_nets(uart_signals)
     if uart_nets:
-        interfaces.append({"type": "uart_interface", "signals_found": uart_nets})
+        interfaces.append({
+            "type": "uart_interface",
+            "signals_found": uart_nets,
+            "components": _components_on_nets(uart_nets),
+        })
 
     # USB interface detection — nets OR a known USB-IC value
     usb_signals = {
         "USB_D+", "USB_D-", "USB_DP", "USB_DM", "D+", "D-", "DP", "DM", "VBUS",
     }
     usb_nets = _matching_nets(usb_signals)
-    has_usb_ic = any(
-        re.search(
+    usb_ic_refs = sorted(
+        ref
+        for ref, component in components.items()
+        if re.search(
             r"FT232|CH340|CP210|MCP2200|TUSB|FT231|FT201",
             component.get("value", ""),
             re.IGNORECASE,
         )
-        for component in components.values()
     )
-    if usb_nets or has_usb_ic:
-        interfaces.append({"type": "usb_interface", "signals_found": usb_nets})
+    if usb_nets or usb_ic_refs:
+        combined = sorted(set(_components_on_nets(usb_nets)) | set(usb_ic_refs))
+        interfaces.append({
+            "type": "usb_interface",
+            "signals_found": usb_nets,
+            "components": combined,
+        })
 
     # Ethernet interface detection — nets OR a known PHY value
     ethernet_signals = {"TX+", "TX-", "RX+", "RX-", "MDI", "MDIO", "ETH"}
     eth_nets = _matching_nets(ethernet_signals)
-    has_eth_phy = any(
-        re.search(
+    eth_phy_refs = sorted(
+        ref
+        for ref, component in components.items()
+        if re.search(
             r"W5500|ENC28J60|LAN87|KSZ80|DP83|RTL8|AX88",
             component.get("value", ""),
             re.IGNORECASE,
         )
-        for component in components.values()
     )
-    if eth_nets or has_eth_phy:
-        interfaces.append({"type": "ethernet_interface", "signals_found": eth_nets})
+    if eth_nets or eth_phy_refs:
+        combined = sorted(set(_components_on_nets(eth_nets)) | set(eth_phy_refs))
+        interfaces.append({
+            "type": "ethernet_interface",
+            "signals_found": eth_nets,
+            "components": combined,
+        })
 
     return interfaces
 
@@ -551,7 +606,12 @@ def identify_sensor_interfaces(
         # ADS1115-specific branch in the ADC handler (with resolution and
         # channel count) was unreachable because dict iteration order put
         # "voltage" before "ADC".
-        "voltage": r"INA\d+|MCP\d+",
+        # MCP\d+ was previously here and matched any Microchip part starting
+        # with MCP — including MCP6002 (op-amp), MCP23017 (GPIO expander),
+        # MCP2200 (USB-UART), MCP9808 (temp sensor). All wrongly classified
+        # as voltage_sensor. Real MCP voltage-sensing parts are ADCs (MCP3xxx)
+        # already covered by the ADC pattern below.
+        "voltage": r"INA\d+",
         "ADC": r"ADS\d+|MCP33\d+|MCP32\d+|LTC\d+|NAU7802|HX711",
         "GPS": r"NEO-[67]M|L80|MTK\d+|SIM\d+|SAM-M8Q|MAX-M8",
     }
