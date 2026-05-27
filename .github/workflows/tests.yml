@@ -10,8 +10,11 @@ permissions:
   contents: read
 
 jobs:
-  pytest:
-    name: pytest
+  # Matrix job — produces check names "pytest (3.10)" etc.  These are NOT
+  # what branch protection requires (it requires a single check named
+  # exactly "pytest"); the umbrella job below provides that.
+  matrix:
+    name: pytest (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -45,3 +48,22 @@ jobs:
         env:
           KICAD_SYMBOL_DIR: /usr/share/kicad/symbols
         run: python -m pytest tests/ -q
+
+  # Umbrella job — single check named "pytest" that branch protection can
+  # require regardless of how the matrix above changes shape.  Adding or
+  # removing a Python version updates this PR alone; branch protection
+  # never has to be re-edited.
+  pytest:
+    name: pytest
+    needs: matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all matrix jobs passed
+        run: |
+          if [[ "${{ needs.matrix.result }}" == "success" ]]; then
+            echo "All matrix jobs passed."
+            exit 0
+          fi
+          echo "Matrix result: ${{ needs.matrix.result }}"
+          exit 1
