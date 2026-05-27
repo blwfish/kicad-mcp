@@ -46,13 +46,16 @@ def create_server() -> FastMCP:
     register_analyze_tools(mcp)
     register_export_tools(mcp)
 
-    # Tools not yet consolidated into routers
+    # Domain routers (phase 2: project + drc + autoroute)
     from kicad_mcp.tools.project import register_project_tools
     from kicad_mcp.tools.drc import register_drc_tools
-    from kicad_mcp.tools.netlist import register_netlist_tools
 
     register_project_tools(mcp)
     register_drc_tools(mcp)
+
+    # Tools not yet consolidated into routers
+    from kicad_mcp.tools.netlist import register_netlist_tools
+
     register_netlist_tools(mcp)
 
     # Schematic tools (wrapping kicad-sch-api)

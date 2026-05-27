@@ -688,393 +688,413 @@ print(json.dumps({
     })
 
 
+def _op_run(
+    pcb_path: str,
+    freerouter_jar: str = "",
+    passes: int = 1,
+    remove_zones: bool = True,
+    net_classes: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Synchronous autoroute — runs the full pipeline and waits for completion."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
+
+    if not (1 <= passes <= 10):
+        return {"error": f"passes must be between 1 and 10, got {passes}"}
+
+    jar_path = _find_freerouter_jar(freerouter_jar or None)
+    if not jar_path:
+        return {
+            "error": (
+                "FreeRouter JAR not found. Provide freerouter_jar path, "
+                "set FREEROUTER_JAR env var, or place freerouting-2.1.0.jar "
+                "in a known location."
+            )
+        }
+
+    java_path = _find_java()
+    if not java_path:
+        return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
+
+    # Apply net classes before routing (so DSN export includes them)
+    net_class_results = []
+    if net_classes:
+        from kicad_mcp.tools.pcb_nets import _default_net_class
+        stem = os.path.splitext(pcb_path)[0]
+        pro_path = stem + ".kicad_pro"
+        if not os.path.exists(pro_path):
+            return {
+                "error": (
+                    f"net_classes requires a .kicad_pro file at {pro_path}. "
+                    "Create one or use set_net_class separately."
+                )
+            }
+
+        import json as _json
+
+        with open(pro_path, "r") as f:
+            project = _json.load(f)
+
+        if "net_settings" not in project:
+            project["net_settings"] = {
+                "classes": [_default_net_class()],
+                "meta": {"version": 4},
+                "net_colors": None,
+                "netclass_assignments": None,
+                "netclass_patterns": [],
+            }
+
+        ns = project["net_settings"]
+        classes = ns.get("classes", [])
+        _raw_assignments = ns.get("netclass_assignments")
+        assignments = _raw_assignments if _raw_assignments is not None else {}
+
+        for cls_name, cls_def in net_classes.items():
+            nets = cls_def.get("nets", [])
+            tw = cls_def.get("track_width_mm", 0.25)
+            cl = cls_def.get("clearance_mm", 0.2)
+            vd = cls_def.get("via_diameter_mm", 0.6)
+            vr = cls_def.get("via_drill_mm", 0.3)
+
+            # Find or create class
+            existing = None
+            for c in classes:
+                if c.get("name") == cls_name:
+                    existing = c
+                    break
+            if existing:
+                existing["track_width"] = tw
+                existing["clearance"] = cl
+                existing["via_diameter"] = vd
+                existing["via_drill"] = vr
+            else:
+                nc = _default_net_class()
+                nc["name"] = cls_name
+                nc["track_width"] = tw
+                nc["clearance"] = cl
+                nc["via_diameter"] = vd
+                nc["via_drill"] = vr
+                classes.append(nc)
+
+            for net_name in nets:
+                assignments[net_name] = cls_name
+
+            net_class_results.append({
+                "class": cls_name,
+                "track_width_mm": tw,
+                "nets_assigned": len(nets),
+            })
+
+        ns["classes"] = classes
+        ns["netclass_assignments"] = assignments
+
+        with open(pro_path, "w") as f:
+            _json.dump(project, f, indent=2)
+            f.write("\n")
+
+    # Pre-flight placement check — catch issues before spending time on FreeRouter
+    preflight = _run_pre_route_check(pcb_path)
+    preflight_info = {}
+
+    if preflight.get("status") == "ok" and not preflight.get("route_ready", True):
+        overlaps = preflight.get("courtyard_overlaps", 0)
+
+        if overlaps > 0:
+            # Auto-fix courtyard overlaps by nudging footprints apart
+            logger.info("Pre-route: %d courtyard overlap(s), auto-fixing", overlaps)
+            fix_result = _run_auto_fix_placement(pcb_path)
+            preflight_info["auto_fix_applied"] = True
+            preflight_info["components_moved"] = fix_result.get("components_moved", 0)
+
+            # Re-check after fix
+            recheck = _run_pre_route_check(pcb_path)
+            if recheck.get("status") == "ok" and not recheck.get("route_ready", True):
+                # Still have issues (likely pad clearance, not just courtyards)
+                _errors_raw = recheck.get("errors", [])
+                preflight_info["errors_after_fix"] = _errors_raw[:10]
+                preflight_info["errors_after_fix_truncated"] = len(_errors_raw) > 10
+                preflight_info["route_ready_after_fix"] = False
+                # Continue anyway — FreeRouter may still produce a usable result
+                logger.warning("Pre-route: still %d error(s) after fix, routing anyway",
+                               recheck.get("error_count", 0))
+            else:
+                preflight_info["route_ready_after_fix"] = True
+        else:
+            # Pad clearance issues only — can't auto-fix, but warn and continue
+            preflight_info["pad_violations"] = preflight.get("pad_violations", 0)
+            _errors_raw = preflight.get("errors", [])
+            preflight_info["errors"] = _errors_raw[:10]
+            preflight_info["errors_truncated"] = len(_errors_raw) > 10
+            logger.warning("Pre-route: %d error(s) (no courtyard overlaps to fix)",
+                           preflight.get("error_count", 0))
+
+    result = _run_full_autoroute(
+        pcb_path=pcb_path,
+        jar_path=jar_path,
+        java_path=java_path,
+        passes=passes,
+        remove_zones=remove_zones,
+    )
+
+    if net_class_results:
+        result["net_classes_applied"] = net_class_results
+    if preflight_info:
+        result["preflight"] = preflight_info
+
+    return result
+
+
+def _op_start(
+    pcb_path: str,
+    freerouter_jar: str = "",
+    passes: int = 1,
+    remove_zones: bool = True,
+) -> Dict[str, Any]:
+    """Start autorouting in the background. Returns a job_id immediately."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
+
+    if not (1 <= passes <= 10):
+        return {"error": f"passes must be between 1 and 10, got {passes}"}
+
+    jar_path = _find_freerouter_jar(freerouter_jar or None)
+    if not jar_path:
+        return {
+            "error": (
+                "FreeRouter JAR not found. Provide freerouter_jar path, "
+                "set FREEROUTER_JAR env var, or place freerouting-2.1.0.jar "
+                "in a known location."
+            )
+        }
+
+    java_path = _find_java()
+    if not java_path:
+        return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
+
+    # Enforce concurrent job limit and clean up stale jobs
+    with _autoroute_lock:
+        _cleanup_stale_jobs()
+        active = sum(
+            1 for j in _autoroute_jobs.values() if j["status"] == "running"
+        )
+        if active >= MAX_CONCURRENT_JOBS:
+            return {
+                "error": (
+                    f"Too many concurrent autoroute jobs ({active}). "
+                    f"Maximum is {MAX_CONCURRENT_JOBS}. "
+                    "Wait for a job to finish or cancel one."
+                )
+            }
+
+    job_id = uuid.uuid4().hex[:8]
+
+    with _autoroute_lock:
+        _autoroute_jobs[job_id] = {
+            "status": "running",
+            "started": time.time(),
+            "pcb_path": pcb_path,
+            "passes": passes,
+            "phase": "exporting",
+            "current_pass": 0,
+            "pid": None,
+        }
+
+    thread = threading.Thread(
+        target=_autoroute_worker,
+        kwargs={
+            "job_id": job_id,
+            "pcb_path": pcb_path,
+            "jar_path": jar_path,
+            "java_path": java_path,
+            "passes": passes,
+            "remove_zones": remove_zones,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "job_id": job_id,
+        "status": "submitted",
+        "pcb_path": pcb_path,
+        "passes": passes,
+        "note": "Use autoroute(operation='poll', job_id=...) to check progress.",
+    }
+
+
+def _op_poll(job_id: str) -> Dict[str, Any]:
+    """Check the status of an async autoroute job."""
+    with _autoroute_lock:
+        if job_id not in _autoroute_jobs:
+            return {
+                "error": (
+                    f"Unknown job_id: {job_id!r}. "
+                    "Already retrieved or never submitted."
+                )
+            }
+
+        job = _autoroute_jobs[job_id]
+        elapsed = round(time.time() - job["started"], 1)
+
+        if job["status"] == "running":
+            return {
+                "status": "running",
+                "elapsed_s": elapsed,
+                "phase": job.get("phase", "unknown"),
+                "current_pass": job.get("current_pass", 0),
+                "total_passes": job["passes"],
+            }
+
+        # Done, error, or cancelled — retrieve and clean up
+        result = dict(job)
+        del _autoroute_jobs[job_id]
+
+    return {
+        "status": result["status"],
+        "elapsed_s": result.get("elapsed", elapsed),
+        "result": result.get("result", {}),
+    }
+
+
+def _op_cancel(job_id: str) -> Dict[str, Any]:
+    """Cancel a running async autoroute job."""
+    with _autoroute_lock:
+        if job_id not in _autoroute_jobs:
+            return {
+                "error": (
+                    f"Unknown job_id: {job_id!r}. "
+                    "Already retrieved or never submitted."
+                )
+            }
+
+        job = _autoroute_jobs[job_id]
+        if job["status"] != "running":
+            return {
+                "error": (
+                    f"Job {job_id} is not running "
+                    f"(status: {job['status']})"
+                )
+            }
+
+        elapsed = round(time.time() - job["started"], 1)
+        job["status"] = "cancelled"
+        job["elapsed"] = elapsed
+        job["result"] = {"error": f"Cancelled by user after {elapsed}s"}
+
+        # Kill the FreeRouter subprocess
+        pid = job.get("pid")
+
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("Sent SIGTERM to FreeRouter PID %d", pid)
+        except ProcessLookupError:
+            pass  # Already exited
+        except Exception as exc:
+            logger.warning("Failed to kill PID %d: %s", pid, exc)
+
+    return {
+        "status": "cancelled",
+        "job_id": job_id,
+        "elapsed_s": elapsed,
+    }
+
+
+def _op_list_jobs() -> Dict[str, Any]:
+    """List all tracked autoroute jobs and their current status."""
+    now = time.time()
+    with _autoroute_lock:
+        jobs = {
+            jid: {
+                "status": j["status"],
+                "elapsed_s": round(now - j["started"], 1),
+                "pcb_path": j.get("pcb_path", ""),
+                "phase": j.get("phase", ""),
+                "current_pass": j.get("current_pass", 0),
+                "total_passes": j.get("passes", 1),
+            }
+            for jid, j in _autoroute_jobs.items()
+        }
+    return {"jobs": jobs, "count": len(jobs)}
+
+
 def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
-    """Register PCB autorouting tools."""
+    """Register the autoroute domain router."""
 
     @mcp.tool()
-    def autoroute_pcb(
-        pcb_path: str,
+    def autoroute(
+        operation: str,
+        *,
+        pcb_path: Optional[str] = None,
         freerouter_jar: str = "",
         passes: int = 1,
         remove_zones: bool = True,
         net_classes: Optional[Dict[str, Any]] = None,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Autoroute a PCB using FreeRouter (Specctra DSN/SES pipeline).
+        """PCB autorouting via FreeRouter (Specctra DSN/SES pipeline).
 
-        Runs the full autorouting pipeline:
-        1. Optionally sets up net classes for per-net trace widths
-        2. Optionally removes copper pour zones (FreeRouter doesn't understand them)
-        3. Exports the board as a Specctra DSN file
-        4. Runs FreeRouter headless autorouter
-        5. Imports the routed SES session file back into the PCB
+        Operations:
+          run(pcb_path, freerouter_jar="", passes=1, remove_zones=True,
+              net_classes=None)
+              -> {status, pcb_path, tracks_after, vias_after, unconnected_after_routing,
+                  passes_run, best_incomplete, note, net_classes_applied?, preflight?}
+              Synchronous autoroute — waits for completion. Use for short
+              routes. FreeRouter is non-deterministic; set passes > 1 to
+              run multiple times and keep the best result.
 
-        After autorouting, re-add copper zones with add_copper_zone and
-        fill them with fill_zones.
+          start(pcb_path, freerouter_jar="", passes=1, remove_zones=True)
+              -> {job_id, status, pcb_path, passes, note}
+              Start autorouting in the background. Returns immediately.
+              Use poll(job_id) to check progress.
 
-        FreeRouter is non-deterministic. Set passes > 1 to run multiple
-        times and keep the result with the fewest incomplete connections.
+          poll(job_id)
+              -> {status: "running"|"done"|"error"|"cancelled",
+                  elapsed_s, phase?, result?}
+              Check the status of an async autoroute job. Completed/failed
+              jobs are removed from tracking after retrieval.
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            freerouter_jar: Path to freerouting JAR file. Auto-detected if empty.
-            passes: Number of autoroute attempts (best result kept). Default 1.
-            remove_zones: Remove copper pour zones before routing (recommended). Default True.
-            net_classes: Optional dict of net class definitions to apply before
-                routing.  Format: ``{"ClassName": {"nets": [...], "track_width_mm": 0.5,
-                "clearance_mm": 0.3, "via_diameter_mm": 0.8, "via_drill_mm": 0.4}}``.
-                FreeRouter reads these from the DSN export and routes each net
-                at the specified width.  Requires a .kicad_pro file alongside
-                the PCB.
+          cancel(job_id)
+              -> {status: "cancelled", job_id, elapsed_s}
+              Cancel a running async autoroute job. Kills the FreeRouter
+              subprocess if it is still running.
+
+          list_jobs()
+              -> {jobs: {job_id: {...}}, count}
+              List all tracked autoroute jobs and their current status.
         """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-
-        if not (1 <= passes <= 10):
-            return {"error": f"passes must be between 1 and 10, got {passes}"}
-
-        jar_path = _find_freerouter_jar(freerouter_jar or None)
-        if not jar_path:
-            return {
-                "error": (
-                    "FreeRouter JAR not found. Provide freerouter_jar path, "
-                    "set FREEROUTER_JAR env var, or place freerouting-2.1.0.jar "
-                    "in a known location."
-                )
-            }
-
-        java_path = _find_java()
-        if not java_path:
-            return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
-
-        # Apply net classes before routing (so DSN export includes them)
-        net_class_results = []
-        if net_classes:
-            from kicad_mcp.tools.pcb_nets import _default_net_class
-            stem = os.path.splitext(pcb_path)[0]
-            pro_path = stem + ".kicad_pro"
-            if not os.path.exists(pro_path):
-                return {
-                    "error": (
-                        f"net_classes requires a .kicad_pro file at {pro_path}. "
-                        "Create one or use set_net_class separately."
-                    )
-                }
-
-            import json as _json
-
-            with open(pro_path, "r") as f:
-                project = _json.load(f)
-
-            if "net_settings" not in project:
-                project["net_settings"] = {
-                    "classes": [_default_net_class()],
-                    "meta": {"version": 4},
-                    "net_colors": None,
-                    "netclass_assignments": None,
-                    "netclass_patterns": [],
-                }
-
-            ns = project["net_settings"]
-            classes = ns.get("classes", [])
-            _raw_assignments = ns.get("netclass_assignments")
-            assignments = _raw_assignments if _raw_assignments is not None else {}
-
-            for cls_name, cls_def in net_classes.items():
-                nets = cls_def.get("nets", [])
-                tw = cls_def.get("track_width_mm", 0.25)
-                cl = cls_def.get("clearance_mm", 0.2)
-                vd = cls_def.get("via_diameter_mm", 0.6)
-                vr = cls_def.get("via_drill_mm", 0.3)
-
-                # Find or create class
-                existing = None
-                for c in classes:
-                    if c.get("name") == cls_name:
-                        existing = c
-                        break
-                if existing:
-                    existing["track_width"] = tw
-                    existing["clearance"] = cl
-                    existing["via_diameter"] = vd
-                    existing["via_drill"] = vr
-                else:
-                    nc = _default_net_class()
-                    nc["name"] = cls_name
-                    nc["track_width"] = tw
-                    nc["clearance"] = cl
-                    nc["via_diameter"] = vd
-                    nc["via_drill"] = vr
-                    classes.append(nc)
-
-                for net_name in nets:
-                    assignments[net_name] = cls_name
-
-                net_class_results.append({
-                    "class": cls_name,
-                    "track_width_mm": tw,
-                    "nets_assigned": len(nets),
-                })
-
-            ns["classes"] = classes
-            ns["netclass_assignments"] = assignments
-
-            with open(pro_path, "w") as f:
-                _json.dump(project, f, indent=2)
-                f.write("\n")
-
-        # Pre-flight placement check — catch issues before spending time on FreeRouter
-        preflight = _run_pre_route_check(pcb_path)
-        preflight_info = {}
-
-        if preflight.get("status") == "ok" and not preflight.get("route_ready", True):
-            overlaps = preflight.get("courtyard_overlaps", 0)
-
-            if overlaps > 0:
-                # Auto-fix courtyard overlaps by nudging footprints apart
-                logger.info("Pre-route: %d courtyard overlap(s), auto-fixing", overlaps)
-                fix_result = _run_auto_fix_placement(pcb_path)
-                preflight_info["auto_fix_applied"] = True
-                preflight_info["components_moved"] = fix_result.get("components_moved", 0)
-
-                # Re-check after fix
-                recheck = _run_pre_route_check(pcb_path)
-                if recheck.get("status") == "ok" and not recheck.get("route_ready", True):
-                    # Still have issues (likely pad clearance, not just courtyards)
-                    _errors_raw = recheck.get("errors", [])
-                    preflight_info["errors_after_fix"] = _errors_raw[:10]
-                    preflight_info["errors_after_fix_truncated"] = len(_errors_raw) > 10
-                    preflight_info["route_ready_after_fix"] = False
-                    # Continue anyway — FreeRouter may still produce a usable result
-                    logger.warning("Pre-route: still %d error(s) after fix, routing anyway",
-                                   recheck.get("error_count", 0))
-                else:
-                    preflight_info["route_ready_after_fix"] = True
-            else:
-                # Pad clearance issues only — can't auto-fix, but warn and continue
-                preflight_info["pad_violations"] = preflight.get("pad_violations", 0)
-                _errors_raw = preflight.get("errors", [])
-                preflight_info["errors"] = _errors_raw[:10]
-                preflight_info["errors_truncated"] = len(_errors_raw) > 10
-                logger.warning("Pre-route: %d error(s) (no courtyard overlaps to fix)",
-                               preflight.get("error_count", 0))
-
-        result = _run_full_autoroute(
-            pcb_path=pcb_path,
-            jar_path=jar_path,
-            java_path=java_path,
-            passes=passes,
-            remove_zones=remove_zones,
-        )
-
-        if net_class_results:
-            result["net_classes_applied"] = net_class_results
-        if preflight_info:
-            result["preflight"] = preflight_info
-
-        return result
-
-    @mcp.tool()
-    def autoroute_pcb_async(
-        pcb_path: str,
-        freerouter_jar: str = "",
-        passes: int = 1,
-        remove_zones: bool = True,
-    ) -> Dict[str, Any]:
-        """Start autorouting in the background.  Returns a job_id immediately.
-
-        Use ``poll_autoroute(job_id)`` to check progress and retrieve
-        results.  Use ``cancel_autoroute(job_id)`` to abort.
-
-        FreeRouter can take 10-30+ minutes on complex boards.  This async
-        variant avoids MCP call timeouts by returning immediately and
-        running FreeRouter in a background thread.
-
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            freerouter_jar: Path to freerouting JAR file. Auto-detected if empty.
-            passes: Number of autoroute attempts (best result kept). Default 1.
-            remove_zones: Remove copper pour zones before routing (recommended). Default True.
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-
-        if not (1 <= passes <= 10):
-            return {"error": f"passes must be between 1 and 10, got {passes}"}
-
-        jar_path = _find_freerouter_jar(freerouter_jar or None)
-        if not jar_path:
-            return {
-                "error": (
-                    "FreeRouter JAR not found. Provide freerouter_jar path, "
-                    "set FREEROUTER_JAR env var, or place freerouting-2.1.0.jar "
-                    "in a known location."
-                )
-            }
-
-        java_path = _find_java()
-        if not java_path:
-            return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
-
-        # Enforce concurrent job limit and clean up stale jobs
-        with _autoroute_lock:
-            _cleanup_stale_jobs()
-            active = sum(
-                1 for j in _autoroute_jobs.values() if j["status"] == "running"
+        if operation == "run":
+            if pcb_path is None:
+                return {"error": "operation='run' requires 'pcb_path'"}
+            return _op_run(
+                pcb_path=pcb_path,
+                freerouter_jar=freerouter_jar,
+                passes=passes,
+                remove_zones=remove_zones,
+                net_classes=net_classes,
             )
-            if active >= MAX_CONCURRENT_JOBS:
-                return {
-                    "error": (
-                        f"Too many concurrent autoroute jobs ({active}). "
-                        f"Maximum is {MAX_CONCURRENT_JOBS}. "
-                        "Wait for a job to finish or cancel one."
-                    )
-                }
-
-        job_id = uuid.uuid4().hex[:8]
-
-        with _autoroute_lock:
-            _autoroute_jobs[job_id] = {
-                "status": "running",
-                "started": time.time(),
-                "pcb_path": pcb_path,
-                "passes": passes,
-                "phase": "exporting",
-                "current_pass": 0,
-                "pid": None,
-            }
-
-        thread = threading.Thread(
-            target=_autoroute_worker,
-            kwargs={
-                "job_id": job_id,
-                "pcb_path": pcb_path,
-                "jar_path": jar_path,
-                "java_path": java_path,
-                "passes": passes,
-                "remove_zones": remove_zones,
-            },
-            daemon=True,
-        )
-        thread.start()
-
+        if operation == "start":
+            if pcb_path is None:
+                return {"error": "operation='start' requires 'pcb_path'"}
+            return _op_start(
+                pcb_path=pcb_path,
+                freerouter_jar=freerouter_jar,
+                passes=passes,
+                remove_zones=remove_zones,
+            )
+        if operation == "poll":
+            if job_id is None:
+                return {"error": "operation='poll' requires 'job_id'"}
+            return _op_poll(job_id)
+        if operation == "cancel":
+            if job_id is None:
+                return {"error": "operation='cancel' requires 'job_id'"}
+            return _op_cancel(job_id)
+        if operation == "list_jobs":
+            return _op_list_jobs()
         return {
-            "job_id": job_id,
-            "status": "submitted",
-            "pcb_path": pcb_path,
-            "passes": passes,
-            "note": "Use poll_autoroute(job_id) to check progress.",
+            "error": (
+                f"unknown operation {operation!r}; "
+                f"valid: run|start|poll|cancel|list_jobs"
+            )
         }
-
-    @mcp.tool()
-    def poll_autoroute(job_id: str) -> Dict[str, Any]:
-        """Check the status of an async autoroute job.
-
-        Returns:
-          - ``{"status": "running", ...}`` while FreeRouter is working
-          - ``{"status": "done", "result": {...}}`` when complete
-          - ``{"status": "error", "result": {"error": "..."}}`` on failure
-
-        Completed/failed jobs are removed from tracking after retrieval.
-
-        Args:
-            job_id: The job ID returned by autoroute_pcb_async.
-        """
-        with _autoroute_lock:
-            if job_id not in _autoroute_jobs:
-                return {
-                    "error": (
-                        f"Unknown job_id: {job_id!r}. "
-                        "Already retrieved or never submitted."
-                    )
-                }
-
-            job = _autoroute_jobs[job_id]
-            elapsed = round(time.time() - job["started"], 1)
-
-            if job["status"] == "running":
-                return {
-                    "status": "running",
-                    "elapsed_s": elapsed,
-                    "phase": job.get("phase", "unknown"),
-                    "current_pass": job.get("current_pass", 0),
-                    "total_passes": job["passes"],
-                }
-
-            # Done, error, or cancelled — retrieve and clean up
-            result = dict(job)
-            del _autoroute_jobs[job_id]
-
-        return {
-            "status": result["status"],
-            "elapsed_s": result.get("elapsed", elapsed),
-            "result": result.get("result", {}),
-        }
-
-    @mcp.tool()
-    def cancel_autoroute(job_id: str) -> Dict[str, Any]:
-        """Cancel a running async autoroute job.
-
-        Marks the job as cancelled and kills the FreeRouter subprocess
-        if it is running.
-
-        Args:
-            job_id: The job ID returned by autoroute_pcb_async.
-        """
-        with _autoroute_lock:
-            if job_id not in _autoroute_jobs:
-                return {
-                    "error": (
-                        f"Unknown job_id: {job_id!r}. "
-                        "Already retrieved or never submitted."
-                    )
-                }
-
-            job = _autoroute_jobs[job_id]
-            if job["status"] != "running":
-                return {
-                    "error": (
-                        f"Job {job_id} is not running "
-                        f"(status: {job['status']})"
-                    )
-                }
-
-            elapsed = round(time.time() - job["started"], 1)
-            job["status"] = "cancelled"
-            job["elapsed"] = elapsed
-            job["result"] = {"error": f"Cancelled by user after {elapsed}s"}
-
-            # Kill the FreeRouter subprocess
-            pid = job.get("pid")
-
-        if pid:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                logger.info("Sent SIGTERM to FreeRouter PID %d", pid)
-            except ProcessLookupError:
-                pass  # Already exited
-            except Exception as exc:
-                logger.warning("Failed to kill PID %d: %s", pid, exc)
-
-        return {
-            "status": "cancelled",
-            "job_id": job_id,
-            "elapsed_s": elapsed,
-        }
-
-    @mcp.tool()
-    def list_autoroute_jobs() -> Dict[str, Any]:
-        """List all tracked autoroute jobs and their current status."""
-        now = time.time()
-        with _autoroute_lock:
-            jobs = {
-                jid: {
-                    "status": j["status"],
-                    "elapsed_s": round(now - j["started"], 1),
-                    "pcb_path": j.get("pcb_path", ""),
-                    "phase": j.get("phase", ""),
-                    "current_pass": j.get("current_pass", 0),
-                    "total_passes": j.get("passes", 1),
-                }
-                for jid, j in _autoroute_jobs.items()
-            }
-        return {"jobs": jobs, "count": len(jobs)}

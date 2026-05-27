@@ -523,8 +523,8 @@ class TestAutoroutePreflight:
         }
         mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
 
-        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
 
         assert result["status"] == "ok"
         mock_fix.assert_not_called()
@@ -557,8 +557,8 @@ class TestAutoroutePreflight:
         mock_fix.return_value = {"status": "ok", "components_moved": 1, "moved": ["R1"]}
         mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
 
-        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
 
         assert result["status"] == "ok"
         mock_fix.assert_called_once()
@@ -582,8 +582,8 @@ class TestAutoroutePreflight:
         }
         mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
 
-        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
 
         assert result["status"] == "ok"
         mock_fix.assert_not_called()  # No overlaps, so no fix attempted

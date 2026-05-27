@@ -1,9 +1,10 @@
-"""
-Project management tools for KiCad.
+"""Project router — KiCad project file management.
+
+See docs/SPEC_Tool_Consolidation.md.
 """
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
 
@@ -13,67 +14,106 @@ from kicad_mcp.utils.kicad_utils import find_kicad_projects, open_kicad_project
 logger = logging.getLogger(__name__)
 
 
+def _op_list() -> List[Dict[str, Any]]:
+    logger.info("Executing project list...")
+    projects = find_kicad_projects()
+    logger.info("project list returning %d projects.", len(projects))
+    return projects
+
+
+def _op_get_structure(project_path: str) -> Dict[str, Any]:
+    if not os.path.exists(project_path):
+        return {"error": f"Project not found: {project_path}"}
+
+    project_dir = os.path.dirname(project_path)
+    project_name = os.path.basename(project_path)[:-10]  # Remove .kicad_pro
+
+    files = get_project_files(project_path)
+
+    metadata = {}
+    project_data = load_project_json(project_path)
+    if project_data and "metadata" in project_data:
+        metadata = project_data["metadata"]
+
+    return {
+        "name": project_name,
+        "path": project_path,
+        "directory": project_dir,
+        "files": files,
+        "metadata": metadata,
+    }
+
+
+def _op_open(project_path: str) -> Dict[str, Any]:
+    return open_kicad_project(project_path)
+
+
+def _op_validate(project_path: str) -> Dict[str, Any]:
+    if not os.path.exists(project_path):
+        return {"success": False, "error": f"Project not found: {project_path}"}
+
+    files = get_project_files(project_path)
+    issues: list[str] = []
+
+    if "schematic" not in files:
+        issues.append("No schematic file found")
+    if "pcb" not in files:
+        issues.append("No PCB file found")
+
+    return {
+        "success": len(issues) == 0,
+        "project_path": project_path,
+        "files_found": list(files.keys()),
+        "issues": issues,
+    }
+
+
 def register_project_tools(mcp: FastMCP) -> None:
-    """Register project management tools with the MCP server.
-
-    Args:
-        mcp: The FastMCP server instance
-    """
+    """Register the project domain router."""
 
     @mcp.tool()
-    def list_projects() -> List[Dict[str, Any]]:
-        """Find and list all KiCad projects on this system."""
-        logger.info("Executing list_projects tool...")
-        projects = find_kicad_projects()
-        logger.info("list_projects tool returning %d projects.", len(projects))
-        return projects
+    def project(
+        operation: str,
+        *,
+        project_path: Optional[str] = None,
+    ) -> Any:
+        """KiCad project management operations.
 
-    @mcp.tool()
-    def get_project_structure(project_path: str) -> Dict[str, Any]:
-        """Get the structure and files of a KiCad project."""
-        if not os.path.exists(project_path):
-            return {"error": f"Project not found: {project_path}"}
+        Operations:
+          list()
+              -> [{name, path, ...}, ...]
+              Find and list all KiCad projects on this system.
 
-        project_dir = os.path.dirname(project_path)
-        project_name = os.path.basename(project_path)[:-10]  # Remove .kicad_pro
+          get_structure(project_path)
+              -> {name, path, directory, files, metadata}
+              Get the structure and files of a KiCad project.
 
-        files = get_project_files(project_path)
+          open(project_path)
+              -> {success, command, ...}
+              Open a KiCad project in KiCad.
 
-        metadata = {}
-        project_data = load_project_json(project_path)
-        if project_data and "metadata" in project_data:
-            metadata = project_data["metadata"]
-
+          validate(project_path)
+              -> {success, project_path, files_found, issues}
+              Basic validation of a KiCad project — checks that schematic
+              and PCB files are present.
+        """
+        if operation == "list":
+            return _op_list()
+        if operation == "get_structure":
+            if project_path is None:
+                return {"error": "operation='get_structure' requires 'project_path'"}
+            return _op_get_structure(project_path)
+        if operation == "open":
+            if project_path is None:
+                return {"error": "operation='open' requires 'project_path'"}
+            return _op_open(project_path)
+        if operation == "validate":
+            if project_path is None:
+                return {"error": "operation='validate' requires 'project_path'"}
+            return _op_validate(project_path)
         return {
-            "name": project_name,
-            "path": project_path,
-            "directory": project_dir,
-            "files": files,
-            "metadata": metadata,
-        }
-
-    @mcp.tool()
-    def open_project(project_path: str) -> Dict[str, Any]:
-        """Open a KiCad project in KiCad."""
-        return open_kicad_project(project_path)
-
-    @mcp.tool()
-    def validate_project(project_path: str) -> Dict[str, Any]:
-        """Basic validation of a KiCad project."""
-        if not os.path.exists(project_path):
-            return {"success": False, "error": f"Project not found: {project_path}"}
-
-        files = get_project_files(project_path)
-        issues: list[str] = []
-
-        if "schematic" not in files:
-            issues.append("No schematic file found")
-        if "pcb" not in files:
-            issues.append("No PCB file found")
-
-        return {
-            "success": len(issues) == 0,
-            "project_path": project_path,
-            "files_found": list(files.keys()),
-            "issues": issues,
+            "error": (
+                f"unknown operation {operation!r}; "
+                f"valid: list|get_structure|open|validate"
+            )
         }

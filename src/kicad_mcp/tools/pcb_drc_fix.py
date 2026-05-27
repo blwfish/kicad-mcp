@@ -87,82 +87,63 @@ def _categorize_violations(categories: Dict[str, int]) -> Dict[str, list]:
     }
 
 
-def register_pcb_drc_fix_tools(mcp: FastMCP) -> None:
-    """Register DRC auto-fix tools."""
+async def _op_autofix(
+    pcb_path: str,
+    project_path: str = "",
+    fix_routing: bool = True,
+    fix_silkscreen: bool = True,
+    fix_placement: bool = True,
+    autoroute_passes: int = 2,
+) -> Dict[str, Any]:
+    """Automatically fix common DRC violations.
 
-    @mcp.tool()
-    async def drc_autofix(
-        pcb_path: str,
-        project_path: str = "",
-        fix_routing: bool = True,
-        fix_silkscreen: bool = True,
-        fix_placement: bool = True,
-        autoroute_passes: int = 2,
-    ) -> Dict[str, Any]:
-        """Automatically fix common DRC violations.
+    Used by the drc router's autofix operation.
+    """
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
 
-        Runs DRC, categorizes violations, and applies fixes in order:
-        1. Placement fixes (courtyard overlaps) — nudges footprints apart
-        2. Routing fixes (clearance, crossing, shorts) — clears and re-autoroutes
-        3. Silkscreen fixes (silk over copper/pads) — repositions text
-        4. Zone fill — refills copper pours after changes
+    # Derive project_path if not provided
+    if not project_path:
+        base = os.path.splitext(pcb_path)[0]
+        project_path = base + ".kicad_pro"
 
-        Runs DRC again afterward to verify improvement and returns a
-        before/after comparison.
+    if not os.path.exists(project_path):
+        return {"error": f"Project file not found: {project_path}. Provide project_path explicitly."}
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            project_path: Path to .kicad_pro file (auto-derived from pcb_path if empty).
-            fix_routing: Clear routing and re-autoroute for track violations (default True).
-            fix_silkscreen: Auto-fix silkscreen overlaps (default True).
-            fix_placement: Auto-fix courtyard overlaps (default True).
-            autoroute_passes: Number of autoroute passes when fixing routing (default 2).
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
+    # Lazy imports to avoid circular dependencies
+    from kicad_mcp.tools.drc_impl.cli_drc import run_drc_via_cli
+    from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
-        # Derive project_path if not provided
-        if not project_path:
-            base = os.path.splitext(pcb_path)[0]
-            project_path = base + ".kicad_pro"
+    actions_taken = []
 
-        if not os.path.exists(project_path):
-            return {"error": f"Project file not found: {project_path}. Provide project_path explicitly."}
+    # --- Run initial DRC ---
+    before_drc = await run_drc_via_cli(pcb_path, ctx=None)
+    if not before_drc.get("success"):
+        return {"error": f"Initial DRC failed: {before_drc.get('error', 'unknown')}"}
 
-        # Lazy imports to avoid circular dependencies
-        from kicad_mcp.tools.drc_impl.cli_drc import run_drc_via_cli
-        from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+    # DRC result schema: success=True implies total_violations present.
+    # Default 0 here would silently misreport "fully clean" if the key
+    # ever goes missing (schema change, partial result, etc.).
+    if "total_violations" not in before_drc:
+        return {"error": f"DRC result missing 'total_violations' key (have: {sorted(before_drc.keys())})"}
+    before_total = before_drc["total_violations"]
+    before_cats = before_drc.get("violation_categories", {})  # empty dict is a legitimate value
+    groups = _categorize_violations(before_cats)
 
-        actions_taken = []
+    if before_total == 0:
+        return {
+            "status": "ok",
+            "message": "No DRC violations found — nothing to fix",
+            "before": {"total": 0, "categories": {}},
+            "after": {"total": 0, "categories": {}},
+            "actions_taken": [],
+        }
 
-        # --- Run initial DRC ---
-        before_drc = await run_drc_via_cli(pcb_path, ctx=None)
-        if not before_drc.get("success"):
-            return {"error": f"Initial DRC failed: {before_drc.get('error', 'unknown')}"}
-
-        # DRC result schema: success=True implies total_violations present.
-        # Default 0 here would silently misreport "fully clean" if the key
-        # ever goes missing (schema change, partial result, etc.).
-        if "total_violations" not in before_drc:
-            return {"error": f"DRC result missing 'total_violations' key (have: {sorted(before_drc.keys())})"}
-        before_total = before_drc["total_violations"]
-        before_cats = before_drc.get("violation_categories", {})  # empty dict is a legitimate value
-        groups = _categorize_violations(before_cats)
-
-        if before_total == 0:
-            return {
-                "status": "ok",
-                "message": "No DRC violations found — nothing to fix",
-                "before": {"total": 0, "categories": {}},
-                "after": {"total": 0, "categories": {}},
-                "actions_taken": [],
-            }
-
-        # --- 1. Fix placement (courtyard overlaps) ---
-        if fix_placement and groups["placement"]:
-            # Call auto_fix_placement via its pcbnew script
-            # (we inline the tool call to avoid MCP dispatch overhead)
-            result = run_pcbnew_script("""
+    # --- 1. Fix placement (courtyard overlaps) ---
+    if fix_placement and groups["placement"]:
+        # Call auto_fix_placement via its pcbnew script
+        # (we inline the tool call to avoid MCP dispatch overhead)
+        result = run_pcbnew_script("""
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -243,13 +224,13 @@ for pass_num in range(1, max_passes + 1):
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "move_count": move_count}))
 """, params={"pcb_path": pcb_path})
-            if result.get("status") == "ok" and result.get("move_count", 0) > 0:
-                actions_taken.append(f"placement: nudged {result['move_count']} footprint(s)")
+        if result.get("status") == "ok" and result.get("move_count", 0) > 0:
+            actions_taken.append(f"placement: nudged {result['move_count']} footprint(s)")
 
-        # --- 2. Fix routing violations ---
-        if fix_routing and groups["routing"]:
-            # Clear existing routing
-            clear_result = run_pcbnew_script("""
+    # --- 2. Fix routing violations ---
+    if fix_routing and groups["routing"]:
+        # Clear existing routing
+        clear_result = run_pcbnew_script("""
 import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
@@ -263,44 +244,44 @@ for item in to_remove:
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "removed": removed}))
 """, params={"pcb_path": pcb_path})
-            # Subprocess returned {"status": "ok", "removed": N} or {"error": ...}.
-            # Default-to-0 would silently re-autoroute an uncleared board, masking
-            # the failure with an optimistic action log entry.
-            if "error" in clear_result:
-                return {"error": f"Failed to clear existing routing: {clear_result['error']}"}
-            tracks_cleared = clear_result["removed"]
+        # Subprocess returned {"status": "ok", "removed": N} or {"error": ...}.
+        # Default-to-0 would silently re-autoroute an uncleared board, masking
+        # the failure with an optimistic action log entry.
+        if "error" in clear_result:
+            return {"error": f"Failed to clear existing routing: {clear_result['error']}"}
+        tracks_cleared = clear_result["removed"]
 
-            # Re-autoroute
-            from kicad_mcp.tools.pcb_autoroute import (
-                _find_freerouter_jar,
-                _find_java,
-                _run_full_autoroute,
+        # Re-autoroute
+        from kicad_mcp.tools.pcb_autoroute import (
+            _find_freerouter_jar,
+            _find_java,
+            _run_full_autoroute,
+        )
+
+        jar_path = _find_freerouter_jar(None)
+        java_path = _find_java()
+        if jar_path and java_path:
+            route_result = _run_full_autoroute(
+                pcb_path=pcb_path,
+                jar_path=jar_path,
+                java_path=java_path,
+                passes=autoroute_passes,
+                remove_zones=True,
+            )
+            incomplete = route_result.get("best_incomplete", "?")
+            actions_taken.append(
+                f"routing: cleared {tracks_cleared} tracks/vias, "
+                f"re-autorouted ({autoroute_passes} passes, {incomplete} incomplete)"
+            )
+        else:
+            actions_taken.append(
+                f"routing: cleared {tracks_cleared} tracks/vias but "
+                "FreeRouter/Java not available for re-autoroute"
             )
 
-            jar_path = _find_freerouter_jar(None)
-            java_path = _find_java()
-            if jar_path and java_path:
-                route_result = _run_full_autoroute(
-                    pcb_path=pcb_path,
-                    jar_path=jar_path,
-                    java_path=java_path,
-                    passes=autoroute_passes,
-                    remove_zones=True,
-                )
-                incomplete = route_result.get("best_incomplete", "?")
-                actions_taken.append(
-                    f"routing: cleared {tracks_cleared} tracks/vias, "
-                    f"re-autorouted ({autoroute_passes} passes, {incomplete} incomplete)"
-                )
-            else:
-                actions_taken.append(
-                    f"routing: cleared {tracks_cleared} tracks/vias but "
-                    "FreeRouter/Java not available for re-autoroute"
-                )
-
-        # --- 3. Fix silkscreen ---
-        if fix_silkscreen and groups["silkscreen"]:
-            silk_result = run_pcbnew_script("""
+    # --- 3. Fix silkscreen ---
+    if fix_silkscreen and groups["silkscreen"]:
+        silk_result = run_pcbnew_script("""
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -420,25 +401,33 @@ board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "moved": moved, "hidden": hidden_count,
                     "zones_filled": len(copper_zones)}))
 """, params={"pcb_path": pcb_path}, timeout=120.0)
-            if silk_result.get("status") == "ok":
-                m = silk_result.get("moved", 0)
-                h = silk_result.get("hidden", 0)
-                z = silk_result.get("zones_filled", 0)
-                parts = []
-                if m: parts.append(f"moved {m}")
-                if h: parts.append(f"hidden {h}")
-                if z: parts.append(f"filled {z} zone(s)")
-                actions_taken.append(f"silkscreen: {', '.join(parts)}" if parts else "silkscreen: no changes needed")
+        if silk_result.get("status") == "ok":
+            m = silk_result.get("moved", 0)
+            h = silk_result.get("hidden", 0)
+            z = silk_result.get("zones_filled", 0)
+            parts = []
+            if m: parts.append(f"moved {m}")
+            if h: parts.append(f"hidden {h}")
+            if z: parts.append(f"filled {z} zone(s)")
+            actions_taken.append(f"silkscreen: {', '.join(parts)}" if parts else "silkscreen: no changes needed")
 
-        # --- 4. Re-run DRC to verify ---
-        after_drc = await run_drc_via_cli(pcb_path, ctx=None)
-        after_total = after_drc.get("total_violations", 0) if after_drc.get("success") else "error"
-        after_cats = after_drc.get("violation_categories", {}) if after_drc.get("success") else {}
+    # --- 4. Re-run DRC to verify ---
+    after_drc = await run_drc_via_cli(pcb_path, ctx=None)
+    after_total = after_drc.get("total_violations", 0) if after_drc.get("success") else "error"
+    after_cats = after_drc.get("violation_categories", {}) if after_drc.get("success") else {}
 
-        return {
-            "status": "ok",
-            "before": {"total": before_total, "categories": before_cats},
-            "after": {"total": after_total, "categories": after_cats},
-            "actions_taken": actions_taken,
-            "improvement": before_total - after_total if isinstance(after_total, int) else None,
-        }
+    return {
+        "status": "ok",
+        "before": {"total": before_total, "categories": before_cats},
+        "after": {"total": after_total, "categories": after_cats},
+        "actions_taken": actions_taken,
+        "improvement": before_total - after_total if isinstance(after_total, int) else None,
+    }
+
+
+def register_pcb_drc_fix_tools(mcp: FastMCP) -> None:
+    """No-op: drc_autofix has moved to the drc router (see drc.py).
+
+    Kept so server.py import/call doesn't break during migration.
+    """
+    pass

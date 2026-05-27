@@ -31,10 +31,11 @@ class TestCreateServer:
 
         Tool-consolidation in progress (see docs/SPEC_Tool_Consolidation.md).
         Target: 14 tools. Current count tracks the in-progress migration.
+        Phase 2 consolidated project (4→1) + drc (3→1) + autoroute (5→1) = 90-12+3=81.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 90, (
-            f"Expected 90 tools, got {len(tools)}. "
+        assert len(tools) == 81, (
+            f"Expected 81 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -72,12 +73,6 @@ class TestExpectedToolsExist:
         "check_silkscreen_overlaps",
         "auto_fix_silkscreen",
         "add_text_to_pcb",
-        # PCB autoroute tools
-        "autoroute_pcb",
-        "autoroute_pcb_async",
-        "poll_autoroute",
-        "cancel_autoroute",
-        "list_autoroute_jobs",
         # PCB panelize tools
         "panelize_pcb",
         # PCB keepout tools
@@ -89,22 +84,17 @@ class TestExpectedToolsExist:
         "audit_all",
         "pre_route_check",
         "auto_fix_placement",
-        # PCB DRC fix tools
-        "drc_autofix",
         # PCB planning tools
         "estimate_board_size",
         "suggest_placement",
-        # Project tools
-        "list_projects",
-        "get_project_structure",
-        "open_project",
-        "validate_project",
         # Phase 1 routers (library + analyze + export)
         "library",
         "analyze",
         "export",
-        # DRC (still standalone until phase 2)
-        "run_drc_check",
+        # Phase 2 routers (project + drc + autoroute)
+        "project",
+        "drc",
+        "autoroute",
         # Schematic tools
         "create_schematic",
         "load_schematic",
