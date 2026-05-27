@@ -34,12 +34,12 @@ async def _op_analyze_bom(
     if not os.path.exists(project_path):
         print(f"Project not found: {project_path}")
         if ctx:
-            ctx.info(f"Project not found: {project_path}")
+            await ctx.info(f"Project not found: {project_path}")
         return {"success": False, "error": f"Project not found: {project_path}"}
 
     if ctx:
         await ctx.report_progress(10, 100)
-        ctx.info(
+        await ctx.info(
             f"Looking for BOM files related to {os.path.basename(project_path)}"
         )
 
@@ -54,7 +54,7 @@ async def _op_analyze_bom(
     if not bom_files:
         print("No BOM files found for project")
         if ctx:
-            ctx.info("No BOM files found for project")
+            await ctx.info("No BOM files found for project")
         return {
             "success": False,
             "error": "No BOM files found. Export a BOM from KiCad first.",
@@ -79,7 +79,7 @@ async def _op_analyze_bom(
     for file_type, file_path in bom_files.items():
         try:
             if ctx:
-                ctx.info(f"Analyzing {os.path.basename(file_path)}")
+                await ctx.info(f"Analyzing {os.path.basename(file_path)}")
 
             bom_data, format_info = _parse_bom_file(file_path)
 
@@ -161,7 +161,7 @@ async def _op_analyze_bom(
 
     if ctx:
         await ctx.report_progress(100, 100)
-        ctx.info(f"BOM analysis complete: found {total_components} components")
+        await ctx.info(f"BOM analysis complete: found {total_components} components")
 
     return results
 
@@ -175,7 +175,7 @@ async def _op_export_bom_csv(
     if not os.path.exists(project_path):
         print(f"Project not found: {project_path}")
         if ctx:
-            ctx.info(f"Project not found: {project_path}")
+            await ctx.info(f"Project not found: {project_path}")
         return {"success": False, "error": f"Project not found: {project_path}"}
 
     if ctx:
@@ -186,7 +186,7 @@ async def _op_export_bom_csv(
     if "schematic" not in files:
         print("Schematic file not found in project")
         if ctx:
-            ctx.info("Schematic file not found in project")
+            await ctx.info("Schematic file not found in project")
         return {"success": False, "error": "Schematic file not found"}
 
     schematic_file = files["schematic"]
@@ -195,18 +195,18 @@ async def _op_export_bom_csv(
 
     if ctx:
         await ctx.report_progress(20, 100)
-        ctx.info(f"Found schematic file: {os.path.basename(schematic_file)}")
+        await ctx.info(f"Found schematic file: {os.path.basename(schematic_file)}")
 
     try:
         if ctx:
-            ctx.info("Attempting to export BOM using command-line tools...")
+            await ctx.info("Attempting to export BOM using command-line tools...")
         export_result = await _export_bom_with_cli(
             schematic_file, project_dir, project_name, ctx
         )
     except Exception as e:
         print(f"Error exporting BOM with CLI: {e}")
         if ctx:
-            ctx.info(f"Error using command-line tools: {e}")
+            await ctx.info(f"Error using command-line tools: {e}")
         export_result = {"success": False, "error": str(e)}
 
     if ctx:
@@ -214,13 +214,13 @@ async def _op_export_bom_csv(
 
     if export_result.get("success", False):
         if ctx:
-            ctx.info(
+            await ctx.info(
                 f"BOM exported successfully to "
                 f"{export_result.get('output_file', 'unknown location')}"
             )
     else:
         if ctx:
-            ctx.info(
+            await ctx.info(
                 f"Failed to export BOM: "
                 f"{export_result.get('error', 'Unknown error')}"
             )
