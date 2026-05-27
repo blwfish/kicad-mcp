@@ -32,6 +32,15 @@ def identify_power_supplies(
         "LDO": r"LM\d{3}|LD\d{3}|AMS\d{4}|LT\d{4}|TLV\d{3}|AP\d{4}|MIC\d{4}|NCP\d{3}|LP\d{4}|L\d{2}|TPS\d{5}",
     }
 
+    # Track refs already classified so a single component doesn't appear
+    # under multiple top-level categories. LM7805 matches 78xx (linear) AND
+    # LM\d{4} (buck/buck_boost switching) — without cross-category dedup
+    # the same chip is reported in two power-supply entries with
+    # different `type` fields, leaving the caller no way to tell apart
+    # "two unrelated parts" from "the same part double-classified."
+    # Linear runs first; switching detection skips refs linear already claimed.
+    classified_refs: set = set()
+
     for ref, component in components.items():
         component_value = component.get("value", "").upper()
         component_lib = component.get("lib_id", "").upper()
@@ -49,6 +58,7 @@ def identify_power_supplies(
                     "output_voltage": extract_voltage_from_regulator(component_value),
                     "associated_components": [],
                 })
+                classified_refs.add(ref)
                 break  # First-match-wins; LM7905 matches 78xx (substring) AND 79xx — break prevents double entry.
 
     # Look for switching regulators
@@ -64,6 +74,8 @@ def identify_power_supplies(
 
         if ref.startswith("L") or "Inductor" in component_lib:
             for ic_ref, ic_component in components.items():
+                if ic_ref in classified_refs:
+                    continue  # Linear regulator already claimed this ref.
                 if ic_ref.startswith("U") or ic_ref.startswith("IC"):
                     ic_value = ic_component.get("value", "").upper()
                     ic_lib = ic_component.get("lib_id", "").upper()
@@ -79,6 +91,7 @@ def identify_power_supplies(
                                 "inductor": ref,
                                 "value": ic_value,
                             })
+                            classified_refs.add(ic_ref)
                             break  # LM\d{4} matches buck AND buck_boost — break prevents duplicate entry.
 
     return power_supplies
