@@ -12,6 +12,7 @@ Assertion rules:
 """
 
 import asyncio
+import inspect
 import os
 import shutil
 
@@ -28,11 +29,47 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 def _get_tool(mcp, name):
-    return asyncio.run(mcp.get_tool(name)).fn
+    """Return a callable that takes a kwargs-dict and invokes the named tool.
+
+    Handles two flavours of tool function exposed by the FastMCP registry:
+    - sync tools (the majority) return a result dict directly
+    - async tools (DRC, BOM, netlist, patterns) return a coroutine
+
+    The returned callable accepts a positional dict of arguments
+    (matching the convention the rest of this file uses) and unpacks
+    them as kwargs because each registered tool declares an explicit
+    parameter list (e.g. `search(query, type, library, limit)`), not a
+    single args-dict.
+    """
+    fn = asyncio.run(mcp.get_tool(name)).fn
+
+    # Async tools (DRC, BOM, netlist, patterns) declare a required `ctx:
+    # Context | None` parameter for progress reporting.  In integration
+    # tests we have no MCP context to pass, so auto-inject None whenever
+    # the tool's signature requires it and the caller hasn't supplied it.
+    needs_ctx = "ctx" in inspect.signature(fn).parameters
+
+    def call(args=None):
+        args = dict(args or {})
+        if needs_ctx and "ctx" not in args:
+            args["ctx"] = None
+        result = fn(**args)
+        if inspect.iscoroutine(result):
+            result = asyncio.run(result)
+        return result
+
+    return call
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(value):
+    """Legacy passthrough kept so existing call sites read symmetrically.
+
+    `_get_tool(...)(args)` already drives sync/async; this just unwraps any
+    coroutine a caller hands us directly.
+    """
+    if inspect.iscoroutine(value):
+        return asyncio.run(value)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +78,8 @@ def _run(coro):
 
 @pytest.fixture(scope="module")
 def mcp_server():
-    from kicad_mcp.server import mcp
-    return mcp
+    from kicad_mcp.server import create_server
+    return create_server()
 
 
 @pytest.fixture()
@@ -87,31 +124,36 @@ def test_search_footprints(mcp_server):
 # ---------------------------------------------------------------------------
 
 def test_schematic_create_and_save(mcp_server, workspace):
-    """kicad-sch-api compatibility: create, add component, save."""
+    """kicad-sch-api compatibility: create, add component, save.
+
+    create_schematic / add_component operate on a module-level in-memory
+    schematic; the path is supplied only at save time via save_schematic's
+    `file_path` argument.  Earlier test versions passed a `schematic_path`
+    kwarg to all three — none of those functions accepts it.
+    """
     sch_path = str(workspace / "test.kicad_sch")
 
     create = _get_tool(mcp_server, "create_schematic")
-    result = _run(create({"schematic_path": sch_path}))
+    result = create({"name": "integration_test"})
     assert result.get("status") == "ok"
 
     # Find a real resistor lib_id before adding
     search = _get_tool(mcp_server, "search")
-    sr = _run(search({"query": "resistor", "type": "symbol"}))
+    sr = search({"query": "resistor", "type": "symbol"})
     assert sr.get("status") == "ok" and sr.get("results")
     lib_id = sr["results"][0]["lib_id"]
 
     add = _get_tool(mcp_server, "add_component")
-    result = _run(add({
-        "schematic_path": sch_path,
+    result = add({
         "lib_id": lib_id,
         "reference": "R1",
         "value": "10k",
         "position": [100, 100],
-    }))
+    })
     assert result.get("status") == "ok"
 
     save = _get_tool(mcp_server, "save_schematic")
-    result = _run(save({"schematic_path": sch_path}))
+    result = save({"file_path": sch_path})
     assert result.get("status") == "ok"
     assert os.path.isfile(sch_path)
 
@@ -172,10 +214,12 @@ def test_place_footprint_and_audit(mcp_server, workspace):
     assert result.get("status") == "ok"
 
     audit = _get_tool(mcp_server, "audit_all")
-    result = _run(audit({"pcb_path": pcb_path}))
-    assert result.get("status") == "ok"
-    # audit_all returns overlap/silkscreen/keepout sub-keys
-    assert "overlaps" in result or "placement" in result or "results" in result
+    result = audit({"pcb_path": pcb_path})
+    # audit_all returns separate lists per check type — assert each exists
+    # as a list (length will vary by KiCad version & footprint geometry).
+    for key in ("footprint_overlaps", "keepout_violations", "silkscreen_overlaps"):
+        assert key in result, f"audit_all output missing expected key {key!r}; got {list(result)}"
+        assert isinstance(result[key], list)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +237,9 @@ def test_drc_returns_structure(mcp_server, workspace):
     }))
 
     drc = _get_tool(mcp_server, "run_drc_check")
-    result = _run(drc({"project_path": pro_path, "pcb_path": pcb_path}))
+    # run_drc_check is async + ctx-aware; _get_tool's wrapper injects ctx=None.
+    # It only takes project_path (no pcb_path) — finds the .kicad_pcb beside the .kicad_pro.
+    result = drc({"project_path": pro_path})
     # DRC may return violations on an empty board; assert on structure only
     assert "violations" in result or "drc_results" in result or result.get("status") == "ok"
 
@@ -233,9 +279,12 @@ def test_autoroute_smoke(mcp_server, workspace):
     }))
 
     autoroute = _get_tool(mcp_server, "autoroute_pcb")
-    result = _run(autoroute({"pcb_path": pcb_path, "passes": 1}))
-    assert result.get("status") == "ok"
-    assert "routed" in result or "unrouted" in result or "connections" in result
+    result = autoroute({"pcb_path": pcb_path, "passes": 1})
+    # FreeRouter pipeline reports per-net progress; assert structural keys
+    # only (counts vary with FreeRouter version + board geometry).
+    assert "net_count" in result
+    assert "best_incomplete" in result
+    assert isinstance(result["net_count"], int) and result["net_count"] >= 0
 
 
 # ---------------------------------------------------------------------------
