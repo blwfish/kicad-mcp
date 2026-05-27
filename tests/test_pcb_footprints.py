@@ -12,6 +12,7 @@ import pytest
 from fastmcp import FastMCP
 
 from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
+from kicad_mcp.tools.library import register_library_tools
 
 
 # -- Fixtures ----------------------------------------------------------------
@@ -20,6 +21,13 @@ from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
 def fp_server():
     mcp = FastMCP("test-footprints")
     register_pcb_footprint_tools(mcp)
+    return mcp
+
+
+@pytest.fixture
+def library_server():
+    mcp = FastMCP("test-library")
+    register_library_tools(mcp)
     return mcp
 
 
@@ -281,12 +289,12 @@ class TestGetFootprintDimensions:
         assert result["keepout_count"] == 1
 
 
-# -- search (unified footprint/symbol) tests --------------------------------
+# -- library router → search operation (was: search tool) ------------------
 
 class TestSearch:
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_returns_footprint_results(self, mock_get_index, fp_server):
+    def test_returns_footprint_results(self, mock_get_index, library_server):
         mock_index = MagicMock()
         mock_index.footprints_stale.return_value = False
         mock_index.search_footprints.return_value = [
@@ -295,45 +303,45 @@ class TestSearch:
         ]
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search")
-        result = fn("0805 resistor")
+        fn = _get_tool_fn(library_server, "library")
+        result = fn(operation="search", query="0805 resistor")
         assert result["status"] == "ok"
         assert result["count"] == 1
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_rebuilds_stale_footprint_index(self, mock_get_index, fp_server):
+    def test_rebuilds_stale_footprint_index(self, mock_get_index, library_server):
         mock_index = MagicMock()
         mock_index.footprints_stale.return_value = True
         mock_index.rebuild_footprints.return_value = 500
         mock_index.search_footprints.return_value = []
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search")
-        fn("something")
+        fn = _get_tool_fn(library_server, "library")
+        fn(operation="search", query="something")
         mock_index.rebuild_footprints.assert_called_once()
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_with_library_filter(self, mock_get_index, fp_server):
+    def test_with_library_filter(self, mock_get_index, library_server):
         mock_index = MagicMock()
         mock_index.footprints_stale.return_value = False
         mock_index.search_footprints.return_value = []
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search")
-        fn("0805", library="Resistor_SMD", limit=5)
+        fn = _get_tool_fn(library_server, "library")
+        fn(operation="search", query="0805", library="Resistor_SMD", limit=5)
         mock_index.search_footprints.assert_called_once_with(
             "0805", library="Resistor_SMD", limit=5
         )
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_handles_exception(self, mock_get_index, fp_server):
+    def test_handles_exception(self, mock_get_index, library_server):
         mock_get_index.side_effect = RuntimeError("DB locked")
-        fn = _get_tool_fn(fp_server, "search")
-        result = fn("anything")
+        fn = _get_tool_fn(library_server, "library")
+        result = fn(operation="search", query="anything")
         assert "error" in result
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_symbol_type_uses_symbol_search(self, mock_get_index, fp_server):
+    def test_symbol_type_uses_symbol_search(self, mock_get_index, library_server):
         mock_index = MagicMock()
         mock_index.symbols_stale.return_value = False
         mock_index.search_symbols.return_value = [
@@ -341,8 +349,8 @@ class TestSearch:
         ]
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search")
-        result = fn("resistor", type="symbol")
+        fn = _get_tool_fn(library_server, "library")
+        result = fn(operation="search", query="resistor", type="symbol")
         assert result["status"] == "ok"
         assert result["count"] == 1
         mock_index.search_symbols.assert_called_once_with(
@@ -350,8 +358,20 @@ class TestSearch:
         )
         mock_index.search_footprints.assert_not_called()
 
-    def test_rejects_invalid_type(self, fp_server):
-        fn = _get_tool_fn(fp_server, "search")
-        result = fn("anything", type="garbage")
+    def test_rejects_invalid_type(self, library_server):
+        fn = _get_tool_fn(library_server, "library")
+        result = fn(operation="search", query="anything", type="garbage")
         assert "error" in result
         assert "footprint" in result["error"] and "symbol" in result["error"]
+
+    def test_missing_query(self, library_server):
+        fn = _get_tool_fn(library_server, "library")
+        result = fn(operation="search")
+        assert "error" in result
+        assert "query" in result["error"]
+
+    def test_unknown_operation(self, library_server):
+        fn = _get_tool_fn(library_server, "library")
+        result = fn(operation="bogus")
+        assert "error" in result
+        assert "unknown operation" in result["error"]

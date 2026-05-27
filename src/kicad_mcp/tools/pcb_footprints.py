@@ -2,7 +2,6 @@
 
 import logging
 import os
-import sqlite3
 from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
@@ -589,92 +588,3 @@ print(json.dumps(result))
             "footprint_name": footprint_name,
             "rotation_deg": rotation_deg,
         })
-
-    @mcp.tool()
-    def search(
-        query: str,
-        type: str = "footprint",
-        library: Optional[str] = None,
-        limit: int = 20,
-    ) -> Dict[str, Any]:
-        """Search KiCad libraries for symbols (schematic) or footprints (PCB).
-
-        Backed by a SQLite FTS5 index that auto-rebuilds when the underlying
-        KiCad libraries change. Results are suitable for use with
-        add_component (symbols) or place_footprint (footprints).
-
-        Args:
-            query: Search terms (e.g., "SOT-23", "0603 resistor", "op amp", "555").
-            type: "footprint" or "symbol".
-            library: Optional library name to restrict search.
-            limit: Maximum number of results (default 20).
-        """
-        if type not in ("footprint", "symbol"):
-            return {"error": f"type must be 'footprint' or 'symbol', got {type!r}"}
-
-        try:
-            from kicad_mcp.utils.library_index import get_library_index
-
-            index = get_library_index()
-
-            if type == "footprint":
-                if index.footprints_stale():
-                    count = index.rebuild_footprints()
-                    logger.info("Footprint index rebuilt: %d entries", count)
-                results = index.search_footprints(query, library=library, limit=limit)
-            else:
-                if index.symbols_stale():
-                    index.rebuild_symbols()
-                results = index.search_symbols(query, library=library, limit=limit)
-
-            return {
-                "status": "ok",
-                "count": len(results),
-                "results": results,
-                # When count == limit there are likely more matches not shown.
-                # Without this flag, callers can't distinguish "5 total matches"
-                # from "top 5 of 500 matches."
-                "truncated": len(results) == limit,
-            }
-        except (sqlite3.Error, RuntimeError) as e:
-            # Library-index database error or other runtime failure.
-            # AttributeError/KeyError/ImportError propagate (programming bugs).
-            logger.error("Search failed (%s): %s", e.__class__.__name__, e)
-            return {"error": f"Search failed: {e.__class__.__name__}: {e}"}
-
-    @mcp.tool()
-    def rebuild_library_index(
-        kind: str = "both",
-    ) -> Dict[str, Any]:
-        """Force a rebuild of the symbol and/or footprint library index.
-
-        The index normally auto-rebuilds when staleness is detected. Use this
-        tool when the staleness check misses an edit (e.g. you edited a
-        ``.kicad_mod`` file in a way that didn't bump its mtime in a way the
-        scanner noticed), or after installing/updating a third-party library.
-
-        Args:
-            kind: ``"symbols"``, ``"footprints"``, or ``"both"`` (default).
-        """
-        valid = ("symbols", "footprints", "both")
-        if kind not in valid:
-            return {"error": f"kind must be one of {valid}; got {kind!r}"}
-
-        try:
-            from kicad_mcp.utils.library_index import get_library_index
-
-            index = get_library_index()
-            result: Dict[str, Any] = {"status": "ok"}
-
-            if kind in ("symbols", "both"):
-                result["symbols_indexed"] = index.rebuild_symbols()
-                logger.info("Symbol index rebuilt: %d entries", result["symbols_indexed"])
-
-            if kind in ("footprints", "both"):
-                result["footprints_indexed"] = index.rebuild_footprints()
-                logger.info("Footprint index rebuilt: %d entries", result["footprints_indexed"])
-
-            return result
-        except (sqlite3.Error, RuntimeError, OSError) as e:
-            logger.error("Library rebuild failed (%s): %s", type(e).__name__, e)
-            return {"error": f"Library rebuild failed: {type(e).__name__}: {e}"}
