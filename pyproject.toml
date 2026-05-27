@@ -33,6 +33,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "defusedxml>=0.7.1",
     "python-multipart>=0.0.29",
+    "mcp-events>=0.1.0",
 ]
 
 [project.scripts]
@@ -103,4 +104,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pandas", "defusedxml.*", "sexpdata"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# mcp-events 0.1.0 doesn't ship a py.typed marker yet. Remove this override
+# when the upstream package adds typing markers.
+module = ["mcp_events"]
 ignore_missing_imports = true

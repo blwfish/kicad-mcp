@@ -60,6 +60,11 @@ def create_server() -> FastMCP:
 
     register_schematic_tools(mcp)
 
+    # Telemetry analyze tool (read-only access to feedback infrastructure)
+    from kicad_mcp.tools.telemetry_analyze import register_telemetry_analyze_tools
+
+    register_telemetry_analyze_tools(mcp)
+
     logger.info("KiCad MCP server initialized with all tool modules")
     return mcp
 
