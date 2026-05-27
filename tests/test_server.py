@@ -31,11 +31,12 @@ class TestCreateServer:
 
         Tool-consolidation in progress (see docs/SPEC_Tool_Consolidation.md).
         Target: 14 tools. Current count tracks the in-progress migration.
-        Phase 2 consolidated project (4→1) + drc (3→1) + autoroute (5→1) = 90-12+3=81.
+        Phase 2: 90-12+3=81.
+        Phase 3: audit router replaces 9 keepout tools → 81-9+1=73.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 81, (
-            f"Expected 81 tools, got {len(tools)}. "
+        assert len(tools) == 73, (
+            f"Expected 73 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -75,15 +76,8 @@ class TestExpectedToolsExist:
         "add_text_to_pcb",
         # PCB panelize tools
         "panelize_pcb",
-        # PCB keepout tools
-        "get_keepout_zones",
-        "get_board_constraints",
-        "validate_placement",
-        "audit_pcb_placement",
-        "audit_footprint_overlaps",
-        "audit_all",
-        "pre_route_check",
-        "auto_fix_placement",
+        # Phase 3 router (audit)
+        "audit",
         # PCB planning tools
         "estimate_board_size",
         "suggest_placement",

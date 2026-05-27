@@ -53,6 +53,10 @@ def create_server() -> FastMCP:
     register_project_tools(mcp)
     register_drc_tools(mcp)
 
+    # Domain routers (phase 3: audit)
+    # Note: register_pcb_keepout_tools is imported above and already called;
+    # it now registers the audit router instead of 9 individual tools.
+
     # Tools not yet consolidated into routers
     from kicad_mcp.tools.netlist import register_netlist_tools
 

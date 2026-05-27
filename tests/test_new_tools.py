@@ -212,22 +212,28 @@ class TestGetFootprintDimensions:
 class TestPreRouteCheck:
 
     @pytest.fixture
-    def keepout_server(self):
-        mcp = FastMCP("test-keepout")
+    def audit_server(self):
+        mcp = FastMCP("test-audit")
         register_pcb_keepout_tools(mcp)
         return mcp
 
-    def test_tool_registered(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
+    def _get_audit_fn(self, mcp_server):
+        tool = asyncio.run(mcp_server.get_tool("audit"))
+        if tool is None:
+            raise ValueError("Tool 'audit' not found")
+        return tool.fn
+
+    def test_tool_registered(self, audit_server):
+        fn = self._get_audit_fn(audit_server)
         assert fn is not None
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, audit_server):
+        fn = self._get_audit_fn(audit_server)
+        result = fn("pre_route_check", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_route_ready_true(self, mock_run, keepout_server, pcb_file):
+    def test_route_ready_true(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "route_ready": True,
@@ -243,13 +249,13 @@ class TestPreRouteCheck:
             "warnings": [],
             "summary": "Ready to route: 10 footprints, 30 pads all clear",
         }
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        result = fn(pcb_file)
+        fn = self._get_audit_fn(audit_server)
+        result = fn("pre_route_check", pcb_path=pcb_file)
         assert result["route_ready"] is True
         assert result["error_count"] == 0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_route_ready_false_with_overlaps(self, mock_run, keepout_server, pcb_file):
+    def test_route_ready_false_with_overlaps(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "route_ready": False,
@@ -267,14 +273,14 @@ class TestPreRouteCheck:
             "warnings": [],
             "summary": "NOT ready to route: 1 courtyard overlap(s)",
         }
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        result = fn(pcb_file)
+        fn = self._get_audit_fn(audit_server)
+        result = fn("pre_route_check", pcb_path=pcb_file)
         assert result["route_ready"] is False
         assert result["error_count"] == 1
         assert len(result["courtyard_overlaps"]) == 1
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_checks_all_three(self, mock_run, keepout_server, pcb_file):
+    def test_script_checks_all_three(self, mock_run, audit_server, pcb_file):
         """Script should contain courtyard, keepout, and pad clearance checks."""
         mock_run.return_value = {
             "status": "ok", "route_ready": True, "total_footprints": 0,
@@ -284,8 +290,8 @@ class TestPreRouteCheck:
             "pad_violations": [], "errors": [], "warnings": [],
             "summary": "",
         }
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        fn(pcb_file)
+        fn = self._get_audit_fn(audit_server)
+        fn("pre_route_check", pcb_path=pcb_file)
         script = mock_run.call_args[0][0]
         # Courtyard check
         assert "CrtYd" in script
