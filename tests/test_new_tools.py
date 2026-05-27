@@ -13,8 +13,7 @@ import pytest
 from fastmcp import FastMCP
 
 from kicad_mcp.server import create_server
-from kicad_mcp.tools.pcb_board import register_pcb_board_tools
-from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
+from kicad_mcp.tools.pcb import register_pcb_tools
 from kicad_mcp.tools.pcb_keepout import register_pcb_keepout_tools
 from kicad_mcp.tools.export import register_export_tools
 
@@ -121,17 +120,23 @@ class TestCheckPinCollisions:
 class TestGetFootprintDimensions:
 
     @pytest.fixture
-    def fp_server(self):
-        mcp = FastMCP("test-fp")
-        register_pcb_footprint_tools(mcp)
+    def pcb_server(self):
+        mcp = FastMCP("test-pcb")
+        register_pcb_tools(mcp)
         return mcp
 
-    def test_tool_registered(self, fp_server):
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
+    def _get_pcb_fn(self, mcp_server):
+        tool = asyncio.run(mcp_server.get_tool("pcb"))
+        if tool is None:
+            raise ValueError("Tool 'pcb' not found")
+        return tool.fn
+
+    def test_tool_registered(self, pcb_server):
+        fn = self._get_pcb_fn(pcb_server)
         assert fn is not None
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_script_loads_footprint(self, mock_run, fp_server):
+    def test_script_loads_footprint(self, mock_run, pcb_server):
         mock_run.return_value = {
             "status": "ok",
             "library": "Resistor_SMD",
@@ -149,15 +154,16 @@ class TestGetFootprintDimensions:
                 "width_mm": 1.6, "height_mm": 0.8,
             },
         }
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        result = fn(library="Resistor_SMD", footprint_name="R_0603_1608Metric")
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("get_footprint_dimensions",
+                    library="Resistor_SMD", footprint_name="R_0603_1608Metric")
         assert result["status"] == "ok"
         assert result["pad_count"] == 2
         assert "body_bbox" in result
         assert "pad_span" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_script_handles_keepout_zones(self, mock_run, fp_server):
+    def test_script_handles_keepout_zones(self, mock_run, pcb_server):
         """ESP32-WROOM-32E should report embedded keepout zones."""
         mock_run.return_value = {
             "status": "ok",
@@ -191,18 +197,21 @@ class TestGetFootprintDimensions:
             ],
             "keepout_count": 1,
         }
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        result = fn(library="RF_Module", footprint_name="ESP32-WROOM-32E")
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("get_footprint_dimensions",
+                    library="RF_Module", footprint_name="ESP32-WROOM-32E")
         assert "keepout_zones" in result
         assert result["keepout_count"] == 1
         kz = result["keepout_zones"][0]
         assert kz["constraints"]["no_footprints"] is True
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_rotation_passed_to_script(self, mock_run, fp_server):
+    def test_rotation_passed_to_script(self, mock_run, pcb_server):
         mock_run.return_value = {"status": "ok", "rotation_deg": 90}
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        fn(library="Resistor_SMD", footprint_name="R_0603_1608Metric", rotation_deg=90)
+        fn = self._get_pcb_fn(pcb_server)
+        fn("get_footprint_dimensions",
+           library="Resistor_SMD", footprint_name="R_0603_1608Metric",
+           rotation_deg=90)
         params = mock_run.call_args[1]["params"]
         assert params["rotation_deg"] == 90
 
@@ -308,13 +317,19 @@ class TestPreRouteCheck:
 class TestSetDesignRulesProjectFile:
 
     @pytest.fixture
-    def board_server(self):
-        mcp = FastMCP("test-board")
-        register_pcb_board_tools(mcp)
+    def pcb_server(self):
+        mcp = FastMCP("test-pcb")
+        register_pcb_tools(mcp)
         return mcp
 
+    def _get_pcb_fn(self, mcp_server):
+        tool = asyncio.run(mcp_server.get_tool("pcb"))
+        if tool is None:
+            raise ValueError("Tool 'pcb' not found")
+        return tool.fn
+
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_updates_kicad_pro(self, mock_run, board_server, pcb_with_pro):
+    def test_updates_kicad_pro(self, mock_run, pcb_server, pcb_with_pro):
         pcb_path, pro_path = pcb_with_pro
         mock_run.return_value = {
             "status": "ok",
@@ -328,9 +343,9 @@ class TestSetDesignRulesProjectFile:
                 "min_copper_edge_clearance_mm": 0.0,
             },
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
+        fn = self._get_pcb_fn(pcb_server)
         result = fn(
-            pcb_path,
+            "set_design_rules", pcb_path=pcb_path,
             min_through_hole_diameter_mm=0.15,
             min_copper_edge_clearance_mm=0.0,
         )
@@ -344,28 +359,28 @@ class TestSetDesignRulesProjectFile:
         assert rules["min_copper_edge_clearance"] == 0.0
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_no_pro_file_still_works(self, mock_run, board_server, pcb_file):
+    def test_no_pro_file_still_works(self, mock_run, pcb_server, pcb_file):
         """When no .kicad_pro exists, PCB rules are still set."""
         mock_run.return_value = {
             "status": "ok",
             "design_rules": {},
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn(pcb_file)
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path=pcb_file)
         assert result["project_rules_updated"] is False
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_default_values(self, mock_run, board_server, pcb_file):
+    def test_default_values(self, mock_run, pcb_server, pcb_file):
         """Default min_through_hole_diameter should be 0.3mm."""
         mock_run.return_value = {"status": "ok", "design_rules": {}}
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        fn(pcb_file)
+        fn = self._get_pcb_fn(pcb_server)
+        fn("set_design_rules", pcb_path=pcb_file)
         params = mock_run.call_args[1]["params"]
         # Params should contain the default via drill value
         assert params["min_via_drill_mm"] == 0.3
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_creates_rules_section_if_missing(self, mock_run, board_server, tmp_path):
+    def test_creates_rules_section_if_missing(self, mock_run, pcb_server, tmp_path):
         """If .kicad_pro exists but has no rules section, create it."""
         pcb = tmp_path / "test.kicad_pcb"
         pcb.write_text("(kicad_pcb)")
@@ -373,8 +388,9 @@ class TestSetDesignRulesProjectFile:
         pro.write_text("{}")  # Empty project file
 
         mock_run.return_value = {"status": "ok", "design_rules": {}}
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn(str(pcb), min_through_hole_diameter_mm=0.15)
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path=str(pcb),
+                    min_through_hole_diameter_mm=0.15)
         assert result["project_rules_updated"] is True
 
         with open(str(pro)) as f:

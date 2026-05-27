@@ -1,61 +1,39 @@
-"""PCB footprint tools: place, move, list, search, and get pad positions."""
+"""PCB footprint ops: place, move, list, pad positions, dimensions.
+
+These are module-level _op_* helpers consumed by the pcb router (pcb.py).
+"""
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
-
-from fastmcp import FastMCP
+from typing import Any, Dict, Optional
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 
 logger = logging.getLogger(__name__)
 
+_KEEPOUT_HELPER = KEEPOUT_HELPER
 
-def register_pcb_footprint_tools(mcp: FastMCP) -> None:
-    """Register PCB footprint tools."""
 
-    _KEEPOUT_HELPER = KEEPOUT_HELPER
+def _op_place_footprint(
+    pcb_path: str,
+    library: str,
+    footprint_name: str,
+    reference: str,
+    value: str,
+    x_mm: float,
+    y_mm: float,
+    rotation_deg: float = 0.0,
+    layer: str = "F.Cu",
+    check_keepouts: bool = True,
+) -> Dict[str, Any]:
+    """Place a footprint on the PCB from a KiCad library."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
 
-    @mcp.tool()
-    def place_footprint(
-        pcb_path: str,
-        library: str,
-        footprint_name: str,
-        reference: str,
-        value: str,
-        x_mm: float,
-        y_mm: float,
-        rotation_deg: float = 0.0,
-        layer: str = "F.Cu",
-        check_keepouts: bool = True,
-    ) -> Dict[str, Any]:
-        """Place a footprint on the PCB from a KiCad library.
-
-        By default, checks the proposed position against keepout zones and
-        board boundaries before placing. If violations are found, the
-        footprint is still placed but warnings are included in the result.
-
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            library: Footprint library name (e.g., "Resistor_THT").
-            footprint_name: Footprint name within the library.
-            reference: Component reference (e.g., "R1").
-            value: Component value (e.g., "330").
-            x_mm: X position in millimeters.
-            y_mm: Y position in millimeters.
-            rotation_deg: Rotation angle in degrees (default 0).
-            layer: PCB layer, "F.Cu" or "B.Cu" (default "F.Cu").
-            check_keepouts: Check placement against keepout zones and board
-                boundaries (default True). Warnings are included in the result
-                but do not prevent placement.
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-
-        keepout_code = ""
-        if check_keepouts:
-            keepout_code = """
+    keepout_code = ""
+    if check_keepouts:
+        keepout_code = """
 """ + _KEEPOUT_HELPER + """
 
 # Check placement against keepout zones and board boundary
@@ -101,7 +79,7 @@ elif not rect_inside(fp_rect, outline):
     )
 """
 
-        script = """
+    script = """
 import pcbnew, json, os, glob, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -152,13 +130,6 @@ bbox_info = {
     "height_mm": round(pcbnew.ToMM(bbox.GetHeight()), 2),
 }
 
-# Try to get courtyard specifically (tighter than body bbox).
-# Earlier code called `fp.GetBoundingBox(False, True)` and labelled it
-# "only courtyard", but the second argument is `aIncludeText` (or
-# similar across KiCad versions), NOT a courtyard filter — the result
-# is the body bbox, not a courtyard bbox. Iterate GraphicalItems and
-# filter by CrtYd layer (same approach as the keepout_helpers
-# COURTYARD_BBOX_HELPER).
 cy_x_min = float("inf"); cy_y_min = float("inf")
 cy_x_max = float("-inf"); cy_y_max = float("-inf")
 cy_found = False
@@ -197,39 +168,31 @@ if placement_warnings:
     result["placement_warnings"] = placement_warnings
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "library": library,
-            "footprint_name": footprint_name,
-            "reference": reference,
-            "value": value,
-            "x_mm": x_mm,
-            "y_mm": y_mm,
-            "rotation_deg": rotation_deg,
-            "layer": layer,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "library": library,
+        "footprint_name": footprint_name,
+        "reference": reference,
+        "value": value,
+        "x_mm": x_mm,
+        "y_mm": y_mm,
+        "rotation_deg": rotation_deg,
+        "layer": layer,
+    })
 
-    @mcp.tool()
-    def move_footprint(
-        pcb_path: str,
-        reference: str,
-        x_mm: float,
-        y_mm: float,
-        rotation_deg: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """Move a footprint to a new position on the PCB.
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            reference: Component reference (e.g., "R1").
-            x_mm: New X position in millimeters.
-            y_mm: New Y position in millimeters.
-            rotation_deg: New rotation in degrees (None to keep current).
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
+def _op_move_footprint(
+    pcb_path: str,
+    reference: str,
+    x_mm: float,
+    y_mm: float,
+    rotation_deg: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Move a footprint to a new position on the PCB."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -292,25 +255,21 @@ if placement_warnings:
     result["placement_warnings"] = placement_warnings
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "reference": reference,
-            "x_mm": x_mm,
-            "y_mm": y_mm,
-            "rotation_deg": rotation_deg,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "reference": reference,
+        "x_mm": x_mm,
+        "y_mm": y_mm,
+        "rotation_deg": rotation_deg,
+    })
 
-    @mcp.tool()
-    def list_pcb_footprints(pcb_path: str) -> Dict[str, Any]:
-        """List all footprints currently placed on the PCB.
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
+def _op_list_footprints(pcb_path: str) -> Dict[str, Any]:
+    """List all footprints currently placed on the PCB."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -326,8 +285,6 @@ PAD_SHAPE = {
     pcbnew.PAD_SHAPE_ROUNDRECT: "roundrect",
     pcbnew.PAD_SHAPE_CHAMFERED_RECT: "chamfered_rect",
 }
-# Newer KiCad versions add shapes (CUSTOM polygon, etc.) — track them
-# so callers can detect when the script encountered an unmapped shape.
 unknown_pad_shapes = set()
 
 fp_list = []
@@ -338,10 +295,6 @@ for fp in board.GetFootprints():
         pad_pos = pad.GetPosition()
         size = pad.GetSize()
         drill = pad.GetDrillSize()
-        # Collect copper layer names this pad covers. Iterate the layer
-        # set directly rather than the F_Cu..B_Cu integer range, which
-        # would also produce names for any non-copper layer that happens
-        # to fall in that integer range on future KiCad versions.
         lset = pad.GetLayerSet()
         copper_layers = [
             board.GetLayerName(lid)
@@ -362,7 +315,6 @@ for fp in board.GetFootprints():
             "size_y_mm": round(pcbnew.ToMM(size.y), 3),
             "copper_layers": copper_layers,
         }
-        # Drill info only for through-hole pads
         if drill.x > 0:
             pad_info["drill_x_mm"] = round(pcbnew.ToMM(drill.x), 3)
             pad_info["drill_y_mm"] = round(pcbnew.ToMM(drill.y), 3)
@@ -385,28 +337,18 @@ _out = {
     "footprints": fp_list,
 }
 if unknown_pad_shapes:
-    # Newer KiCad shapes (CUSTOM polygon etc.) showed up — record so a
-    # downstream maintainer can add them to PAD_SHAPE explicitly.
     _out["unknown_pad_shape_ids"] = sorted(unknown_pad_shapes)
 print(json.dumps(_out))
 """
-        return run_pcbnew_script(script, params={"pcb_path": pcb_path})
+    return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
-    @mcp.tool()
-    def get_pad_positions(
-        pcb_path: str,
-        reference: str,
-    ) -> Dict[str, Any]:
-        """Get all pad positions for a footprint.
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            reference: Component reference (e.g., "R1").
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
+def _op_get_pad_positions(pcb_path: str, reference: str) -> Dict[str, Any]:
+    """Get all pad positions for a footprint."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
 
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -438,34 +380,19 @@ print(json.dumps({
     "pads": pads,
 }))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "reference": reference,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "reference": reference,
+    })
 
-    @mcp.tool()
-    def get_footprint_dimensions(
-        library: str,
-        footprint_name: str,
-        rotation_deg: float = 0.0,
-    ) -> Dict[str, Any]:
-        """Query a footprint's bounding box, pad span, and embedded keepout zones.
 
-        Loads the footprint from the KiCad library WITHOUT placing it on a PCB.
-        Use this BEFORE placing components to plan layout with actual dimensions
-        rather than guessing.  Returns body bounding box, courtyard, pad span
-        (extent of actual copper pads), and any embedded keepout zones (like
-        the ESP32 antenna keepout).
-
-        All dimensions are relative to the footprint origin (0,0) with the
-        specified rotation applied.
-
-        Args:
-            library: Footprint library name (e.g., "RF_Module").
-            footprint_name: Footprint name (e.g., "ESP32-WROOM-32E").
-            rotation_deg: Rotation to apply before measuring (default 0).
-        """
-        script = """
+def _op_get_footprint_dimensions(
+    library: str,
+    footprint_name: str,
+    rotation_deg: float = 0.0,
+) -> Dict[str, Any]:
+    """Query a footprint's bounding box, pad span, and embedded keepout zones."""
+    script = """
 import pcbnew, json, os, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -505,7 +432,6 @@ cx_min = float("inf"); cy_min = float("inf")
 cx_max = float("-inf"); cy_max = float("-inf")
 found_cy = False
 for item in fp.GraphicalItems():
-    # Check both front and back courtyard via layer ID directly.
     ly = item.GetLayer()
     if ly in (pcbnew.F_CrtYd, pcbnew.B_CrtYd):
         found_cy = True
@@ -583,8 +509,8 @@ if keepouts:
     result["keepout_count"] = len(keepouts)
 print(json.dumps(result))
 """
-        return run_pcbnew_script(script, params={
-            "library": library,
-            "footprint_name": footprint_name,
-            "rotation_deg": rotation_deg,
-        })
+    return run_pcbnew_script(script, params={
+        "library": library,
+        "footprint_name": footprint_name,
+        "rotation_deg": rotation_deg,
+    })

@@ -12,15 +12,15 @@ from unittest.mock import patch
 import pytest
 from fastmcp import FastMCP
 
-from kicad_mcp.tools.pcb_nets import register_pcb_net_tools
+from kicad_mcp.tools.pcb import register_pcb_tools
 
 
 # -- Fixtures ----------------------------------------------------------------
 
 @pytest.fixture
-def net_server():
-    mcp = FastMCP("test-nets")
-    register_pcb_net_tools(mcp)
+def pcb_server():
+    mcp = FastMCP("test-pcb")
+    register_pcb_tools(mcp)
     return mcp
 
 
@@ -53,10 +53,10 @@ def pcb_with_project(tmp_path):
     return {"pcb_path": str(pcb), "pro_path": str(pro)}
 
 
-def _get_tool_fn(mcp_server, tool_name):
-    tool = asyncio.run(mcp_server.get_tool(tool_name))
+def _get_pcb_fn(mcp_server):
+    tool = asyncio.run(mcp_server.get_tool("pcb"))
     if tool is None:
-        raise ValueError(f"Tool {tool_name!r} not found")
+        raise ValueError("Tool 'pcb' not found")
     return tool.fn
 
 
@@ -64,14 +64,15 @@ def _get_tool_fn(mcp_server, tool_name):
 
 class TestAddNet:
 
-    def test_file_not_found(self, net_server):
-        fn = _get_tool_fn(net_server, "add_net")
-        result = fn("/nonexistent/board.kicad_pcb", "SDA")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_net",
+                    pcb_path="/nonexistent/board.kicad_pcb", net_name="SDA")
         assert "error" in result
 
-    def test_adds_new_net(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "add_net")
-        result = fn(pcb_file, "SDA")
+    def test_adds_new_net(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_net", pcb_path=pcb_file, net_name="SDA")
         assert result["status"] == "ok"
         assert result["net"] == "SDA"
         assert result["net_code"] == 3  # next after 2
@@ -81,17 +82,17 @@ class TestAddNet:
             content = f.read()
         assert '(net 3 "SDA")' in content
 
-    def test_existing_net_returns_ok(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "add_net")
-        result = fn(pcb_file, "GND")
+    def test_existing_net_returns_ok(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_net", pcb_path=pcb_file, net_name="GND")
         assert result["status"] == "ok"
         assert result["note"] == "Net already exists"
         assert result["net_code"] == 1
 
-    def test_adds_multiple_nets_sequentially(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "add_net")
-        r1 = fn(pcb_file, "SDA")
-        r2 = fn(pcb_file, "SCL")
+    def test_adds_multiple_nets_sequentially(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        r1 = fn("add_net", pcb_path=pcb_file, net_name="SDA")
+        r2 = fn("add_net", pcb_path=pcb_file, net_name="SCL")
         assert r1["net_code"] == 3
         assert r2["net_code"] == 4
 
@@ -100,14 +101,16 @@ class TestAddNet:
 
 class TestRenameNet:
 
-    def test_file_not_found(self, net_server):
-        fn = _get_tool_fn(net_server, "rename_net")
-        result = fn("/nonexistent/board.kicad_pcb", "GND", "AGND")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("rename_net",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    old_name="GND", new_name="AGND")
         assert "error" in result
 
-    def test_renames_net(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "rename_net")
-        result = fn(pcb_file, "GND", "AGND")
+    def test_renames_net(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("rename_net", pcb_path=pcb_file, old_name="GND", new_name="AGND")
         assert result["status"] == "ok"
         assert result["old_name"] == "GND"
         assert result["new_name"] == "AGND"
@@ -118,21 +121,21 @@ class TestRenameNet:
         assert '"AGND"' in content
         assert '(net 1 "GND")' not in content
 
-    def test_rename_nonexistent_net(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "rename_net")
-        result = fn(pcb_file, "NOSUCHNET", "NEWNAME")
+    def test_rename_nonexistent_net(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("rename_net", pcb_path=pcb_file, old_name="NOSUCHNET", new_name="NEWNAME")
         assert "error" in result
         assert "not found" in result["error"].lower()
 
-    def test_rename_to_existing_name(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "rename_net")
-        result = fn(pcb_file, "GND", "VCC")
+    def test_rename_to_existing_name(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("rename_net", pcb_path=pcb_file, old_name="GND", new_name="VCC")
         assert "error" in result
         assert "already exists" in result["error"]
 
-    def test_same_name_noop(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "rename_net")
-        result = fn(pcb_file, "GND", "GND")
+    def test_same_name_noop(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("rename_net", pcb_path=pcb_file, old_name="GND", new_name="GND")
         assert result["status"] == "ok"
         assert result["replacements"] == 0
 
@@ -141,13 +144,15 @@ class TestRenameNet:
 
 class TestAssignPadNet:
 
-    def test_file_not_found(self, net_server):
-        fn = _get_tool_fn(net_server, "assign_pad_net")
-        result = fn("/nonexistent/board.kicad_pcb", "R1", "1", "GND")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("assign_pad_net",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    reference="R1", pad_number="1", net_name="GND")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_nets.run_pcbnew_script")
-    def test_assigns_pad(self, mock_run, net_server, pcb_file):
+    def test_assigns_pad(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "reference": "R1",
@@ -155,17 +160,19 @@ class TestAssignPadNet:
             "net": "GND",
             "sub_pads": 1,
         }
-        fn = _get_tool_fn(net_server, "assign_pad_net")
-        result = fn(pcb_file, "R1", "1", "GND")
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("assign_pad_net",
+                    pcb_path=pcb_file, reference="R1", pad_number="1", net_name="GND")
         assert result["status"] == "ok"
         assert result["reference"] == "R1"
 
     @patch("kicad_mcp.tools.pcb_nets.run_pcbnew_script")
-    def test_passes_params(self, mock_run, net_server, pcb_file):
+    def test_passes_params(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "reference": "U1",
                                   "pad": "3", "net": "VCC", "sub_pads": 1}
-        fn = _get_tool_fn(net_server, "assign_pad_net")
-        fn(pcb_file, "U1", "3", "VCC")
+        fn = _get_pcb_fn(pcb_server)
+        fn("assign_pad_net",
+           pcb_path=pcb_file, reference="U1", pad_number="3", net_name="VCC")
         params = mock_run.call_args[1]["params"]
         assert params["reference"] == "U1"
         assert params["pad_number"] == "3"
@@ -176,20 +183,22 @@ class TestAssignPadNet:
 
 class TestBulkAssignPadNets:
 
-    def test_file_not_found(self, net_server):
-        fn = _get_tool_fn(net_server, "bulk_assign_pad_nets")
-        result = fn("/nonexistent/board.kicad_pcb",
-                    [{"reference": "R1", "pad": "1", "net": "GND"}])
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("bulk_assign_pad_nets",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    assignments=[{"reference": "R1", "pad": "1", "net": "GND"}])
         assert "error" in result
 
-    def test_empty_assignments(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "bulk_assign_pad_nets")
-        result = fn(pcb_file, [])
+    def test_empty_assignments(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("bulk_assign_pad_nets",
+                    pcb_path=pcb_file, assignments=[])
         assert "error" in result
-        assert "No assignments" in result["error"]
+        assert "assignments" in result["error"]
 
     @patch("kicad_mcp.tools.pcb_nets.run_pcbnew_script")
-    def test_bulk_assign(self, mock_run, net_server, pcb_file):
+    def test_bulk_assign(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "assigned": 3,
@@ -201,28 +210,28 @@ class TestBulkAssignPadNets:
                 {"reference": "C1", "pad": "1", "net": "VCC", "sub_pads": 1},
             ],
         }
-        fn = _get_tool_fn(net_server, "bulk_assign_pad_nets")
+        fn = _get_pcb_fn(pcb_server)
         assignments = [
             {"reference": "R1", "pad": "1", "net": "GND"},
             {"reference": "R1", "pad": "2", "net": "VCC"},
             {"reference": "C1", "pad": "1", "net": "VCC"},
         ]
-        result = fn(pcb_file, assignments)
+        result = fn("bulk_assign_pad_nets", pcb_path=pcb_file, assignments=assignments)
         assert result["assigned"] == 3
         assert len(result["errors"]) == 0
 
 
-# -- list_pcb_nets tests -----------------------------------------------------
+# -- list_nets tests ---------------------------------------------------------
 
-class TestListPcbNets:
+class TestListNets:
 
-    def test_file_not_found(self, net_server):
-        fn = _get_tool_fn(net_server, "list_pcb_nets")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("list_nets", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_nets.run_pcbnew_script")
-    def test_lists_nets(self, mock_run, net_server, pcb_file):
+    def test_lists_nets(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "net_count": 3,
@@ -232,8 +241,8 @@ class TestListPcbNets:
                 {"code": 3, "name": "SDA"},
             ],
         }
-        fn = _get_tool_fn(net_server, "list_pcb_nets")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("list_nets", pcb_path=pcb_file)
         assert result["net_count"] == 3
         assert result["nets"][0]["name"] == "GND"
 
@@ -242,22 +251,26 @@ class TestListPcbNets:
 
 class TestSetNetClass:
 
-    def test_pcb_not_found(self, net_server):
-        fn = _get_tool_fn(net_server, "set_net_class")
-        result = fn("/nonexistent/board.kicad_pcb", "Power", ["GND"])
+    def test_pcb_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_net_class",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    class_name="Power", nets=["GND"])
         assert "error" in result
 
-    def test_project_not_found(self, net_server, pcb_file):
-        fn = _get_tool_fn(net_server, "set_net_class")
-        result = fn(pcb_file, "Power", ["GND"])
+    def test_project_not_found(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_net_class",
+                    pcb_path=pcb_file, class_name="Power", nets=["GND"])
         assert "error" in result
         assert "Project file not found" in result["error"]
 
-    def test_creates_net_class(self, net_server, pcb_with_project):
+    def test_creates_net_class(self, pcb_server, pcb_with_project):
         pcb_path = pcb_with_project["pcb_path"]
         pro_path = pcb_with_project["pro_path"]
-        fn = _get_tool_fn(net_server, "set_net_class")
-        result = fn(pcb_path, "Power", ["GND", "VCC"],
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_net_class",
+                    pcb_path=pcb_path, class_name="Power", nets=["GND", "VCC"],
                     track_width_mm=0.5, clearance_mm=0.3)
         assert result["status"] == "ok"
         assert result["action"] == "created"
@@ -269,12 +282,14 @@ class TestSetNetClass:
         assert assignments["GND"] == "Power"
         assert assignments["VCC"] == "Power"
 
-    def test_updates_existing_class(self, net_server, pcb_with_project):
+    def test_updates_existing_class(self, pcb_server, pcb_with_project):
         pcb_path = pcb_with_project["pcb_path"]
-        fn = _get_tool_fn(net_server, "set_net_class")
+        fn = _get_pcb_fn(pcb_server)
         # Create
-        fn(pcb_path, "Power", ["GND"], track_width_mm=0.5)
+        fn("set_net_class", pcb_path=pcb_path, class_name="Power",
+           nets=["GND"], track_width_mm=0.5)
         # Update
-        result = fn(pcb_path, "Power", ["GND"], track_width_mm=0.8)
+        result = fn("set_net_class", pcb_path=pcb_path, class_name="Power",
+                    nets=["GND"], track_width_mm=0.8)
         assert result["action"] == "updated"
         assert result["track_width_mm"] == 0.8

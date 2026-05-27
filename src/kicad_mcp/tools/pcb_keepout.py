@@ -19,6 +19,10 @@ from kicad_mcp.utils.keepout_helpers import (
 
 logger = logging.getLogger(__name__)
 
+# Shared impl: check_silkscreen_overlaps lives in pcb_silkscreen so the pcb
+# router can use the same function without duplicating it.
+from kicad_mcp.tools.pcb_silkscreen import _op_check_silkscreen_overlaps  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Module-level helper string constants (embedded in pcbnew subprocess scripts)
 # ---------------------------------------------------------------------------
@@ -1222,6 +1226,11 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
                   effective_placement_area_mm2?}
                  Board outline + keepouts + design rules in one call. Use before
                  placement decisions to understand available area.
+
+          check_silkscreen_overlaps(pcb_path)
+              -> {status, silk_items_checked, pads_checked, overlap_count, overlaps,
+                  text_overlap_count, text_overlaps}
+                 Shared implementation with pcb.check_silkscreen_overlaps.
         """
         if detail not in ("summary", "full"):
             return {"error": f"detail must be 'summary' or 'full', got {detail!r}"}
@@ -1291,10 +1300,16 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
                 return {"error": "operation='constraints' requires 'pcb_path'"}
             return _op_constraints(pcb_path)
 
+        if operation == "check_silkscreen_overlaps":
+            if pcb_path is None:
+                return {"error": "operation='check_silkscreen_overlaps' requires 'pcb_path'"}
+            return _op_check_silkscreen_overlaps(pcb_path)
+
         return {
             "error": (
                 f"unknown operation {operation!r}; "
                 f"valid: all|placement|footprint_overlaps|pad_clearances|"
-                f"validate_one|auto_fix_placement|keepouts|pre_route_check|constraints"
+                f"validate_one|auto_fix_placement|keepouts|pre_route_check|"
+                f"constraints|check_silkscreen_overlaps"
             )
         }

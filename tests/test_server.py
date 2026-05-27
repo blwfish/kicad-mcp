@@ -33,10 +33,11 @@ class TestCreateServer:
         Target: 14 tools. Current count tracks the in-progress migration.
         Phase 2: 90-12+3=81.
         Phase 3: audit router replaces 9 keepout tools → 81-9+1=73.
+        Phase 4: pcb router replaces 29 individual pcb_* tools → 73-29+1=45.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 73, (
-            f"Expected 73 tools, got {len(tools)}. "
+        assert len(tools) == 45, (
+            f"Expected 45 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -45,35 +46,8 @@ class TestExpectedToolsExist:
     """Verify that specific important tools are registered."""
 
     EXPECTED_TOOLS = [
-        # PCB board tools
-        "create_pcb",
-        "load_pcb",
-        "add_board_outline",
-        # PCB footprint tools
-        "place_footprint",
-        "move_footprint",
-        "list_pcb_footprints",
-        "get_pad_positions",
-        "get_footprint_dimensions",
-        # PCB net tools
-        "add_net",
-        "assign_pad_net",
-        "bulk_assign_pad_nets",
-        "list_pcb_nets",
-        # PCB routing tools
-        "add_trace",
-        "add_via",
-        "clear_routing",
-        "set_design_rules",
-        # PCB zone tools
-        "add_copper_zone",
-        "fill_zones",
-        # PCB silkscreen tools
-        "list_silkscreen_items",
-        "update_silkscreen_item",
-        "check_silkscreen_overlaps",
-        "auto_fix_silkscreen",
-        "add_text_to_pcb",
+        # Phase 4 router (pcb — replaces all individual pcb_* tools)
+        "pcb",
         # PCB panelize tools
         "panelize_pcb",
         # Phase 3 router (audit)

@@ -11,16 +11,16 @@ from unittest.mock import patch, MagicMock
 import pytest
 from fastmcp import FastMCP
 
-from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
+from kicad_mcp.tools.pcb import register_pcb_tools
 from kicad_mcp.tools.library import register_library_tools
 
 
 # -- Fixtures ----------------------------------------------------------------
 
 @pytest.fixture
-def fp_server():
-    mcp = FastMCP("test-footprints")
-    register_pcb_footprint_tools(mcp)
+def pcb_server():
+    mcp = FastMCP("test-pcb")
+    register_pcb_tools(mcp)
     return mcp
 
 
@@ -38,6 +38,13 @@ def pcb_file(tmp_path):
     return str(pcb)
 
 
+def _get_pcb_fn(mcp_server):
+    tool = asyncio.run(mcp_server.get_tool("pcb"))
+    if tool is None:
+        raise ValueError("Tool 'pcb' not found")
+    return tool.fn
+
+
 def _get_tool_fn(mcp_server, tool_name):
     tool = asyncio.run(mcp_server.get_tool(tool_name))
     if tool is None:
@@ -49,14 +56,16 @@ def _get_tool_fn(mcp_server, tool_name):
 
 class TestPlaceFootprint:
 
-    def test_file_not_found(self, fp_server):
-        fn = _get_tool_fn(fp_server, "place_footprint")
-        result = fn("/nonexistent/board.kicad_pcb", "Resistor_SMD", "R_0805",
-                    "R1", "10k", 100, 80)
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("place_footprint",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    library="Resistor_SMD", footprint_name="R_0805",
+                    reference="R1", value="10k", x_mm=100, y_mm=80)
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_returns_placement_info(self, mock_run, fp_server, pcb_file):
+    def test_returns_placement_info(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "placed": {
@@ -73,17 +82,24 @@ class TestPlaceFootprint:
                 "width_mm": 3.0, "height_mm": 1.0,
             },
         }
-        fn = _get_tool_fn(fp_server, "place_footprint")
-        result = fn(pcb_file, "Resistor_SMD", "R_0805", "R1", "10k", 100, 80)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("place_footprint",
+                    pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805",
+                    reference="R1", value="10k", x_mm=100, y_mm=80)
         assert result["status"] == "ok"
         assert result["placed"]["reference"] == "R1"
         assert "bounding_box" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_passes_all_params(self, mock_run, fp_server, pcb_file):
+    def test_passes_all_params(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "placed": {}, "bounding_box": {}}
-        fn = _get_tool_fn(fp_server, "place_footprint")
-        fn(pcb_file, "LED_SMD", "LED_0805", "D1", "RED", 50, 60,
+        fn = _get_pcb_fn(pcb_server)
+        fn("place_footprint",
+           pcb_path=pcb_file,
+           library="LED_SMD", footprint_name="LED_0805",
+           reference="D1", value="RED",
+           x_mm=50, y_mm=60,
            rotation_deg=90, layer="B.Cu")
         params = mock_run.call_args[1]["params"]
         assert params["library"] == "LED_SMD"
@@ -96,7 +112,7 @@ class TestPlaceFootprint:
         assert params["layer"] == "B.Cu"
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_placement_warnings(self, mock_run, fp_server, pcb_file):
+    def test_placement_warnings(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "placed": {"reference": "U1", "footprint": "RF:ESP32",
@@ -104,24 +120,33 @@ class TestPlaceFootprint:
             "bounding_box": {},
             "placement_warnings": ["Overlaps keepout from U1 (blocks tracks, vias)"],
         }
-        fn = _get_tool_fn(fp_server, "place_footprint")
-        result = fn(pcb_file, "RF_Module", "ESP32", "U1", "ESP32", 130, 76)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("place_footprint",
+                    pcb_path=pcb_file,
+                    library="RF_Module", footprint_name="ESP32",
+                    reference="U1", value="ESP32",
+                    x_mm=130, y_mm=76)
         assert "placement_warnings" in result
         assert len(result["placement_warnings"]) == 1
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_keepout_check_included_by_default(self, mock_run, fp_server, pcb_file):
+    def test_keepout_check_included_by_default(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "placed": {}, "bounding_box": {}}
-        fn = _get_tool_fn(fp_server, "place_footprint")
-        fn(pcb_file, "R", "R_0805", "R1", "1k", 100, 80)
+        fn = _get_pcb_fn(pcb_server)
+        fn("place_footprint",
+           pcb_path=pcb_file, library="R", footprint_name="R_0805",
+           reference="R1", value="1k", x_mm=100, y_mm=80)
         script = mock_run.call_args[0][0]
         assert "extract_keepouts" in script
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_keepout_check_disabled(self, mock_run, fp_server, pcb_file):
+    def test_keepout_check_disabled(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "placed": {}, "bounding_box": {}}
-        fn = _get_tool_fn(fp_server, "place_footprint")
-        fn(pcb_file, "R", "R_0805", "R1", "1k", 100, 80, check_keepouts=False)
+        fn = _get_pcb_fn(pcb_server)
+        fn("place_footprint",
+           pcb_path=pcb_file, library="R", footprint_name="R_0805",
+           reference="R1", value="1k", x_mm=100, y_mm=80,
+           check_keepouts=False)
         script = mock_run.call_args[0][0]
         assert "extract_keepouts" not in script
 
@@ -130,13 +155,15 @@ class TestPlaceFootprint:
 
 class TestMoveFootprint:
 
-    def test_file_not_found(self, fp_server):
-        fn = _get_tool_fn(fp_server, "move_footprint")
-        result = fn("/nonexistent/board.kicad_pcb", "R1", 100, 80)
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("move_footprint",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    reference="R1", x_mm=100, y_mm=80)
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_moves_footprint(self, mock_run, fp_server, pcb_file):
+    def test_moves_footprint(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "reference": "R1",
@@ -144,41 +171,45 @@ class TestMoveFootprint:
             "y_mm": 90.0,
             "rotation": 0,
         }
-        fn = _get_tool_fn(fp_server, "move_footprint")
-        result = fn(pcb_file, "R1", 120, 90)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("move_footprint",
+                    pcb_path=pcb_file, reference="R1", x_mm=120, y_mm=90)
         assert result["status"] == "ok"
         assert result["x_mm"] == 120.0
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_move_with_rotation(self, mock_run, fp_server, pcb_file):
+    def test_move_with_rotation(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "reference": "R1",
                                   "x_mm": 100, "y_mm": 80, "rotation": 45}
-        fn = _get_tool_fn(fp_server, "move_footprint")
-        fn(pcb_file, "R1", 100, 80, rotation_deg=45)
+        fn = _get_pcb_fn(pcb_server)
+        fn("move_footprint",
+           pcb_path=pcb_file, reference="R1", x_mm=100, y_mm=80,
+           rotation_deg=45)
         params = mock_run.call_args[1]["params"]
         assert params["rotation_deg"] == 45
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_move_without_rotation(self, mock_run, fp_server, pcb_file):
+    def test_move_without_rotation(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "reference": "R1",
                                   "x_mm": 100, "y_mm": 80, "rotation": 0}
-        fn = _get_tool_fn(fp_server, "move_footprint")
-        fn(pcb_file, "R1", 100, 80)
+        fn = _get_pcb_fn(pcb_server)
+        fn("move_footprint",
+           pcb_path=pcb_file, reference="R1", x_mm=100, y_mm=80)
         params = mock_run.call_args[1]["params"]
         assert params["rotation_deg"] is None
 
 
-# -- list_pcb_footprints tests -----------------------------------------------
+# -- list_footprints tests ---------------------------------------------------
 
-class TestListPcbFootprints:
+class TestListFootprints:
 
-    def test_file_not_found(self, fp_server):
-        fn = _get_tool_fn(fp_server, "list_pcb_footprints")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("list_footprints", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_lists_footprints(self, mock_run, fp_server, pcb_file):
+    def test_lists_footprints(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "footprint_count": 2,
@@ -191,8 +222,8 @@ class TestListPcbFootprints:
                  "pads": []},
             ],
         }
-        fn = _get_tool_fn(fp_server, "list_pcb_footprints")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("list_footprints", pcb_path=pcb_file)
         assert result["footprint_count"] == 2
         assert result["footprints"][0]["reference"] == "R1"
 
@@ -201,13 +232,14 @@ class TestListPcbFootprints:
 
 class TestGetPadPositions:
 
-    def test_file_not_found(self, fp_server):
-        fn = _get_tool_fn(fp_server, "get_pad_positions")
-        result = fn("/nonexistent/board.kicad_pcb", "R1")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("get_pad_positions",
+                    pcb_path="/nonexistent/board.kicad_pcb", reference="R1")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_returns_pads(self, mock_run, fp_server, pcb_file):
+    def test_returns_pads(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "reference": "U1",
@@ -219,8 +251,8 @@ class TestGetPadPositions:
                 {"number": "4", "x_mm": 102.54, "y_mm": 80, "net": "SCL", "shape": "Oval"},
             ],
         }
-        fn = _get_tool_fn(fp_server, "get_pad_positions")
-        result = fn(pcb_file, "U1")
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("get_pad_positions", pcb_path=pcb_file, reference="U1")
         assert result["pad_count"] == 4
         assert result["pads"][0]["net"] == "VCC"
 
@@ -230,7 +262,7 @@ class TestGetPadPositions:
 class TestGetFootprintDimensions:
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_returns_dimensions(self, mock_run, fp_server):
+    def test_returns_dimensions(self, mock_run, pcb_server):
         mock_run.return_value = {
             "status": "ok",
             "library": "Resistor_SMD",
@@ -247,25 +279,27 @@ class TestGetFootprintDimensions:
                          "x_max_mm": 1.7, "y_max_mm": 0.85,
                          "width_mm": 3.4, "height_mm": 1.7},
         }
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        result = fn("Resistor_SMD", "R_0805_2012Metric")
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("get_footprint_dimensions",
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric")
         assert result["status"] == "ok"
         assert result["pad_count"] == 2
         assert "body_bbox" in result
         assert "courtyard" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_with_rotation(self, mock_run, fp_server):
+    def test_with_rotation(self, mock_run, pcb_server):
         mock_run.return_value = {"status": "ok", "library": "R", "footprint": "R_0805",
                                   "rotation_deg": 90, "pad_count": 2,
                                   "body_bbox": {}, "pad_span": {}}
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        fn("R", "R_0805", rotation_deg=90)
+        fn = _get_pcb_fn(pcb_server)
+        fn("get_footprint_dimensions",
+           library="R", footprint_name="R_0805", rotation_deg=90)
         params = mock_run.call_args[1]["params"]
         assert params["rotation_deg"] == 90
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_with_keepout_zones(self, mock_run, fp_server):
+    def test_with_keepout_zones(self, mock_run, pcb_server):
         mock_run.return_value = {
             "status": "ok",
             "library": "RF_Module",
@@ -284,8 +318,9 @@ class TestGetFootprintDimensions:
             ],
             "keepout_count": 1,
         }
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        result = fn("RF_Module", "ESP32-WROOM-32E")
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("get_footprint_dimensions",
+                    library="RF_Module", footprint_name="ESP32-WROOM-32E")
         assert result["keepout_count"] == 1
 
 
