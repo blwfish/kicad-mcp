@@ -36,12 +36,6 @@ dependencies = [
     "mcp-events>=0.1.0",
 ]
 
-[tool.uv.sources]
-# Local dev: use the workspace copy of mcp-events. CI / downstream users
-# resolve from PyPI per the version constraint above. kicad-mcp itself is
-# distributed via AGENT-INSTALL.md, not PyPI.
-mcp-events = { path = "/Volumes/Files/claude/mcp-events", editable = true }
-
 [project.scripts]
 kicad-mcp = "kicad_mcp.server:main"
 

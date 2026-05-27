@@ -1007,7 +1007,7 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "fastmcp", specifier = ">=3.3.1" },
     { name = "kicad-sch-api", specifier = ">=0.5.6" },
-    { name = "mcp-events", editable = "../mcp-events" },
+    { name = "mcp-events", specifier = ">=0.1.0" },
     { name = "python-multipart", specifier = ">=0.0.29" },
     { name = "pyyaml", specifier = ">=6.0.3" },
 ]
@@ -1263,15 +1263,10 @@ wheels = [
 [[package]]
 name = "mcp-events"
 version = "0.1.0"
-source = { editable = "../mcp-events" }
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=2.0" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "ruff", specifier = ">=0.9" },
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/cf/90b4af882a55e7d95ea0c9177914095c8132e4652fda296739769be9eb11/mcp_events-0.1.0.tar.gz", hash = "sha256:d9c26adde5fa1f7c511d8207a2361b89e78c8dca0ba712340168e7f5729a0fb8", size = 33513, upload-time = "2026-05-27T22:57:36.845Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/92/a112182f36b255075bf0dca99f35465a92835cf4d7e1b9766a052d19d2a8/mcp_events-0.1.0-py3-none-any.whl", hash = "sha256:21a5c44b241e8d2b89289f4bdf88e8ab9f636a488a6552031c96c7e4092997ef", size = 4891, upload-time = "2026-05-27T22:57:35.844Z" },
 ]
 
 [[package]]
