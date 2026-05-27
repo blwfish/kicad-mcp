@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER
+from kicad_mcp.utils.spiral_placement import SPIRAL_HELPER
 
 logger = logging.getLogger(__name__)
 
@@ -186,11 +187,13 @@ print(json.dumps({
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
 
+        _SPIRAL_HELPER = SPIRAL_HELPER
+
         script = """
 import pcbnew, json, math, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + _KEEPOUT_HELPER + POWER_NET_HELPER + """
+""" + _KEEPOUT_HELPER + POWER_NET_HELPER + _SPIRAL_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
@@ -363,49 +366,25 @@ if sorted_refs:
 
         # Try positions in a spiral pattern around the target
         placed = False
-        for radius in [r * 2.0 for r in range(1, 40)]:
-            if placed:
+        for px, py, box in generate_spiral_candidates(tx, ty, hw, hh, outline, spacing):
+            if not box_collides(box, placed_boxes, spacing):
+                placements[ref] = {"x_mm": round(px, 2), "y_mm": round(py, 2), "reason": reason}
+                placed_boxes.append(box)
+                placed = True
                 break
-            # Try 12 angles at each radius (every 30 degrees)
-            for angle_deg in range(0, 360, 30):
-                angle = math.radians(angle_deg)
-                px = tx + radius * math.cos(angle)
-                py = ty + radius * math.sin(angle)
-
-                px, py = clamp_to_board(px, py, info["width"], info["height"], info)
-                box = (px - hw, py - hh, px + hw, py + hh)
-
-                # Check within board — use same margin (spacing) that clamp_to_board
-                # enforces. A hardcoded 0.1 would reject every clamped position when
-                # spacing < 0.1, turning the spiral into an infinite continue loop.
-                if (box[0] < outline["x_min_mm"] + spacing or
-                    box[2] > outline["x_max_mm"] - spacing or
-                    box[1] < outline["y_min_mm"] + spacing or
-                    box[3] > outline["y_max_mm"] - spacing):
-                    continue
-
-                if not box_collides(box, placed_boxes, spacing):
-                    placements[ref] = {"x_mm": round(px, 2), "y_mm": round(py, 2), "reason": reason}
-                    placed_boxes.append(box)
-                    placed = True
-                    break
 
         if not placed:
             # Fallback: just find any open space
-            for gx in range(int(outline["x_min_mm"] + hw + 1), int(outline["x_max_mm"] - hw), 2):
-                if placed:
+            for gx, gy, box in generate_grid_fallback(hw, hh, outline):
+                if not box_collides(box, placed_boxes, spacing):
+                    placements[ref] = {
+                        "x_mm": round(gx, 2),
+                        "y_mm": round(gy, 2),
+                        "reason": "fallback grid placement",
+                    }
+                    placed_boxes.append(box)
+                    placed = True
                     break
-                for gy in range(int(outline["y_min_mm"] + hh + 1), int(outline["y_max_mm"] - hh), 2):
-                    box = (gx - hw, gy - hh, gx + hw, gy + hh)
-                    if not box_collides(box, placed_boxes, spacing):
-                        placements[ref] = {
-                            "x_mm": round(float(gx), 2),
-                            "y_mm": round(float(gy), 2),
-                            "reason": "fallback grid placement",
-                        }
-                        placed_boxes.append(box)
-                        placed = True
-                        break
             if not placed:
                 placements[ref] = {
                     "x_mm": round(board_cx, 2),

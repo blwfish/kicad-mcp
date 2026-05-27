@@ -310,13 +310,6 @@ overlaps = []
 for i in range(len(footprints)):
     a = footprints[i]
     a_box = a["bbox"]
-    # Expand bbox by min_clearance for proximity check
-    a_expanded = {
-        "x_min_mm": a_box["x_min_mm"] - min_clearance,
-        "y_min_mm": a_box["y_min_mm"] - min_clearance,
-        "x_max_mm": a_box["x_max_mm"] + min_clearance,
-        "y_max_mm": a_box["y_max_mm"] + min_clearance,
-    }
     for j in range(i + 1, len(footprints)):
         b = footprints[j]
         b_box = b["bbox"]
@@ -325,10 +318,10 @@ for i in range(len(footprints)):
         actual_overlap = rects_overlap(a_box, b_box)
         area = overlap_area(a_box, b_box) if actual_overlap else 0.0
 
-        # Check clearance violation (expanded bbox)
-        clearance_violation = min_clearance > 0 and rects_overlap(a_expanded, b_box)
+        # Check clearance violation using canonical helper
+        is_clearance_violation = clearance_violation(a_box, b_box, min_clearance)
 
-        if actual_overlap or clearance_violation:
+        if actual_overlap or is_clearance_violation:
             # Compute gap (negative = overlap, positive = clearance)
             gap_x = max(a_box["x_min_mm"], b_box["x_min_mm"]) - min(a_box["x_max_mm"], b_box["x_max_mm"])
             gap_y = max(a_box["y_min_mm"], b_box["y_min_mm"]) - min(a_box["y_max_mm"], b_box["y_max_mm"])
@@ -531,17 +524,11 @@ for fp in board.GetFootprints():
 fp_overlaps = []
 for i in range(len(footprints)):
     a = footprints[i]; a_box = a["bbox"]
-    a_exp = {
-        "x_min_mm": a_box["x_min_mm"] - min_clearance,
-        "y_min_mm": a_box["y_min_mm"] - min_clearance,
-        "x_max_mm": a_box["x_max_mm"] + min_clearance,
-        "y_max_mm": a_box["y_max_mm"] + min_clearance,
-    }
     for j in range(i + 1, len(footprints)):
         b = footprints[j]; b_box = b["bbox"]
         actual = rects_overlap(a_box, b_box)
-        clearance_fail = min_clearance > 0 and rects_overlap(a_exp, b_box)
-        if actual or clearance_fail:
+        is_clearance_violation = clearance_violation(a_box, b_box, min_clearance)
+        if actual or is_clearance_violation:
             area = overlap_area(a_box, b_box) if actual else 0.0
             fp_overlaps.append({
                 "ref_a": a["reference"], "ref_b": b["reference"],

@@ -18,6 +18,8 @@ from kicad_mcp.utils.geometry import (
     GEOMETRY_HELPER,
     aabb_inside,
     aabb_overlap,
+    clearance_violation,
+    expand_bbox,
     overlap_area,
     rect_inside,
     rects_overlap,
@@ -206,6 +208,8 @@ class TestGeometryHelperSource:
         "rect_inside",
         "overlap_area",
         "signed_gap_mm",
+        "expand_bbox",
+        "clearance_violation",
     ])
     def test_helper_defines(self, name):
         assert f"def {name}" in GEOMETRY_HELPER, (
@@ -228,3 +232,178 @@ class TestGeometryHelperSource:
         assert namespace["overlap_area"](a, b) == overlap_area(a, b)
         # Signed gap: 0.0 for touching, sign preserved
         assert namespace["signed_gap_mm"](a, b) == signed_gap_mm(a, b)
+
+    def test_helper_expand_bbox_identical(self):
+        """expand_bbox in GEOMETRY_HELPER must match Python module."""
+        namespace: dict = {}
+        exec(GEOMETRY_HELPER, namespace)
+        rect = _r(0, 0, 10, 10)
+        for margin in (0.0, 1.0, -1.0, 0.5):
+            expected = expand_bbox(rect, margin)
+            got = namespace["expand_bbox"](rect, margin)
+            assert got == expected, f"expand_bbox mismatch at margin={margin}"
+
+    def test_helper_clearance_violation_identical(self):
+        """clearance_violation in GEOMETRY_HELPER must match Python module."""
+        namespace: dict = {}
+        exec(GEOMETRY_HELPER, namespace)
+        a = _r(0, 0, 10, 10)
+        # touching, gap=0.5, gap=1e-6
+        cases = [
+            (_r(10, 0, 20, 10), 0.0),   # touching, zero clearance
+            (_r(10, 0, 20, 10), 0.5),   # touching, positive clearance
+            (_r(10.5, 0, 20, 10), 0.5), # gap == clearance (threshold)
+            (_r(15, 0, 25, 10), 0.0),   # well separated, zero clearance
+        ]
+        for b, cl in cases:
+            expected = clearance_violation(a, b, cl)
+            got = namespace["clearance_violation"](a, b, cl)
+            assert got == expected, f"clearance_violation mismatch: b={b}, cl={cl}"
+
+
+# ---------------------------------------------------------------------------
+# expand_bbox — boundary tests
+# ---------------------------------------------------------------------------
+
+class TestExpandBbox:
+    def test_zero_margin_is_noop(self):
+        rect = _r(2, 3, 8, 9)
+        result = expand_bbox(rect, 0.0)
+        assert result == rect
+        assert result is not rect  # returns a copy
+
+    def test_positive_margin_expands_all_sides(self):
+        result = expand_bbox(_r(2, 3, 8, 9), 1.0)
+        assert result["x_min_mm"] == pytest.approx(1.0)
+        assert result["y_min_mm"] == pytest.approx(2.0)
+        assert result["x_max_mm"] == pytest.approx(9.0)
+        assert result["y_max_mm"] == pytest.approx(10.0)
+
+    def test_negative_margin_shrinks_all_sides(self):
+        """Negative margin shrinks; if margin > half-width the rect inverts."""
+        result = expand_bbox(_r(0, 0, 10, 10), -1.0)
+        assert result["x_min_mm"] == pytest.approx(1.0)
+        assert result["y_min_mm"] == pytest.approx(1.0)
+        assert result["x_max_mm"] == pytest.approx(9.0)
+        assert result["y_max_mm"] == pytest.approx(9.0)
+
+    def test_negative_margin_larger_than_half_produces_inverted_rect(self):
+        """Document: margin > half-width → x_min_mm > x_max_mm (inverted).
+        Callers must guard against this if using the result with rects_overlap."""
+        result = expand_bbox(_r(0, 0, 4, 4), -3.0)
+        # x_min_mm = 0 - (-3) = 3; x_max_mm = 4 + (-3) = 1
+        assert result["x_min_mm"] > result["x_max_mm"]
+
+    def test_epsilon_margin(self):
+        result = expand_bbox(_r(0, 0, 10, 10), EPS)
+        assert result["x_min_mm"] == pytest.approx(-EPS)
+        assert result["x_max_mm"] == pytest.approx(10 + EPS)
+
+    def test_expand_preserves_center(self):
+        """Expanding uniformly should not shift the center."""
+        rect = _r(0, 0, 10, 10)
+        expanded = expand_bbox(rect, 2.0)
+        orig_cx = (rect["x_min_mm"] + rect["x_max_mm"]) / 2
+        orig_cy = (rect["y_min_mm"] + rect["y_max_mm"]) / 2
+        exp_cx = (expanded["x_min_mm"] + expanded["x_max_mm"]) / 2
+        exp_cy = (expanded["y_min_mm"] + expanded["y_max_mm"]) / 2
+        assert exp_cx == pytest.approx(orig_cx)
+        assert exp_cy == pytest.approx(orig_cy)
+
+
+# ---------------------------------------------------------------------------
+# clearance_violation — boundary tests
+# ---------------------------------------------------------------------------
+
+class TestClearanceViolation:
+    """Boundary coverage per CLAUDE.md Threshold-Boundary Testing Rule.
+
+    The threshold is min_clearance_mm; three cases per value: at, below, above.
+    Also tests that min_clearance_mm=0 is strictly equivalent to rects_overlap.
+    """
+
+    # -- min_clearance=0: must equal rects_overlap ---------------------------
+
+    def test_zero_clearance_touching_is_violation(self):
+        """gap=0 (touching) with min_clearance=0 must be a violation (non-strict)."""
+        a = _r(0, 0, 10, 10)
+        b = _r(10, 0, 20, 10)
+        assert clearance_violation(a, b, 0.0) is True
+        assert clearance_violation(a, b, 0.0) is rects_overlap(a, b)
+
+    def test_zero_clearance_overlapping_is_violation(self):
+        a = _r(0, 0, 10, 10)
+        b = _r(8, 0, 18, 10)
+        assert clearance_violation(a, b, 0.0) is True
+        assert clearance_violation(a, b, 0.0) is rects_overlap(a, b)
+
+    def test_zero_clearance_separated_is_not_violation(self):
+        a = _r(0, 0, 10, 10)
+        b = _r(10 + EPS, 0, 20, 10)
+        assert clearance_violation(a, b, 0.0) is False
+        assert clearance_violation(a, b, 0.0) is rects_overlap(a, b)
+
+    @pytest.mark.parametrize("edge,b", [
+        ("right",  _r(10, 0, 20, 10)),
+        ("left",   _r(-10, 0, 0, 10)),
+        ("bottom", _r(0, 10, 10, 20)),
+        ("top",    _r(0, -10, 10, 0)),
+    ])
+    def test_zero_clearance_matches_rects_overlap_all_edges(self, edge, b):
+        a = _r(0, 0, 10, 10)
+        assert clearance_violation(a, b, 0.0) is rects_overlap(a, b)
+
+    # -- min_clearance=0.5: threshold at/below/above -------------------------
+
+    def test_gap_equals_clearance_is_not_violation(self):
+        """gap == min_clearance: the limit is exclusive — exactly at threshold is clean."""
+        a = _r(0, 0, 10, 10)
+        b = _r(10.5, 0, 20, 10)  # gap = 0.5
+        assert signed_gap_mm(a, b) == pytest.approx(0.5)
+        assert clearance_violation(a, b, 0.5) is False
+
+    def test_gap_just_below_clearance_is_violation(self):
+        """gap < min_clearance by epsilon: violation."""
+        a = _r(0, 0, 10, 10)
+        b = _r(10.5 - EPS, 0, 20, 10)  # gap = 0.5 - 1e-6
+        assert clearance_violation(a, b, 0.5) is True
+
+    def test_gap_just_above_clearance_is_not_violation(self):
+        """gap > min_clearance by epsilon: no violation."""
+        a = _r(0, 0, 10, 10)
+        b = _r(10.5 + EPS, 0, 20, 10)  # gap = 0.5 + 1e-6
+        assert clearance_violation(a, b, 0.5) is False
+
+    def test_touching_with_positive_clearance_is_violation(self):
+        """gap=0 (touching) with min_clearance=0.5: violation (gap < 0.5)."""
+        a = _r(0, 0, 10, 10)
+        b = _r(10, 0, 20, 10)
+        assert clearance_violation(a, b, 0.5) is True
+
+    def test_overlap_with_positive_clearance_is_violation(self):
+        """Overlapping rects always violate any non-negative clearance."""
+        a = _r(0, 0, 10, 10)
+        b = _r(8, 0, 18, 10)  # gap = -2
+        assert clearance_violation(a, b, 0.5) is True
+        assert clearance_violation(a, b, 0.0) is True
+
+    def test_large_gap_no_violation(self):
+        a = _r(0, 0, 10, 10)
+        b = _r(100, 0, 110, 10)
+        assert clearance_violation(a, b, 0.5) is False
+        assert clearance_violation(a, b, 0.0) is False
+
+    # -- monotonicity: increasing clearance produces more violations ----------
+
+    def test_monotone_in_clearance(self):
+        """A gap of 1.0 mm: no violation at cl=0.99-eps, violation at cl=1.0+eps."""
+        a = _r(0, 0, 10, 10)
+        b = _r(11.0, 0, 20, 10)  # gap = 1.0
+        cl = 1.0
+        assert signed_gap_mm(a, b) == pytest.approx(cl)
+        # At threshold: clean
+        assert clearance_violation(a, b, cl) is False
+        # Just above threshold: violation
+        assert clearance_violation(a, b, cl + EPS) is True
+        # Just below threshold: clean
+        assert clearance_violation(a, b, cl - EPS) is False

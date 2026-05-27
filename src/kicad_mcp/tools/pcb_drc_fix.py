@@ -198,7 +198,7 @@ for pass_num in range(1, max_passes + 1):
         a = fp_data[i]; ab = a["bbox"]
         for j in range(i + 1, len(fp_data)):
             b = fp_data[j]; bb_ = b["bbox"]
-            if ab[0] < bb_[2] and ab[2] > bb_[0] and ab[1] < bb_[3] and ab[3] > bb_[1]:
+            if aabb_overlap(ab, bb_):
                 pairs.append((a, b))
     if not pairs:
         break
@@ -214,7 +214,7 @@ for pass_num in range(1, max_passes + 1):
         mb = mover["bbox"]; ab_ = anchor["bbox"]
         ox = min(mb[2], ab_[2]) - max(mb[0], ab_[0])
         oy = min(mb[3], ab_[3]) - max(mb[1], ab_[1])
-        if ox <= 0 or oy <= 0:
+        if ox < 0 or oy < 0:
             continue
         old_pos = mover["fp"].GetPosition()
         old_x = pcbnew.ToMM(old_pos.x); old_y = pcbnew.ToMM(old_pos.y)
