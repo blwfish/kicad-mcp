@@ -409,3 +409,80 @@ class TestSearchSymbols:
     def test_search_prefix(self, index):
         results = index.search_symbols("LM3")
         assert any(r["name"] == "LM358" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# _op_search truncated boundary tests
+# ---------------------------------------------------------------------------
+
+
+class TestSearchTruncatedBoundary:
+    """Pin the `truncated` flag in _op_search at the limit boundary.
+
+    The implementation uses `len(results) == limit`; the SQL LIMIT prevents
+    the index from returning more than `limit` rows, so `len > limit` is not
+    reachable in practice.  These tests verify the three boundary cases:
+      - count < limit  → truncated: False
+      - count == limit → truncated: True
+      - (count > limit is unreachable via the SQL layer — not tested)
+
+    `get_library_index` is imported locally inside `_op_search`, so we patch
+    the canonical module path `kicad_mcp.utils.library_index.get_library_index`.
+    """
+
+    def test_below_limit_footprint_not_truncated(self, index):
+        """Footprints: result < limit → truncated False.
+
+        "resistor" matches exactly 1 footprint; limit=5 → count(1) < limit(5).
+        """
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            result = _op_search("resistor", type="footprint", limit=5)
+        assert "error" not in result
+        assert result["count"] < 5
+        assert result["truncated"] is False
+
+    def test_at_limit_footprint_is_truncated(self, index):
+        """Footprints: result == limit → truncated True.
+
+        "pin" matches 3 footprints (SOIC-8, SOT-23, TerminalBlock); set limit=3.
+        """
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            all_fps = index.search_footprints("pin", limit=100)
+            n = len(all_fps)
+            if n == 0:
+                pytest.skip("No matching footprints for boundary test")
+            result = _op_search("pin", type="footprint", limit=n)
+        assert result["count"] == n
+        assert result["truncated"] is True
+
+    def test_below_limit_symbol_not_truncated(self, index):
+        """Symbols: result < limit → truncated False."""
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            all_syms = index.search_symbols("R", limit=100)
+            n = len(all_syms)
+            assert n > 0
+            result = _op_search("R", type="symbol", limit=n + 1)
+        assert result.get("truncated") is False
+
+    def test_at_limit_symbol_is_truncated(self, index):
+        """Symbols: result == limit → truncated True."""
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            all_syms = index.search_symbols("R", limit=100)
+            n = len(all_syms)
+            if n == 0:
+                pytest.skip("No matching symbols for boundary test")
+            result = _op_search("R", type="symbol", limit=n)
+        assert result["count"] == n
+        assert result["truncated"] is True
