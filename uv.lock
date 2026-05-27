@@ -977,7 +977,7 @@ wheels = [
 
 [[package]]
 name = "kicad-mcp"
-version = "0.10.0.dev0"
+version = "0.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "authlib" },
