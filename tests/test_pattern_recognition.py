@@ -9,15 +9,14 @@ double-classification guard, edge/empty cases.
 import pytest
 
 from kicad_mcp.utils.pattern_recognition import (
-    identify_power_supplies,
     identify_amplifiers,
-    identify_filters,
-    identify_oscillators,
     identify_digital_interfaces,
-    identify_sensor_interfaces,
+    identify_filters,
     identify_microcontrollers,
+    identify_oscillators,
+    identify_power_supplies,
+    identify_sensor_interfaces,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -279,17 +278,9 @@ class TestIdentifyFilters:
         rc = [r for r in result if r.get("subtype") == "rc_low_pass"]
         assert len(rc) == 0
 
-    def test_crystal_filter_y_prefix(self):
-        components = {"Y1": _comp("16MHz")}
-        result = identify_filters(components, {})
-        crystal = [r for r in result if r["type"] == "crystal_filter"]
-        assert len(crystal) == 1
-
-    def test_crystal_filter_x_prefix(self):
-        components = {"X1": _comp("8MHz")}
-        result = identify_filters(components, {})
-        crystal = [r for r in result if r["type"] == "crystal_filter"]
-        assert len(crystal) == 1
+    # Crystal_filter classification removed — identify_oscillators is the
+    # single source of truth for crystals (see TestCrystalNotDoubleClassified
+    # below).
 
     def test_active_filter_opamp_with_rc_feedback(self):
         components = {
@@ -815,3 +806,234 @@ class TestIdentifyMicrocontrollers:
         components = {"U1": _comp("RPICO")}
         result = identify_microcontrollers(components)
         assert any(r.get("type") in ("development_board", "microcontroller") for r in result)
+
+
+# ===========================================================================
+# Pre-flight fixes for placement-project calibration honesty (2026-05-27).
+# Each class below pins a specific bug the v0.10.0 prep didn't address.
+# ===========================================================================
+
+
+def _net(pins):
+    """Build a synthetic net entry: list of {component, pin}.
+
+    Used by the test classes below that exercise net-topology fixes (RC
+    pull-up false positive, digital interface component-ref collection).
+    """
+    return [{"component": ref, "pin": p} for ref, p in pins]
+
+
+class TestSensorMCPCollision:
+    """identify_sensor_interfaces previously matched any MCP\\d+ as
+    voltage_sensor, sweeping up op-amps, GPIO expanders, USB-UARTs."""
+
+    def test_mcp6002_opamp_not_voltage_sensor(self):
+        components = {"U1": _comp(value="MCP6002")}
+        sensors = identify_sensor_interfaces(components, {})
+        types = {s.get("type") for s in sensors}
+        assert "voltage_sensor" not in types
+
+    def test_mcp23017_gpio_not_voltage_sensor(self):
+        components = {"U1": _comp(value="MCP23017")}
+        sensors = identify_sensor_interfaces(components, {})
+        types = {s.get("type") for s in sensors}
+        assert "voltage_sensor" not in types
+
+    def test_mcp2200_usb_not_voltage_sensor(self):
+        components = {"U1": _comp(value="MCP2200")}
+        sensors = identify_sensor_interfaces(components, {})
+        types = {s.get("type") for s in sensors}
+        assert "voltage_sensor" not in types
+
+    def test_mcp9808_temp_not_voltage_sensor(self):
+        """MCP9808 is a temp sensor; voltage_sensor would shadow temperature_sensor."""
+        components = {"U1": _comp(value="MCP9808")}
+        sensors = identify_sensor_interfaces(components, {})
+        types = {s.get("type") for s in sensors}
+        assert "temperature_sensor" in types
+        assert "voltage_sensor" not in types
+
+    def test_ina226_still_classified(self):
+        components = {"U1": _comp(value="INA226")}
+        sensors = identify_sensor_interfaces(components, {})
+        types = {s.get("type") for s in sensors}
+        assert "current_sensor" in types or "voltage_sensor" in types
+
+    def test_mcp3204_still_classified_as_adc(self):
+        """ADC path is unchanged. Emits type='analog_interface'."""
+        components = {"U1": _comp(value="MCP3204")}
+        sensors = identify_sensor_interfaces(components, {})
+        types = {s.get("type") for s in sensors}
+        assert "analog_interface" in types
+
+
+class TestOpAmpMCPOverMatch:
+    """identify_amplifiers previously matched MCP\\d{3} which caught
+    MCP9808 (temp), MCP1525 (vref), MCP4725 (DAC), MCP3221 (ADC).
+    Now uses MCP6\\d{2,3} which is the actual MCP op-amp family."""
+
+    def test_mcp6002_still_classified_as_opamp(self):
+        components = {"U1": _comp(value="MCP6002", lib_id="Amplifier_Operational:MCP6002")}
+        amps = identify_amplifiers(components, {})
+        values = {a.get("value") for a in amps}
+        assert "MCP6002" in values
+
+    def test_mcp9808_temp_not_opamp(self):
+        components = {"U1": _comp(value="MCP9808")}
+        amps = identify_amplifiers(components, {})
+        values = {a.get("value") for a in amps}
+        assert "MCP9808" not in values
+
+    def test_mcp1525_vref_not_opamp(self):
+        components = {"U1": _comp(value="MCP1525")}
+        amps = identify_amplifiers(components, {})
+        values = {a.get("value") for a in amps}
+        assert "MCP1525" not in values
+
+    def test_mcp4725_dac_not_opamp(self):
+        components = {"U1": _comp(value="MCP4725")}
+        amps = identify_amplifiers(components, {})
+        values = {a.get("value") for a in amps}
+        assert "MCP4725" not in values
+
+    def test_mcp3221_adc_not_opamp(self):
+        components = {"U1": _comp(value="MCP3221")}
+        amps = identify_amplifiers(components, {})
+        values = {a.get("value") for a in amps}
+        assert "MCP3221" not in values
+
+
+class TestRCFilterPullupFalsePositive:
+    """A pull-up R between VCC and SDA + decoupling cap on VCC was
+    misclassified as rc_low_pass. Now skipped via is_power_net guard."""
+
+    def test_i2c_pullup_not_rc_filter(self):
+        components = {
+            "R1": _comp(value="4.7k"),
+            "C1": _comp(value="100nF"),
+            "U1": _comp(value="MCP23017"),
+        }
+        nets = {
+            "VCC": _net([("R1", "1"), ("C1", "1"), ("U1", "20")]),
+            "SDA": _net([("R1", "2"), ("U1", "12")]),
+            "GND": _net([("C1", "2"), ("U1", "10")]),
+        }
+        results = identify_filters(components, nets)
+        types = [(f.get("type"), f.get("subtype")) for f in results]
+        assert ("passive_filter", "rc_low_pass") not in types
+
+    def test_pullup_to_3v3_not_rc_filter(self):
+        components = {
+            "R1": _comp(value="10k"),
+            "C1": _comp(value="100nF"),
+            "U1": _comp(value="MCU"),
+        }
+        nets = {
+            "+3V3": _net([("R1", "1"), ("C1", "1"), ("U1", "1")]),
+            "SDA": _net([("R1", "2"), ("U1", "2")]),
+            "GND": _net([("C1", "2"), ("U1", "3")]),
+        }
+        results = identify_filters(components, nets)
+        assert all(f.get("subtype") != "rc_low_pass" for f in results)
+
+    def test_real_rc_low_pass_still_detected(self):
+        """R between two non-power nets, C to GND. Genuine low-pass."""
+        components = {
+            "R1": _comp(value="1k"),
+            "C1": _comp(value="100nF"),
+        }
+        nets = {
+            "SIGNAL_IN": _net([("R1", "1")]),
+            "SIGNAL_OUT": _net([("R1", "2"), ("C1", "1")]),
+            "GND": _net([("C1", "2")]),
+        }
+        results = identify_filters(components, nets)
+        types = [(f.get("type"), f.get("subtype")) for f in results]
+        assert ("passive_filter", "rc_low_pass") in types
+
+
+class TestCrystalNotDoubleClassified:
+    """identify_filters used to also emit crystal_filter for any Y*/X*
+    ref or CRYSTAL/XTAL lib_id. identify_oscillators classifies them too.
+    Removed from filters; oscillator-side stays."""
+
+    def test_crystal_not_in_filter_output(self):
+        components = {"Y1": _comp(value="16MHz", lib_id="Device:Crystal")}
+        nets = {"XTAL1": _net([("Y1", "1")]), "XTAL2": _net([("Y1", "2")])}
+        results = identify_filters(components, nets)
+        types = {f.get("type") for f in results}
+        assert "crystal_filter" not in types
+
+    def test_crystal_still_in_oscillator_output(self):
+        components = {"Y1": _comp(value="16MHz", lib_id="Device:Crystal")}
+        nets = {"XTAL1": _net([("Y1", "1")]), "XTAL2": _net([("Y1", "2")])}
+        results = identify_oscillators(components, nets)
+        types = {f.get("type") for f in results}
+        assert "crystal_oscillator" in types
+
+    def test_ceramic_filter_still_detected(self):
+        components = {"FL1": _comp(value="455kHz", lib_id="Custom:Ceramic_Filter")}
+        results = identify_filters(components, {})
+        types = {f.get("type") for f in results}
+        assert "ceramic_filter" in types
+
+
+class TestDigitalInterfacesComponents:
+    """Each interface entry now has a `components` list (refs touching the
+    matched signal nets, plus the IC by ref for value-based detection)."""
+
+    def test_i2c_interface_includes_component_refs(self):
+        components = {
+            "U1": _comp(value="MCU"),
+            "U2": _comp(value="MCP23017"),
+            "R1": _comp(value="4.7k"),
+            "R2": _comp(value="4.7k"),
+        }
+        nets = {
+            "SCL": _net([("U1", "1"), ("U2", "12"), ("R1", "1")]),
+            "SDA": _net([("U1", "2"), ("U2", "13"), ("R2", "1")]),
+            "+3V3": _net([("R1", "2"), ("R2", "2")]),
+        }
+        interfaces = identify_digital_interfaces(components, nets)
+        i2c = next(i for i in interfaces if i["type"] == "i2c_interface")
+        assert set(i2c["components"]) == {"U1", "U2", "R1", "R2"}
+
+    def test_spi_interface_includes_component_refs(self):
+        components = {"U1": _comp(value="MCU"), "U2": _comp(value="W25Q64")}
+        nets = {
+            "MOSI": _net([("U1", "1"), ("U2", "5")]),
+            "MISO": _net([("U1", "2"), ("U2", "2")]),
+            "SCK": _net([("U1", "3"), ("U2", "6")]),
+            "SPI_CS": _net([("U1", "4"), ("U2", "1")]),
+        }
+        interfaces = identify_digital_interfaces(components, nets)
+        spi = next(i for i in interfaces if i["type"] == "spi_interface")
+        assert set(spi["components"]) == {"U1", "U2"}
+
+    def test_usb_ic_detected_by_value_appears_in_components(self):
+        """USB IC detected by value (no USB nets) — must appear in components."""
+        components = {"U1": _comp(value="FT232RL"), "U2": _comp(value="MCU")}
+        nets = {}
+        interfaces = identify_digital_interfaces(components, nets)
+        usb = next(i for i in interfaces if i["type"] == "usb_interface")
+        assert "U1" in usb["components"]
+
+
+class TestMCP6PatternBoundaries:
+    """Boundary coverage for the narrowed op-amp pattern (MCP6\\d{2,3})."""
+
+    def test_mcp602_three_digit_form_matches(self):
+        components = {"U1": _comp(value="MCP602")}
+        amps = identify_amplifiers(components, {})
+        assert any(a.get("value") == "MCP602" for a in amps)
+
+    def test_mcp6001_four_digit_form_matches(self):
+        components = {"U1": _comp(value="MCP6001")}
+        amps = identify_amplifiers(components, {})
+        assert any(a.get("value") == "MCP6001" for a in amps)
+
+    def test_mcp7383_non_opamp_family_does_not_match(self):
+        """Boundary: MCP7xxx (not an op-amp family) must NOT match the narrowed pattern."""
+        components = {"U1": _comp(value="MCP7383")}
+        amps = identify_amplifiers(components, {})
+        assert not any(a.get("value") == "MCP7383" for a in amps)
