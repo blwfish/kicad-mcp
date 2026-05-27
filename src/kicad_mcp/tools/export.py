@@ -35,6 +35,7 @@ def _op_gerbers(
         kicad_cli = get_kicad_cli_path(required=True)
     except Exception as e:
         return {"error": str(e)}
+    assert kicad_cli is not None  # required=True raises above if CLI not found
 
     if not output_dir:
         pcb_dir = os.path.dirname(os.path.abspath(pcb_path))
@@ -58,12 +59,12 @@ def _op_gerbers(
         return "\n".join(parts) or f"(no output; exit code {e.returncode})"
 
     try:
-        result = subprocess.run(
+        _gerber_run = subprocess.run(
             gerber_cmd, capture_output=True, text=True,
             check=True, timeout=30,
         )
-        if result.stdout.strip():
-            logger.info("Gerber export: %s", result.stdout.strip())
+        if _gerber_run.stdout.strip():
+            logger.info("Gerber export: %s", _gerber_run.stdout.strip())
     except subprocess.CalledProcessError as e:
         errors.append(f"Gerber export failed: {_cli_error_text(e)}")
     except subprocess.TimeoutExpired:
@@ -78,12 +79,12 @@ def _op_gerbers(
     ]
 
     try:
-        result = subprocess.run(
+        _drill_run = subprocess.run(
             drill_cmd, capture_output=True, text=True,
             check=True, timeout=30,
         )
-        if result.stdout.strip():
-            logger.info("Drill export: %s", result.stdout.strip())
+        if _drill_run.stdout.strip():
+            logger.info("Drill export: %s", _drill_run.stdout.strip())
     except subprocess.CalledProcessError as e:
         errors.append(f"Drill export failed: {_cli_error_text(e)}")
     except subprocess.TimeoutExpired:

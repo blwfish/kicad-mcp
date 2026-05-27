@@ -220,7 +220,7 @@ def _parse_kicad_sym(filepath: str) -> List[Dict]:
     Each .kicad_sym can contain many symbols. Returns a list of dicts.
     Uses regex for speed — good enough for name/description/keywords/pin_count.
     """
-    results = []
+    results: list[dict] = []
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
