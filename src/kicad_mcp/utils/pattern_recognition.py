@@ -49,6 +49,7 @@ def identify_power_supplies(
                     "output_voltage": extract_voltage_from_regulator(component_value),
                     "associated_components": [],
                 })
+                break  # First-match-wins; LM7905 matches 78xx (substring) AND 79xx — break prevents double entry.
 
     # Look for switching regulators
     switching_patterns = {
@@ -78,6 +79,7 @@ def identify_power_supplies(
                                 "inductor": ref,
                                 "value": ic_value,
                             })
+                            break  # LM\d{4} matches buck AND buck_boost — break prevents duplicate entry.
 
     return power_supplies
 
@@ -110,20 +112,11 @@ def identify_amplifiers(
             if re.search(pattern, component_value, re.IGNORECASE) or re.search(
                 pattern, component_lib, re.IGNORECASE
             ):
-                # Common op-amps
+                # Audio op-amps first — TL072 belongs here despite also
+                # appearing in the general-purpose pattern below; without
+                # this ordering it was misclassified as general_purpose
+                # (first-match-wins on a duplicated entry).
                 if re.search(
-                    r"LM358|LM324|TL072|TL082|NE5532|LF353|MCP6002|AD8620|OPA2134",
-                    component_value,
-                    re.IGNORECASE,
-                ):
-                    amplifiers.append({
-                        "type": "operational_amplifier",
-                        "subtype": "general_purpose",
-                        "component": ref,
-                        "value": component_value,
-                    })
-                # Audio op-amps
-                elif re.search(
                     r"NE5534|OPA134|OPA1612|OPA1652|LM4562|LME49720|LME49860|TL071|TL072",
                     component_value,
                     re.IGNORECASE,
@@ -131,6 +124,18 @@ def identify_amplifiers(
                     amplifiers.append({
                         "type": "operational_amplifier",
                         "subtype": "audio",
+                        "component": ref,
+                        "value": component_value,
+                    })
+                # General-purpose op-amps (TL072 removed — see audio above)
+                elif re.search(
+                    r"LM358|LM324|TL082|NE5532|LF353|MCP6002|AD8620|OPA2134",
+                    component_value,
+                    re.IGNORECASE,
+                ):
+                    amplifiers.append({
+                        "type": "operational_amplifier",
+                        "subtype": "general_purpose",
                         "component": ref,
                         "value": component_value,
                     })
@@ -153,6 +158,7 @@ def identify_amplifiers(
                         "component": ref,
                         "value": component_value,
                     })
+                break  # Pattern matched and we've added an entry — don't double-append for the second opamp_patterns entry.
 
     # Look for transistor amplifiers
     transistor_refs = [ref for ref in components.keys() if ref.startswith("Q")]
@@ -425,124 +431,67 @@ def identify_digital_interfaces(
     """
     interfaces = []
 
+    # Net-name token matching. Splitting on non-alphanumeric (keeping +/-
+    # so signed signal names like "D+" / "RX-" stay intact) gives exact
+    # token matches — substring tests would mis-fire on names like
+    # MUSCLE_CLK (false I2C/SCL), BASS_CTRL (false SPI/SS), MRXD (false
+    # UART/RX), VDP_CTRL (false USB/DP).
+    def _net_tokens(name: str) -> set:
+        return {t for t in re.split(r"[^A-Za-z0-9+\-]+", name.upper()) if t}
+
+    def _matching_nets(signals: set) -> list:
+        sig_upper = {s.upper() for s in signals}
+        return [n for n in nets.keys() if _net_tokens(n) & sig_upper]
+
     # I2C interface detection
     i2c_signals = {"SCL", "SDA", "I2C_SCL", "I2C_SDA"}
-    has_i2c = False
-
-    for net_name in nets.keys():
-        if any(signal in net_name.upper() for signal in i2c_signals):
-            has_i2c = True
-            break
-
-    if has_i2c:
-        interfaces.append({
-            "type": "i2c_interface",
-            "signals_found": [
-                net
-                for net in nets.keys()
-                if any(signal in net.upper() for signal in i2c_signals)
-            ],
-        })
+    i2c_nets = _matching_nets(i2c_signals)
+    if i2c_nets:
+        interfaces.append({"type": "i2c_interface", "signals_found": i2c_nets})
 
     # SPI interface detection
     spi_signals = {
         "MOSI", "MISO", "SCK", "SS", "SPI_MOSI", "SPI_MISO", "SPI_SCK", "SPI_CS",
     }
-    has_spi = False
-
-    for net_name in nets.keys():
-        if any(signal in net_name.upper() for signal in spi_signals):
-            has_spi = True
-            break
-
-    if has_spi:
-        interfaces.append({
-            "type": "spi_interface",
-            "signals_found": [
-                net
-                for net in nets.keys()
-                if any(signal in net.upper() for signal in spi_signals)
-            ],
-        })
+    spi_nets = _matching_nets(spi_signals)
+    if spi_nets:
+        interfaces.append({"type": "spi_interface", "signals_found": spi_nets})
 
     # UART interface detection
     uart_signals = {"TX", "RX", "TXD", "RXD", "UART_TX", "UART_RX"}
-    has_uart = False
+    uart_nets = _matching_nets(uart_signals)
+    if uart_nets:
+        interfaces.append({"type": "uart_interface", "signals_found": uart_nets})
 
-    for net_name in nets.keys():
-        if any(signal in net_name.upper() for signal in uart_signals):
-            has_uart = True
-            break
-
-    if has_uart:
-        interfaces.append({
-            "type": "uart_interface",
-            "signals_found": [
-                net
-                for net in nets.keys()
-                if any(signal in net.upper() for signal in uart_signals)
-            ],
-        })
-
-    # USB interface detection
+    # USB interface detection — nets OR a known USB-IC value
     usb_signals = {
         "USB_D+", "USB_D-", "USB_DP", "USB_DM", "D+", "D-", "DP", "DM", "VBUS",
     }
-    has_usb = False
-
-    for net_name in nets.keys():
-        if any(signal in net_name.upper() for signal in usb_signals):
-            has_usb = True
-            break
-
-    for ref, component in components.items():
-        component_value = component.get("value", "").upper()
-        if re.search(
+    usb_nets = _matching_nets(usb_signals)
+    has_usb_ic = any(
+        re.search(
             r"FT232|CH340|CP210|MCP2200|TUSB|FT231|FT201",
-            component_value,
+            component.get("value", ""),
             re.IGNORECASE,
-        ):
-            has_usb = True
-            break
+        )
+        for component in components.values()
+    )
+    if usb_nets or has_usb_ic:
+        interfaces.append({"type": "usb_interface", "signals_found": usb_nets})
 
-    if has_usb:
-        interfaces.append({
-            "type": "usb_interface",
-            "signals_found": [
-                net
-                for net in nets.keys()
-                if any(signal in net.upper() for signal in usb_signals)
-            ],
-        })
-
-    # Ethernet interface detection
+    # Ethernet interface detection — nets OR a known PHY value
     ethernet_signals = {"TX+", "TX-", "RX+", "RX-", "MDI", "MDIO", "ETH"}
-    has_ethernet = False
-
-    for net_name in nets.keys():
-        if any(signal in net_name.upper() for signal in ethernet_signals):
-            has_ethernet = True
-            break
-
-    for ref, component in components.items():
-        component_value = component.get("value", "").upper()
-        if re.search(
+    eth_nets = _matching_nets(ethernet_signals)
+    has_eth_phy = any(
+        re.search(
             r"W5500|ENC28J60|LAN87|KSZ80|DP83|RTL8|AX88",
-            component_value,
+            component.get("value", ""),
             re.IGNORECASE,
-        ):
-            has_ethernet = True
-            break
-
-    if has_ethernet:
-        interfaces.append({
-            "type": "ethernet_interface",
-            "signals_found": [
-                net
-                for net in nets.keys()
-                if any(signal in net.upper() for signal in ethernet_signals)
-            ],
-        })
+        )
+        for component in components.values()
+    )
+    if eth_nets or has_eth_phy:
+        interfaces.append({"type": "ethernet_interface", "signals_found": eth_nets})
 
     return interfaces
 
@@ -867,9 +816,16 @@ def identify_microcontrollers(
                     identified = True
 
                 elif re.search(r"STM32F\d+", component_value, re.IGNORECASE):
-                    model = re.search(
+                    _stm_match = re.search(
                         r"(STM32F\d+)", component_value, re.IGNORECASE
-                    ).group(1)
+                    )
+                    # The elif guard above used the same pattern, but
+                    # accessing .group(1) on a hypothetical None would
+                    # AttributeError. Guarded match preserves consistency
+                    # with the other model captures (lines 849, 862).
+                    if _stm_match is None:
+                        continue
+                    model = _stm_match.group(1)
                     microcontrollers.append({
                         "type": "microcontroller",
                         "family": "STM32",

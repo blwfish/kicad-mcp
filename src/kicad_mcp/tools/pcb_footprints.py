@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
@@ -152,17 +153,33 @@ bbox_info = {
     "height_mm": round(pcbnew.ToMM(bbox.GetHeight()), 2),
 }
 
-# Try to get courtyard specifically (tighter than body bbox)
-courtyard_layer = pcbnew.F_CrtYd if params["layer"] == "F.Cu" else pcbnew.B_CrtYd
-cy_bb = fp.GetBoundingBox(False, True)  # include text=False, only courtyard
-if cy_bb.GetWidth() > 0:
+# Try to get courtyard specifically (tighter than body bbox).
+# Earlier code called `fp.GetBoundingBox(False, True)` and labelled it
+# "only courtyard", but the second argument is `aIncludeText` (or
+# similar across KiCad versions), NOT a courtyard filter — the result
+# is the body bbox, not a courtyard bbox. Iterate GraphicalItems and
+# filter by CrtYd layer (same approach as the keepout_helpers
+# COURTYARD_BBOX_HELPER).
+cy_x_min = float("inf"); cy_y_min = float("inf")
+cy_x_max = float("-inf"); cy_y_max = float("-inf")
+cy_found = False
+for item in fp.GraphicalItems():
+    ly = item.GetLayer()
+    if ly in (pcbnew.F_CrtYd, pcbnew.B_CrtYd):
+        cy_found = True
+        ibb = item.GetBoundingBox()
+        cy_x_min = min(cy_x_min, pcbnew.ToMM(ibb.GetX()))
+        cy_y_min = min(cy_y_min, pcbnew.ToMM(ibb.GetY()))
+        cy_x_max = max(cy_x_max, pcbnew.ToMM(ibb.GetRight()))
+        cy_y_max = max(cy_y_max, pcbnew.ToMM(ibb.GetBottom()))
+if cy_found:
     bbox_info["courtyard"] = {
-        "x_min_mm": round(pcbnew.ToMM(cy_bb.GetX()), 2),
-        "y_min_mm": round(pcbnew.ToMM(cy_bb.GetY()), 2),
-        "x_max_mm": round(pcbnew.ToMM(cy_bb.GetRight()), 2),
-        "y_max_mm": round(pcbnew.ToMM(cy_bb.GetBottom()), 2),
-        "width_mm": round(pcbnew.ToMM(cy_bb.GetWidth()), 2),
-        "height_mm": round(pcbnew.ToMM(cy_bb.GetHeight()), 2),
+        "x_min_mm": round(cy_x_min, 2),
+        "y_min_mm": round(cy_y_min, 2),
+        "x_max_mm": round(cy_x_max, 2),
+        "y_max_mm": round(cy_y_max, 2),
+        "width_mm": round(cy_x_max - cy_x_min, 2),
+        "height_mm": round(cy_y_max - cy_y_min, 2),
     }
 
 result = {
@@ -310,6 +327,9 @@ PAD_SHAPE = {
     pcbnew.PAD_SHAPE_ROUNDRECT: "roundrect",
     pcbnew.PAD_SHAPE_CHAMFERED_RECT: "chamfered_rect",
 }
+# Newer KiCad versions add shapes (CUSTOM polygon, etc.) — track them
+# so callers can detect when the script encountered an unmapped shape.
+unknown_pad_shapes = set()
 
 fp_list = []
 for fp in board.GetFootprints():
@@ -319,19 +339,26 @@ for fp in board.GetFootprints():
         pad_pos = pad.GetPosition()
         size = pad.GetSize()
         drill = pad.GetDrillSize()
-        # Collect copper layer names this pad covers
+        # Collect copper layer names this pad covers. Iterate the layer
+        # set directly rather than the F_Cu..B_Cu integer range, which
+        # would also produce names for any non-copper layer that happens
+        # to fall in that integer range on future KiCad versions.
         lset = pad.GetLayerSet()
-        copper_layers = []
-        for layer_id in range(pcbnew.F_Cu, pcbnew.B_Cu + 1):
-            if lset.Contains(layer_id):
-                copper_layers.append(board.GetLayerName(layer_id))
+        copper_layers = [
+            board.GetLayerName(lid)
+            for lid in lset.Seq()
+            if pcbnew.IsCopperLayer(lid)
+        ]
 
+        shape_id = pad.GetShape()
+        if shape_id not in PAD_SHAPE:
+            unknown_pad_shapes.add(shape_id)
         pad_info = {
             "number": pad.GetNumber(),
             "x_mm": round(pcbnew.ToMM(pad_pos.x), 3),
             "y_mm": round(pcbnew.ToMM(pad_pos.y), 3),
             "net": pad.GetNetname(),
-            "shape": PAD_SHAPE.get(pad.GetShape(), str(pad.GetShape())),
+            "shape": PAD_SHAPE.get(shape_id, f"unknown_shape_{shape_id}"),
             "size_x_mm": round(pcbnew.ToMM(size.x), 3),
             "size_y_mm": round(pcbnew.ToMM(size.y), 3),
             "copper_layers": copper_layers,
@@ -353,11 +380,16 @@ for fp in board.GetFootprints():
         "pads": pads,
     })
 
-print(json.dumps({
+_out = {
     "status": "ok",
     "footprint_count": len(fp_list),
     "footprints": fp_list,
-}))
+}
+if unknown_pad_shapes:
+    # Newer KiCad shapes (CUSTOM polygon etc.) showed up — record so a
+    # downstream maintainer can add them to PAD_SHAPE explicitly.
+    _out["unknown_pad_shape_ids"] = sorted(unknown_pad_shapes)
+print(json.dumps(_out))
 """
         return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
@@ -474,8 +506,7 @@ cx_min = float("inf"); cy_min = float("inf")
 cx_max = float("-inf"); cy_max = float("-inf")
 found_cy = False
 for item in fp.GraphicalItems():
-    layer_name = item.GetLayerName() if hasattr(item, 'GetLayerName') else ""
-    # Check both front and back courtyard
+    # Check both front and back courtyard via layer ID directly.
     ly = item.GetLayer()
     if ly in (pcbnew.F_CrtYd, pcbnew.B_CrtYd):
         found_cy = True
@@ -592,7 +623,13 @@ print(json.dumps(result))
                 "status": "ok",
                 "count": len(results),
                 "results": results,
+                # When count == limit there are likely more matches not shown.
+                # Without this flag, callers can't distinguish "5 total matches"
+                # from "top 5 of 500 matches."
+                "truncated": len(results) == limit,
             }
-        except Exception as e:
-            logger.error("Footprint search failed: %s", e)
-            return {"error": f"Footprint search failed: {e}"}
+        except (sqlite3.Error, RuntimeError) as e:
+            # Library-index database error or other runtime failure.
+            # AttributeError/KeyError/ImportError propagate (programming bugs).
+            logger.error("Footprint search failed (%s): %s", type(e).__name__, e)
+            return {"error": f"Footprint search failed: {type(e).__name__}: {e}"}

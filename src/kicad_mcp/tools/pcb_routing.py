@@ -39,6 +39,8 @@ def register_pcb_routing_tools(mcp: FastMCP) -> None:
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+        if width_mm <= 0:
+            return {"error": f"width_mm must be positive (got {width_mm})"}
 
         script = """
 import pcbnew, json, sys
@@ -54,11 +56,17 @@ track.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(params["end_x_mm"]), pcbnew.FromMM(pa
 track.SetWidth(pcbnew.FromMM(params["width_mm"]))
 track.SetLayer(board.GetLayerID(params["layer"]))
 
+# Net assignment: explicit error if the requested net doesn't exist.
+# Silently dropping the assignment would write an unconnected trace and
+# return status=ok, leaving the caller to discover the problem only when
+# DRC flags an unconnected item.
 net_name = params["net_name"]
 if net_name:
     net = board.FindNet(net_name)
-    if net:
-        track.SetNet(net)
+    if net is None:
+        print(json.dumps({"error": f"Net {net_name!r} not found on PCB"}))
+        raise SystemExit(0)
+    track.SetNet(net)
 
 board.Add(track)
 board.Save(pcb_path)
@@ -108,6 +116,15 @@ print(json.dumps({
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+        if drill_mm <= 0:
+            return {"error": f"drill_mm must be positive (got {drill_mm})"}
+        if size_mm <= 0:
+            return {"error": f"size_mm must be positive (got {size_mm})"}
+        if drill_mm >= size_mm:
+            return {"error": f"drill_mm ({drill_mm}) must be less than size_mm ({size_mm}) — a drill ≥ pad means no annular ring"}
+        valid_via_types = ("through", "blind_buried", "micro")
+        if via_type not in valid_via_types:
+            return {"error": f"via_type must be one of {valid_via_types}; got {via_type!r}"}
 
         script = """
 import pcbnew, json, sys
@@ -122,19 +139,24 @@ via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(par
 via.SetDrill(pcbnew.FromMM(params["drill_mm"]))
 via.SetWidth(pcbnew.FromMM(params["size_mm"]))
 
+# Via type already validated at the Python tool layer; this dispatch is
+# total over the validated set.
 via_type = params["via_type"]
-if via_type == "blind_buried":
-    via.SetViaType(pcbnew.VIATYPE_BLIND_BURIED)
-elif via_type == "micro":
-    via.SetViaType(pcbnew.VIATYPE_MICROVIA)
-else:
-    via.SetViaType(pcbnew.VIATYPE_THROUGH)
+_VIATYPE_MAP = {
+    "through":      pcbnew.VIATYPE_THROUGH,
+    "blind_buried": pcbnew.VIATYPE_BLIND_BURIED,
+    "micro":        pcbnew.VIATYPE_MICROVIA,
+}
+via.SetViaType(_VIATYPE_MAP[via_type])
 
+# Net assignment: explicit error if the requested net doesn't exist.
 net_name = params["net_name"]
 if net_name:
     net = board.FindNet(net_name)
-    if net:
-        via.SetNet(net)
+    if net is None:
+        print(json.dumps({"error": f"Net {net_name!r} not found on PCB"}))
+        raise SystemExit(0)
+    via.SetNet(net)
 
 board.Add(via)
 board.Save(pcb_path)
@@ -181,6 +203,14 @@ print(json.dumps({
         """
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+        if new_width_mm <= 0:
+            return {"error": f"new_width_mm must be positive (got {new_width_mm})"}
+        # Whitespace-padded filter strings are almost certainly a typo;
+        # an empty string is the documented "all" sentinel.
+        if net_name and net_name != net_name.strip():
+            return {"error": f"net_name has surrounding whitespace; use empty string for 'all nets', not {net_name!r}"}
+        if layer and layer != layer.strip():
+            return {"error": f"layer has surrounding whitespace; use empty string for 'all layers', not {layer!r}"}
 
         script = """
 import pcbnew, json, sys

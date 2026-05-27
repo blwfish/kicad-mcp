@@ -88,6 +88,8 @@ def register_bom_tools(mcp: FastMCP) -> None:
 
         total_unique_components = 0
         total_components = 0
+        file_error_count = 0
+        file_parse_skipped = 0
 
         for file_type, file_path in bom_files.items():
             try:
@@ -96,8 +98,9 @@ def register_bom_tools(mcp: FastMCP) -> None:
 
                 bom_data, format_info = _parse_bom_file(file_path)
 
-                if not bom_data or len(bom_data) == 0:
+                if not bom_data:
                     print(f"Failed to parse BOM file: {file_path}")
+                    file_parse_skipped += 1
                     continue
 
                 analysis = _analyze_bom_data(bom_data, format_info)
@@ -113,12 +116,23 @@ def register_bom_tools(mcp: FastMCP) -> None:
 
                 print(f"Successfully analyzed BOM file: {file_path}")
 
-            except Exception as e:
+            except (OSError, ValueError, KeyError) as e:
+                # OSError = file/IO; ValueError = parse/CSV; KeyError = schema.
+                # Anything else (AttributeError, ImportError) propagates as a
+                # programming bug. file_error_count is surfaced below so a
+                # caller scanning only "results" doesn't miss partial failure.
                 print(f"Error analyzing BOM file {file_path}: {e}")
+                file_error_count += 1
                 results["bom_files"][file_type] = {
                     "path": file_path,
-                    "error": str(e),
+                    "error": f"{type(e).__name__}: {e}",
                 }
+
+        # Surface partial-failure counts so callers don't have to scan the
+        # bom_files dict for "error" keys.
+        if file_error_count or file_parse_skipped:
+            results["file_error_count"] = file_error_count
+            results["file_parse_skipped"] = file_parse_skipped
 
         if ctx:
             await ctx.report_progress(70, 100)
@@ -575,6 +589,10 @@ def _analyze_bom_data(
             results["most_common_values"] = {
                 str(k): int(v) for k, v in most_common.items()
             }
+            # Surface total distinct count so callers can tell "exactly 5
+            # unique values" from "top 5 of 500".
+            results["distinct_value_count"] = int(value_counts.size)
+            results["most_common_values_truncated"] = value_counts.size > 5
 
     except Exception as e:
         print(f"Error analyzing BOM data: {e}")

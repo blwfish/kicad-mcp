@@ -22,11 +22,10 @@ def _find_kikit() -> Optional[str]:
         import glob as _glob
         kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
         fw = f"{kicad_app}/Contents/Frameworks/Python.framework/Versions"
-        kikit_candidates = []
-        for vdir in sorted(_glob.glob(f"{fw}/3.*"), reverse=True):
-            ver = os.path.basename(vdir)
-            kikit_candidates.append(f"{vdir}/bin/kikit")
-        candidates = kikit_candidates
+        candidates = [
+            f"{vdir}/bin/kikit"
+            for vdir in sorted(_glob.glob(f"{fw}/3.*"), reverse=True)
+        ]
     elif system == "Linux":
         candidates = ["/usr/local/bin/kikit"]
     elif system == "Windows":
@@ -126,7 +125,11 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
         # Build CLI command
         cmd = [kikit_bin, "panelize"]
 
-        if preset and os.path.exists(preset):
+        if preset:
+            # Explicit preset specified — require it to exist, don't silently
+            # fall through to grid mode (which would ship a wrong layout to fab).
+            if not os.path.exists(preset):
+                return {"error": f"Preset file not found: {preset}"}
             cmd.extend(["--preset", preset])
         else:
             # Layout
@@ -135,19 +138,16 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
                 f"grid; rows: {rows}; cols: {cols}; space: {space}mm",
             ])
 
-            # Tabs — vcuts don't need tabs, mousebites do
+            # Tabs and cuts — single cut_type dispatch instead of two
+            # parallel if/else blocks (vcuts don't need tabs; mousebites do).
             if cut_type == "mousebites":
                 cmd.extend(["--tabs", "fixed; width: 3mm; vcount: 1"])
-            else:
-                cmd.extend(["--tabs", "none"])
-
-            # Cuts
-            if cut_type == "mousebites":
                 cmd.extend([
                     "--cuts",
-                    f"mousebites; drill: 0.5mm; spacing: 0.8mm; offset: -0.1mm",
+                    "mousebites; drill: 0.5mm; spacing: 0.8mm; offset: -0.1mm",
                 ])
             else:
+                cmd.extend(["--tabs", "none"])
                 cmd.extend(["--cuts", "vcuts"])
 
             # Framing
@@ -197,8 +197,13 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
             return {"error": "KiKit panelization timed out after 60s"}
 
         if result.returncode != 0:
-            error_msg = result.stderr.strip() or result.stdout.strip()
-            return {"error": f"KiKit failed: {error_msg[:2000]}"}
+            # Concatenate both streams — `or` would drop stderr entirely when
+            # empty, hiding stdout-only error reports.
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+            error_msg = "\n".join(p for p in (stderr, stdout) if p) or "(no output)"
+            truncated = "  (...truncated)" if len(error_msg) > 2000 else ""
+            return {"error": f"KiKit failed: {error_msg[:2000]}{truncated}"}
 
         if not os.path.exists(output_path):
             return {"error": f"Panel file was not created at {output_path}"}
@@ -229,13 +234,20 @@ print(json.dumps({
     "track_count": track_count,
 }))
 """
+        # Panel info read. If this fails, we still produced the panel file
+        # successfully (KiKit ran + output exists), so surface the read
+        # failure as a warning rather than silently returning None for
+        # width/height/counts — a None for footprint_count would let a
+        # caller's assertion `count == rows*cols*orig` pass on bad data.
+        info_warning: Optional[str] = None
         try:
             panel_info = run_pcbnew_script(info_script, params={"output_path": output_path}, timeout=15.0)
-        except Exception as e:
-            logger.warning("Could not read panel info: %s", e)
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            info_warning = f"Panel info read failed ({type(e).__name__}): {e}"
+            logger.warning(info_warning)
             panel_info = {}
 
-        return {
+        result_dict = {
             "status": "ok",
             "input_pcb": pcb_path,
             "output_pcb": output_path,
@@ -247,3 +259,6 @@ print(json.dumps({
             "footprint_count": panel_info.get("footprint_count"),
             "track_count": panel_info.get("track_count"),
         }
+        if info_warning is not None:
+            result_dict["info_read_warning"] = info_warning
+        return result_dict

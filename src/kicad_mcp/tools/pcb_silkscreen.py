@@ -582,15 +582,20 @@ for drawing in board.GetDrawings():
                               "obj": drawing, "layer": drawing.GetLayer()})
 
 # Board outline bbox for boundary clamping
-try:
+if hasattr(board, 'GetBoardEdgesBoundingBox'):
     board_bb = board.GetBoardEdgesBoundingBox()
     board_valid = board_bb.GetWidth() > 0
-except Exception:
+else:
+    board_bb = None
     board_valid = False
 
 def aabb_hit(a, bx_min, by_min, bx_max, by_max):
-    return (a.GetX() < bx_max and a.GetRight() > bx_min and
-            a.GetY() < by_max and a.GetBottom() > by_min)
+    # Non-strict: touching edges count as overlap, matching KiCad DRC's
+    # silk_over_copper / silk_overlap semantics. A silkscreen text item
+    # whose edge is flush with a pad is a DRC violation, so flag it here
+    # rather than letting it slip through to fail at fab.
+    return (a.GetX() <= bx_max and a.GetRight() >= bx_min and
+            a.GetY() <= by_max and a.GetBottom() >= by_min)
 
 def has_pad_overlap(text_bbox, own_ref):
     for pad in all_pads:
@@ -608,7 +613,8 @@ def has_text_overlap(text_bbox, own_ref, own_layer, own_obj):
             continue
         if si["layer"] != own_layer:
             continue
-        if not si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else False:
+        visible = si["obj"].IsVisible() if hasattr(si["obj"], 'IsVisible') else True
+        if not visible:
             continue
         ob = si["obj"].GetBoundingBox()
         if aabb_hit(text_bbox, ob.GetX(), ob.GetY(), ob.GetRight(), ob.GetBottom()):
@@ -647,6 +653,14 @@ for fp in board.GetFootprints():
         clips_edge = not in_board(text_bbox)
         if not has_overlap and not clips_edge:
             already_ok += 1
+            continue
+
+        # Degenerate text bbox (zero width or height) usually means an
+        # empty value string or a library quirk — moving it is pointless
+        # because the candidate-overlap check against a zero-area bbox
+        # cannot tell us anything useful. Skip with a counter.
+        if text_bbox.GetWidth() <= 0 or text_bbox.GetHeight() <= 0:
+            already_ok += 1  # counts as "no actionable fix"
             continue
 
         fp_bb = fp.GetBoundingBox()
@@ -772,8 +786,9 @@ if params["fix_silkscreen"]:
         board_valid = False
 
     def _aabb_hit(a, bx_min, by_min, bx_max, by_max):
-        return (a.GetX() < bx_max and a.GetRight() > bx_min and
-                a.GetY() < by_max and a.GetBottom() > by_min)
+        # Non-strict: touching edges count as overlap (matches KiCad DRC).
+        return (a.GetX() <= bx_max and a.GetRight() >= bx_min and
+                a.GetY() <= by_max and a.GetBottom() >= by_min)
 
     def has_pad_overlap(text_bbox, own_ref):
         for pad in all_pads:

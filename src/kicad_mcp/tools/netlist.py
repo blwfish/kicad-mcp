@@ -235,31 +235,27 @@ def register_netlist_tools(mcp: FastMCP) -> None:
             if ctx:
                 await ctx.report_progress(60, 100)
 
+            # Use the canonical is_power_net classifier — the previous
+            # inline 6-prefix list (VCC/VDD/GND/+5V/+3V3/+12V) diverged
+            # from netlist_parser's _POWER_NET_PREFIXES (which adds
+            # VSS/VBUS/-) and silently misclassified those rails as
+            # signal nets, then re-misclassified them as floating.
+            from kicad_mcp.utils.netlist_parser import is_power_net
+
             nets = netlist_data.get("nets", {})
             for net_name, pins in nets.items():
-                if any(
-                    net_name.startswith(prefix)
-                    for prefix in ["VCC", "VDD", "GND", "+5V", "+3V3", "+12V"]
-                ):
-                    analysis["power_nets"].append({
-                        "name": net_name,
-                        "pin_count": len(pins),
-                    })
+                entry = {"name": net_name, "pin_count": len(pins)}
+                if is_power_net(net_name):
+                    analysis["power_nets"].append(entry)
                 else:
-                    analysis["signal_nets"].append({
-                        "name": net_name,
-                        "pin_count": len(pins),
-                    })
+                    analysis["signal_nets"].append(entry)
 
             if ctx:
                 await ctx.report_progress(80, 100)
 
-            # Check for floating nets
+            # Check for floating nets (signal nets with 0 or 1 pin).
             for net_name, pins in nets.items():
-                if len(pins) <= 1 and not any(
-                    net_name.startswith(prefix)
-                    for prefix in ["VCC", "VDD", "GND", "+5V", "+3V3", "+12V"]
-                ):
+                if len(pins) <= 1 and not is_power_net(net_name):
                     analysis["potential_issues"].append({
                         "type": "floating_net",
                         "net": net_name,
@@ -418,37 +414,46 @@ def register_netlist_tools(mcp: FastMCP) -> None:
                 await ctx.report_progress(70, 100)
                 ctx.info("Analyzing connections...")
 
-            # Categorize connections by pin function
+            # Categorize connections by pin function.
+            # Substring matching ("IN" in name) misfires badly on common
+            # pin names: VIN, DRAIN, SHDN, MAIN all contain "IN". Tokenize
+            # the pin name and match exact tokens with word boundaries.
             pin_functions: dict[str, dict] = {}
+            skipped_pins_missing_num = 0  # surfaced in result regardless of pins-present branch
+
+            _POWER_TOKENS = {"VCC", "VDD", "VEE", "VSS", "GND", "PWR", "POWER", "VBUS"}
+            _IO_TOKENS = {"IO", "I/O", "GPIO"}
+            _INPUT_TOKENS = {"IN", "INPUT"}
+            _OUTPUT_TOKENS = {"OUT", "OUTPUT"}
+
+            def _name_tokens(name: str):
+                # Split on non-alphanumeric (and underscore); upper-case;
+                # produces tokens like ["VIN"] not ["V", "IN"], so VIN
+                # doesn't false-match as INPUT.
+                return {t.upper() for t in re.split(r"[^A-Za-z0-9/]+", name) if t}
+
             if "pins" in component_info:
                 for pin in component_info["pins"]:
                     pin_num = pin.get("num")
+                    if not pin_num:
+                        # Pins lacking a "num" attribute would otherwise
+                        # collapse into a single pin_functions[None] entry
+                        # (each new None-num pin overwriting the previous).
+                        skipped_pins_missing_num += 1
+                        continue
                     pin_name = pin.get("name", "")
+                    tokens = _name_tokens(pin_name)
 
-                    pin_type = "unknown"
-
-                    if any(
-                        power_term in pin_name.upper()
-                        for power_term in [
-                            "VCC", "VDD", "VEE", "VSS", "GND", "PWR", "POWER",
-                        ]
-                    ):
+                    if tokens & _POWER_TOKENS:
                         pin_type = "power"
-                    elif any(
-                        io_term in pin_name.upper()
-                        for io_term in ["IO", "I/O", "GPIO"]
-                    ):
+                    elif tokens & _IO_TOKENS:
                         pin_type = "io"
-                    elif any(
-                        input_term in pin_name.upper()
-                        for input_term in ["IN", "INPUT"]
-                    ):
+                    elif tokens & _INPUT_TOKENS:
                         pin_type = "input"
-                    elif any(
-                        output_term in pin_name.upper()
-                        for output_term in ["OUT", "OUTPUT"]
-                    ):
+                    elif tokens & _OUTPUT_TOKENS:
                         pin_type = "output"
+                    else:
+                        pin_type = "unknown"
 
                     pin_functions[pin_num] = {
                         "name": pin_name,
@@ -464,6 +469,7 @@ def register_netlist_tools(mcp: FastMCP) -> None:
                 "connections": connections,
                 "connected_nets": connected_nets,
                 "pin_functions": pin_functions,
+                "pins_skipped_missing_num": skipped_pins_missing_num,
                 "total_connections": len(connections),
             }
 

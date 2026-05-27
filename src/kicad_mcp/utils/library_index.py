@@ -118,16 +118,24 @@ def _parse_lib_table_uris(table_path: str) -> List[str]:
     try:
         with open(table_path, "r", encoding="utf-8", errors="replace") as fh:
             content = fh.read()
-    except OSError:
+    except OSError as e:
+        logger.warning("Could not read library table %s: %s", table_path, e)
         return uris
 
-    for m in re.finditer(r'\(uri\s+"?([^"\)]+)"?\)', content):
+    # Anchor to fully-quoted URIs only. The previous `"?([^"\)]+)"?` made
+    # quotes optional and could match malformed `(uri ...)` tokens; the
+    # required-quote form is what KiCad actually writes.
+    for m in re.finditer(r'\(uri\s+"([^"]+)"\)', content):
         uri = m.group(1).strip()
         # Skip entries with unresolved KiCad variable substitutions
         if "${" in uri:
             continue
         if os.path.exists(uri):
             uris.append(uri)
+        else:
+            # Log dropped paths — silently dropping non-existent paths
+            # makes it impossible to diagnose "why is my library missing?"
+            logger.debug("Library table URI %r does not exist; skipped", uri)
     return uris
 
 
@@ -630,7 +638,13 @@ class LibraryIndex:
 
             conn.close()
             return False
-        except (sqlite3.Error, ValueError):
+        except (sqlite3.Error, ValueError) as e:
+            # Corrupt metadata or DB-level error → force rebuild. Log so
+            # repeated rebuilds (root cause: corruption) become diagnosable.
+            logger.warning(
+                "Staleness check failed for %s (forcing rebuild): %s: %s",
+                lib_path, type(e).__name__, e,
+            )
             return True
 
     @staticmethod

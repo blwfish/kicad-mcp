@@ -37,16 +37,17 @@ def register_pcb_net_tools(mcp: FastMCP) -> None:
         with open(pcb_path, "r") as f:
             content = f.read()
 
-        # Check if net already exists
+        # Check if net already exists. Single search with capture group —
+        # the previous code did two searches (existence + extraction) with
+        # a fallback `-1` sentinel that was returned to the caller as a
+        # valid net_code, hiding any inconsistency between the two regexes.
         escaped_name = _re.escape(net_name)
-        if _re.search(rf'\(net\s+\d+\s+"{escaped_name}"\)', content):
-            # Find the existing net code
-            match = _re.search(rf'\(net\s+(\d+)\s+"{escaped_name}"\)', content)
-            net_code = int(match.group(1)) if match else -1
+        match = _re.search(rf'\(net\s+(\d+)\s+"{escaped_name}"\)', content)
+        if match:
             return {
                 "status": "ok",
                 "net": net_name,
-                "net_code": net_code,
+                "net_code": int(match.group(1)),
                 "note": "Net already exists",
             }
 
@@ -154,7 +155,7 @@ print(json.dumps({
     @mcp.tool()
     def bulk_assign_pad_nets(
         pcb_path: str,
-        assignments: List[Dict[str, str]] = [],
+        assignments: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """Assign nets to multiple pads in a single operation.
 
@@ -216,9 +217,20 @@ for a in assignments:
 
 board.Save(pcb_path)
 
+# Status reflects whether ALL assignments succeeded. A caller that only
+# checks status==ok would otherwise miss partial failures buried in the
+# errors list.
+if not errors:
+    out_status = "ok"
+elif results:
+    out_status = "partial"
+else:
+    out_status = "error"
+
 print(json.dumps({
-    "status": "ok",
+    "status": out_status,
     "assigned": len(results),
+    "error_count": len(errors),
     "nets_created": created_nets,
     "errors": errors,
     "results": results,
@@ -374,18 +386,26 @@ print(json.dumps({
         if not net_definitions:
             return {"error": "No nets found in schematic netlist"}
 
-        # Sanity-check: detect obvious power/ground cross-wiring
+        # Sanity-check: detect obvious power/ground cross-wiring.
+        # Use is_power_net (the canonical classifier) — substring tests on
+        # raw net names (`"VCC" in net`) would false-positive on names
+        # like `"AVEC"` or `"GND_5V"`.
+        from kicad_mcp.utils.netlist_parser import is_power_net
         power_ground_warnings = []
+        _GND_FUNCS = {"GND", "VSS", "GNDA", "AGND", "DGND"}
+        _PWR_FUNCS = {"VDD", "VCC", "VIN", "3V3", "5V", "VBUS"}
         for a in pad_assignments:
             func = (a.get("pinfunction") or "").upper()
-            net = a["net"].upper()
-            if func in ("GND", "VSS") and any(
-                p in net for p in ("+3V3", "+5V", "VCC", "VDD", "3V3", "5V")
-            ):
+            net = a["net"]
+            net_is_power = is_power_net(net) and not any(
+                net.upper().startswith(g) for g in ("GND", "VSS")
+            )
+            net_is_ground = any(net.upper().startswith(g) for g in ("GND", "VSS"))
+            if func in _GND_FUNCS and net_is_power:
                 power_ground_warnings.append(
                     f"{a['reference']} pin {a['pad']} ({func}) → power net {a['net']}"
                 )
-            elif func in ("VDD", "VCC", "3V3", "5V") and "GND" in net:
+            elif func in _PWR_FUNCS and net_is_ground:
                 power_ground_warnings.append(
                     f"{a['reference']} pin {a['pad']} ({func}) → ground net {a['net']}"
                 )
@@ -412,19 +432,23 @@ print(json.dumps({
                     f"Check schematic for unintended connections."
                 )
 
-        # Detect missing expected power/ground nets
-        EXPECTED_POWER_NETS = {"GND", "+3V3", "+5V", "VCC", "VDD"}
-        # Check if any GND-function pin exists in the design
+        # Detect missing expected power/ground nets.
+        # Recognise GND under any conventional name (GND, AGND, DGND, VSS, etc.)
+        # — checking only for the literal "GND" net name would false-alarm on
+        # designs that use AGND/DGND as their only ground.
         all_funcs = set()
         for a in pad_assignments:
             f = (a.get("pinfunction") or "").upper()
             if f:
                 all_funcs.add(f)
         net_names_upper = {n.upper() for n in net_definitions}
-        if any(f in ("GND", "VSS") for f in all_funcs):
-            if "GND" not in net_names_upper:
+        if any(f in _GND_FUNCS for f in all_funcs):
+            has_ground_net = any(
+                n.startswith(("GND", "VSS")) for n in net_names_upper
+            )
+            if not has_ground_net:
                 power_ground_warnings.append(
-                    "WARNING: design has GND-function pins but no GND net. "
+                    "WARNING: design has GND-function pins but no GND/VSS net. "
                     "GND may be absorbed into another net due to schematic wiring error."
                 )
 

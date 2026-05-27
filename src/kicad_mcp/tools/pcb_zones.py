@@ -57,10 +57,13 @@ if net is None or net.GetNetCode() == 0:
     print(json.dumps({"error": f"Net {params['net_name']!r} not found"}))
     raise SystemExit(0)
 
-# Determine zone corners
+# Determine zone corners. Empty list = auto-derive from board outline.
+# A list with 1 or 2 entries is almost certainly a caller error (a polygon
+# needs >= 3 vertices); we reject it explicitly rather than silently
+# falling back to the auto-outline path.
 corners = params["corners"]
 auto_outline = False
-if len(corners) < 3:
+if len(corners) == 0:
     # Auto-derive from board outline (Edge.Cuts bounding box)
     bb = board.GetBoardEdgesBoundingBox()
     if bb.GetWidth() > 0 and bb.GetHeight() > 0:
@@ -73,6 +76,9 @@ if len(corners) < 3:
     else:
         print(json.dumps({"error": "No corners provided and no board outline (Edge.Cuts) found"}))
         raise SystemExit(0)
+elif len(corners) < 3:
+    print(json.dumps({"error": f"corners must be empty (auto-derive) or have >= 3 entries; got {len(corners)}"}))
+    raise SystemExit(0)
 
 zone = pcbnew.ZONE(board)
 zone.SetNet(net)
@@ -83,14 +89,19 @@ zone.SetAssignedPriority(params["priority"])
 zone.SetLocalClearance(pcbnew.FromMM(params["clearance_mm"]))
 zone.SetMinThickness(pcbnew.FromMM(params["min_width_mm"]))
 
-# Set pad connection type
+# Set pad connection type. Reject unknown values explicitly — silently
+# defaulting to thermal would hide caller typos that change the
+# electrical behavior of the zone.
+_PAD_CONNECT_MAP = {
+    "solid": pcbnew.ZONE_CONNECTION_FULL,
+    "none": pcbnew.ZONE_CONNECTION_NONE,
+    "thermal": pcbnew.ZONE_CONNECTION_THERMAL,
+}
 connect = params["connect_pads"]
-if connect == "solid":
-    zone.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
-elif connect == "none":
-    zone.SetPadConnection(pcbnew.ZONE_CONNECTION_NONE)
-else:
-    zone.SetPadConnection(pcbnew.ZONE_CONNECTION_THERMAL)
+if connect not in _PAD_CONNECT_MAP:
+    print(json.dumps({"error": f"connect_pads must be one of {sorted(_PAD_CONNECT_MAP)}; got {connect!r}"}))
+    raise SystemExit(0)
+zone.SetPadConnection(_PAD_CONNECT_MAP[connect])
 
 # Build outline
 outline = zone.Outline()
@@ -100,13 +111,10 @@ for i, (cx, cy) in enumerate(corners):
 
 board.Add(zone)
 
-# Fill the zone
+# Fill the zone (pass board.Zones() directly — matches fill_zones pattern;
+# the previous manual ZONES() copy was redundant.)
 filler = pcbnew.ZONE_FILLER(board)
-zones = board.Zones()
-zone_list = pcbnew.ZONES()
-for z in zones:
-    zone_list.append(z)
-filler.Fill(zone_list)
+filler.Fill(board.Zones())
 
 board.Save(pcb_path)
 
@@ -182,13 +190,22 @@ success = filler.Fill(zones)
 # Collect results
 zone_info = []
 for z in copper_zones:
-    layer_set = z.GetLayerSet()
-    layer_name = "F.Cu" if layer_set.Contains(pcbnew.F_Cu) else "B.Cu" if layer_set.Contains(pcbnew.B_Cu) else "unknown"
+    # Use board.GetLayerName for the actual layer — the previous
+    # two-branch F.Cu/B.Cu/"unknown" classifier silently reported every
+    # inner-copper zone as "unknown".
+    layer_id = z.GetLayer()
+    layer_name = board.GetLayerName(layer_id)
+    # GetFilledArea returns IU² (nm²). ToMM(x) converts nm → mm (one
+    # power of 10^-6). For area we need 10^-12 — apply ToMM twice, or
+    # equivalently divide by 1e12. Previously this called ToMM once and
+    # reported filled_area_mm2 inflated by a factor of 10^6.
+    area_iu_sq = z.GetFilledArea()
+    area_mm_sq = pcbnew.ToMM(pcbnew.ToMM(area_iu_sq))
     zone_info.append({
         "net": z.GetNetname(),
         "layer": layer_name,
         "filled": z.IsFilled(),
-        "filled_area_mm2": round(pcbnew.ToMM(z.GetFilledArea()), 1),
+        "filled_area_mm2": round(area_mm_sq, 3),
     })
 
 board.Save(pcb_path)

@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastmcp import FastMCP
 
@@ -243,11 +243,25 @@ print(json.dumps({
             "min_copper_edge_clearance_mm": min_copper_edge_clearance_mm,
         })
 
-        # Also update the .kicad_pro project file DRC rules
+        # Also update the .kicad_pro project file DRC rules.
+        # The two parameters min_through_hole_diameter_mm and
+        # min_copper_edge_clearance_mm are NOT applied via pcbnew's
+        # DesignSettings — they only live in .kicad_pro. If the project
+        # file is missing or the write fails, those two values are
+        # silently dropped on the floor; surface that to the caller
+        # rather than echoing them as if applied.
         stem = os.path.splitext(pcb_path)[0]
         pro_path = stem + ".kicad_pro"
         pro_updated = False
-        if os.path.exists(pro_path):
+        pro_error: Optional[str] = None
+
+        if not os.path.exists(pro_path):
+            pro_error = (
+                f".kicad_pro project file not found at {pro_path}; "
+                "min_through_hole_diameter_mm and min_copper_edge_clearance_mm "
+                "were NOT applied (these live only in the project file)"
+            )
+        else:
             try:
                 import json as _json
                 with open(pro_path, "r") as f:
@@ -269,12 +283,19 @@ print(json.dumps({
                     _json.dump(project, f, indent=2)
                     f.write("\n")
                 pro_updated = True
-            except Exception as e:
-                logger.warning("Could not update .kicad_pro rules: %s", e)
+            except (OSError, ValueError) as e:
+                # OSError = permission/disk/encoding; ValueError = malformed JSON.
+                # Anything else propagates.
+                pro_error = f"Failed to update .kicad_pro: {type(e).__name__}: {e}"
+                logger.warning(pro_error)
 
         if isinstance(result, dict) and "error" not in result:
             result["project_rules_updated"] = pro_updated
             if pro_updated:
                 result["project_file"] = pro_path
+            if pro_error is not None:
+                # Surface the partial-failure so the caller knows two of the
+                # seven params didn't apply.
+                result["project_rules_warning"] = pro_error
 
         return result
