@@ -4,7 +4,7 @@ This file is for you, the AI agent. It tells you what needs to be true on this s
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server providing 98 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
+kicad-mcp is a Model Context Protocol (MCP) server providing 97 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
 **Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
@@ -28,7 +28,7 @@ KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP 
 **What it provides:**
 - `kicad-cli` — used for DRC checks, netlist export, thumbnail generation
 - KiCad's Python 3.9 with pcbnew — used by the subprocess bridge for all PCB modifications
-- Symbol and footprint libraries — indexed by the MCP server for `search_components` / `search_footprints`
+- Symbol and footprint libraries — indexed by the MCP server for `search` (type="symbol" or "footprint")`
 
 ### 2. Python 3.10+ (required)
 
@@ -123,7 +123,7 @@ This should return a list (possibly empty) without errors. If it returns an erro
 A more thorough check:
 
 ```
-search_footprints(query="0603 resistor")
+search(query="0603 resistor")
 ```
 
 This exercises the library index. On first run it builds a SQLite FTS5 index of all KiCad libraries (takes a few seconds). If it returns results like `Resistor_SMD:R_0603_1608Metric`, everything is working.
@@ -184,7 +184,7 @@ If you are not running inside Claude Code, stop. This server will not work corre
 1. Schematic    → create_schematic, add_component, connect_pins_with_labels, save_schematic
 2. Board size   → estimate_board_size (call BEFORE creating the PCB)
 3. PCB setup    → create_pcb, add_board_outline, set_design_rules
-4. Footprints   → search_footprints, place_footprint, suggest_placement, audit_all
+4. Footprints   → search, place_footprint, suggest_placement, audit_all
 5. Nets         → update_pcb_from_schematic (preferred) or manual add_net + bulk_assign_pad_nets
 6. Autoroute    → autoroute_pcb with passes=2 or passes=3
 7. Zones/finish → add_copper_zone, fill_zones, finalize_pcb
@@ -194,7 +194,7 @@ If you are not running inside Claude Code, stop. This server will not work corre
 ### Critical Rules
 
 1. **Never route manually.** Do not use `add_trace`/`add_via` for routing. You cannot reliably compute spatial clearances. Use `autoroute_pcb`.
-2. **Never guess library names.** Always call `search_components` or `search_footprints` first. Library names change between KiCad versions.
+2. **Never guess library names.** Always call `search` (with `type="symbol"` or `type="footprint"`) first. Library names change between KiCad versions.
 3. **Never write to the same PCB file in parallel.** Each PCB tool call loads, modifies, and saves the file. Concurrent writes corrupt it. Serialize all PCB operations.
 
 ## Health and Debugging

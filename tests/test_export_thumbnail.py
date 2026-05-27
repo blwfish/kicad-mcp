@@ -100,27 +100,6 @@ class TestGeneratePcbThumbnailSuccess:
         assert "image_data" not in result
         assert "mime_type" not in result
 
-    def test_generate_project_thumbnail_alias(self, mcp_server, project_path, monkeypatch):
-        """generate_project_thumbnail should produce identical output."""
-        monkeypatch.setattr(
-            "kicad_mcp.tools.export.subprocess.run",
-            _mock_run_ok(FAKE_SVG, os.path.dirname(project_path)),
-        )
-        monkeypatch.setattr(
-            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
-        )
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
-
-        fn1 = get_tool_fn(mcp_server, "generate_pcb_thumbnail")
-        fn2 = get_tool_fn(mcp_server, "generate_project_thumbnail")
-
-        r1 = asyncio.run(fn1(project_path=project_path, ctx=None))
-        r2 = asyncio.run(fn2(project_path=project_path, ctx=None))
-
-        assert isinstance(r1, dict)
-        assert isinstance(r2, dict)
-        assert r1["status"] == r2["status"] == "ok"
-
 
 # ---------------------------------------------------------------------------
 # Error paths — tool returns a dict with "error", not ImageContent

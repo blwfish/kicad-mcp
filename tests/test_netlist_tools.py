@@ -48,18 +48,18 @@ def _get_tool_fn(mcp_server, tool_name):
     return tool.fn
 
 
-# -- extract_schematic_netlist tests -----------------------------------------
+# -- extract_netlist tests (schematic input) ---------------------------------
 
-class TestExtractSchematicNetlist:
+class TestExtractNetlistSchematic:
 
     def test_file_not_found(self, netlist_server):
-        fn = _get_tool_fn(netlist_server, "extract_schematic_netlist")
+        fn = _get_tool_fn(netlist_server, "extract_netlist")
         result = asyncio.run(fn("/nonexistent/test.kicad_sch", None))
         assert result["success"] is False
         assert "not found" in result["error"]
 
     @patch("kicad_mcp.tools.netlist.analyze_netlist")
-    @patch("kicad_mcp.tools.netlist.extract_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
     def test_returns_netlist(self, mock_extract, mock_analyze, netlist_server, sch_file):
         mock_extract.return_value = {
             "component_count": 3,
@@ -68,34 +68,42 @@ class TestExtractSchematicNetlist:
             "nets": {"GND": [], "VCC": []},
         }
         mock_analyze.return_value = {"summary": "3 components, 5 nets"}
-        fn = _get_tool_fn(netlist_server, "extract_schematic_netlist")
+        fn = _get_tool_fn(netlist_server, "extract_netlist")
         result = asyncio.run(fn(sch_file, None))
         assert result["success"] is True
 
-    @patch("kicad_mcp.tools.netlist.extract_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
     def test_handles_extraction_error(self, mock_extract, netlist_server, sch_file):
         mock_extract.return_value = {"error": "Failed to parse schematic"}
-        fn = _get_tool_fn(netlist_server, "extract_schematic_netlist")
+        fn = _get_tool_fn(netlist_server, "extract_netlist")
         result = asyncio.run(fn(sch_file, None))
         assert result["success"] is False
 
 
-# -- extract_project_netlist tests -------------------------------------------
+# -- extract_netlist tests (project input) -----------------------------------
 
-class TestExtractProjectNetlist:
+class TestExtractNetlistProject:
 
     def test_project_not_found(self, netlist_server):
-        fn = _get_tool_fn(netlist_server, "extract_project_netlist")
+        fn = _get_tool_fn(netlist_server, "extract_netlist")
         result = asyncio.run(fn("/nonexistent/project.kicad_pro", None))
         assert result["success"] is False
 
     def test_no_schematic(self, netlist_server, tmp_path):
         pro = tmp_path / "test.kicad_pro"
         pro.write_text("{}")
-        fn = _get_tool_fn(netlist_server, "extract_project_netlist")
+        fn = _get_tool_fn(netlist_server, "extract_netlist")
         result = asyncio.run(fn(str(pro), None))
         assert result["success"] is False
         assert "schematic" in result["error"].lower()
+
+    def test_unsupported_extension(self, netlist_server, tmp_path):
+        other = tmp_path / "test.txt"
+        other.write_text("not a kicad file")
+        fn = _get_tool_fn(netlist_server, "extract_netlist")
+        result = asyncio.run(fn(str(other), None))
+        assert result["success"] is False
+        assert "Unsupported" in result["error"]
 
 
 # -- identify_circuit_patterns tests -----------------------------------------

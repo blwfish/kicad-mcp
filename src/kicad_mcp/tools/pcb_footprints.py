@@ -591,33 +591,41 @@ print(json.dumps(result))
         })
 
     @mcp.tool()
-    def search_footprints(
+    def search(
         query: str,
+        type: str = "footprint",
         library: Optional[str] = None,
         limit: int = 20,
     ) -> Dict[str, Any]:
-        """Search for footprints in KiCad footprint libraries.
+        """Search KiCad libraries for symbols (schematic) or footprints (PCB).
 
-        Searches a SQLite FTS5 index built from all installed KiCad footprint
-        libraries. The index auto-rebuilds when library files change (e.g. after
-        a KiCad upgrade). Returns footprint names suitable for use with
-        place_footprint.
+        Backed by a SQLite FTS5 index that auto-rebuilds when the underlying
+        KiCad libraries change. Results are suitable for use with
+        add_component (symbols) or place_footprint (footprints).
 
         Args:
-            query: Search terms (e.g., "SOT-23", "0603 resistor", "QFP 48").
-            library: Optional library name to restrict search (e.g., "Resistor_SMD").
+            query: Search terms (e.g., "SOT-23", "0603 resistor", "op amp", "555").
+            type: "footprint" or "symbol".
+            library: Optional library name to restrict search.
             limit: Maximum number of results (default 20).
         """
+        if type not in ("footprint", "symbol"):
+            return {"error": f"type must be 'footprint' or 'symbol', got {type!r}"}
+
         try:
             from kicad_mcp.utils.library_index import get_library_index
 
             index = get_library_index()
 
-            if index.footprints_stale():
-                count = index.rebuild_footprints()
-                logger.info("Footprint index rebuilt: %d entries", count)
-
-            results = index.search_footprints(query, library=library, limit=limit)
+            if type == "footprint":
+                if index.footprints_stale():
+                    count = index.rebuild_footprints()
+                    logger.info("Footprint index rebuilt: %d entries", count)
+                results = index.search_footprints(query, library=library, limit=limit)
+            else:
+                if index.symbols_stale():
+                    index.rebuild_symbols()
+                results = index.search_symbols(query, library=library, limit=limit)
 
             return {
                 "status": "ok",
@@ -631,8 +639,8 @@ print(json.dumps(result))
         except (sqlite3.Error, RuntimeError) as e:
             # Library-index database error or other runtime failure.
             # AttributeError/KeyError/ImportError propagate (programming bugs).
-            logger.error("Footprint search failed (%s): %s", type(e).__name__, e)
-            return {"error": f"Footprint search failed: {type(e).__name__}: {e}"}
+            logger.error("Search failed (%s): %s", e.__class__.__name__, e)
+            return {"error": f"Search failed: {e.__class__.__name__}: {e}"}
 
     @mcp.tool()
     def rebuild_library_index(

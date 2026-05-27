@@ -4,7 +4,7 @@ This tool enables your AI agent to use [KiCad](https://www.kicad.org/) — the i
 
 ## What This Does
 
-You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 98 tools covering the full design workflow.
+You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 97 tools covering the full design workflow.
 
 You don't need to know KiCad. You don't need to know what a PCB layout tool does. You just need an AI agent (like [Claude](https://claude.ai/)).
 
@@ -42,7 +42,7 @@ If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/ne
 
 ### What's Under the Hood
 
-The server provides 98 tools organized into three groups:
+The server provides 97 tools organized into three groups:
 
 - **Schematic tools** (29) — create and edit circuit schematics, place components, wire connections, pin collision detection
 - **PCB tools** (49) — board layout, footprint placement, pre-route readiness checks, autorouting via [FreeRouter](https://github.com/freerouting/freerouting), copper zones, silkscreen management, design rule checking and auto-fix
@@ -60,7 +60,7 @@ pytest
 ruff check src/ tests/
 ```
 
-Tests cover all 98 tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
+Tests cover all 97 tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
 
 See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 

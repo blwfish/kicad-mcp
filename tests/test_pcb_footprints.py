@@ -281,12 +281,12 @@ class TestGetFootprintDimensions:
         assert result["keepout_count"] == 1
 
 
-# -- search_footprints tests ------------------------------------------------
+# -- search (unified footprint/symbol) tests --------------------------------
 
-class TestSearchFootprints:
+class TestSearch:
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_returns_results(self, mock_get_index, fp_server):
+    def test_returns_footprint_results(self, mock_get_index, fp_server):
         mock_index = MagicMock()
         mock_index.footprints_stale.return_value = False
         mock_index.search_footprints.return_value = [
@@ -295,20 +295,20 @@ class TestSearchFootprints:
         ]
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search_footprints")
+        fn = _get_tool_fn(fp_server, "search")
         result = fn("0805 resistor")
         assert result["status"] == "ok"
         assert result["count"] == 1
 
     @patch("kicad_mcp.utils.library_index.get_library_index")
-    def test_rebuilds_stale_index(self, mock_get_index, fp_server):
+    def test_rebuilds_stale_footprint_index(self, mock_get_index, fp_server):
         mock_index = MagicMock()
         mock_index.footprints_stale.return_value = True
         mock_index.rebuild_footprints.return_value = 500
         mock_index.search_footprints.return_value = []
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search_footprints")
+        fn = _get_tool_fn(fp_server, "search")
         fn("something")
         mock_index.rebuild_footprints.assert_called_once()
 
@@ -319,7 +319,7 @@ class TestSearchFootprints:
         mock_index.search_footprints.return_value = []
         mock_get_index.return_value = mock_index
 
-        fn = _get_tool_fn(fp_server, "search_footprints")
+        fn = _get_tool_fn(fp_server, "search")
         fn("0805", library="Resistor_SMD", limit=5)
         mock_index.search_footprints.assert_called_once_with(
             "0805", library="Resistor_SMD", limit=5
@@ -328,6 +328,30 @@ class TestSearchFootprints:
     @patch("kicad_mcp.utils.library_index.get_library_index")
     def test_handles_exception(self, mock_get_index, fp_server):
         mock_get_index.side_effect = RuntimeError("DB locked")
-        fn = _get_tool_fn(fp_server, "search_footprints")
+        fn = _get_tool_fn(fp_server, "search")
         result = fn("anything")
         assert "error" in result
+
+    @patch("kicad_mcp.utils.library_index.get_library_index")
+    def test_symbol_type_uses_symbol_search(self, mock_get_index, fp_server):
+        mock_index = MagicMock()
+        mock_index.symbols_stale.return_value = False
+        mock_index.search_symbols.return_value = [
+            {"lib_id": "Device:R", "name": "R", "description": "Resistor"},
+        ]
+        mock_get_index.return_value = mock_index
+
+        fn = _get_tool_fn(fp_server, "search")
+        result = fn("resistor", type="symbol")
+        assert result["status"] == "ok"
+        assert result["count"] == 1
+        mock_index.search_symbols.assert_called_once_with(
+            "resistor", library=None, limit=20
+        )
+        mock_index.search_footprints.assert_not_called()
+
+    def test_rejects_invalid_type(self, fp_server):
+        fn = _get_tool_fn(fp_server, "search")
+        result = fn("anything", type="garbage")
+        assert "error" in result
+        assert "footprint" in result["error"] and "symbol" in result["error"]

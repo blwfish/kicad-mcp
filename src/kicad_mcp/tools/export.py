@@ -235,17 +235,6 @@ def register_export_tools(mcp: FastMCP) -> None:
                 await ctx.info(f"Error: {e}")
             return {"error": f"Unexpected error in thumbnail generation: {e}"}
 
-    @mcp.tool()
-    async def generate_project_thumbnail(
-        project_path: str, ctx: Context | None
-    ):
-        """Generate a thumbnail of a KiCad project's PCB layout (Alias for generate_pcb_thumbnail)."""
-        print(
-            f"generate_project_thumbnail called, redirecting to "
-            f"generate_pcb_thumbnail for {project_path}"
-        )
-        return await generate_pcb_thumbnail(project_path, ctx)
-
 
 async def _generate_thumbnail_with_cli(
     pcb_file: str, ctx: Context | None

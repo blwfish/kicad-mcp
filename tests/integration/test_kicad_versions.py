@@ -5,7 +5,7 @@ Override install: KICAD_APP_PATH=$HOME/kicad-versions/9.0/KiCad.app
 
 Assertion rules:
 - Assert on JSON structure (keys, status field), not exact values.
-- Never assert on specific lib_id strings from search_components / search_footprints;
+- Never assert on specific lib_id strings from search;
   library names drift between KiCad versions. Assert the list is non-empty and each
   item has the expected schema fields (lib_id, name, description).
 - Never assert on exact DRC violation counts; assert on structural keys only.
@@ -55,12 +55,12 @@ def workspace(tmp_path):
 # Category: Library search
 # ---------------------------------------------------------------------------
 
-def test_search_components(mcp_server):
+def test_search_symbols(mcp_server):
     """Library DB rebuild + lib_id stability across KiCad versions."""
-    fn = _get_tool(mcp_server, "search_components")
-    result = _run(fn({"query": "op amp"}))
+    fn = _get_tool(mcp_server, "search")
+    result = _run(fn({"query": "op amp", "type": "symbol"}))
     assert result.get("status") == "ok"
-    components = result.get("components", [])
+    components = result.get("results", [])
     assert len(components) > 0
     for item in components[:5]:
         assert "lib_id" in item
@@ -72,10 +72,10 @@ def test_search_components(mcp_server):
 
 def test_search_footprints(mcp_server):
     """Footprint library search."""
-    fn = _get_tool(mcp_server, "search_footprints")
+    fn = _get_tool(mcp_server, "search")
     result = _run(fn({"query": "0603 resistor"}))
     assert result.get("status") == "ok"
-    footprints = result.get("footprints", [])
+    footprints = result.get("results", [])
     assert len(footprints) > 0
     for item in footprints[:5]:
         assert "name" in item
@@ -95,10 +95,10 @@ def test_schematic_create_and_save(mcp_server, workspace):
     assert result.get("status") == "ok"
 
     # Find a real resistor lib_id before adding
-    search = _get_tool(mcp_server, "search_components")
-    sr = _run(search({"query": "resistor"}))
-    assert sr.get("status") == "ok" and sr.get("components")
-    lib_id = sr["components"][0]["lib_id"]
+    search = _get_tool(mcp_server, "search")
+    sr = _run(search({"query": "resistor", "type": "symbol"}))
+    assert sr.get("status") == "ok" and sr.get("results")
+    lib_id = sr["results"][0]["lib_id"]
 
     add = _get_tool(mcp_server, "add_component")
     result = _run(add({
@@ -154,10 +154,10 @@ def test_place_footprint_and_audit(mcp_server, workspace):
     }))
 
     # Find a real footprint
-    search = _get_tool(mcp_server, "search_footprints")
+    search = _get_tool(mcp_server, "search")
     sr = _run(search({"query": "0603 resistor"}))
-    assert sr.get("status") == "ok" and sr.get("footprints")
-    fp = sr["footprints"][0]
+    assert sr.get("status") == "ok" and sr.get("results")
+    fp = sr["results"][0]
 
     place = _get_tool(mcp_server, "place_footprint")
     result = _run(place({
@@ -212,9 +212,9 @@ def test_autoroute_smoke(mcp_server, workspace):
     }))
 
     # Place two footprints and connect them via a net
-    search = _get_tool(mcp_server, "search_footprints")
+    search = _get_tool(mcp_server, "search")
     sr = _run(search({"query": "0603 resistor"}))
-    fp = sr["footprints"][0]
+    fp = sr["results"][0]
 
     for ref, x in [("R1", 15), ("R2", 35)]:
         _run(_get_tool(mcp_server, "place_footprint")({

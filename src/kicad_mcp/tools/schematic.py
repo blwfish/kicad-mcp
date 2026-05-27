@@ -377,29 +377,6 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         return {"status": "ok", "count": len(components), "components": components}
 
     @mcp.tool()
-    def search_components(query: str, library: str | None = None, limit: int = 20) -> dict:
-        """Search for components in KiCad symbol libraries.
-
-        Args:
-            query: Search term (e.g., resistor, op amp, 555).
-            library: Optional library to search in.
-            limit: Maximum number of results.
-        """
-        try:
-            from kicad_mcp.utils.library_index import get_library_index
-
-            index = get_library_index()
-
-            if index.symbols_stale():
-                index.rebuild_symbols()
-
-            results = index.search_symbols(query, library=library, limit=limit)
-            return {"status": "ok", "count": len(results), "results": results}
-        except Exception as e:
-            logger.error("Component search failed: %s", e)
-            return {"error": f"Component search failed: {e}"}
-
-    @mcp.tool()
     def filter_components(
         lib_id: str | None = None,
         value: str | None = None,

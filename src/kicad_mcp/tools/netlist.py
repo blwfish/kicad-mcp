@@ -11,7 +11,7 @@ from fastmcp import FastMCP, Context
 logger = logging.getLogger(__name__)
 
 from kicad_mcp.utils.file_utils import get_project_files
-from kicad_mcp.utils.netlist_parser import analyze_netlist, extract_netlist
+from kicad_mcp.utils.netlist_parser import analyze_netlist, extract_netlist as _parse_netlist
 
 
 def register_netlist_tools(mcp: FastMCP) -> None:
@@ -22,32 +22,50 @@ def register_netlist_tools(mcp: FastMCP) -> None:
     """
 
     @mcp.tool()
-    async def extract_schematic_netlist(
-        schematic_path: str, ctx: Context | None
+    async def extract_netlist(
+        path: str, ctx: Context | None
     ) -> Dict[str, Any]:
-        """Extract netlist information from a KiCad schematic.
+        """Extract netlist information from a KiCad schematic or project.
 
-        This tool parses a KiCad schematic file and extracts comprehensive
-        netlist information including components, connections, and labels.
+        Dispatches on file extension: ``.kicad_sch`` is parsed directly;
+        ``.kicad_pro`` is resolved to its associated schematic first.
+        Returns components, nets, and analysis (see analyze_netlist).
 
         Args:
-            schematic_path: Path to the KiCad schematic file (.kicad_sch)
-            ctx: MCP context for progress reporting
-
-        Returns:
-            Dictionary with netlist information
+            path: Path to a ``.kicad_sch`` schematic or ``.kicad_pro`` project file.
+            ctx: MCP context for progress reporting.
         """
-        logger.debug(f"Extracting netlist from schematic: {schematic_path}")
-
-        if not os.path.exists(schematic_path):
-            logger.warning(f"Schematic file not found: {schematic_path}")
+        if not os.path.exists(path):
+            logger.warning(f"File not found: {path}")
             if ctx:
-                ctx.info(f"Schematic file not found: {schematic_path}")
+                ctx.info(f"File not found: {path}")
+            return {"success": False, "error": f"File not found: {path}"}
+
+        ext = os.path.splitext(path)[1].lower()
+        project_path: str | None = None
+        schematic_path: str
+
+        if ext == ".kicad_pro":
+            project_path = path
+            try:
+                files = get_project_files(path)
+            except Exception as e:
+                logger.warning(f"Error reading project: {e}")
+                if ctx:
+                    ctx.info(f"Error reading project: {e}")
+                return {"success": False, "error": str(e)}
+            if "schematic" not in files:
+                return {"success": False, "error": "Schematic file not found in project"}
+            schematic_path = files["schematic"]
+        elif ext == ".kicad_sch":
+            schematic_path = path
+        else:
             return {
                 "success": False,
-                "error": f"Schematic file not found: {schematic_path}",
+                "error": f"Unsupported file type {ext!r} (expected .kicad_sch or .kicad_pro)",
             }
 
+        logger.debug(f"Extracting netlist from schematic: {schematic_path}")
         if ctx:
             await ctx.report_progress(10, 100)
             ctx.info(f"Loading schematic file: {os.path.basename(schematic_path)}")
@@ -57,7 +75,7 @@ def register_netlist_tools(mcp: FastMCP) -> None:
                 await ctx.report_progress(20, 100)
                 ctx.info("Parsing schematic structure...")
 
-            netlist_data = extract_netlist(schematic_path)
+            netlist_data = _parse_netlist(schematic_path)
 
             if "error" in netlist_data:
                 logger.warning(f"Error extracting netlist: {netlist_data['error']}")
@@ -81,7 +99,7 @@ def register_netlist_tools(mcp: FastMCP) -> None:
             if ctx:
                 await ctx.report_progress(90, 100)
 
-            result = {
+            result: Dict[str, Any] = {
                 "success": True,
                 "schematic_path": schematic_path,
                 "component_count": netlist_data["component_count"],
@@ -90,6 +108,8 @@ def register_netlist_tools(mcp: FastMCP) -> None:
                 "nets": netlist_data["nets"],
                 "analysis": analysis_results,
             }
+            if project_path is not None:
+                result["project_path"] = project_path
 
             if ctx:
                 await ctx.report_progress(100, 100)
@@ -101,71 +121,6 @@ def register_netlist_tools(mcp: FastMCP) -> None:
             logger.warning(f"Error extracting netlist: {e}")
             if ctx:
                 ctx.info(f"Error extracting netlist: {e}")
-            return {"success": False, "error": str(e)}
-
-    @mcp.tool()
-    async def extract_project_netlist(
-        project_path: str, ctx: Context | None
-    ) -> Dict[str, Any]:
-        """Extract netlist from a KiCad project's schematic.
-
-        This tool finds the schematic associated with a KiCad project
-        and extracts its netlist information.
-
-        Args:
-            project_path: Path to the KiCad project file (.kicad_pro)
-            ctx: MCP context for progress reporting
-
-        Returns:
-            Dictionary with netlist information
-        """
-        logger.debug(f"Extracting netlist for project: {project_path}")
-
-        if not os.path.exists(project_path):
-            logger.warning(f"Project not found: {project_path}")
-            if ctx:
-                ctx.info(f"Project not found: {project_path}")
-            return {
-                "success": False,
-                "error": f"Project not found: {project_path}",
-            }
-
-        if ctx:
-            await ctx.report_progress(10, 100)
-
-        try:
-            files = get_project_files(project_path)
-
-            if "schematic" not in files:
-                logger.warning("Schematic file not found in project")
-                if ctx:
-                    ctx.info("Schematic file not found in project")
-                return {
-                    "success": False,
-                    "error": "Schematic file not found in project",
-                }
-
-            schematic_path = files["schematic"]
-            logger.debug(f"Found schematic file: {schematic_path}")
-            if ctx:
-                ctx.info(
-                    f"Found schematic file: {os.path.basename(schematic_path)}"
-                )
-
-            if ctx:
-                await ctx.report_progress(20, 100)
-
-            result = await extract_schematic_netlist(schematic_path, ctx)
-
-            if "success" in result and result["success"]:
-                result["project_path"] = project_path
-
-            return result
-
-        except Exception as e:
-            logger.warning(f"Error extracting project netlist: {e}")
-            if ctx:
-                ctx.info(f"Error extracting project netlist: {e}")
             return {"success": False, "error": str(e)}
 
     @mcp.tool()
@@ -202,7 +157,7 @@ def register_netlist_tools(mcp: FastMCP) -> None:
             )
 
         try:
-            netlist_data = extract_netlist(schematic_path)
+            netlist_data = _parse_netlist(schematic_path)
 
             if "error" in netlist_data:
                 logger.warning(f"Error extracting netlist: {netlist_data['error']}")
@@ -347,7 +302,7 @@ def register_netlist_tools(mcp: FastMCP) -> None:
                     f"Extracting netlist to find connections for {component_ref}..."
                 )
 
-            netlist_data = extract_netlist(schematic_path)
+            netlist_data = _parse_netlist(schematic_path)
 
             if "error" in netlist_data:
                 logger.warning(f"Failed to extract netlist: {netlist_data['error']}")
