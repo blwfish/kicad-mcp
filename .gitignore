@@ -16,3 +16,6 @@ CLAUDE.md
 .claude/
 .claude.json
 .DS_Store
+
+# Self-hosted GitHub Actions runner install — runtime artifact, not source
+actions-runner/
