@@ -819,3 +819,88 @@ class TestAuditFootprintOverlaps:
         assert result["overlap_count"] == 3
         assert result["error_count"] == 2
         assert result["warning_count"] == 1
+
+    # -- min_clearance boundary tests ----------------------------------------
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_min_clearance_zero_param_passed_through(self, mock_run, keepout_server, pcb_file):
+        """min_clearance_mm=0 is passed as-is to the script params."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "All 2 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file, min_clearance_mm=0.0)
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == 0.0
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_min_clearance_epsilon_param_passed_through(self, mock_run, keepout_server, pcb_file):
+        """min_clearance_mm=1e-6 (just above zero) is passed to script params."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "All 2 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file, min_clearance_mm=1e-6)
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == pytest.approx(1e-6)
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_min_clearance_half_mm_param_passed_through(self, mock_run, keepout_server, pcb_file):
+        """min_clearance_mm=0.5 is passed to script params."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "All 2 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file, min_clearance_mm=0.5)
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == pytest.approx(0.5)
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_script_uses_clearance_violation_helper(self, mock_run, keepout_server, pcb_file):
+        """The generated script uses clearance_violation() instead of inline expand+gate."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 0, "pairs_checked": 0,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "All 0 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        fn(pcb_file, min_clearance_mm=0.5)
+        script = mock_run.call_args[0][0]
+        # The canonical helper must be present in the script
+        assert "clearance_violation" in script
+        # The old inline pattern should NOT appear
+        assert "min_clearance > 0 and rects_overlap" not in script
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_script_clearance_violation_zero_response_no_warnings(
+            self, mock_run, keepout_server, pcb_file):
+        """When min_clearance=0 and footprints are only touching, no warnings emitted."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "All 2 footprints are clear of each other",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file, min_clearance_mm=0.0)
+        assert result["warning_count"] == 0
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_clearance_violation_at_threshold_produces_no_warning(
+            self, mock_run, keepout_server, pcb_file):
+        """Gap exactly equal to min_clearance is clean — no warning expected."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 2 footprints are clear of each other (min clearance 0.5 mm)",
+        }
+        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
+        result = fn(pcb_file, min_clearance_mm=0.5)
+        assert result["warning_count"] == 0
+        assert result["overlap_count"] == 0

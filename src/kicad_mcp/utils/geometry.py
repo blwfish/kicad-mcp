@@ -90,6 +90,43 @@ def signed_gap_mm(a: dict, b: dict) -> float:
     return max(gap_x, gap_y)
 
 
+def expand_bbox(rect: dict, margin: float) -> dict:
+    """Return a new dict-format rect expanded by ``margin`` on all four sides.
+
+    A positive margin grows the rect; a negative margin shrinks it (which may
+    produce an inverted rect where ``x_min_mm > x_max_mm`` — callers that need
+    to shrink-then-test should guard against this).  A zero margin is a no-op
+    and returns a copy.
+    """
+    return {
+        "x_min_mm": rect["x_min_mm"] - margin,
+        "y_min_mm": rect["y_min_mm"] - margin,
+        "x_max_mm": rect["x_max_mm"] + margin,
+        "y_max_mm": rect["y_max_mm"] + margin,
+    }
+
+
+def clearance_violation(a: dict, b: dict, min_clearance_mm: float) -> bool:
+    """Return True if rects ``a`` and ``b`` violate ``min_clearance_mm``.
+
+    Semantics match KiCad DRC's non-strict convention:
+
+    - Any contact (touching or overlap, gap <= 0) is always a violation
+      regardless of ``min_clearance_mm``.
+    - A gap strictly less than ``min_clearance_mm`` (positive threshold) is
+      a violation even when the rects are separated.
+    - A gap exactly equal to ``min_clearance_mm`` is *clean* (the threshold
+      is exclusive on the passing side).
+
+    When ``min_clearance_mm == 0`` this is equivalent to :func:`rects_overlap`
+    — touching (gap == 0) and any overlap (gap < 0) both return ``True``.
+    When ``min_clearance_mm > 0`` the touching case still fires via the
+    ``gap <= 0`` sub-clause.
+    """
+    gap = signed_gap_mm(a, b)
+    return gap <= 0 or gap < min_clearance_mm
+
+
 # ---------------------------------------------------------------------------
 # Tuple-format primitives
 # ---------------------------------------------------------------------------
@@ -149,4 +186,16 @@ def signed_gap_mm(a, b):
     if gap_x >= 0 or gap_y >= 0:
         return max(gap_x, gap_y)
     return max(gap_x, gap_y)
+
+def expand_bbox(rect, margin):
+    return {
+        "x_min_mm": rect["x_min_mm"] - margin,
+        "y_min_mm": rect["y_min_mm"] - margin,
+        "x_max_mm": rect["x_max_mm"] + margin,
+        "y_max_mm": rect["y_max_mm"] + margin,
+    }
+
+def clearance_violation(a, b, min_clearance_mm):
+    gap = signed_gap_mm(a, b)
+    return gap <= 0 or gap < min_clearance_mm
 """
