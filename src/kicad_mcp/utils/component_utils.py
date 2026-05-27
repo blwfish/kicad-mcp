@@ -44,16 +44,16 @@ def extract_voltage_from_regulator(value: str) -> str:
     ]
 
     for pattern, negative in voltage_patterns:
-        match = re.search(pattern, value, re.IGNORECASE)
-        if match:
+        m = re.search(pattern, value, re.IGNORECASE)
+        if m:
             try:
-                voltage = float(match.group(1))
-                if 0 < voltage < 50:
+                v = float(m.group(1))
+                if 0 < v < 50:
                     sign = "-" if negative else ""
-                    if voltage.is_integer():
-                        return f"{sign}{int(voltage)}V"
+                    if v.is_integer():
+                        return f"{sign}{int(v)}V"
                     else:
-                        return f"{sign}{voltage}V"
+                        return f"{sign}{v}V"
             except ValueError:
                 pass
 

@@ -936,6 +936,7 @@ def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
         kicad_cli = get_kicad_cli_path(required=True)
     except KiCadCLIError as e:
         return {"error": str(e)}
+    assert kicad_cli is not None  # required=True raises above if CLI not found
 
     pcb_dir = os.path.dirname(os.path.abspath(pcb_path))
     output_dir = os.path.join(pcb_dir, "gerbers")

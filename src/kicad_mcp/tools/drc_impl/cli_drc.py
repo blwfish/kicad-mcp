@@ -47,7 +47,7 @@ async def run_drc_via_cli(
 
             if ctx:
                 await ctx.report_progress(50, 100)
-                ctx.info("Running DRC using KiCad CLI...")
+                await ctx.info("Running DRC using KiCad CLI...")
 
             cmd = [
                 kicad_cli,
@@ -87,7 +87,7 @@ async def run_drc_via_cli(
             print(f"DRC completed with {violation_count} violations")
             if ctx:
                 await ctx.report_progress(70, 100)
-                ctx.info(f"DRC completed with {violation_count} violations")
+                await ctx.info(f"DRC completed with {violation_count} violations")
 
             # Categorize violations by rule_id (stable) with message fallback
             error_types: dict[str, int] = {}
