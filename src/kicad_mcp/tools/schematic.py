@@ -573,12 +573,12 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         The raw data uses ``sexpdata.Symbol`` objects where the tag name is
         accessed via ``.value()`` (a method call, not a property).
         """
-        import sexpdata as _sexpdata
+        import sexpdata as _sexpdata  # type: ignore[import-untyped]
 
         def _tag(elem) -> str:
             """Extract tag string from a sexpdata.Symbol or plain string."""
             if isinstance(elem, _sexpdata.Symbol):
-                return elem.value()
+                return str(elem.value())
             return str(elem).strip('"')
 
         unit_pins: dict[int, list[str]] = {}
@@ -839,7 +839,7 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         def _wire(x1: float, y1: float, x2: float, y2: float) -> str | None:
             if abs(x1 - x2) < 1e-6 and abs(y1 - y2) < 1e-6:
                 return None
-            uuid = sch.add_wire(start=(x1, y1), end=(x2, y2))
+            uuid: str = sch.add_wire(start=(x1, y1), end=(x2, y2))
             segments.append({"start": [x1, y1], "end": [x2, y2], "uuid": uuid})
             return uuid
 

@@ -63,6 +63,7 @@ def load_project_json(project_path: str) -> dict[str, Any] | None:
     """
     try:
         with open(project_path) as f:
-            return json.load(f)
+            data: dict[str, Any] = json.load(f)
+            return data
     except Exception:
         return None
