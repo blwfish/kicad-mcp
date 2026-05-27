@@ -119,13 +119,20 @@ def register_export_tools(mcp: FastMCP) -> None:
             # retry per-step instead of parsing a joined string.
             return {"error": f"{len(errors)} export step(s) failed", "errors": errors, "error_count": len(errors)}
 
-        # Collect output files
-        gerber_files = sorted(glob.glob(os.path.join(output_dir, "*.gbr")))
-        drill_files = sorted(
-            glob.glob(os.path.join(output_dir, "*.drl"))
-            + glob.glob(os.path.join(output_dir, "*.xln"))
+        # Collect output files. output_dir is freshly created per export
+        # and contains only kicad-cli output, so globbing everything in it
+        # is correct — picks up *.gbr (modern KiCad), *.gtl/.gbl/.gto/etc.
+        # (RS-274X layer extensions), *.drl/.xln (drill), *.gbrjob (fab
+        # job manifest), and anything else kicad-cli produces. The earlier
+        # *.gbr-only glob silently shipped fab packages missing layers.
+        all_files = sorted(
+            os.path.join(output_dir, f)
+            for f in os.listdir(output_dir)
+            if os.path.isfile(os.path.join(output_dir, f))
         )
-        all_files = gerber_files + drill_files
+        # Classify for the response — informational only; all files go into the ZIP.
+        gerber_files = [f for f in all_files if not (f.endswith(".drl") or f.endswith(".xln"))]
+        drill_files = [f for f in all_files if f.endswith(".drl") or f.endswith(".xln")]
 
         if not all_files:
             return {"error": "No output files generated — PCB may be empty"}
