@@ -489,9 +489,9 @@ print(json.dumps({
         # Determine next available net code
         max_code = max(existing_nets.values()) if existing_nets else 0
 
-        nets_created = []
-        nets_existing = []
-        skipped_unconnected = []
+        nets_created: list[str] = []
+        nets_existing: list[str] = []
+        skipped_unconnected: list[str] = []
 
         for net_name in net_definitions:
             if net_name in existing_nets:

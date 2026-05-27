@@ -31,23 +31,18 @@ jobs:
         # only needs the symbol library package.
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends kicad-symbols
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Install package + test deps
-        run: |
-          uv pip install --system -e .
-          uv pip install --system pytest pytest-asyncio
+      - name: Install package + dev deps (from lockfile)
+        run: uv sync --frozen --group dev
 
       - name: Run tests
         env:
           KICAD_SYMBOL_DIR: /usr/share/kicad/symbols
-        run: python -m pytest tests/ -q
+        run: uv run python -m pytest tests/ -q
 
   # Umbrella job — single check named "pytest" that branch protection can
   # require regardless of how the matrix above changes shape.  Adding or
@@ -67,3 +62,20 @@ jobs:
           fi
           echo "Matrix result: ${{ needs.matrix.result }}"
           exit 1
+
+  mypy:
+    name: check-mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install package + dev deps (from lockfile)
+        run: uv sync --frozen --group dev
+
+      - name: Run mypy
+        run: uv run mypy src/kicad_mcp/

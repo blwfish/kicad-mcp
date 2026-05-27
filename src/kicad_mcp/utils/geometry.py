@@ -32,7 +32,7 @@ from __future__ import annotations
 # Dict-format primitives
 # ---------------------------------------------------------------------------
 
-def rects_overlap(a: dict, b: dict) -> bool:
+def rects_overlap(a: dict[str, float], b: dict[str, float]) -> bool:
     """Non-strict overlap test on dict-format rects.
 
     Two rects sharing an edge return ``True`` (touching counts as overlap).
@@ -42,7 +42,7 @@ def rects_overlap(a: dict, b: dict) -> bool:
             a["y_min_mm"] <= b["y_max_mm"] and a["y_max_mm"] >= b["y_min_mm"])
 
 
-def rect_inside(inner: dict, outer: dict) -> bool:
+def rect_inside(inner: dict[str, float], outer: dict[str, float]) -> bool:
     """Non-strict containment on dict-format rects.
 
     ``inner`` is inside ``outer`` if every edge of ``inner`` is at or inside
@@ -53,7 +53,7 @@ def rect_inside(inner: dict, outer: dict) -> bool:
             inner["y_min_mm"] >= outer["y_min_mm"] and inner["y_max_mm"] <= outer["y_max_mm"])
 
 
-def overlap_area(a: dict, b: dict) -> float:
+def overlap_area(a: dict[str, float], b: dict[str, float]) -> float:
     """Area of overlap between two dict-format rects, clipped to ``>= 0``.
 
     Returns ``0.0`` when rects do not overlap or only touch.  Sign of overlap
@@ -65,7 +65,7 @@ def overlap_area(a: dict, b: dict) -> float:
     return round(dx * dy, 2)
 
 
-def signed_gap_mm(a: dict, b: dict) -> float:
+def signed_gap_mm(a: dict[str, float], b: dict[str, float]) -> float:
     """Signed orthogonal gap between two dict-format rects.
 
     Returns:
@@ -90,7 +90,7 @@ def signed_gap_mm(a: dict, b: dict) -> float:
     return max(gap_x, gap_y)
 
 
-def expand_bbox(rect: dict, margin: float) -> dict:
+def expand_bbox(rect: dict[str, float], margin: float) -> dict[str, float]:
     """Return a new dict-format rect expanded by ``margin`` on all four sides.
 
     A positive margin grows the rect; a negative margin shrinks it (which may
@@ -106,7 +106,7 @@ def expand_bbox(rect: dict, margin: float) -> dict:
     }
 
 
-def clearance_violation(a: dict, b: dict, min_clearance_mm: float) -> bool:
+def clearance_violation(a: dict[str, float], b: dict[str, float], min_clearance_mm: float) -> bool:
     """Return True if rects ``a`` and ``b`` violate ``min_clearance_mm``.
 
     Semantics match KiCad DRC's non-strict convention:
@@ -131,7 +131,7 @@ def clearance_violation(a: dict, b: dict, min_clearance_mm: float) -> bool:
 # Tuple-format primitives
 # ---------------------------------------------------------------------------
 
-def aabb_overlap(a: tuple, b: tuple) -> bool:
+def aabb_overlap(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
     """Non-strict overlap test on tuple-format rects ``(x_min, y_min, x_max, y_max)``.
 
     Two rects sharing an edge return ``True``.
@@ -139,7 +139,7 @@ def aabb_overlap(a: tuple, b: tuple) -> bool:
     return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
 
 
-def aabb_inside(inner: tuple, outer: tuple) -> bool:
+def aabb_inside(inner: tuple[float, ...], outer: tuple[float, ...]) -> bool:
     """Non-strict containment on tuple-format rects.
 
     Touching the boundary counts as inside.

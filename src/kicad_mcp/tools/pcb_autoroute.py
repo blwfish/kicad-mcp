@@ -372,7 +372,7 @@ def _run_full_autoroute(
         # Step 2: Run FreeRouter passes
         best_ses = None
         best_incomplete = float("inf")
-        pass_results = []
+        pass_results: list[dict] = []
 
         for pass_num in range(1, passes + 1):
             # Check cancellation before each pass

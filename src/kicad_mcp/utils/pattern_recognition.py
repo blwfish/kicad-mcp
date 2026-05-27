@@ -521,7 +521,7 @@ def identify_sensor_interfaces(
     Returns:
         List of identified sensor interface circuits
     """
-    sensor_interfaces = []
+    sensor_interfaces: list[dict[str, Any]] = []
 
     # Common sensor IC patterns
     sensor_patterns = {
