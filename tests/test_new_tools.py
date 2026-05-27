@@ -387,12 +387,15 @@ class TestExportGerbers:
         return mcp
 
     def test_tool_registered(self, export_server):
-        fn = _get_tool_fn(export_server, "export_gerbers")
+        fn = _get_tool_fn(export_server, "export")
         assert fn is not None
 
     def test_file_not_found(self, export_server):
-        fn = _get_tool_fn(export_server, "export_gerbers")
-        result = fn("/nonexistent/board.kicad_pcb")
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path="/nonexistent/board.kicad_pcb",
+        ))
         assert "error" in result
 
     @patch("kicad_mcp.tools.export.get_kicad_cli_path")
@@ -420,8 +423,11 @@ class TestExportGerbers:
 
         mock_run.side_effect = fake_run
 
-        fn = _get_tool_fn(export_server, "export_gerbers")
-        result = fn(str(pcb), output_dir=str(gerber_dir))
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path=str(pcb), output_dir=str(gerber_dir),
+        ))
 
         assert result["status"] == "ok"
         assert result["gerber_count"] == 3
@@ -456,8 +462,11 @@ class TestExportGerbers:
 
         mock_run.side_effect = fake_run
 
-        fn = _get_tool_fn(export_server, "export_gerbers")
-        result = fn(str(pcb), output_dir=str(gerber_dir), create_zip=False)
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path=str(pcb), output_dir=str(gerber_dir), create_zip=False,
+        ))
 
         assert result["status"] == "ok"
         assert "zip_path" not in result
@@ -484,8 +493,10 @@ class TestExportGerbers:
 
         mock_run.side_effect = fake_run
 
-        fn = _get_tool_fn(export_server, "export_gerbers")
-        result = fn(str(pcb))
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=str(pcb),
+        ))
 
         assert result["status"] == "ok"
         assert result["output_dir"] == str(tmp_path / "gerbers")

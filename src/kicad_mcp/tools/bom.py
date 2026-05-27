@@ -1,5 +1,8 @@
-"""
-Bill of Materials (BOM) processing tools for KiCad projects.
+"""BOM operation implementations.
+
+Tool surface lives on the `analyze` router (operation="bom") and the
+`export` router (operation="bom_csv"). This module contains the impls
+and the parser/analyzer helpers they share.
 """
 import csv
 import json
@@ -15,278 +18,225 @@ try:
 except ImportError:
     pd = None
 
-from fastmcp import FastMCP, Context
+from fastmcp import Context
 
 from kicad_mcp.utils.file_utils import get_project_files
 
 
-def register_bom_tools(mcp: FastMCP) -> None:
-    """Register BOM-related tools with the MCP server.
+async def _op_analyze_bom(
+    project_path: str,
+    ctx: Context | None,
+    column_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Analyze a KiCad project's Bill of Materials."""
+    print(f"Analyzing BOM for project: {project_path}")
 
-    Args:
-        mcp: The FastMCP server instance
-    """
-
-    @mcp.tool()
-    async def analyze_bom(
-        project_path: str,
-        ctx: Context | None,
-        column_map: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
-        """Analyze a KiCad project's Bill of Materials.
-
-        Looks for BOM files related to a KiCad project and provides analysis
-        including component counts, categories, cost estimates, and any
-        supplier metadata (MPN, manufacturer, LCSC, etc.) present in the BOM.
-
-        Args:
-            project_path: Path to the KiCad project file (.kicad_pro)
-            ctx: MCP context for progress reporting
-            column_map: Optional override of column-name detection. Keys are
-                canonical field names ("reference", "value", "quantity",
-                "footprint", "cost", "category", "mpn", "manufacturer",
-                "lcsc", "datasheet", "description"); values are the actual
-                column names in the BOM. Fields not in column_map fall
-                back to heuristic detection.
-
-        Returns:
-            Dictionary with BOM analysis results. Per-file analysis includes:
-            - counts, categories, cost data
-            - detected_fields: which BOM columns were classified as which field
-            - all_columns: full list of column names in the BOM (so nothing
-              is silently invisible to the caller)
-            - analysis_error or stage_errors: present if any analysis stage
-              failed (counts may still be partial)
-        """
-        print(f"Analyzing BOM for project: {project_path}")
-
-        if not os.path.exists(project_path):
-            print(f"Project not found: {project_path}")
-            if ctx:
-                ctx.info(f"Project not found: {project_path}")
-            return {"success": False, "error": f"Project not found: {project_path}"}
-
+    if not os.path.exists(project_path):
+        print(f"Project not found: {project_path}")
         if ctx:
-            await ctx.report_progress(10, 100)
-            ctx.info(
-                f"Looking for BOM files related to {os.path.basename(project_path)}"
-            )
+            ctx.info(f"Project not found: {project_path}")
+        return {"success": False, "error": f"Project not found: {project_path}"}
 
-        files = get_project_files(project_path)
+    if ctx:
+        await ctx.report_progress(10, 100)
+        ctx.info(
+            f"Looking for BOM files related to {os.path.basename(project_path)}"
+        )
 
-        # Look for BOM files
-        bom_files = {}
-        for file_type, file_path in files.items():
-            if "bom" in file_type.lower() or file_path.lower().endswith(".csv"):
-                bom_files[file_type] = file_path
-                print(f"Found potential BOM file: {file_path}")
+    files = get_project_files(project_path)
 
-        if not bom_files:
-            print("No BOM files found for project")
-            if ctx:
-                ctx.info("No BOM files found for project")
-            return {
-                "success": False,
-                "error": "No BOM files found. Export a BOM from KiCad first.",
-                "project_path": project_path,
-            }
+    bom_files = {}
+    for file_type, file_path in files.items():
+        if "bom" in file_type.lower() or file_path.lower().endswith(".csv"):
+            bom_files[file_type] = file_path
+            print(f"Found potential BOM file: {file_path}")
 
+    if not bom_files:
+        print("No BOM files found for project")
         if ctx:
-            await ctx.report_progress(30, 100)
-
-        results: Dict[str, Any] = {
-            "success": True,
+            ctx.info("No BOM files found for project")
+        return {
+            "success": False,
+            "error": "No BOM files found. Export a BOM from KiCad first.",
             "project_path": project_path,
-            "bom_files": {},
-            "component_summary": {},
         }
 
-        total_unique_components = 0
-        total_components = 0
-        file_error_count = 0
-        file_parse_skipped = 0
+    if ctx:
+        await ctx.report_progress(30, 100)
 
-        for file_type, file_path in bom_files.items():
-            try:
-                if ctx:
-                    ctx.info(f"Analyzing {os.path.basename(file_path)}")
+    results: Dict[str, Any] = {
+        "success": True,
+        "project_path": project_path,
+        "bom_files": {},
+        "component_summary": {},
+    }
 
-                bom_data, format_info = _parse_bom_file(file_path)
+    total_unique_components = 0
+    total_components = 0
+    file_error_count = 0
+    file_parse_skipped = 0
 
-                if not bom_data:
-                    print(f"Failed to parse BOM file: {file_path}")
-                    file_parse_skipped += 1
-                    continue
-
-                analysis = _analyze_bom_data(bom_data, format_info, column_map=column_map)
-
-                results["bom_files"][file_type] = {
-                    "path": file_path,
-                    "format": format_info,
-                    "analysis": analysis,
-                }
-
-                total_unique_components += analysis["unique_component_count"]
-                total_components += analysis["total_component_count"]
-
-                print(f"Successfully analyzed BOM file: {file_path}")
-
-            except (OSError, ValueError, KeyError) as e:
-                # OSError = file/IO; ValueError = parse/CSV; KeyError = schema.
-                # Anything else (AttributeError, ImportError) propagates as a
-                # programming bug. file_error_count is surfaced below so a
-                # caller scanning only "results" doesn't miss partial failure.
-                print(f"Error analyzing BOM file {file_path}: {e}")
-                file_error_count += 1
-                results["bom_files"][file_type] = {
-                    "path": file_path,
-                    "error": f"{type(e).__name__}: {e}",
-                }
-
-        # Surface partial-failure counts so callers don't have to scan the
-        # bom_files dict for "error" keys.
-        if file_error_count or file_parse_skipped:
-            results["file_error_count"] = file_error_count
-            results["file_parse_skipped"] = file_parse_skipped
-
-        if ctx:
-            await ctx.report_progress(70, 100)
-
-        # Generate overall component summary
-        if total_components > 0:
-            results["component_summary"] = {
-                "total_unique_components": total_unique_components,
-                "total_components": total_components,
-            }
-
-            all_categories: dict[str, int] = {}
-            for file_type, file_info in results["bom_files"].items():
-                if "analysis" in file_info and "categories" in file_info["analysis"]:
-                    for category, count in file_info["analysis"]["categories"].items():
-                        if category not in all_categories:
-                            all_categories[category] = 0
-                        all_categories[category] += count
-
-            results["component_summary"]["categories"] = all_categories
-
-            total_cost = 0.0
-            cost_available = False
-            for file_type, file_info in results["bom_files"].items():
-                if "analysis" in file_info and "total_cost" in file_info["analysis"]:
-                    if file_info["analysis"]["total_cost"] > 0:
-                        total_cost += file_info["analysis"]["total_cost"]
-                        cost_available = True
-
-            if cost_available:
-                results["component_summary"]["total_cost"] = round(total_cost, 2)
-                currency = next(
-                    (
-                        file_info["analysis"].get("currency", "USD")
-                        for file_type, file_info in results["bom_files"].items()
-                        if "analysis" in file_info
-                        and "currency" in file_info["analysis"]
-                    ),
-                    "USD",
-                )
-                results["component_summary"]["currency"] = currency
-
-        if ctx:
-            await ctx.report_progress(100, 100)
-            ctx.info(f"BOM analysis complete: found {total_components} components")
-
-        return results
-
-    @mcp.tool()
-    async def export_bom_csv(
-        project_path: str, ctx: Context | None
-    ) -> Dict[str, Any]:
-        """Export a Bill of Materials for a KiCad project.
-
-        This tool attempts to generate a CSV BOM file for a KiCad project.
-        It requires KiCad to be installed with the appropriate command-line tools.
-
-        Args:
-            project_path: Path to the KiCad project file (.kicad_pro)
-            ctx: MCP context for progress reporting
-
-        Returns:
-            Dictionary with export results
-        """
-        print(f"Exporting BOM for project: {project_path}")
-
-        if not os.path.exists(project_path):
-            print(f"Project not found: {project_path}")
-            if ctx:
-                ctx.info(f"Project not found: {project_path}")
-            return {"success": False, "error": f"Project not found: {project_path}"}
-
-        if ctx:
-            await ctx.report_progress(10, 100)
-
-        files = get_project_files(project_path)
-
-        if "schematic" not in files:
-            print("Schematic file not found in project")
-            if ctx:
-                ctx.info("Schematic file not found in project")
-            return {"success": False, "error": "Schematic file not found"}
-
-        schematic_file = files["schematic"]
-        project_dir = os.path.dirname(project_path)
-        project_name = os.path.basename(project_path)[:-10]
-
-        if ctx:
-            await ctx.report_progress(20, 100)
-            ctx.info(f"Found schematic file: {os.path.basename(schematic_file)}")
-
-        # Try CLI export
+    for file_type, file_path in bom_files.items():
         try:
             if ctx:
-                ctx.info("Attempting to export BOM using command-line tools...")
-            export_result = await _export_bom_with_cli(
-                schematic_file, project_dir, project_name, ctx
+                ctx.info(f"Analyzing {os.path.basename(file_path)}")
+
+            bom_data, format_info = _parse_bom_file(file_path)
+
+            if not bom_data:
+                print(f"Failed to parse BOM file: {file_path}")
+                file_parse_skipped += 1
+                continue
+
+            analysis = _analyze_bom_data(bom_data, format_info, column_map=column_map)
+
+            results["bom_files"][file_type] = {
+                "path": file_path,
+                "format": format_info,
+                "analysis": analysis,
+            }
+
+            total_unique_components += analysis["unique_component_count"]
+            total_components += analysis["total_component_count"]
+
+            print(f"Successfully analyzed BOM file: {file_path}")
+
+        except (OSError, ValueError, KeyError) as e:
+            # OSError = file/IO; ValueError = parse/CSV; KeyError = schema.
+            # Anything else (AttributeError, ImportError) propagates as a
+            # programming bug. file_error_count is surfaced below so a
+            # caller scanning only "results" doesn't miss partial failure.
+            print(f"Error analyzing BOM file {file_path}: {e}")
+            file_error_count += 1
+            results["bom_files"][file_type] = {
+                "path": file_path,
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    # Surface partial-failure counts so callers don't have to scan the
+    # bom_files dict for "error" keys.
+    if file_error_count or file_parse_skipped:
+        results["file_error_count"] = file_error_count
+        results["file_parse_skipped"] = file_parse_skipped
+
+    if ctx:
+        await ctx.report_progress(70, 100)
+
+    if total_components > 0:
+        results["component_summary"] = {
+            "total_unique_components": total_unique_components,
+            "total_components": total_components,
+        }
+
+        all_categories: dict[str, int] = {}
+        for file_type, file_info in results["bom_files"].items():
+            if "analysis" in file_info and "categories" in file_info["analysis"]:
+                for category, count in file_info["analysis"]["categories"].items():
+                    if category not in all_categories:
+                        all_categories[category] = 0
+                    all_categories[category] += count
+
+        results["component_summary"]["categories"] = all_categories
+
+        total_cost = 0.0
+        cost_available = False
+        for file_type, file_info in results["bom_files"].items():
+            if "analysis" in file_info and "total_cost" in file_info["analysis"]:
+                if file_info["analysis"]["total_cost"] > 0:
+                    total_cost += file_info["analysis"]["total_cost"]
+                    cost_available = True
+
+        if cost_available:
+            results["component_summary"]["total_cost"] = round(total_cost, 2)
+            currency = next(
+                (
+                    file_info["analysis"].get("currency", "USD")
+                    for file_type, file_info in results["bom_files"].items()
+                    if "analysis" in file_info
+                    and "currency" in file_info["analysis"]
+                ),
+                "USD",
             )
-        except Exception as e:
-            print(f"Error exporting BOM with CLI: {e}")
-            if ctx:
-                ctx.info(f"Error using command-line tools: {e}")
-            export_result = {"success": False, "error": str(e)}
+            results["component_summary"]["currency"] = currency
 
+    if ctx:
+        await ctx.report_progress(100, 100)
+        ctx.info(f"BOM analysis complete: found {total_components} components")
+
+    return results
+
+
+async def _op_export_bom_csv(
+    project_path: str, ctx: Context | None
+) -> Dict[str, Any]:
+    """Export a CSV BOM from the project's schematic."""
+    print(f"Exporting BOM for project: {project_path}")
+
+    if not os.path.exists(project_path):
+        print(f"Project not found: {project_path}")
         if ctx:
-            await ctx.report_progress(100, 100)
+            ctx.info(f"Project not found: {project_path}")
+        return {"success": False, "error": f"Project not found: {project_path}"}
 
-        if export_result.get("success", False):
-            if ctx:
-                ctx.info(
-                    f"BOM exported successfully to "
-                    f"{export_result.get('output_file', 'unknown location')}"
-                )
-        else:
-            if ctx:
-                ctx.info(
-                    f"Failed to export BOM: "
-                    f"{export_result.get('error', 'Unknown error')}"
-                )
+    if ctx:
+        await ctx.report_progress(10, 100)
 
-        return export_result
+    files = get_project_files(project_path)
+
+    if "schematic" not in files:
+        print("Schematic file not found in project")
+        if ctx:
+            ctx.info("Schematic file not found in project")
+        return {"success": False, "error": "Schematic file not found"}
+
+    schematic_file = files["schematic"]
+    project_dir = os.path.dirname(project_path)
+    project_name = os.path.basename(project_path)[:-10]
+
+    if ctx:
+        await ctx.report_progress(20, 100)
+        ctx.info(f"Found schematic file: {os.path.basename(schematic_file)}")
+
+    try:
+        if ctx:
+            ctx.info("Attempting to export BOM using command-line tools...")
+        export_result = await _export_bom_with_cli(
+            schematic_file, project_dir, project_name, ctx
+        )
+    except Exception as e:
+        print(f"Error exporting BOM with CLI: {e}")
+        if ctx:
+            ctx.info(f"Error using command-line tools: {e}")
+        export_result = {"success": False, "error": str(e)}
+
+    if ctx:
+        await ctx.report_progress(100, 100)
+
+    if export_result.get("success", False):
+        if ctx:
+            ctx.info(
+                f"BOM exported successfully to "
+                f"{export_result.get('output_file', 'unknown location')}"
+            )
+    else:
+        if ctx:
+            ctx.info(
+                f"Failed to export BOM: "
+                f"{export_result.get('error', 'Unknown error')}"
+            )
+
+    return export_result
 
 
-# Helper functions for BOM processing
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _parse_bom_file(
     file_path: str,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Parse a BOM file and detect its format.
-
-    Args:
-        file_path: Path to the BOM file
-
-    Returns:
-        Tuple containing:
-            - List of component dictionaries
-            - Dictionary with format information
-    """
+    """Parse a BOM file and detect its format."""
     print(f"Parsing BOM file: {file_path}")
 
     _, ext = os.path.splitext(file_path)
@@ -428,19 +378,7 @@ def _analyze_bom_data(
     format_info: Dict[str, Any],
     column_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Analyze component data from a BOM file.
-
-    Args:
-        components: List of component dictionaries
-        format_info: Dictionary with format information
-        column_map: Optional caller-supplied column-name overrides per
-            canonical field. See _BOM_FIELD_PROBES for valid keys. Fields
-            not in column_map fall back to heuristic detection.
-
-    Returns:
-        Dictionary with analysis results. Includes `detected_fields` and
-        `all_columns` so the caller can see the full BOM schema.
-    """
+    """Analyze component data from a BOM file."""
     import re
 
     print(f"Analyzing {len(components)} components")
@@ -559,7 +497,6 @@ def _analyze_bom_data(
                     str(k): int(v) for k, v in categories.items()
                 }
 
-        # Map reference prefixes to component types
         category_mapping = {
             "R": "Resistors",
             "C": "Capacitors",
@@ -619,10 +556,10 @@ def _analyze_bom_data(
                     if "$" in cost_str:
                         results["currency"] = "USD"
                         break
-                    elif "\u20ac" in cost_str:
+                    elif "€" in cost_str:
                         results["currency"] = "EUR"
                         break
-                    elif "\u00a3" in cost_str:
+                    elif "£" in cost_str:
                         results["currency"] = "GBP"
                         break
 
@@ -647,7 +584,6 @@ def _analyze_bom_data(
         except (KeyError, ValueError) as e:
             results["stage_errors"]["most_common_values"] = f"{type(e).__name__}: {e}"
 
-    # Drop the empty stage_errors dict if nothing went wrong (cleaner output).
     if not results["stage_errors"]:
         del results["stage_errors"]
 
@@ -660,17 +596,7 @@ async def _export_bom_with_cli(
     project_name: str,
     ctx: Context | None,
 ) -> Dict[str, Any]:
-    """Export a BOM using KiCad command-line tools.
-
-    Args:
-        schematic_file: Path to the schematic file
-        output_dir: Directory to save the BOM
-        project_name: Name of the project
-        ctx: MCP context for progress reporting
-
-    Returns:
-        Dictionary with export results
-    """
+    """Export a BOM using KiCad command-line tools."""
     import platform
 
     system = platform.system()

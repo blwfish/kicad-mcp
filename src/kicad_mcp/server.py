@@ -37,20 +37,23 @@ def create_server() -> FastMCP:
     register_pcb_drc_fix_tools(mcp)
     register_pipeline_tools(mcp)
 
-    # Upstream tools (project, export, DRC, BOM, netlist, patterns)
-    from kicad_mcp.tools.project import register_project_tools
+    # Domain routers (phase 1: library + analyze + export)
+    from kicad_mcp.tools.library import register_library_tools
+    from kicad_mcp.tools.analyze import register_analyze_tools
     from kicad_mcp.tools.export import register_export_tools
+
+    register_library_tools(mcp)
+    register_analyze_tools(mcp)
+    register_export_tools(mcp)
+
+    # Tools not yet consolidated into routers
+    from kicad_mcp.tools.project import register_project_tools
     from kicad_mcp.tools.drc import register_drc_tools
-    from kicad_mcp.tools.bom import register_bom_tools
     from kicad_mcp.tools.netlist import register_netlist_tools
-    from kicad_mcp.tools.patterns import register_pattern_tools
 
     register_project_tools(mcp)
-    register_export_tools(mcp)
     register_drc_tools(mcp)
-    register_bom_tools(mcp)
     register_netlist_tools(mcp)
-    register_pattern_tools(mcp)
 
     # Schematic tools (wrapping kicad-sch-api)
     from kicad_mcp.tools.schematic import register_schematic_tools
