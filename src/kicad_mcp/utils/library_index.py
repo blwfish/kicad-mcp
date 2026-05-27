@@ -229,17 +229,15 @@ def _parse_kicad_sym(filepath: str) -> List[Dict]:
 
     library = os.path.splitext(os.path.basename(filepath))[0]
 
-    # Find all top-level (symbol "Name" blocks — skip nested (symbol "Name_N_N" pin units)
-    # Top-level symbols are at indent level 1 (after the kicad_symbol_lib wrapper)
-    # They DON'T start with the library name + underscore + digit pattern used for units
+    # Find all top-level (symbol "Name") blocks.
+    # The single-tab anchor `^\t\(symbol` already excludes sub-unit blocks,
+    # which are nested two tabs deep (e.g. `\t\t(symbol "LM358_1_1" ...)`).
+    # An earlier _N_N$ name-filter heuristic was redundant for sub-units AND
+    # dropped legitimate top-level symbols whose names happen to end in
+    # _N_N (verified against the KiCad standard library: Raspberry_Pi_2_3
+    # was the only false positive across 22,730 top-level symbols).
     for m in re.finditer(r'^\t\(symbol\s+"([^"]+)"', content, re.MULTILINE):
         name = m.group(1)
-
-        # Skip sub-units like "LM358_1_1", "LM358_0_1" — they contain pin defs
-        # but are children of the main symbol. Heuristic: if name contains _N_N
-        # where N are digits, and the prefix matches a symbol we already found, skip.
-        if re.search(r"_\d+_\d+$", name):
-            continue
 
         # Extract the block for this symbol (approximate — find next same-indent symbol)
         start = m.start()
