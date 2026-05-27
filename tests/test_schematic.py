@@ -1,10 +1,9 @@
 """
-Tests for the schematic MCP tools.
+Tests for the schematic domain router (phase 5).
 
-These are unit tests that use the real kicad-sch-api library (no mocking)
-since it is a pure Python library that works without KiCad installed.
-The tests verify the MCP tool wrappers correctly delegate to kicad-sch-api
-and return well-structured results.
+Uses the real kicad-sch-api library (no mocking) since it is a pure
+Python library that works without KiCad installed.
+All calls go through the single `schematic` router tool with operation=.
 """
 
 import asyncio
@@ -12,7 +11,7 @@ import asyncio
 import pytest
 from fastmcp import FastMCP
 
-from kicad_mcp.tools.schematic import register_schematic_tools, _current_schematic
+from kicad_mcp.tools.schematic_router import register_schematic_router
 import kicad_mcp.tools.schematic as sch_module
 
 
@@ -20,9 +19,9 @@ import kicad_mcp.tools.schematic as sch_module
 
 @pytest.fixture
 def sch_server():
-    """Create a FastMCP server with only schematic tools registered."""
+    """Create a FastMCP server with only the schematic router registered."""
     mcp = FastMCP("test-schematic")
-    register_schematic_tools(mcp)
+    register_schematic_router(mcp)
     return mcp
 
 
@@ -34,32 +33,37 @@ def reset_schematic_state():
     sch_module._current_schematic = None
 
 
-def _get_tool_fn(mcp_server, tool_name):
-    """Extract a tool function from the FastMCP 3.0 server by name."""
-    tool = asyncio.run(mcp_server.get_tool(tool_name))
+def _get_schematic_fn(mcp_server):
+    """Extract the schematic router function."""
+    tool = asyncio.run(mcp_server.get_tool("schematic"))
     if tool is None:
-        raise ValueError(f"Tool {tool_name!r} not found")
+        raise ValueError("Tool 'schematic' not found")
     return tool.fn
 
 
-# -- create_schematic tests --------------------------------------------------
+def _call(fn, operation, **kwargs):
+    """Call the schematic router (async) synchronously."""
+    return asyncio.run(fn(operation=operation, **kwargs))
 
-class TestCreateSchematic:
+
+# -- create tests ------------------------------------------------------------
+
+class TestCreate:
 
     def test_create_returns_ok(self, sch_server):
-        fn = _get_tool_fn(sch_server, "create_schematic")
-        result = fn(name="test_circuit")
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "create", name="test_circuit")
         assert result["status"] == "ok"
         assert result["name"] == "test_circuit"
 
     def test_create_sets_module_state(self, sch_server):
-        fn = _get_tool_fn(sch_server, "create_schematic")
-        fn(name="my_sch")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="my_sch")
         assert sch_module._current_schematic is not None
 
     def test_create_with_default_name(self, sch_server):
-        fn = _get_tool_fn(sch_server, "create_schematic")
-        result = fn()
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "create")
         assert result["status"] == "ok"
         assert result["name"] == "untitled"
 
@@ -70,18 +74,15 @@ class TestAddAndListComponents:
 
     @pytest.fixture(autouse=True)
     def _create_schematic(self, sch_server):
-        """Create a schematic before each test in this class."""
-        fn = _get_tool_fn(sch_server, "create_schematic")
-        fn(name="test")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        self._fn = fn
 
     def test_add_component_basic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_component")
-        result = fn(
-            lib_id="Device:R",
-            reference="R1",
-            value="10k",
-            position=[101.6, 101.6],  # 80 × 1.27 — exactly on-grid
-        )
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_component",
+                       lib_id="Device:R", reference="R1", value="10k",
+                       position=[101.6, 101.6])
         assert result["status"] == "ok"
         assert result["reference"] == "R1"
         assert result["lib_id"] == "Device:R"
@@ -89,61 +90,52 @@ class TestAddAndListComponents:
         assert result["position"] == [101.6, 101.6]
 
     def test_add_component_with_footprint(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_component")
-        result = fn(
-            lib_id="Device:R",
-            reference="R1",
-            value="4.7k",
-            position=[120.0, 80.0],
-            footprint="Resistor_SMD:R_0805_2012Metric",
-        )
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_component",
+                       lib_id="Device:R", reference="R1", value="4.7k",
+                       position=[120.0, 80.0],
+                       footprint="Resistor_SMD:R_0805_2012Metric")
         assert result["status"] == "ok"
         assert result["reference"] == "R1"
 
     def test_add_component_bad_position(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_component")
-        result = fn(
-            lib_id="Device:R",
-            reference="R1",
-            value="10k",
-            position=[100.0],  # missing y
-        )
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_component",
+                       lib_id="Device:R", reference="R1", value="10k",
+                       position=[100.0])  # missing y
         assert "error" in result
 
     def test_list_components_empty(self, sch_server):
-        fn = _get_tool_fn(sch_server, "list_components")
-        result = fn()
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "list_components")
         assert result["status"] == "ok"
         assert result["count"] == 0
         assert result["components"] == []
 
     def test_list_components_after_add(self, sch_server):
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
-        add_fn(lib_id="Device:C", reference="C1", value="100nF", position=[150, 100])
-
-        list_fn = _get_tool_fn(sch_server, "list_components")
-        result = list_fn()
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
+        _call(fn, "add_component", lib_id="Device:C", reference="C1", value="100nF",
+              position=[150, 100])
+        result = _call(fn, "list_components")
         assert result["status"] == "ok"
         assert result["count"] == 2
         refs = {c["reference"] for c in result["components"]}
         assert refs == {"R1", "C1"}
 
     def test_remove_component(self, sch_server):
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
-
-        rm_fn = _get_tool_fn(sch_server, "remove_component")
-        result = rm_fn(reference="R1")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
+        result = _call(fn, "remove_component", reference="R1")
         assert result["status"] == "ok"
-
-        list_fn = _get_tool_fn(sch_server, "list_components")
-        result = list_fn()
+        result = _call(fn, "list_components")
         assert result["count"] == 0
 
     def test_remove_nonexistent_component(self, sch_server):
-        rm_fn = _get_tool_fn(sch_server, "remove_component")
-        result = rm_fn(reference="R99")
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "remove_component", reference="R99")
         assert "error" in result
 
 
@@ -153,35 +145,33 @@ class TestAddWire:
 
     @pytest.fixture(autouse=True)
     def _create_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "create_schematic")
-        fn(name="test")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
 
     def test_add_wire_basic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire")
-        # 101.6 = 80 × 1.27, 203.2 = 160 × 1.27 — both exactly on-grid
-        result = fn(start_pos=[101.6, 101.6], end_pos=[203.2, 101.6])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_wire",
+                       start_pos=[101.6, 101.6], end_pos=[203.2, 101.6])
         assert result["status"] == "ok"
         assert "wire_uuid" in result
         assert result["start"] == [101.6, 101.6]
         assert result["end"] == [203.2, 101.6]
 
     def test_add_wire_bad_positions(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire")
-        result = fn(start_pos=[100.0], end_pos=[200.0, 100.0])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_wire", start_pos=[100.0], end_pos=[200.0, 100.0])
         assert "error" in result
 
     def test_remove_wire(self, sch_server):
-        add_fn = _get_tool_fn(sch_server, "add_wire")
-        result = add_fn(start_pos=[100.0, 100.0], end_pos=[200.0, 100.0])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_wire", start_pos=[100.0, 100.0], end_pos=[200.0, 100.0])
         wire_uuid = result["wire_uuid"]
-
-        rm_fn = _get_tool_fn(sch_server, "remove_wire")
-        result = rm_fn(wire_uuid=wire_uuid)
+        result = _call(fn, "remove_wire", wire_uuid=wire_uuid)
         assert result["status"] == "ok"
 
     def test_remove_nonexistent_wire(self, sch_server):
-        rm_fn = _get_tool_fn(sch_server, "remove_wire")
-        result = rm_fn(wire_uuid="nonexistent-uuid")
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "remove_wire", wire_uuid="nonexistent-uuid")
         assert "error" in result
 
 
@@ -191,40 +181,38 @@ class TestAddLabel:
 
     @pytest.fixture(autouse=True)
     def _create_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "create_schematic")
-        fn(name="test")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
 
     def test_add_label_basic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
-        result = fn(text="GND", position=[101.6, 101.6])  # 80 × 1.27 — on-grid
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_label", text="GND", position=[101.6, 101.6])
         assert result["status"] == "ok"
         assert result["text"] == "GND"
         assert result["position"] == [101.6, 101.6]
         assert "label_uuid" in result
 
     def test_add_label_with_rotation(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
-        result = fn(text="VCC", position=[50.0, 50.0], rotation=90.0)
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_label", text="VCC", position=[50.0, 50.0], rotation=90.0)
         assert result["status"] == "ok"
         assert result["text"] == "VCC"
 
     def test_add_label_bad_position(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
-        result = fn(text="GND", position=[100.0])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_label", text="GND", position=[100.0])
         assert "error" in result
 
     def test_remove_label(self, sch_server):
-        add_fn = _get_tool_fn(sch_server, "add_label")
-        result = add_fn(text="SDA", position=[100.0, 100.0])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_label", text="SDA", position=[100.0, 100.0])
         label_uuid = result["label_uuid"]
-
-        rm_fn = _get_tool_fn(sch_server, "remove_label")
-        result = rm_fn(label_uuid=label_uuid)
+        result = _call(fn, "remove_label", label_uuid=label_uuid)
         assert result["status"] == "ok"
 
     def test_remove_nonexistent_label(self, sch_server):
-        rm_fn = _get_tool_fn(sch_server, "remove_label")
-        result = rm_fn(label_uuid="nonexistent-uuid")
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "remove_label", label_uuid="nonexistent-uuid")
         assert "error" in result
 
 
@@ -235,52 +223,59 @@ class TestGridSnap:
 
     @pytest.fixture(autouse=True)
     def _create_schematic(self, sch_server):
-        _get_tool_fn(sch_server, "create_schematic")(name="test")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
 
     def test_add_component_on_grid_unchanged(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_component")
-        result = fn(lib_id="Device:R", reference="R1", value="10k", position=[101.6, 101.6])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_component",
+                       lib_id="Device:R", reference="R1", value="10k",
+                       position=[101.6, 101.6])
         assert result["position"] == [101.6, 101.6]
 
     def test_add_component_off_grid_snaps(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_component")
+        fn = _get_schematic_fn(sch_server)
         # 100.0 / 1.27 = 78.74 → 79 → 79 × 1.27 = 100.33
-        result = fn(lib_id="Device:R", reference="R1", value="10k", position=[100.0, 100.0])
+        result = _call(fn, "add_component",
+                       lib_id="Device:R", reference="R1", value="10k",
+                       position=[100.0, 100.0])
         assert result["position"] == [100.33, 100.33]
 
     def test_add_wire_on_grid_unchanged(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire")
-        result = fn(start_pos=[101.6, 101.6], end_pos=[203.2, 101.6])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_wire",
+                       start_pos=[101.6, 101.6], end_pos=[203.2, 101.6])
         assert result["start"] == [101.6, 101.6]
         assert result["end"] == [203.2, 101.6]
 
     def test_add_wire_off_grid_snaps(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire")
+        fn = _get_schematic_fn(sch_server)
         # 100.0 → 100.33 (79 × 1.27);  200.0 → 199.39 (157 × 1.27)
-        result = fn(start_pos=[100.0, 100.0], end_pos=[200.0, 100.0])
+        result = _call(fn, "add_wire",
+                       start_pos=[100.0, 100.0], end_pos=[200.0, 100.0])
         assert result["start"] == [100.33, 100.33]
         assert result["end"] == [199.39, 100.33]
 
     def test_add_label_on_grid_unchanged(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
-        result = fn(text="GND", position=[101.6, 101.6])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_label", text="GND", position=[101.6, 101.6])
         assert result["position"] == [101.6, 101.6]
 
     def test_add_label_off_grid_snaps(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
-        result = fn(text="GND", position=[100.0, 100.0])
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_label", text="GND", position=[100.0, 100.0])
         assert result["position"] == [100.33, 100.33]
 
     def test_snap_rounds_down(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
+        fn = _get_schematic_fn(sch_server)
         # 0.5 / 1.27 = 0.394 → rounds to 0 → 0.0
-        result = fn(text="X", position=[0.5, 0.0])
+        result = _call(fn, "add_label", text="X", position=[0.5, 0.0])
         assert result["position"] == [0.0, 0.0]
 
     def test_snap_rounds_up(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
+        fn = _get_schematic_fn(sch_server)
         # 1.0 / 1.27 = 0.787 → rounds to 1 → 1.27
-        result = fn(text="X", position=[1.0, 0.0])
+        result = _call(fn, "add_label", text="X", position=[1.0, 0.0])
         assert result["position"] == [1.27, 0.0]
 
 
@@ -290,25 +285,26 @@ class TestAddWireBetweenPins:
 
     @pytest.fixture(autouse=True)
     def _create_schematic(self, sch_server):
-        _get_tool_fn(sch_server, "create_schematic")(name="test")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
 
     def test_error_first_component_not_found(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire_between_pins")
-        result = fn(comp1_ref="R99", pin1="1", comp2_ref="R2", pin2="1")
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_wire_between_pins",
+                       comp1_ref="R99", pin1="1", comp2_ref="R2", pin2="1")
         assert "error" in result
         assert "R99" in result["error"]
 
     def test_error_second_component_not_found(self, sch_server):
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[101.6, 101.6])
-        fn = _get_tool_fn(sch_server, "add_wire_between_pins")
-        # R1 exists but its pin lookup either returns None (no KiCad library)
-        # or succeeds; either way R2 definitely doesn't exist → error
-        result = fn(comp1_ref="R1", pin1="1", comp2_ref="R99", pin2="1")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[101.6, 101.6])
+        result = _call(fn, "add_wire_between_pins",
+                       comp1_ref="R1", pin1="1", comp2_ref="R99", pin2="1")
         assert "error" in result
 
     def test_tool_is_registered(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire_between_pins")
+        fn = _get_schematic_fn(sch_server)
         assert fn is not None
 
 
@@ -318,87 +314,78 @@ class TestNoSchematicLoaded:
     """Verify tools fail gracefully when no schematic is loaded."""
 
     def test_list_components_no_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "list_components")
+        fn = _get_schematic_fn(sch_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn()
+            _call(fn, "list_components")
 
     def test_add_component_no_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_component")
+        fn = _get_schematic_fn(sch_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
+            _call(fn, "add_component",
+                  lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
 
     def test_add_wire_no_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_wire")
+        fn = _get_schematic_fn(sch_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn(start_pos=[100, 100], end_pos=[200, 100])
+            _call(fn, "add_wire", start_pos=[100, 100], end_pos=[200, 100])
 
     def test_add_label_no_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "add_label")
+        fn = _get_schematic_fn(sch_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn(text="GND", position=[100, 100])
+            _call(fn, "add_label", text="GND", position=[100, 100])
 
     def test_validate_no_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "validate_schematic")
+        fn = _get_schematic_fn(sch_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn()
+            _call(fn, "validate")
 
     def test_get_info_no_schematic(self, sch_server):
-        fn = _get_tool_fn(sch_server, "get_schematic_info")
+        fn = _get_schematic_fn(sch_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn()
+            _call(fn, "info")
 
 
-# -- get_schematic_info tests ------------------------------------------------
+# -- info tests (was: get_schematic_info) ------------------------------------
 
-class TestGetSchematicInfo:
+class TestInfo:
 
     def test_info_empty_schematic(self, sch_server):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        info_fn = _get_tool_fn(sch_server, "get_schematic_info")
-        result = info_fn()
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        result = _call(fn, "info")
         assert result["status"] == "ok"
         assert result["components"] == 0
 
     def test_info_after_adding_components(self, sch_server):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
-        add_fn(lib_id="Device:C", reference="C1", value="100nF", position=[150, 100])
-
-        info_fn = _get_tool_fn(sch_server, "get_schematic_info")
-        result = info_fn()
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
+        _call(fn, "add_component", lib_id="Device:C", reference="C1", value="100nF",
+              position=[150, 100])
+        result = _call(fn, "info")
         assert result["status"] == "ok"
         assert result["components"] == 2
 
 
-# -- validate_schematic tests ------------------------------------------------
+# -- validate tests ----------------------------------------------------------
 
-class TestValidateSchematic:
+class TestValidate:
 
     def test_validate_empty_schematic(self, sch_server):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        validate_fn = _get_tool_fn(sch_server, "validate_schematic")
-        result = validate_fn()
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        result = _call(fn, "validate")
         assert result["status"] == "ok"
         assert result["issues"] == 0
 
     def test_validate_schematic_with_components(self, sch_server):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
-
-        validate_fn = _get_tool_fn(sch_server, "validate_schematic")
-        result = validate_fn()
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
+        result = _call(fn, "validate")
         assert result["status"] == "ok"
-        # Validation may or may not find issues depending on kicad-sch-api version
         assert "issues" in result
 
 
@@ -407,41 +394,33 @@ class TestValidateSchematic:
 class TestAddJunction:
 
     def test_add_junction(self, sch_server):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        fn = _get_tool_fn(sch_server, "add_junction")
-        result = fn(position=[100.0, 100.0])
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        result = _call(fn, "add_junction", position=[100.0, 100.0])
         assert result["status"] == "ok"
         assert result["position"] == [100.0, 100.0]
         assert "junction_uuid" in result
 
     def test_add_junction_bad_position(self, sch_server):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        fn = _get_tool_fn(sch_server, "add_junction")
-        result = fn(position=[100.0])
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        result = _call(fn, "add_junction", position=[100.0])
         assert "error" in result
 
 
-# -- save_schematic tests (with tmp_path) ------------------------------------
+# -- save tests (with tmp_path) ----------------------------------------------
 
-class TestSaveSchematic:
+class TestSave:
 
     def test_save_to_file(self, sch_server, tmp_path):
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        create_fn(name="test")
-
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 100])
-
-        save_fn = _get_tool_fn(sch_server, "save_schematic")
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
         save_path = str(tmp_path / "test.kicad_sch")
-        result = save_fn(file_path=save_path)
+        result = _call(fn, "save", schematic_path=save_path)
         assert result["status"] == "ok"
 
-        # Verify the file was created
         import os
         assert os.path.exists(save_path)
         content = open(save_path).read()
@@ -454,42 +433,39 @@ class TestSchematicWorkflow:
     """Test a realistic workflow of creating a schematic with components, wires, and labels."""
 
     def test_full_workflow(self, sch_server):
+        fn = _get_schematic_fn(sch_server)
+
         # Create schematic
-        create_fn = _get_tool_fn(sch_server, "create_schematic")
-        result = create_fn(name="voltage_divider")
+        result = _call(fn, "create", name="voltage_divider")
         assert result["status"] == "ok"
 
         # Add two resistors
-        add_fn = _get_tool_fn(sch_server, "add_component")
-        r1 = add_fn(lib_id="Device:R", reference="R1", value="10k", position=[100, 80])
-        r2 = add_fn(lib_id="Device:R", reference="R2", value="10k", position=[100, 120])
+        r1 = _call(fn, "add_component", lib_id="Device:R", reference="R1",
+                   value="10k", position=[100, 80])
+        r2 = _call(fn, "add_component", lib_id="Device:R", reference="R2",
+                   value="10k", position=[100, 120])
         assert r1["status"] == "ok"
         assert r2["status"] == "ok"
 
         # Add wire between them
-        wire_fn = _get_tool_fn(sch_server, "add_wire")
-        w1 = wire_fn(start_pos=[100.0, 90.0], end_pos=[100.0, 110.0])
+        w1 = _call(fn, "add_wire", start_pos=[100.0, 90.0], end_pos=[100.0, 110.0])
         assert w1["status"] == "ok"
 
         # Add labels
-        label_fn = _get_tool_fn(sch_server, "add_label")
-        l1 = label_fn(text="VCC", position=[100.0, 70.0])
-        l2 = label_fn(text="GND", position=[100.0, 130.0])
-        l3 = label_fn(text="VOUT", position=[110.0, 100.0])
+        l1 = _call(fn, "add_label", text="VCC", position=[100.0, 70.0])
+        l2 = _call(fn, "add_label", text="GND", position=[100.0, 130.0])
+        l3 = _call(fn, "add_label", text="VOUT", position=[110.0, 100.0])
         assert l1["status"] == "ok"
         assert l2["status"] == "ok"
         assert l3["status"] == "ok"
 
         # Verify state
-        list_fn = _get_tool_fn(sch_server, "list_components")
-        result = list_fn()
+        result = _call(fn, "list_components")
         assert result["count"] == 2
 
-        info_fn = _get_tool_fn(sch_server, "get_schematic_info")
-        info = info_fn()
+        info = _call(fn, "info")
         assert info["components"] == 2
 
         # Validate
-        validate_fn = _get_tool_fn(sch_server, "validate_schematic")
-        result = validate_fn()
+        result = _call(fn, "validate")
         assert result["status"] == "ok"

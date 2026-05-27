@@ -62,51 +62,61 @@ def _get_tool_fn(mcp_server, tool_name):
     return tool.fn
 
 
-# -- check_pin_collisions tests ---------------------------------------------
+# -- check_pin_collisions tests (via schematic router) ----------------------
 
 class TestCheckPinCollisions:
 
+    def _sch(self, mcp_server):
+        """Get the schematic router function and return an async-wrapped caller."""
+        tool = asyncio.run(mcp_server.get_tool("schematic"))
+        if tool is None:
+            raise ValueError("Tool 'schematic' not found")
+        fn = tool.fn
+
+        def call(operation, **kwargs):
+            return asyncio.run(fn(operation=operation, **kwargs))
+
+        return call
+
     def test_tool_registered(self, mcp_server):
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        assert fn is not None
+        call = self._sch(mcp_server)
+        # Just verify calling works without error
+        assert call is not None
 
     def test_requires_schematic(self, mcp_server):
         """Should raise RuntimeError if no schematic is loaded."""
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
+        import kicad_mcp.tools.schematic as sch_module
+        sch_module._current_schematic = None
+        call = self._sch(mcp_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn()
+            call("check_pin_collisions")
 
     def test_no_collisions_empty_schematic(self, mcp_server):
         """Creating an empty schematic should return no collisions."""
-        create_fn = _get_tool_fn(mcp_server, "create_schematic")
-        create_fn("test")
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        result = fn()
+        call = self._sch(mcp_server)
+        call("create", name="test")
+        result = call("check_pin_collisions")
         assert result["status"] == "ok"
         assert result["collision_count"] == 0
 
     def test_no_collisions_separate_components(self, mcp_server):
         """Two resistors placed far apart should have no pin collisions."""
-        create_fn = _get_tool_fn(mcp_server, "create_schematic")
-        create_fn("test")
-        add_fn = _get_tool_fn(mcp_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
-        add_fn(lib_id="Device:R", reference="R2", value="10k", position=[100, 50])
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        result = fn()
+        call = self._sch(mcp_server)
+        call("create", name="test")
+        call("add_component", lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
+        call("add_component", lib_id="Device:R", reference="R2", value="10k", position=[100, 50])
+        result = call("check_pin_collisions")
         assert result["status"] == "ok"
         assert result["collision_count"] == 0
 
     def test_detects_collision(self, mcp_server):
         """Two components placed at the same position should have pin collisions."""
-        create_fn = _get_tool_fn(mcp_server, "create_schematic")
-        create_fn("test")
-        add_fn = _get_tool_fn(mcp_server, "add_component")
+        call = self._sch(mcp_server)
+        call("create", name="test")
         # Place two resistors at exact same position — their pins will collide
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
-        add_fn(lib_id="Device:R", reference="R2", value="10k", position=[50, 50])
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        result = fn()
+        call("add_component", lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
+        call("add_component", lib_id="Device:R", reference="R2", value="10k", position=[50, 50])
+        result = call("check_pin_collisions")
         assert result["status"] == "ok"
         assert result["collision_count"] > 0
         # Each collision should involve pins from different components

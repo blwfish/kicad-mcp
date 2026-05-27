@@ -222,211 +222,204 @@ async def _op_analyze_schematic_connections(
         return {"success": False, "error": str(e)}
 
 
-def register_netlist_tools(mcp: FastMCP) -> None:
-    """Register netlist tools not yet folded into a router.
+async def _op_find_component_connections(
+    project_path: str,
+    component_ref: str,
+    ctx: "Context | None",
+) -> Dict[str, Any]:
+    """Find all connections for a specific component in a KiCad project.
 
-    Only ``find_component_connections`` is registered here; it moves to
-    the schematic router in phase 5.
+    Extracted from the standalone tool so the schematic router (phase 5)
+    can delegate to it.
     """
+    logger.debug(
+        "Finding connections for component %s in project: %s",
+        component_ref, project_path,
+    )
 
-    @mcp.tool()
-    async def find_component_connections(
-        project_path: str,
-        component_ref: str,
-        ctx: Context | None,
-    ) -> Dict[str, Any]:
-        """Find all connections for a specific component in a KiCad project.
+    if not os.path.exists(project_path):
+        logger.warning(f"Project not found: {project_path}")
+        if ctx:
+            ctx.info(f"Project not found: {project_path}")
+        return {
+            "success": False,
+            "error": f"Project not found: {project_path}",
+        }
 
-        This tool extracts information about how a specific component
-        is connected to other components in the schematic.
+    if ctx:
+        await ctx.report_progress(10, 100)
 
-        Args:
-            project_path: Path to the KiCad project file (.kicad_pro)
-            component_ref: Component reference (e.g., "R1", "U3")
-            ctx: MCP context for progress reporting
+    try:
+        files = get_project_files(project_path)
 
-        Returns:
-            Dictionary with component connection information
-        """
-        logger.debug(
-            "Finding connections for component %s in project: %s",
-            component_ref, project_path,
-        )
-
-        if not os.path.exists(project_path):
-            logger.warning(f"Project not found: {project_path}")
+        if "schematic" not in files:
+            logger.warning("Schematic file not found in project")
             if ctx:
-                ctx.info(f"Project not found: {project_path}")
+                ctx.info("Schematic file not found in project")
             return {
                 "success": False,
-                "error": f"Project not found: {project_path}",
+                "error": "Schematic file not found in project",
             }
+
+        schematic_path = files["schematic"]
+        logger.debug(f"Found schematic file: {schematic_path}")
+        if ctx:
+            ctx.info(
+                f"Found schematic file: {os.path.basename(schematic_path)}"
+            )
 
         if ctx:
-            await ctx.report_progress(10, 100)
+            await ctx.report_progress(30, 100)
+            ctx.info(
+                f"Extracting netlist to find connections for {component_ref}..."
+            )
 
-        try:
-            files = get_project_files(project_path)
+        netlist_data = _parse_netlist(schematic_path)
 
-            if "schematic" not in files:
-                logger.warning("Schematic file not found in project")
-                if ctx:
-                    ctx.info("Schematic file not found in project")
-                return {
-                    "success": False,
-                    "error": "Schematic file not found in project",
-                }
-
-            schematic_path = files["schematic"]
-            logger.debug(f"Found schematic file: {schematic_path}")
+        if "error" in netlist_data:
+            logger.warning(f"Failed to extract netlist: {netlist_data['error']}")
             if ctx:
                 ctx.info(
-                    f"Found schematic file: {os.path.basename(schematic_path)}"
+                    f"Failed to extract netlist: {netlist_data['error']}"
                 )
+            return {"success": False, "error": netlist_data["error"]}
 
+        components = netlist_data.get("components", {})
+        if component_ref not in components:
+            logger.warning(f"Component {component_ref} not found in schematic")
             if ctx:
-                await ctx.report_progress(30, 100)
                 ctx.info(
-                    f"Extracting netlist to find connections for {component_ref}..."
+                    f"Component {component_ref} not found in schematic"
                 )
-
-            netlist_data = _parse_netlist(schematic_path)
-
-            if "error" in netlist_data:
-                logger.warning(f"Failed to extract netlist: {netlist_data['error']}")
-                if ctx:
-                    ctx.info(
-                        f"Failed to extract netlist: {netlist_data['error']}"
-                    )
-                return {"success": False, "error": netlist_data["error"]}
-
-            components = netlist_data.get("components", {})
-            if component_ref not in components:
-                logger.warning(f"Component {component_ref} not found in schematic")
-                if ctx:
-                    ctx.info(
-                        f"Component {component_ref} not found in schematic"
-                    )
-                return {
-                    "success": False,
-                    "error": f"Component {component_ref} not found in schematic",
-                    "available_components": list(components.keys()),
-                }
-
-            component_info = components[component_ref]
-
-            if ctx:
-                await ctx.report_progress(50, 100)
-                ctx.info("Finding connections...")
-
-            nets = netlist_data.get("nets", {})
-            connections = []
-            connected_nets = []
-
-            for net_name, pins in nets.items():
-                component_pins = []
-                for pin in pins:
-                    if pin.get("component") == component_ref:
-                        component_pins.append(pin)
-
-                if component_pins:
-                    net_connections = []
-
-                    for pin in component_pins:
-                        pin_num = pin.get("pin", "Unknown")
-                        connected_components = []
-
-                        for other_pin in pins:
-                            other_comp = other_pin.get("component")
-                            if other_comp and other_comp != component_ref:
-                                connected_components.append({
-                                    "component": other_comp,
-                                    "pin": other_pin.get("pin", "Unknown"),
-                                })
-
-                        net_connections.append({
-                            "pin": pin_num,
-                            "net": net_name,
-                            "connected_to": connected_components,
-                        })
-
-                    connections.extend(net_connections)
-                    connected_nets.append(net_name)
-
-            if ctx:
-                await ctx.report_progress(70, 100)
-                ctx.info("Analyzing connections...")
-
-            # Categorize connections by pin function.
-            # Substring matching ("IN" in name) misfires badly on common
-            # pin names: VIN, DRAIN, SHDN, MAIN all contain "IN". Tokenize
-            # the pin name and match exact tokens with word boundaries.
-            pin_functions: dict[str, dict] = {}
-            skipped_pins_missing_num = 0  # surfaced in result regardless of pins-present branch
-
-            _POWER_TOKENS = {"VCC", "VDD", "VEE", "VSS", "GND", "PWR", "POWER", "VBUS"}
-            _IO_TOKENS = {"IO", "I/O", "GPIO"}
-            _INPUT_TOKENS = {"IN", "INPUT"}
-            _OUTPUT_TOKENS = {"OUT", "OUTPUT"}
-
-            def _name_tokens(name: str):
-                # Split on non-alphanumeric (and underscore); upper-case;
-                # produces tokens like ["VIN"] not ["V", "IN"], so VIN
-                # doesn't false-match as INPUT.
-                return {t.upper() for t in re.split(r"[^A-Za-z0-9/]+", name) if t}
-
-            if "pins" in component_info:
-                for pin in component_info["pins"]:
-                    pin_num = pin.get("num")
-                    if not pin_num:
-                        # Pins lacking a "num" attribute would otherwise
-                        # collapse into a single pin_functions[None] entry
-                        # (each new None-num pin overwriting the previous).
-                        skipped_pins_missing_num += 1
-                        continue
-                    pin_name = pin.get("name", "")
-                    tokens = _name_tokens(pin_name)
-
-                    if tokens & _POWER_TOKENS:
-                        pin_type = "power"
-                    elif tokens & _IO_TOKENS:
-                        pin_type = "io"
-                    elif tokens & _INPUT_TOKENS:
-                        pin_type = "input"
-                    elif tokens & _OUTPUT_TOKENS:
-                        pin_type = "output"
-                    else:
-                        pin_type = "unknown"
-
-                    pin_functions[pin_num] = {
-                        "name": pin_name,
-                        "type": pin_type,
-                    }
-
-            result = {
-                "success": True,
-                "project_path": project_path,
-                "schematic_path": schematic_path,
-                "component": component_ref,
-                "component_info": component_info,
-                "connections": connections,
-                "connected_nets": connected_nets,
-                "pin_functions": pin_functions,
-                "pins_skipped_missing_num": skipped_pins_missing_num,
-                "total_connections": len(connections),
+            return {
+                "success": False,
+                "error": f"Component {component_ref} not found in schematic",
+                "available_components": list(components.keys()),
             }
 
-            if ctx:
-                await ctx.report_progress(100, 100)
-                ctx.info(
-                    f"Found {len(connections)} connections for "
-                    f"component {component_ref}"
-                )
+        component_info = components[component_ref]
 
-            return result
+        if ctx:
+            await ctx.report_progress(50, 100)
+            ctx.info("Finding connections...")
 
-        except Exception as e:
-            logger.warning(f"Error finding component connections: {e}")
-            if ctx:
-                ctx.info(f"Error finding component connections: {e}")
-            return {"success": False, "error": str(e)}
+        nets = netlist_data.get("nets", {})
+        connections = []
+        connected_nets = []
+
+        for net_name, pins in nets.items():
+            component_pins = []
+            for pin in pins:
+                if pin.get("component") == component_ref:
+                    component_pins.append(pin)
+
+            if component_pins:
+                net_connections = []
+
+                for pin in component_pins:
+                    pin_num = pin.get("pin", "Unknown")
+                    connected_components = []
+
+                    for other_pin in pins:
+                        other_comp = other_pin.get("component")
+                        if other_comp and other_comp != component_ref:
+                            connected_components.append({
+                                "component": other_comp,
+                                "pin": other_pin.get("pin", "Unknown"),
+                            })
+
+                    net_connections.append({
+                        "pin": pin_num,
+                        "net": net_name,
+                        "connected_to": connected_components,
+                    })
+
+                connections.extend(net_connections)
+                connected_nets.append(net_name)
+
+        if ctx:
+            await ctx.report_progress(70, 100)
+            ctx.info("Analyzing connections...")
+
+        # Categorize connections by pin function.
+        # Substring matching ("IN" in name) misfires badly on common
+        # pin names: VIN, DRAIN, SHDN, MAIN all contain "IN". Tokenize
+        # the pin name and match exact tokens with word boundaries.
+        pin_functions: dict[str, dict] = {}
+        skipped_pins_missing_num = 0  # surfaced in result regardless of pins-present branch
+
+        _POWER_TOKENS = {"VCC", "VDD", "VEE", "VSS", "GND", "PWR", "POWER", "VBUS"}
+        _IO_TOKENS = {"IO", "I/O", "GPIO"}
+        _INPUT_TOKENS = {"IN", "INPUT"}
+        _OUTPUT_TOKENS = {"OUT", "OUTPUT"}
+
+        def _name_tokens(name: str):
+            # Split on non-alphanumeric (and underscore); upper-case;
+            # produces tokens like ["VIN"] not ["V", "IN"], so VIN
+            # doesn't false-match as INPUT.
+            return {t.upper() for t in re.split(r"[^A-Za-z0-9/]+", name) if t}
+
+        if "pins" in component_info:
+            for pin in component_info["pins"]:
+                pin_num = pin.get("num")
+                if not pin_num:
+                    # Pins lacking a "num" attribute would otherwise
+                    # collapse into a single pin_functions[None] entry
+                    # (each new None-num pin overwriting the previous).
+                    skipped_pins_missing_num += 1
+                    continue
+                pin_name = pin.get("name", "")
+                tokens = _name_tokens(pin_name)
+
+                if tokens & _POWER_TOKENS:
+                    pin_type = "power"
+                elif tokens & _IO_TOKENS:
+                    pin_type = "io"
+                elif tokens & _INPUT_TOKENS:
+                    pin_type = "input"
+                elif tokens & _OUTPUT_TOKENS:
+                    pin_type = "output"
+                else:
+                    pin_type = "unknown"
+
+                pin_functions[pin_num] = {
+                    "name": pin_name,
+                    "type": pin_type,
+                }
+
+        result = {
+            "success": True,
+            "project_path": project_path,
+            "schematic_path": schematic_path,
+            "component": component_ref,
+            "component_info": component_info,
+            "connections": connections,
+            "connected_nets": connected_nets,
+            "pin_functions": pin_functions,
+            "pins_skipped_missing_num": skipped_pins_missing_num,
+            "total_connections": len(connections),
+        }
+
+        if ctx:
+            await ctx.report_progress(100, 100)
+            ctx.info(
+                f"Found {len(connections)} connections for "
+                f"component {component_ref}"
+            )
+
+        return result
+
+    except Exception as e:
+        logger.warning(f"Error finding component connections: {e}")
+        if ctx:
+            ctx.info(f"Error finding component connections: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def register_netlist_tools(mcp: FastMCP) -> None:
+    """No-op stub — find_component_connections moved to schematic router (phase 5)."""
+    # Previously registered find_component_connections as a standalone tool.
+    # Phase 5 folds it into the schematic router; this function is kept as a
+    # no-op so any existing callers of register_netlist_tools don't break at
+    # import time.
+    pass

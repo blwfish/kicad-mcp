@@ -19,11 +19,11 @@ class TestCreateServer:
         server = create_server()
         assert server.name == "KiCad"
 
-    def test_at_least_14_tools_registered(self, mcp_server):
-        """Floor — the consolidated surface targets 14 tools."""
+    def test_at_least_13_tools_registered(self, mcp_server):
+        """Floor — the consolidated surface targets ~13 tools."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) >= 14, (
-            f"Expected at least 14 tools, got {len(tools)}"
+        assert len(tools) >= 13, (
+            f"Expected at least 13 tools, got {len(tools)}"
         )
 
     def test_current_tool_count(self, mcp_server):
@@ -34,10 +34,11 @@ class TestCreateServer:
         Phase 2: 90-12+3=81.
         Phase 3: audit router replaces 9 keepout tools → 81-9+1=73.
         Phase 4: pcb router replaces 29 individual pcb_* tools → 73-29+1=45.
+        Phase 5: schematic router replaces 32 schematic + 1 netlist → 45-33+1=13.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 45, (
-            f"Expected 45 tools, got {len(tools)}. "
+        assert len(tools) == 13, (
+            f"Expected 13 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -46,6 +47,8 @@ class TestExpectedToolsExist:
     """Verify that specific important tools are registered."""
 
     EXPECTED_TOOLS = [
+        # Phase 5 router (schematic — replaces 32 schematic tools + find_component_connections)
+        "schematic",
         # Phase 4 router (pcb — replaces all individual pcb_* tools)
         "pcb",
         # PCB panelize tools
@@ -63,25 +66,6 @@ class TestExpectedToolsExist:
         "project",
         "drc",
         "autoroute",
-        # Schematic tools
-        "create_schematic",
-        "load_schematic",
-        "save_schematic",
-        "add_component",
-        "remove_component",
-        "list_components",
-        "add_wire",
-        "remove_wire",
-        "add_label",
-        "remove_label",
-        "add_junction",
-        "get_component_pin_position",
-        "list_component_pins",
-        "add_label_to_pin",
-        "connect_pins_with_labels",
-        "check_pin_collisions",
-        "validate_schematic",
-        "get_schematic_info",
         # Pipeline tools
         "build_pcb_from_schematic",
     ]

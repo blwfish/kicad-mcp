@@ -46,15 +46,10 @@ def create_server() -> FastMCP:
     # Domain routers (phase 3: audit)
     # Note: register_pcb_keepout_tools is imported above and already called.
 
-    # Tools not yet consolidated into routers
-    from kicad_mcp.tools.netlist import register_netlist_tools
+    # Schematic router (phase 5: replaces 32 individual schematic tools + find_component_connections)
+    from kicad_mcp.tools.schematic_router import register_schematic_router
 
-    register_netlist_tools(mcp)
-
-    # Schematic tools (wrapping kicad-sch-api)
-    from kicad_mcp.tools.schematic import register_schematic_tools
-
-    register_schematic_tools(mcp)
+    register_schematic_router(mcp)
 
     logger.info("KiCad MCP server initialized with all tool modules")
     return mcp
