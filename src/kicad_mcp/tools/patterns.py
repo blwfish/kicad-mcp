@@ -27,7 +27,7 @@ async def _op_identify_circuit_patterns(
     """Identify common circuit patterns in a KiCad schematic."""
     if not os.path.exists(schematic_path):
         if ctx:
-            ctx.info(f"Schematic file not found: {schematic_path}")
+            await ctx.info(f"Schematic file not found: {schematic_path}")
         return {
             "success": False,
             "error": f"Schematic file not found: {schematic_path}",
@@ -35,34 +35,34 @@ async def _op_identify_circuit_patterns(
 
     if ctx:
         await ctx.report_progress(10, 100)
-        ctx.info(
+        await ctx.info(
             f"Loading schematic file: {os.path.basename(schematic_path)}"
         )
 
     try:
         if ctx:
             await ctx.report_progress(20, 100)
-            ctx.info("Parsing schematic structure...")
+            await ctx.info("Parsing schematic structure...")
 
         netlist_data = extract_netlist(schematic_path)
 
         if "error" in netlist_data:
             if ctx:
-                ctx.info(
+                await ctx.info(
                     f"Error extracting netlist: {netlist_data['error']}"
                 )
             return {"success": False, "error": netlist_data["error"]}
 
         if ctx:
             await ctx.report_progress(30, 100)
-            ctx.info("Analyzing components and connections...")
+            await ctx.info("Analyzing components and connections...")
 
         components = netlist_data.get("components", {})
         nets = netlist_data.get("nets", {})
 
         if ctx:
             await ctx.report_progress(50, 100)
-            ctx.info("Identifying circuit patterns...")
+            await ctx.info("Identifying circuit patterns...")
 
         identified_patterns: Dict[str, list] = {
             "power_supply_circuits": [],
@@ -131,7 +131,7 @@ async def _op_identify_circuit_patterns(
 
         if ctx:
             await ctx.report_progress(100, 100)
-            ctx.info(
+            await ctx.info(
                 f"Pattern recognition complete. "
                 f"Found {total_patterns} circuit patterns."
             )
@@ -140,7 +140,7 @@ async def _op_identify_circuit_patterns(
 
     except Exception as e:
         if ctx:
-            ctx.info(f"Error identifying circuit patterns: {e}")
+            await ctx.info(f"Error identifying circuit patterns: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -150,7 +150,7 @@ async def _op_analyze_project_circuit_patterns(
     """Identify circuit patterns in a KiCad project's schematic."""
     if not os.path.exists(project_path):
         if ctx:
-            ctx.info(f"Project not found: {project_path}")
+            await ctx.info(f"Project not found: {project_path}")
         return {
             "success": False,
             "error": f"Project not found: {project_path}",
@@ -164,7 +164,7 @@ async def _op_analyze_project_circuit_patterns(
 
         if "schematic" not in files:
             if ctx:
-                ctx.info("Schematic file not found in project")
+                await ctx.info("Schematic file not found in project")
             return {
                 "success": False,
                 "error": "Schematic file not found in project",
@@ -172,7 +172,7 @@ async def _op_analyze_project_circuit_patterns(
 
         schematic_path = files["schematic"]
         if ctx:
-            ctx.info(
+            await ctx.info(
                 f"Found schematic file: {os.path.basename(schematic_path)}"
             )
 
@@ -185,5 +185,5 @@ async def _op_analyze_project_circuit_patterns(
 
     except Exception as e:
         if ctx:
-            ctx.info(f"Error analyzing project circuit patterns: {e}")
+            await ctx.info(f"Error analyzing project circuit patterns: {e}")
         return {"success": False, "error": str(e)}
