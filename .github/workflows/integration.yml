@@ -1,10 +1,18 @@
 name: Integration Tests (KiCad multi-version)
 
+# Parked: scaffolded by adf7f4c (multi-version KiCad regression testing
+# phases 1–4) but never fully wired up.  At time of parking the workflow
+# had never produced a successful run — runner was unregistered, KiCad
+# apps weren't at expected paths, pytest-timeout was missing from deps,
+# and the integration tests themselves had never executed past the
+# prereq checks.  Auto-triggers (pull_request, push) are disabled so
+# the workflow stops emailing PR authors on every failed rerun.
+#
+# To complete the setup: see docs/MULTI_VERSION_TESTING.md and the
+# follow-up task spawned 2026-05-26.  Once green end-to-end, restore
+# the `pull_request` and `push` triggers below.
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
