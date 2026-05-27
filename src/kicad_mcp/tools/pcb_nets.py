@@ -33,6 +33,14 @@ def register_pcb_net_tools(mcp: FastMCP) -> None:
 
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+        # D: input validation — refuse net names with characters that would
+        # require S-expression escaping. We don't currently know whether
+        # KiCad permits any of these in net names; rejecting up-front means
+        # we never write a name our regex reader can't round-trip.
+        if not net_name:
+            return {"error": "net_name must not be empty"}
+        if '"' in net_name or "\\" in net_name or "\n" in net_name or "\r" in net_name:
+            return {"error": f"net_name contains characters that require S-expression escaping: {net_name!r}"}
 
         with open(pcb_path, "r") as f:
             content = f.read()
@@ -58,7 +66,13 @@ def register_pcb_net_tools(mcp: FastMCP) -> None:
         # Insert the new net definition after the last existing net line
         # Net definitions appear as: (net 0 "")  (net 1 "VCC")  etc.
         last_net_match = None
-        for m in _re.finditer(r'\(net\s+\d+\s+"[^"]*"\)', content):
+        # Allow \" escape sequences inside the net name. Bare `[^"]*` would
+        # match through an unescaped `"` mid-name and produce a malformed
+        # extraction; this S-expression-string-aware form handles any net
+        # name our writer might encounter (defense in depth — add_net's
+        # input validation refuses to WRITE such names, but third-party
+        # PCB files may already contain them).
+        for m in _re.finditer(r'\(net\s+\d+\s+"(?:[^"\\]|\\.)*"\)', content):
             last_net_match = m
 
         if last_net_match:
@@ -263,6 +277,13 @@ print(json.dumps({
 
         if not os.path.exists(pcb_path):
             return {"error": f"PCB file not found: {pcb_path}"}
+        # D: input validation — same rule as add_net (refuse names with
+        # characters that would require S-expression escaping).
+        for name, label in [(old_name, "old_name"), (new_name, "new_name")]:
+            if not name:
+                return {"error": f"{label} must not be empty"}
+            if '"' in name or "\\" in name or "\n" in name or "\r" in name:
+                return {"error": f"{label} contains characters that require S-expression escaping: {name!r}"}
 
         with open(pcb_path, "r") as f:
             content = f.read()
@@ -462,7 +483,7 @@ print(json.dumps({
 
         # Find existing nets
         existing_nets = {}
-        for m in _re.finditer(r'\(net\s+(\d+)\s+"([^"]*)"\)', pcb_content):
+        for m in _re.finditer(r'\(net\s+(\d+)\s+"((?:[^"\\]|\\.)*)"\)', pcb_content):
             existing_nets[m.group(2)] = int(m.group(1))
 
         # Determine next available net code
@@ -484,7 +505,7 @@ print(json.dumps({
         if nets_created:
             # Find the last (net ...) line to insert after
             last_net_match = None
-            for m in _re.finditer(r'\(net\s+\d+\s+"[^"]*"\)', pcb_content):
+            for m in _re.finditer(r'\(net\s+\d+\s+"(?:[^"\\]|\\.)*"\)', pcb_content):
                 last_net_match = m
 
             if last_net_match:
