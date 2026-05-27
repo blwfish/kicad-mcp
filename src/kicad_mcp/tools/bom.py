@@ -29,10 +29,10 @@ async def _op_analyze_bom(
     column_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Analyze a KiCad project's Bill of Materials."""
-    print(f"Analyzing BOM for project: {project_path}")
+    logger.debug("Analyzing BOM for project: %s", project_path)
 
     if not os.path.exists(project_path):
-        print(f"Project not found: {project_path}")
+        logger.warning("Project not found: %s", project_path)
         if ctx:
             await ctx.info(f"Project not found: {project_path}")
         return {"success": False, "error": f"Project not found: {project_path}"}
@@ -49,10 +49,10 @@ async def _op_analyze_bom(
     for file_type, file_path in files.items():
         if "bom" in file_type.lower() or file_path.lower().endswith(".csv"):
             bom_files[file_type] = file_path
-            print(f"Found potential BOM file: {file_path}")
+            logger.debug("Found potential BOM file: %s", file_path)
 
     if not bom_files:
-        print("No BOM files found for project")
+        logger.warning("No BOM files found for project")
         if ctx:
             await ctx.info("No BOM files found for project")
         return {
@@ -84,7 +84,7 @@ async def _op_analyze_bom(
             bom_data, format_info = _parse_bom_file(file_path)
 
             if not bom_data:
-                print(f"Failed to parse BOM file: {file_path}")
+                logger.warning("Failed to parse BOM file: %s", file_path)
                 file_parse_skipped += 1
                 continue
 
@@ -99,14 +99,14 @@ async def _op_analyze_bom(
             total_unique_components += analysis["unique_component_count"]
             total_components += analysis["total_component_count"]
 
-            print(f"Successfully analyzed BOM file: {file_path}")
+            logger.info("Successfully analyzed BOM file: %s", file_path)
 
         except (OSError, ValueError, KeyError) as e:
             # OSError = file/IO; ValueError = parse/CSV; KeyError = schema.
             # Anything else (AttributeError, ImportError) propagates as a
             # programming bug. file_error_count is surfaced below so a
             # caller scanning only "results" doesn't miss partial failure.
-            print(f"Error analyzing BOM file {file_path}: {e}")
+            logger.error("Error analyzing BOM file %s: %s", file_path, e)
             file_error_count += 1
             results["bom_files"][file_type] = {
                 "path": file_path,
@@ -170,10 +170,10 @@ async def _op_export_bom_csv(
     project_path: str, ctx: Context | None
 ) -> Dict[str, Any]:
     """Export a CSV BOM from the project's schematic."""
-    print(f"Exporting BOM for project: {project_path}")
+    logger.debug("Exporting BOM for project: %s", project_path)
 
     if not os.path.exists(project_path):
-        print(f"Project not found: {project_path}")
+        logger.warning("Project not found: %s", project_path)
         if ctx:
             await ctx.info(f"Project not found: {project_path}")
         return {"success": False, "error": f"Project not found: {project_path}"}
@@ -184,7 +184,7 @@ async def _op_export_bom_csv(
     files = get_project_files(project_path)
 
     if "schematic" not in files:
-        print("Schematic file not found in project")
+        logger.warning("Schematic file not found in project")
         if ctx:
             await ctx.info("Schematic file not found in project")
         return {"success": False, "error": "Schematic file not found"}
@@ -203,8 +203,8 @@ async def _op_export_bom_csv(
         export_result = await _export_bom_with_cli(
             schematic_file, project_dir, project_name, ctx
         )
-    except Exception as e:
-        print(f"Error exporting BOM with CLI: {e}")
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        logger.error("Error exporting BOM with CLI: %s", e)
         if ctx:
             await ctx.info(f"Error using command-line tools: {e}")
         export_result = {"success": False, "error": str(e)}
@@ -237,7 +237,7 @@ def _parse_bom_file(
     file_path: str,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Parse a BOM file and detect its format."""
-    print(f"Parsing BOM file: {file_path}")
+    logger.debug("Parsing BOM file: %s", file_path)
 
     _, ext = os.path.splitext(file_path)
     ext = ext.lower()
@@ -332,18 +332,18 @@ def _parse_bom_file(
 
                     for row in reader:
                         components.append(dict(row))
-            except Exception as e:
+            except (OSError, csv.Error, UnicodeDecodeError, ValueError) as e:
                 logger.warning("Failed to parse unknown file format %s: %s", file_path, e)
                 return [], {"detected_format": "unsupported", "error": str(e)}
 
-    except Exception as e:
+    except (OSError, csv.Error, UnicodeDecodeError, ValueError, json.JSONDecodeError, KeyError) as e:
         logger.warning("Error parsing BOM file %s: %s", file_path, e, exc_info=True)
         return [], {"error": str(e)}
 
     if not components:
-        print(f"No components found in BOM file: {file_path}")
+        logger.warning("No components found in BOM file: %s", file_path)
     else:
-        print(f"Successfully parsed {len(components)} components from {file_path}")
+        logger.debug("Successfully parsed %d components from %s", len(components), file_path)
 
         if components:
             format_info["sample_fields"] = list(components[0].keys())
@@ -381,7 +381,7 @@ def _analyze_bom_data(
     """Analyze component data from a BOM file."""
     import re
 
-    print(f"Analyzing {len(components)} components")
+    logger.debug("Analyzing %d components", len(components))
 
     results: Dict[str, Any] = {
         "unique_component_count": 0,
@@ -401,7 +401,7 @@ def _analyze_bom_data(
         results["unique_component_count"] = len(components)
         results["total_component_count"] = len(components)
         results["stage_errors"]["pandas"] = "pandas not installed; counts only"
-        print("pandas not installed — returning basic BOM counts only")
+        logger.warning("pandas not installed — returning basic BOM counts only")
         return results
 
     # --- DataFrame construction --------------------------------------------
@@ -600,7 +600,7 @@ async def _export_bom_with_cli(
     import platform
 
     system = platform.system()
-    print(f"Exporting BOM using CLI tools on {system}")
+    logger.debug("Exporting BOM using CLI tools on %s", system)
     if ctx:
         await ctx.report_progress(40, 100)
 
@@ -670,15 +670,15 @@ async def _export_bom_with_cli(
         }
 
     try:
-        print(f"Running command: {' '.join(cmd)}")
+        logger.debug("Running command: %s", " ".join(cmd))
         if ctx:
             await ctx.report_progress(60, 100)
 
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
         if process.returncode != 0:
-            print(f"BOM export command failed with code {process.returncode}")
-            print(f"Error output: {process.stderr}")
+            logger.warning("BOM export command failed with code %d", process.returncode)
+            logger.warning("Error output: %s", process.stderr)
 
             return {
                 "success": False,
@@ -718,15 +718,15 @@ async def _export_bom_with_cli(
         }
 
     except subprocess.TimeoutExpired:
-        print("BOM export command timed out after 30 seconds")
+        logger.warning("BOM export command timed out after 30 seconds")
         return {
             "success": False,
             "error": "BOM export command timed out after 30 seconds",
             "schematic_file": schematic_file,
         }
 
-    except Exception as e:
-        print(f"Error exporting BOM: {e}")
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        logger.error("Error exporting BOM: %s", e)
         return {
             "success": False,
             "error": f"Error exporting BOM: {e}",

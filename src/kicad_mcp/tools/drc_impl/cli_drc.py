@@ -2,14 +2,17 @@
 Design Rule Check (DRC) implementation using KiCad command-line interface.
 """
 import json
+import logging
 import os
 import subprocess
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastmcp import Context
 
-from kicad_mcp.config import system
+from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
+
+logger = logging.getLogger(__name__)
 
 
 async def run_drc_via_cli(
@@ -34,16 +37,14 @@ async def run_drc_via_cli(
         with tempfile.TemporaryDirectory() as temp_dir:
             output_file = os.path.join(temp_dir, "drc_report.json")
 
-            kicad_cli = _find_kicad_cli()
-            if not kicad_cli:
-                print(
-                    "kicad-cli not found in PATH or common installation locations"
-                )
-                results["error"] = (
-                    "kicad-cli not found. Please ensure KiCad is installed "
-                    "and kicad-cli is available."
-                )
+            try:
+                kicad_cli = get_kicad_cli_path(required=True)
+            except KiCadCLIError as e:
+                logger.warning("kicad-cli not available: %s", e)
+                results["error"] = str(e)
                 return results
+            # required=True guarantees a non-None path (else KiCadCLIError above)
+            assert kicad_cli is not None
 
             if ctx:
                 await ctx.report_progress(50, 100)
@@ -60,17 +61,17 @@ async def run_drc_via_cli(
                 pcb_file,
             ]
 
-            print(f"Running command: {' '.join(cmd)}")
+            logger.debug("Running command: %s", " ".join(cmd))
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
             if process.returncode != 0:
-                print(f"DRC command failed with code {process.returncode}")
-                print(f"Error output: {process.stderr}")
+                logger.warning("DRC command failed (code %s): %s",
+                               process.returncode, process.stderr)
                 results["error"] = f"DRC command failed: {process.stderr}"
                 return results
 
             if not os.path.exists(output_file):
-                print("DRC report file not created")
+                logger.warning("DRC report file not created")
                 results["error"] = "DRC report file not created"
                 return results
 
@@ -78,13 +79,13 @@ async def run_drc_via_cli(
                 try:
                     drc_report = json.load(f)
                 except json.JSONDecodeError:
-                    print("Failed to parse DRC report JSON")
+                    logger.warning("Failed to parse DRC report JSON")
                     results["error"] = "Failed to parse DRC report JSON"
                     return results
 
             violations = drc_report.get("violations", [])
             violation_count = len(violations)
-            print(f"DRC completed with {violation_count} violations")
+            logger.info("DRC completed with %d violations", violation_count)
             if ctx:
                 await ctx.report_progress(70, 100)
                 await ctx.info(f"DRC completed with {violation_count} violations")
@@ -113,56 +114,7 @@ async def run_drc_via_cli(
                 await ctx.report_progress(90, 100)
             return results
 
-    except Exception as e:
-        print(f"Error in CLI DRC: {e}")
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        logger.error("Error in CLI DRC: %s", e)
         results["error"] = f"Error in CLI DRC: {e}"
         return results
-
-
-def _find_kicad_cli() -> Optional[str]:
-    """Find the kicad-cli executable in the system PATH.
-
-    Returns:
-        Path to kicad-cli if found, None otherwise
-    """
-    try:
-        if system == "Windows":
-            result = subprocess.run(
-                ["where", "kicad-cli.exe"], capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                return result.stdout.strip().split("\n")[0]
-        else:
-            result = subprocess.run(
-                ["which", "kicad-cli"], capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-
-    except Exception as e:
-        print(f"Error finding kicad-cli: {e}")
-
-    # Try common installation locations
-    if system == "Windows":
-        potential_paths = [
-            r"C:\Program Files\KiCad\bin\kicad-cli.exe",
-            r"C:\Program Files (x86)\KiCad\bin\kicad-cli.exe",
-        ]
-    elif system == "Darwin":
-        kicad_app = os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
-        potential_paths = [
-            f"{kicad_app}/Contents/MacOS/kicad-cli",
-            "/Applications/KiCad/kicad-cli",
-        ]
-    else:  # Linux
-        potential_paths = [
-            "/usr/bin/kicad-cli",
-            "/usr/local/bin/kicad-cli",
-            "/opt/kicad/bin/kicad-cli",
-        ]
-
-    for path in potential_paths:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-
-    return None

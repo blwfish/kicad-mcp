@@ -26,6 +26,7 @@ same source.
 """
 
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
+from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER
 
 # ---------------------------------------------------------------------------
 # Keepout zone helpers
@@ -183,16 +184,18 @@ def get_courtyard_bbox(fp):
             "x_max_mm": bbox[2], "y_max_mm": bbox[3]}
 """
 
-COURTYARD_BBOX_TUPLE_HELPER = """
-POWER_NETS = {"", "GND", "+5V", "+3V3", "+3.3V", "+12V", "VCC", "VDD", "VSS", "VBUS"}
-""" + _GET_BBOX_TUPLE_BODY + """
+COURTYARD_BBOX_TUPLE_HELPER = POWER_NET_HELPER + _GET_BBOX_TUPLE_BODY + """
 get_courtyard_bbox = _get_courtyard_bbox_tuple
 
 def signal_net_count(fp):
+    # Count distinct non-power, non-empty nets attached to this footprint.
+    # Power classification uses the canonical is_power_net (prefix match),
+    # not a hand-typed set — the prior inline POWER_NETS missed nets like
+    # "+12V_FILTERED" or "VSS_A" that match by prefix.
     nets = set()
     for pad in fp.Pads():
         n = pad.GetNetname()
-        if n and n not in POWER_NETS:
+        if n and not is_power_net(n):
             nets.add(n)
     return len(nets)
 """

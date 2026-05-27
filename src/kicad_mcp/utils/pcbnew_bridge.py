@@ -28,8 +28,9 @@ _SAFE_STDERR_PATTERNS = [
 
 
 def _get_kicad_app_path() -> str:
-    """Return the KiCad .app path, honoring KICAD_APP_PATH env var."""
-    return os.environ.get("KICAD_APP_PATH", "/Applications/KiCad/KiCad.app")
+    """Return the KiCad .app path (canonical: config.KICAD_APP_PATH)."""
+    from kicad_mcp.config import KICAD_APP_PATH
+    return KICAD_APP_PATH
 
 
 def _bundled_python_versions(framework_versions_dir: str) -> list:
@@ -110,7 +111,10 @@ def _extract_last_json_object(stdout: str) -> Optional[Dict[str, Any]]:
     ``\\\\``, etc.) by skipping the escaped char.
 
     Returns the last balanced object that parses successfully, or ``None``
-    if none found.  This is robust to:
+    if none found.  **Top-level JSON arrays return None** by design — pcbnew
+    scripts should always emit a dict (e.g. ``{"status": "ok", ...}``).
+    If you find yourself wanting array output, wrap it: ``{"items": [...]}``.
+    This is robust to:
 
     - single-line JSON output (``print(json.dumps(result))``)
     - multi-line indented JSON (``json.dumps(result, indent=2)``)

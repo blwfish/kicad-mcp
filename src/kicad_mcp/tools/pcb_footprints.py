@@ -562,7 +562,10 @@ for zone in fp.Zones():
             "no_tracks": zone.GetDoNotAllowTracks(),
             "no_vias": zone.GetDoNotAllowVias(),
             "no_pads": zone.GetDoNotAllowPads(),
-            "no_copper_pour": zone.GetDoNotAllowCopperPour(),
+            # KiCad 10 renamed GetDoNotAllowCopperPour → GetDoNotAllowZoneFills
+            "no_copper_pour": (zone.GetDoNotAllowZoneFills()
+                               if hasattr(zone, "GetDoNotAllowZoneFills")
+                               else zone.GetDoNotAllowCopperPour()),
             "no_footprints": zone.GetDoNotAllowFootprints(),
         },
     })

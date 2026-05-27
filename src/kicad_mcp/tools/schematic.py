@@ -7,7 +7,6 @@ loaded instance until a different schematic is loaded.
 The underlying library is kicad-sch-api (PyPI), which provides lossless
 round-trip parsing of .kicad_sch files.
 """
-# TODO: Migrate !r script interpolation to JSON params (see pcb_board.py for pattern)
 
 from __future__ import annotations
 
@@ -1301,14 +1300,24 @@ def register_schematic_tools(mcp: FastMCP) -> None:
         Args:
             sheet_uuid: UUID of sheet to add pin to.
             name: Pin name.
-            pin_type: Pin type (input, output, bidirectional).
+            pin_type: Pin type (input, output, bidirectional, tri_state, passive).
             position: [x, y] coordinates relative to sheet.
         """
         sch = _require_schematic()
         if len(position) != 2:
             return {"error": "Position must be [x, y] coordinates"}
 
-        pin_uuid = sch.add_sheet_pin(sheet_uuid, name, pin_type, tuple(position))
+        # Reject unknown pin_type explicitly — silent default-substitution by
+        # the underlying library would hide caller typos (mirrors the
+        # add_hierarchical_label guard pattern).
+        valid_pin_types = {"input", "output", "bidirectional", "tri_state", "passive"}
+        pin_type_key = pin_type.lower()
+        if pin_type_key not in valid_pin_types:
+            return {
+                "error": f"Unknown pin_type {pin_type!r}. Valid: {sorted(valid_pin_types)}"
+            }
+
+        pin_uuid = sch.add_sheet_pin(sheet_uuid, name, pin_type_key, tuple(position))
         return {
             "status": "ok",
             "pin_uuid": pin_uuid,

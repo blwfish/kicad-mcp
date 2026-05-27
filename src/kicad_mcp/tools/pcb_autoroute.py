@@ -338,21 +338,26 @@ def _run_full_autoroute(
     Used by both the synchronous and async tools.
     """
     pcb_basename = os.path.splitext(os.path.basename(pcb_path))[0]
-    work_dir = tempfile.mkdtemp(prefix="kicad_autoroute_")
-    dsn_path = os.path.join(work_dir, f"{pcb_basename}.dsn")
-    ses_path = os.path.join(work_dir, f"{pcb_basename}.ses")
-
-    # Store work_dir in the job dict so cleanup code can find it
-    if job_id:
-        with _autoroute_lock:
-            job = _autoroute_jobs.get(job_id)
-            if job:
-                job["work_dir"] = work_dir
+    work_dir: Optional[str] = None
 
     # 30 minutes per pass — FreeRouter on complex boards can take 10-20+ min
     per_pass_timeout = 1800.0
 
     try:
+        # mkdtemp goes inside try so the finally block guarantees cleanup
+        # even if the job-dict write below raises (otherwise the temp dir
+        # would leak).
+        work_dir = tempfile.mkdtemp(prefix="kicad_autoroute_")
+        dsn_path = os.path.join(work_dir, f"{pcb_basename}.dsn")
+        ses_path = os.path.join(work_dir, f"{pcb_basename}.ses")
+
+        # Store work_dir in the job dict so cleanup code can find it
+        if job_id:
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job:
+                    job["work_dir"] = work_dir
+
         # Step 1: Export DSN
         logger.info("Exporting DSN from %s", pcb_path)
         export_result = _export_dsn(pcb_path, dsn_path, remove_zones)
@@ -472,11 +477,8 @@ def _run_full_autoroute(
 
     finally:
         # Clean up temp files (but not if async job still referencing them)
-        if not job_id:
-            try:
-                shutil.rmtree(work_dir, ignore_errors=True)
-            except Exception:
-                pass
+        if not job_id and work_dir is not None:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _autoroute_worker(job_id: str, **kwargs: Any) -> None:

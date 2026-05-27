@@ -39,6 +39,27 @@ def is_power_net(net_name):
 """
 
 
+# KiCad S-expression quoted-string unescape: \" -> ", \\ -> \, \n -> newline.
+_SEXPR_ESCAPES = {'"': '"', '\\': '\\', 'n': '\n', 't': '\t', 'r': '\r'}
+
+
+def _unescape_sexpr(s: str) -> str:
+    """Reverse the S-expression quoted-string escape sequences."""
+    if "\\" not in s:
+        return s
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            out.append(_SEXPR_ESCAPES.get(s[i + 1], s[i + 1]))
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 class SchematicParser:
     """Parser for KiCad schematic files to extract netlist information."""
 
@@ -205,16 +226,24 @@ class SchematicParser:
         """
         component: dict[str, Any] = {}
 
-        lib_id_match = re.search(r'\(lib_id\s+"([^"]+)"\)', symbol_expr)
+        # KiCad S-expression quoted strings allow escaped quotes (\") and
+        # escaped backslashes (\\). The prior [^"]+ pattern truncated values
+        # silently at the first \" — e.g. a Value containing inch marks would
+        # land in the netlist with the trailing portion dropped. Pattern is
+        # "((?:[^"\\]|\\.)*)" — any non-quote-non-backslash OR a backslash
+        # followed by anything.
+        _QSTR = r'"((?:[^"\\]|\\.)*)"'
+
+        lib_id_match = re.search(r'\(lib_id\s+' + _QSTR + r'\)', symbol_expr)
         if lib_id_match:
-            component["lib_id"] = lib_id_match.group(1)
+            component["lib_id"] = _unescape_sexpr(lib_id_match.group(1))
 
         property_matches = re.finditer(
-            r'\(property\s+"([^"]+)"\s+"([^"]+)"', symbol_expr
+            r'\(property\s+' + _QSTR + r'\s+' + _QSTR, symbol_expr
         )
         for match in property_matches:
-            prop_name = match.group(1)
-            prop_value = match.group(2)
+            prop_name = _unescape_sexpr(match.group(1))
+            prop_value = _unescape_sexpr(match.group(2))
 
             if prop_name == "Reference":
                 component["reference"] = prop_value

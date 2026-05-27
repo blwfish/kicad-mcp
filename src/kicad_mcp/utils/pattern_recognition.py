@@ -522,6 +522,12 @@ def identify_sensor_interfaces(
         List of identified sensor interface circuits
     """
     sensor_interfaces: list[dict[str, Any]] = []
+    # Track refs matched by the main sensor_patterns loop so the
+    # designator-prefix passes below (thermistors RT/TH, photosensors
+    # PD/LDR, potentiometers RV/POT) don't double-classify a component
+    # already labelled by value pattern — e.g. an "RT1" with value "LM35"
+    # would otherwise appear as both temperature_sensor and thermistor.
+    classified_refs: set[str] = set()
 
     # Common sensor IC patterns
     sensor_patterns = {
@@ -698,11 +704,14 @@ def identify_sensor_interfaces(
                         "component": ref,
                     })
 
+                classified_refs.add(ref)
                 break
 
     # Thermistors
     thermistor_refs = [
-        ref for ref in components.keys() if ref.startswith("RT") or ref.startswith("TH")
+        ref for ref in components.keys()
+        if (ref.startswith("RT") or ref.startswith("TH"))
+        and ref not in classified_refs
     ]
     for ref in thermistor_refs:
         component = components[ref]
@@ -718,7 +727,8 @@ def identify_sensor_interfaces(
     photosensor_refs = [
         ref
         for ref in components.keys()
-        if ref.startswith("PD") or ref.startswith("LDR")
+        if (ref.startswith("PD") or ref.startswith("LDR"))
+        and ref not in classified_refs
     ]
     for ref in photosensor_refs:
         component = components[ref]
@@ -734,7 +744,8 @@ def identify_sensor_interfaces(
     pot_refs = [
         ref
         for ref in components.keys()
-        if ref.startswith("RV") or ref.startswith("POT")
+        if (ref.startswith("RV") or ref.startswith("POT"))
+        and ref not in classified_refs
     ]
     for ref in pot_refs:
         component = components[ref]

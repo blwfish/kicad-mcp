@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.utils.file_utils import get_project_files, load_project_json
 from kicad_mcp.utils.kicad_utils import find_kicad_projects, open_kicad_project
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,9 @@ def register_project_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def get_project_structure(project_path: str) -> Dict[str, Any]:
         """Get the structure and files of a KiCad project."""
-        if not os.path.exists(project_path):
-            return {"error": f"Project not found: {project_path}"}
+        err = validate_project_path(project_path)
+        if err:
+            return {"error": err}
 
         project_dir = os.path.dirname(project_path)
         project_name = os.path.basename(project_path)[:-10]  # Remove .kicad_pro
@@ -55,13 +57,17 @@ def register_project_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def open_project(project_path: str) -> Dict[str, Any]:
         """Open a KiCad project in KiCad."""
+        err = validate_project_path(project_path)
+        if err:
+            return {"error": err}
         return open_kicad_project(project_path)
 
     @mcp.tool()
     def validate_project(project_path: str) -> Dict[str, Any]:
         """Basic validation of a KiCad project."""
-        if not os.path.exists(project_path):
-            return {"success": False, "error": f"Project not found: {project_path}"}
+        err = validate_project_path(project_path)
+        if err:
+            return {"success": False, "error": err}
 
         files = get_project_files(project_path)
         issues: list[str] = []

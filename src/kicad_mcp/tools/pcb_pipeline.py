@@ -1,6 +1,5 @@
 """PCB pipeline tool: build a routed PCB from a schematic in one step."""
 
-import glob
 import logging
 import math
 import os
@@ -14,7 +13,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
-from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
 logger = logging.getLogger(__name__)
@@ -425,7 +424,7 @@ def _step_smart_placement(
 import pcbnew, json, math, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + KEEPOUT_HELPER + """
+""" + KEEPOUT_HELPER + POWER_NET_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
@@ -435,7 +434,6 @@ if not outline:
     print(json.dumps({"status": "ok", "message": "No board outline, skipping placement"}))
     raise SystemExit(0)
 
-POWER_PATS = ["GND", "VCC", "VDD", "3V3", "3.3V", "5V", "+5V", "+3", "+12", "VBUS"]
 board_xmin = outline["x_min_mm"]
 board_ymin = outline["y_min_mm"]
 board_xmax = outline["x_max_mm"]
@@ -528,8 +526,7 @@ connectivity = {}
 conn_score = {ref: 0.0 for ref in fp_info}
 
 for net_name, members in net_members.items():
-    is_power = any(p in net_name.upper() for p in POWER_PATS)
-    weight = 0.1 if is_power else 1.0
+    weight = 0.1 if is_power_net(net_name) else 1.0
     placed_members = [m for m in members if m in fp_info]
     for i in range(len(placed_members)):
         for j in range(i + 1, len(placed_members)):
@@ -973,26 +970,33 @@ def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
     if errors:
         return {"error": "; ".join(errors)}
 
-    gerber_files = sorted(glob.glob(os.path.join(output_dir, "*.gbr")))
-    drill_files = sorted(
-        glob.glob(os.path.join(output_dir, "*.drl"))
-        + glob.glob(os.path.join(output_dir, "*.xln"))
+    # Collect everything kicad-cli wrote — *.gbr (legacy), *.gtl/.gbl/.gto/etc.
+    # (RS-274X layer extensions), *.drl/.xln (drill), *.gbrjob (fab manifest).
+    # Matches the export.py _op_gerbers pattern; the narrower *.gbr-only glob
+    # was silently shipping fab packages missing layers.
+    all_files = sorted(
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if os.path.isfile(os.path.join(output_dir, f))
     )
+    drill_files = [f for f in all_files if f.endswith(".drl") or f.endswith(".xln")]
+    gerber_files = [f for f in all_files if f not in drill_files]
 
-    if not gerber_files and not drill_files:
+    if not all_files:
         return {"error": "No output files generated"}
 
-    # ZIP
     pcb_name = os.path.splitext(os.path.basename(pcb_path))[0]
     zip_path = os.path.join(pcb_dir, f"{pcb_name}-gerbers.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in gerber_files + drill_files:
+        for f in all_files:
             zf.write(f, os.path.basename(f))
 
     return {
         "status": "ok",
         "output_dir": output_dir,
-        "total_files": len(gerber_files) + len(drill_files),
+        "gerber_count": len(gerber_files),
+        "drill_count": len(drill_files),
+        "total_files": len(all_files),
         "zip_path": zip_path,
     }
 
