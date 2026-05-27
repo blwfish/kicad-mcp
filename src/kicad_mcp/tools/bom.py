@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import subprocess
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +29,34 @@ def register_bom_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def analyze_bom(
-        project_path: str, ctx: Context | None
+        project_path: str,
+        ctx: Context | None,
+        column_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Analyze a KiCad project's Bill of Materials.
 
-        This tool will look for BOM files related to a KiCad project and provide
-        analysis including component counts, categories, and cost estimates if available.
+        Looks for BOM files related to a KiCad project and provides analysis
+        including component counts, categories, cost estimates, and any
+        supplier metadata (MPN, manufacturer, LCSC, etc.) present in the BOM.
 
         Args:
             project_path: Path to the KiCad project file (.kicad_pro)
             ctx: MCP context for progress reporting
+            column_map: Optional override of column-name detection. Keys are
+                canonical field names ("reference", "value", "quantity",
+                "footprint", "cost", "category", "mpn", "manufacturer",
+                "lcsc", "datasheet", "description"); values are the actual
+                column names in the BOM. Fields not in column_map fall
+                back to heuristic detection.
 
         Returns:
-            Dictionary with BOM analysis results
+            Dictionary with BOM analysis results. Per-file analysis includes:
+            - counts, categories, cost data
+            - detected_fields: which BOM columns were classified as which field
+            - all_columns: full list of column names in the BOM (so nothing
+              is silently invisible to the caller)
+            - analysis_error or stage_errors: present if any analysis stage
+              failed (counts may still be partial)
         """
         print(f"Analyzing BOM for project: {project_path}")
 
@@ -103,7 +118,7 @@ def register_bom_tools(mcp: FastMCP) -> None:
                     file_parse_skipped += 1
                     continue
 
-                analysis = _analyze_bom_data(bom_data, format_info)
+                analysis = _analyze_bom_data(bom_data, format_info, column_map=column_map)
 
                 results["bom_files"][file_type] = {
                     "path": file_path,
@@ -386,17 +401,45 @@ def _parse_bom_file(
     return components, format_info
 
 
+# Canonical field → list of column-name candidates (lowercased). Heuristic
+# detection probes these in order; first match wins. Caller can override
+# any field via the column_map parameter (see _analyze_bom_data docstring).
+_BOM_FIELD_PROBES: Dict[str, List[str]] = {
+    "reference":    ["reference", "designator", "references", "designators", "refdes", "ref"],
+    "value":        ["value", "component", "comp", "part", "component value", "comp value"],
+    "quantity":     ["quantity", "qty", "count", "amount"],
+    "footprint":    ["footprint", "package", "pattern", "pcb footprint"],
+    "cost":         ["cost", "price", "unit price", "unit cost", "cost each"],
+    "category":     ["category", "type", "group", "component type", "lib"],
+    # Supplier / part-info fields — important for JLCPCB / Octopart workflows.
+    # Were silently dropped from earlier versions of this analysis.
+    "mpn":          ["mpn", "manufacturer part number", "manufacturer_part_number",
+                     "mfr part #", "mfr part number", "mpn1", "part number"],
+    "manufacturer": ["manufacturer", "mfr", "manufacturer name", "vendor", "mfg"],
+    "lcsc":         ["lcsc", "lcsc part", "lcsc#", "lcsc part #", "lcsc_part_number",
+                     "jlcpcb part #", "jlcpcb part number"],
+    "datasheet":    ["datasheet", "data sheet", "documentation", "datasheet url"],
+    "description":  ["description", "desc", "long description", "component description"],
+}
+
+
 def _analyze_bom_data(
-    components: List[Dict[str, Any]], format_info: Dict[str, Any]
+    components: List[Dict[str, Any]],
+    format_info: Dict[str, Any],
+    column_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Analyze component data from a BOM file.
 
     Args:
         components: List of component dictionaries
         format_info: Dictionary with format information
+        column_map: Optional caller-supplied column-name overrides per
+            canonical field. See _BOM_FIELD_PROBES for valid keys. Fields
+            not in column_map fall back to heuristic detection.
 
     Returns:
-        Dictionary with analysis results
+        Dictionary with analysis results. Includes `detected_fields` and
+        `all_columns` so the caller can see the full BOM schema.
     """
     import re
 
@@ -407,6 +450,9 @@ def _analyze_bom_data(
         "total_component_count": 0,
         "categories": {},
         "has_cost_data": False,
+        "detected_fields": {},
+        "all_columns": [],
+        "stage_errors": {},
     }
 
     if not components:
@@ -416,60 +462,52 @@ def _analyze_bom_data(
         # Fallback without pandas: basic counting
         results["unique_component_count"] = len(components)
         results["total_component_count"] = len(components)
+        results["stage_errors"]["pandas"] = "pandas not installed; counts only"
         print("pandas not installed — returning basic BOM counts only")
         return results
 
+    # --- DataFrame construction --------------------------------------------
     try:
         df = pd.DataFrame(components)
         df.columns = [str(col).strip().lower() for col in df.columns]
+    except (ValueError, TypeError) as e:
+        # pd.DataFrame can raise on inconsistent dict shapes; if construction
+        # fails we genuinely cannot proceed, so surface as analysis_error.
+        results["analysis_error"] = f"DataFrame construction failed: {type(e).__name__}: {e}"
+        return results
 
-        ref_col = None
-        value_col = None
-        quantity_col = None
-        footprint_col = None
-        cost_col = None
-        category_col = None
+    results["all_columns"] = list(df.columns)
 
-        for possible_col in [
-            "reference", "designator", "references", "designators", "refdes", "ref",
-        ]:
-            if possible_col in df.columns:
-                ref_col = possible_col
-                break
+    # --- Field detection (heuristic + caller overrides) --------------------
+    overrides = {k.lower(): v.lower() for k, v in (column_map or {}).items()}
+    detected: Dict[str, Optional[str]] = {}
+    for field, candidates in _BOM_FIELD_PROBES.items():
+        chosen: Optional[str] = None
+        if field in overrides:
+            requested = overrides[field]
+            if requested in df.columns:
+                chosen = requested
+            else:
+                results["stage_errors"][f"column_map.{field}"] = (
+                    f"requested column {requested!r} not in BOM (have: {list(df.columns)})"
+                )
+        if chosen is None:
+            for cand in candidates:
+                if cand in df.columns:
+                    chosen = cand
+                    break
+        detected[field] = chosen
+    results["detected_fields"] = {k: v for k, v in detected.items() if v is not None}
 
-        for possible_col in [
-            "value", "component", "comp", "part", "component value", "comp value",
-        ]:
-            if possible_col in df.columns:
-                value_col = possible_col
-                break
+    ref_col       = detected["reference"]
+    value_col     = detected["value"]
+    quantity_col  = detected["quantity"]
+    footprint_col = detected["footprint"]
+    cost_col      = detected["cost"]
+    category_col  = detected["category"]
 
-        for possible_col in ["quantity", "qty", "count", "amount"]:
-            if possible_col in df.columns:
-                quantity_col = possible_col
-                break
-
-        for possible_col in [
-            "footprint", "package", "pattern", "pcb footprint",
-        ]:
-            if possible_col in df.columns:
-                footprint_col = possible_col
-                break
-
-        for possible_col in [
-            "cost", "price", "unit price", "unit cost", "cost each",
-        ]:
-            if possible_col in df.columns:
-                cost_col = possible_col
-                break
-
-        for possible_col in [
-            "category", "type", "group", "component type", "lib",
-        ]:
-            if possible_col in df.columns:
-                category_col = possible_col
-                break
-
+    # --- Counts -----------------------------------------------------------
+    try:
         if quantity_col:
             df[quantity_col] = pd.to_numeric(
                 df[quantity_col], errors="coerce"
@@ -477,9 +515,16 @@ def _analyze_bom_data(
             results["total_component_count"] = int(df[quantity_col].sum())
         else:
             results["total_component_count"] = len(df)
-
         results["unique_component_count"] = len(df)
+    except (ValueError, TypeError, KeyError) as e:
+        # Quantity parse failure → we still know unique count. Don't fall
+        # back to total = len(df) silently; signal the partial result.
+        results["unique_component_count"] = len(df)
+        results["total_component_count"] = None
+        results["stage_errors"]["counts"] = f"{type(e).__name__}: {e}"
 
+    # --- Categories ---------------------------------------------------------
+    try:
         if category_col:
             categories = df[category_col].value_counts().to_dict()
             results["categories"] = {str(k): int(v) for k, v in categories.items()}
@@ -541,49 +586,55 @@ def _analyze_bom_data(
                 mapped_categories[cat] = count
 
         results["categories"] = mapped_categories
+    except (KeyError, ValueError, IndexError) as e:
+        results["stage_errors"]["categories"] = f"{type(e).__name__}: {e}"
 
-        if cost_col:
-            try:
-                df[cost_col] = (
-                    df[cost_col]
-                    .astype(str)
-                    .str.replace("$", "")
-                    .str.replace(",", "")
-                )
-                df[cost_col] = pd.to_numeric(df[cost_col], errors="coerce")
+    # --- Cost ---------------------------------------------------------------
+    if cost_col:
+        try:
+            df[cost_col] = (
+                df[cost_col]
+                .astype(str)
+                .str.replace("$", "")
+                .str.replace(",", "")
+            )
+            df[cost_col] = pd.to_numeric(df[cost_col], errors="coerce")
 
-                df_with_cost = df.dropna(subset=[cost_col])
+            df_with_cost = df.dropna(subset=[cost_col])
 
-                if not df_with_cost.empty:
-                    results["has_cost_data"] = True
+            if not df_with_cost.empty:
+                results["has_cost_data"] = True
 
-                    if quantity_col:
-                        total_cost = (
-                            df_with_cost[cost_col] * df_with_cost[quantity_col]
-                        ).sum()
-                    else:
-                        total_cost = df_with_cost[cost_col].sum()
+                if quantity_col:
+                    total_cost = (
+                        df_with_cost[cost_col] * df_with_cost[quantity_col]
+                    ).sum()
+                else:
+                    total_cost = df_with_cost[cost_col].sum()
 
-                    results["total_cost"] = round(float(total_cost), 2)
+                results["total_cost"] = round(float(total_cost), 2)
 
-                    for _, row in df.iterrows():
-                        cost_str = str(row.get(cost_col, ""))
-                        if "$" in cost_str:
-                            results["currency"] = "USD"
-                            break
-                        elif "\u20ac" in cost_str:
-                            results["currency"] = "EUR"
-                            break
-                        elif "\u00a3" in cost_str:
-                            results["currency"] = "GBP"
-                            break
-
-                    if "currency" not in results:
+                for _, row in df.iterrows():
+                    cost_str = str(row.get(cost_col, ""))
+                    if "$" in cost_str:
                         results["currency"] = "USD"
-            except Exception as e:
-                logger.warning("Failed to parse cost data: %s", e, exc_info=True)
+                        break
+                    elif "\u20ac" in cost_str:
+                        results["currency"] = "EUR"
+                        break
+                    elif "\u00a3" in cost_str:
+                        results["currency"] = "GBP"
+                        break
 
-        if ref_col and value_col:
+                if "currency" not in results:
+                    results["currency"] = "USD"
+        except (KeyError, ValueError, TypeError) as e:
+            results["stage_errors"]["cost"] = f"{type(e).__name__}: {e}"
+            logger.warning("Failed to parse cost data: %s", e, exc_info=True)
+
+    # --- Most-common values -------------------------------------------------
+    if ref_col and value_col:
+        try:
             value_counts = df[value_col].value_counts()
             most_common = value_counts.head(5).to_dict()
             results["most_common_values"] = {
@@ -593,11 +644,12 @@ def _analyze_bom_data(
             # unique values" from "top 5 of 500".
             results["distinct_value_count"] = int(value_counts.size)
             results["most_common_values_truncated"] = value_counts.size > 5
+        except (KeyError, ValueError) as e:
+            results["stage_errors"]["most_common_values"] = f"{type(e).__name__}: {e}"
 
-    except Exception as e:
-        print(f"Error analyzing BOM data: {e}")
-        results["unique_component_count"] = len(components)
-        results["total_component_count"] = len(components)
+    # Drop the empty stage_errors dict if nothing went wrong (cleaner output).
+    if not results["stage_errors"]:
+        del results["stage_errors"]
 
     return results
 
