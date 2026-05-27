@@ -621,11 +621,39 @@ class LibraryIndex:
                 conn.close()
                 return True
 
-            # Check if any library entry is newer
+            # Check if any library entry is newer than the indexed build time.
+            #
+            # For symbols (.kicad_sym files): direct mtime check is correct —
+            # file mtime updates when the file is edited.
+            #
+            # For footprints (.pretty directories): the directory's mtime
+            # does NOT update when .kicad_mod files inside are edited (on
+            # POSIX filesystems mtime only changes on add/remove of direct
+            # children). Previously this silently left the index stale after
+            # every footprint content edit. Walk one level deeper to check
+            # the actual .kicad_mod mtimes — adds maybe ~50ms on a typical
+            # KiCad install, paid only on staleness checks.
             for entry in os.scandir(lib_path):
                 if suffix == ".pretty":
                     if entry.name.endswith(suffix) and entry.is_dir():
                         if entry.stat().st_mtime > build_time:
+                            conn.close()
+                            return True
+                        # Scan .kicad_mod files inside this .pretty dir.
+                        try:
+                            for fp_file in os.scandir(entry.path):
+                                if (fp_file.name.endswith(".kicad_mod")
+                                        and fp_file.is_file()
+                                        and fp_file.stat().st_mtime > build_time):
+                                    conn.close()
+                                    return True
+                        except OSError as e:
+                            # Permission or transient FS error — force
+                            # rebuild rather than silently miss edits.
+                            logger.warning(
+                                "Could not scan %s during staleness check: %s; forcing rebuild",
+                                entry.path, e,
+                            )
                             conn.close()
                             return True
                 else:

@@ -28,8 +28,8 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: update when tools are intentionally added or removed."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 99, (
-            f"Expected 99 tools, got {len(tools)}. "
+        assert len(tools) == 100, (
+            f"Expected 100 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 

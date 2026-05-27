@@ -633,3 +633,40 @@ print(json.dumps(result))
             # AttributeError/KeyError/ImportError propagate (programming bugs).
             logger.error("Footprint search failed (%s): %s", type(e).__name__, e)
             return {"error": f"Footprint search failed: {type(e).__name__}: {e}"}
+
+    @mcp.tool()
+    def rebuild_library_index(
+        kind: str = "both",
+    ) -> Dict[str, Any]:
+        """Force a rebuild of the symbol and/or footprint library index.
+
+        The index normally auto-rebuilds when staleness is detected. Use this
+        tool when the staleness check misses an edit (e.g. you edited a
+        ``.kicad_mod`` file in a way that didn't bump its mtime in a way the
+        scanner noticed), or after installing/updating a third-party library.
+
+        Args:
+            kind: ``"symbols"``, ``"footprints"``, or ``"both"`` (default).
+        """
+        valid = ("symbols", "footprints", "both")
+        if kind not in valid:
+            return {"error": f"kind must be one of {valid}; got {kind!r}"}
+
+        try:
+            from kicad_mcp.utils.library_index import get_library_index
+
+            index = get_library_index()
+            result: Dict[str, Any] = {"status": "ok"}
+
+            if kind in ("symbols", "both"):
+                result["symbols_indexed"] = index.rebuild_symbols()
+                logger.info("Symbol index rebuilt: %d entries", result["symbols_indexed"])
+
+            if kind in ("footprints", "both"):
+                result["footprints_indexed"] = index.rebuild_footprints()
+                logger.info("Footprint index rebuilt: %d entries", result["footprints_indexed"])
+
+            return result
+        except (sqlite3.Error, RuntimeError, OSError) as e:
+            logger.error("Library rebuild failed (%s): %s", type(e).__name__, e)
+            return {"error": f"Library rebuild failed: {type(e).__name__}: {e}"}
