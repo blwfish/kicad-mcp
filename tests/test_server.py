@@ -19,17 +19,22 @@ class TestCreateServer:
         server = create_server()
         assert server.name == "KiCad"
 
-    def test_at_least_60_tools_registered(self, mcp_server):
+    def test_at_least_14_tools_registered(self, mcp_server):
+        """Floor — the consolidated surface targets 14 tools."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) >= 60, (
-            f"Expected at least 60 tools, got {len(tools)}"
+        assert len(tools) >= 14, (
+            f"Expected at least 14 tools, got {len(tools)}"
         )
 
     def test_current_tool_count(self, mcp_server):
-        """Snapshot test: update when tools are intentionally added or removed."""
+        """Snapshot test: update when tools are intentionally added or removed.
+
+        Tool-consolidation in progress (see docs/SPEC_Tool_Consolidation.md).
+        Target: 14 tools. Current count tracks the in-progress migration.
+        """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 97, (
-            f"Expected 97 tools, got {len(tools)}. "
+        assert len(tools) == 90, (
+            f"Expected 90 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -48,7 +53,6 @@ class TestExpectedToolsExist:
         "list_pcb_footprints",
         "get_pad_positions",
         "get_footprint_dimensions",
-        "search",
         # PCB net tools
         "add_net",
         "assign_pad_net",
@@ -95,15 +99,12 @@ class TestExpectedToolsExist:
         "get_project_structure",
         "open_project",
         "validate_project",
-        # Export / DRC / BOM / netlist / patterns
-        "export_gerbers",
-        "generate_pcb_thumbnail",
+        # Phase 1 routers (library + analyze + export)
+        "library",
+        "analyze",
+        "export",
+        # DRC (still standalone until phase 2)
         "run_drc_check",
-        "analyze_bom",
-        "export_bom_csv",
-        "extract_netlist",
-        "identify_circuit_patterns",
-        "analyze_project_circuit_patterns",
         # Schematic tools
         "create_schematic",
         "load_schematic",

@@ -94,8 +94,8 @@ def workspace(tmp_path):
 
 def test_search_symbols(mcp_server):
     """Library DB rebuild + lib_id stability across KiCad versions."""
-    fn = _get_tool(mcp_server, "search")
-    result = _run(fn({"query": "op amp", "type": "symbol"}))
+    fn = _get_tool(mcp_server, "library")
+    result = _run(fn({"operation": "search", "query": "op amp", "type": "symbol"}))
     assert result.get("status") == "ok"
     components = result.get("results", [])
     assert len(components) > 0
@@ -109,8 +109,8 @@ def test_search_symbols(mcp_server):
 
 def test_search_footprints(mcp_server):
     """Footprint library search."""
-    fn = _get_tool(mcp_server, "search")
-    result = _run(fn({"query": "0603 resistor"}))
+    fn = _get_tool(mcp_server, "library")
+    result = _run(fn({"operation": "search", "query": "0603 resistor"}))
     assert result.get("status") == "ok"
     footprints = result.get("results", [])
     assert len(footprints) > 0
@@ -138,8 +138,8 @@ def test_schematic_create_and_save(mcp_server, workspace):
     assert result.get("status") == "ok"
 
     # Find a real resistor lib_id before adding
-    search = _get_tool(mcp_server, "search")
-    sr = search({"query": "resistor", "type": "symbol"})
+    search = _get_tool(mcp_server, "library")
+    sr = search({"operation": "search", "query": "resistor", "type": "symbol"})
     assert sr.get("status") == "ok" and sr.get("results")
     lib_id = sr["results"][0]["lib_id"]
 
@@ -196,8 +196,8 @@ def test_place_footprint_and_audit(mcp_server, workspace):
     }))
 
     # Find a real footprint
-    search = _get_tool(mcp_server, "search")
-    sr = _run(search({"query": "0603 resistor"}))
+    search = _get_tool(mcp_server, "library")
+    sr = _run(search({"operation": "search", "query": "0603 resistor"}))
     assert sr.get("status") == "ok" and sr.get("results")
     fp = sr["results"][0]
 
@@ -258,8 +258,8 @@ def test_autoroute_smoke(mcp_server, workspace):
     }))
 
     # Place two footprints and connect them via a net
-    search = _get_tool(mcp_server, "search")
-    sr = _run(search({"query": "0603 resistor"}))
+    search = _get_tool(mcp_server, "library")
+    sr = _run(search({"operation": "search", "query": "0603 resistor"}))
     fp = sr["results"][0]
 
     for ref, x in [("R1", 15), ("R2", 35)]:
@@ -302,7 +302,7 @@ def test_export_gerbers(mcp_server, workspace):
         "pcb_path": pcb_path, "x_mm": 0, "y_mm": 0, "width_mm": 40, "height_mm": 30,
     }))
 
-    export = _get_tool(mcp_server, "export_gerbers")
-    result = _run(export({"pcb_path": pcb_path, "output_dir": output_dir}))
+    export = _get_tool(mcp_server, "export")
+    result = export({"operation": "gerbers", "pcb_path": pcb_path, "output_dir": output_dir})
     assert result.get("status") == "ok"
     assert "files" in result or "output_dir" in result
