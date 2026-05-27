@@ -391,13 +391,18 @@ def register_schematic_tools(mcp: FastMCP) -> None:
             footprint: Filter by footprint.
         """
         sch = _require_schematic()
+        # kicad-sch-api filter() only recognizes: lib_id, value, value_pattern,
+        # reference_pattern, footprint, in_area, has_property.  Passing a key
+        # it doesn't recognize is silently dropped — the public-facing
+        # `reference` arg here is mapped to `reference_pattern` (regex) on the
+        # way in.  The docstring above already describes it as a "pattern".
         criteria: dict[str, str] = {}
         if lib_id:
             criteria["lib_id"] = lib_id
         if value:
             criteria["value"] = value
         if reference:
-            criteria["reference"] = reference
+            criteria["reference_pattern"] = reference
         if footprint:
             criteria["footprint"] = footprint
 
