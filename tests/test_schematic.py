@@ -583,32 +583,6 @@ class TestBackupSchematic:
             _get_tool_fn(sch_server, "backup_schematic")()
 
 
-# -- clone_schematic tests ---------------------------------------------------
-
-class TestCloneSchematic:
-    """Tests for clone_schematic tool.
-
-    KNOWN BUG: kicad-sch-api does not implement Schematic.clone() — calling
-    this tool raises AttributeError.  These tests document that state and pin
-    the guard/response surface once the API exists.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _create_schematic(self, sch_server):
-        _get_tool_fn(sch_server, "create_schematic")(name="test")
-
-    def test_clone_raises_attribute_error(self, sch_server):
-        """clone_schematic raises AttributeError because kicad-sch-api lacks .clone()."""
-        clone_fn = _get_tool_fn(sch_server, "clone_schematic")
-        with pytest.raises(AttributeError, match="clone"):
-            clone_fn(new_name="myclone")
-
-    def test_clone_no_schematic(self, sch_server):
-        sch_module._current_schematic = None
-        with pytest.raises(RuntimeError, match="No schematic loaded"):
-            _get_tool_fn(sch_server, "clone_schematic")(new_name="x")
-
-
 # -- add_multi_unit_component tests ------------------------------------------
 
 class TestAddMultiUnitComponent:
@@ -1298,14 +1272,11 @@ class TestAddSheet:
 class TestAddSheetPin:
     """Tests for add_sheet_pin tool.
 
-    IMPORTANT: Only the validation guard paths are tested here.  The success
-    path (valid pin_type reaching sch.add_sheet_pin()) is intentionally NOT
-    tested because the kicad-sch-api signature changed — the MCP call is
-    sch.add_sheet_pin(sheet_uuid, name, pin_type, tuple(position)) but the
-    installed library now requires (sheet_uuid, name, pin_type, edge,
-    position_along_edge).  Calling the success path raises TypeError.
-    Testing the rejection guards is both safe and valuable: they short-circuit
-    before reaching the broken API call.
+    The signature is (sheet_uuid, name, pin_type, edge, position_along_edge),
+    matching kicad-sch-api's edge-based positioning.  An earlier revision
+    used a position tuple and silently broke when the upstream library
+    moved to edge-based positioning — this test class pins both the new
+    contract and all guard paths.
     """
 
     @pytest.fixture(autouse=True)
@@ -1315,6 +1286,79 @@ class TestAddSheetPin:
         r = fn(name="Sub", filename="sub.kicad_sch", position=[100.0, 50.0], size=[30.0, 20.0])
         self.sheet_uuid = r["sheet_uuid"]
 
+    def test_add_pin_success(self, sch_server):
+        """Happy path — valid pin_type + edge produces a uuid."""
+        fn = _get_tool_fn(sch_server, "add_sheet_pin")
+        result = fn(
+            sheet_uuid=self.sheet_uuid,
+            name="CLK",
+            pin_type="input",
+            edge="left",
+            position_along_edge=10.0,
+        )
+        assert result["status"] == "ok"
+        assert result["pin_uuid"]
+        assert result["name"] == "CLK"
+        assert result["pin_type"] == "input"
+        assert result["edge"] == "left"
+        assert result["position_along_edge"] == 10.0
+
+    @pytest.mark.parametrize("pin_type", [
+        "input", "output", "bidirectional", "tri_state", "passive",
+    ])
+    def test_all_valid_pin_types_succeed(self, sch_server, pin_type):
+        """All 5 documented pin_type values reach the API and succeed."""
+        fn = _get_tool_fn(sch_server, "add_sheet_pin")
+        result = fn(
+            sheet_uuid=self.sheet_uuid,
+            name=f"SIG_{pin_type}",
+            pin_type=pin_type,
+            edge="right",
+            position_along_edge=5.0,
+        )
+        assert result["status"] == "ok"
+        assert result["pin_type"] == pin_type
+
+    @pytest.mark.parametrize("edge", ["right", "bottom", "left", "top"])
+    def test_all_valid_edges_succeed(self, sch_server, edge):
+        """All 4 documented edge values reach the API and succeed."""
+        fn = _get_tool_fn(sch_server, "add_sheet_pin")
+        result = fn(
+            sheet_uuid=self.sheet_uuid,
+            name=f"PIN_{edge}",
+            pin_type="input",
+            edge=edge,
+            position_along_edge=5.0,
+        )
+        assert result["status"] == "ok"
+        assert result["edge"] == edge
+
+    def test_pin_type_is_lowercased(self, sch_server):
+        """Guard accepts mixed-case pin_type and lowercases it for the API."""
+        fn = _get_tool_fn(sch_server, "add_sheet_pin")
+        result = fn(
+            sheet_uuid=self.sheet_uuid,
+            name="X",
+            pin_type="INPUT",
+            edge="left",
+            position_along_edge=5.0,
+        )
+        assert result["status"] == "ok"
+        assert result["pin_type"] == "input"
+
+    def test_edge_is_lowercased(self, sch_server):
+        """Guard accepts mixed-case edge and lowercases it for the API."""
+        fn = _get_tool_fn(sch_server, "add_sheet_pin")
+        result = fn(
+            sheet_uuid=self.sheet_uuid,
+            name="Y",
+            pin_type="input",
+            edge="RIGHT",
+            position_along_edge=5.0,
+        )
+        assert result["status"] == "ok"
+        assert result["edge"] == "right"
+
     def test_invalid_pin_type_rejected(self, sch_server):
         """Guard: unknown pin_type must return a structured error, never reach API."""
         fn = _get_tool_fn(sch_server, "add_sheet_pin")
@@ -1322,46 +1366,33 @@ class TestAddSheetPin:
             sheet_uuid=self.sheet_uuid,
             name="CLK",
             pin_type="not_a_valid_type",
-            position=[100.0, 50.0],
+            edge="left",
+            position_along_edge=5.0,
         )
         assert "error" in result
         assert "not_a_valid_type" in result["error"]
         assert "Valid:" in result["error"]
 
-    def test_bad_position_rejected(self, sch_server):
-        """Guard: 1-element position returns error before type-check or API call."""
+    def test_invalid_edge_rejected(self, sch_server):
+        """Guard: unknown edge value returns a structured error."""
         fn = _get_tool_fn(sch_server, "add_sheet_pin")
         result = fn(
             sheet_uuid=self.sheet_uuid,
             name="CLK",
             pin_type="input",
-            position=[100.0],  # missing y
+            edge="diagonal",
+            position_along_edge=5.0,
         )
         assert "error" in result
-
-    def test_all_valid_pin_types_pass_guard(self, sch_server):
-        """All 5 documented pin_type values pass the guard (they will then hit the broken API).
-
-        This test expects TypeError from the broken kicad-sch-api call — confirming
-        the guard correctly passes valid types through.  When the API is fixed,
-        this test should be updated to assert status==ok.
-        """
-        fn = _get_tool_fn(sch_server, "add_sheet_pin")
-        valid_types = ["input", "output", "bidirectional", "tri_state", "passive"]
-        for pin_type in valid_types:
-            with pytest.raises(TypeError):
-                fn(
-                    sheet_uuid=self.sheet_uuid,
-                    name="SIG",
-                    pin_type=pin_type,
-                    position=[100.0, 50.0],
-                )
+        assert "diagonal" in result["error"]
+        assert "Valid:" in result["error"]
 
     def test_no_schematic(self, sch_server):
         sch_module._current_schematic = None
         with pytest.raises(RuntimeError, match="No schematic loaded"):
             _get_tool_fn(sch_server, "add_sheet_pin")(
-                sheet_uuid="any", name="X", pin_type="input", position=[0.0, 0.0]
+                sheet_uuid="any", name="X", pin_type="input",
+                edge="left", position_along_edge=0.0,
             )
 
 
