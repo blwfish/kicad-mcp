@@ -32,7 +32,7 @@ It is the highest near-term impact item for both Brian and external users.
 This SPEC depends on:
 
 - **`mcp-events` package** (per [`SPEC_OOB_Events.md`](SPEC_OOB_Events.md), **implemented 2026-05-27** at `/Volumes/Files/claude/mcp-events/`, 47 tests passing) — for surfacing first-use ToS prompts, snapshot staleness warnings, and uncertain-match warnings to the calling LLM.
-- **Feedback Infrastructure** (per [`SPEC_Feedback_Infrastructure.md`](SPEC_Feedback_Infrastructure.md)) — for persisting telemetry needed to tune the staleness thresholds and match scoring over time. Not strictly blocking (the tool can ship and emit no-op telemetry calls if feedback infra hasn't landed yet), but strongly preferred for the calibration loop.
+- **Feedback Infrastructure** (per [`SPEC_Feedback_Infrastructure.md`](SPEC_Feedback_Infrastructure.md)) — for persisting telemetry needed to tune the staleness thresholds and match scoring over time. Not a hard blocker at runtime: if feedback infra is absent, `record_call`/`record_warning` calls degrade to no-ops via `try/except ImportError` stubs. Strongly preferred to land first for the calibration loop, but this tool can ship in advance if needed.
 - **`library_index.db`** (already in kicad-mcp) — for resolving manufacturer part numbers to KiCad symbol `lib_id`s.
 
 **PyPI publication blocker.** kicad-mcp's CI uses `uv sync --frozen`, which fails on local-path-only dependencies. This SPEC's PR cannot merge until `mcp-events 0.1.0` is published to PyPI. The implementation can begin with a local-path source for dev, but coordinate the PyPI publication of `mcp-events` BEFORE opening the PR for review.
@@ -57,15 +57,24 @@ The investigation in this session (see memory: `project_component_intelligence.m
 - Updated 3×/day by yaqwsx's CI (which has the LCSC partner-API credentials we don't)
 - Used for **bulk search/filter** (parametric queries across the catalog)
 
+**`basic`/`preferred` → `assembly_tier` mapping:** `basic=True` → `"basic"`; `preferred=True` (and `basic=False`) → `"preferred"`; both `False` → `"extended"`. If both are `True` (data error), treat as `"basic"` (more restrictive). This mapping must be a single canonical function; do not inline it at multiple call sites.
+
+**Multi-chunk download:** The snapshot is split across numbered zip files (`.001`, `.002`, ...). The download algorithm must: (1) fetch a manifest or probe for chunks sequentially until a 404, (2) concatenate and extract the SQLite. The exact chunk-discovery strategy must be verified against the live hosting before implementation — check whether a manifest file exists at the base URL or whether sequential probing is the only option.
+
+**Schema drift risk:** jlcparts is a community project and has changed its schema before. On first use after download, validate that all expected column names are present. If a column is missing, return `status: "error"` with `code: "jlcparts_schema_mismatch"` rather than failing silently at query time.
+
 ### 3. kicad-mcp `library_index.db` (existing)
 - Full-text search over KiCad's bundled symbol libraries
 - Used to resolve manufacturer part number → KiCad `lib_id` (e.g., `"AMS1117-3.3"` → `"Regulator_Linear:AMS1117-3.3"`)
+- **Lookup algorithm (open question — see Open Questions #6):** The query strategy (exact-match vs. FTS, column searched, disambiguation on multiple hits) must be decided before implementation. First-match-wins on duplicates is a Rule 3 violation if not pinned by a test.
 
 ### 4. Package → KiCad footprint mapping table (new, hand-curated)
 - Static lookup: LCSC's `componentSpecificationEn` strings ("SOT-223", "SOIC-8", "0603") → KiCad footprint paths (`"Package_TO_SOT_SMD:SOT-223-3"`, `"Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"`, `"Resistor_SMD:R_0603_1608Metric"`)
 - ~200 entries covers ~95% of JLCPCB's catalog
 - Lives in the repo as a YAML or Python dict; updated by hand as new packages are observed
 - Unmapped packages return `kicad_footprint_path=None` (caller can still proceed; manual footprint assignment needed)
+
+**Pre-implementation step (required):** Before writing the YAML, query a live snapshot for the 50 most-common `package` column values and verify the strings match the YAML keys. jlcparts may normalize differently from LCSC's API (`componentSpecificationEn` used in the live API vs. the `package` column in the snapshot). Case-sensitivity and trailing variant letters (e.g., `"SOT-23-5L"` vs. `"SOT-23-5"`) have caused 5–10% mapping failures in similar projects. The 95% coverage claim depends on this verification.
 
 ### Legal posture (must read before implementation)
 
@@ -94,12 +103,21 @@ class ResolvedPart:
     # Parametric attributes
     attributes: dict[str, str]      # {"Output Voltage": "3.3V", "Output Current": "1A", ...}
                                     # Values are strings (not parsed/typed); caller interprets
+                                    # NOTE: populated by parsing the jlcparts `extra` JSON blob.
+                                    # Verify the actual JSON structure in a live snapshot before
+                                    # coding the parser — this affects description-scoring quality.
 
     # Commercial
     price_tiers: list[dict]         # [{"qty_min": 1, "qty_max": 49, "unit_price_usd": 0.2022}, ...]
                                     # qty_max=None means "and above"
+                                    # NOTE: the jlcparts `price` column raw format is unknown —
+                                    # likely a JSON string or bracket-delimited list. Verify
+                                    # in a live snapshot before writing the parser.
     stock: int                      # global stock at time of snapshot
     lifecycle: str                  # "active" | "nrnd" | "obsolete" | "unknown"
+                                    # NOTE: jlcparts has no lifecycle column; source is TBD —
+                                    # likely parsed from jlc_extra JSON or the description field.
+                                    # Verify before coding. Default to "unknown" if not resolvable.
 
     # LCSC/JLCPCB-specific
     assembly_tier: str | None       # "basic" | "extended" | "preferred" — None for non-JLCPCB
@@ -128,7 +146,7 @@ JSON-serializable shape mirrors the dataclass. All fields present in every respo
 
 ## Tool surface
 
-A single router `lcsc` with three operations.
+A single router `lcsc` with five operations: three primary (`search`, `resolve`, `assign`) and two administrative (`accept_tos`, `refresh_snapshot`).
 
 ### `lcsc(operation="search", ...)`
 
@@ -197,6 +215,39 @@ Applies a resolved part to a schematic component:
 
 This is the **explicit confirmation step** — search/resolve are read-only; assign mutates the schematic.
 
+**Integration note:** `assign` must mutate the KiCad schematic. The implementation should use the existing `kicad_sch_api` path (the same mechanism as `edit_label`, `bulk_update_components`). Specifically: load the schematic via the currently-loaded schematic handle, find the component by `reference`, then set its `Value` field, `Footprint` field (if mapped), and add/overwrite the `LCSC` custom property. Do not write a separate file-editing path — reuse the existing API.
+
+### `lcsc(operation="accept_tos")`
+
+```python
+lcsc(
+    operation="accept_tos",
+)
+-> {
+    "status": "ok",
+    "accepted_at": "2026-05-27T15:32:11Z",   # ISO-8601 timestamp written to acceptance file
+}
+```
+
+Writes `~/.cache/kicad-mcp/lcsc_tos_acceptance.json`. Subsequent calls to `search`, `resolve`, `assign` proceed without the ToS error. Idempotent — calling again just overwrites the file with a new timestamp.
+
+### `lcsc(operation="refresh_snapshot")`
+
+```python
+lcsc(
+    operation="refresh_snapshot",
+)
+-> {
+    "status": "ok",
+    "previous_snapshot_date": "2026-05-10",  # ISO-8601 date from prior metadata, or None
+    "new_snapshot_date": "2026-05-26",        # ISO-8601 date from freshly downloaded snapshot
+    "size_bytes": 327145728,
+    "events": [...],
+}
+```
+
+Downloads and replaces the cached snapshot. Emits `lcsc_snapshot_unavailable` error if the download fails with no existing cache. If the download fails but a cache exists, that case is not applicable here — `refresh_snapshot` fails hard rather than silently falling back, because the user explicitly requested a refresh.
+
 ## Match scoring and ranking
 
 The search algorithm scores each candidate against the query and returns the top N.
@@ -225,6 +276,16 @@ For each returned candidate, `match_deviations` lists every criterion where the 
 - `"kicad_footprint_path: no mapping for 'XQFN-24'; assign manually"`
 
 The LLM consumes these to decide whether to accept the top result, propose a different one to the user, or re-query with looser constraints.
+
+### Search implementation strategy (open question — see Open Questions #7)
+
+The `description` keyword scoring runs against a potentially million-row snapshot. Python-side scoring of every row will time out. The strategy is one of:
+
+- **SQLite FTS5 virtual table** on `description` (pre-built at snapshot load time): fast, but requires an index-build step on first use.
+- **Pre-filter then score**: use SQL `WHERE description LIKE '%keyword%' AND basic=1` (or similar) to narrow to hundreds of rows, then score in Python. Simpler, but LIKE scans are linear and the approach scales poorly with OR-queries.
+- **Hybrid**: pre-filter by `assembly_tier`, `stock > 0`, and `package` (all indexed columns) before any text matching; score only the survivors.
+
+`extra_filters` against the `extra` JSON blob column is a particular risk — `json_extract()` requires SQLite ≥ 3.38 and is not guaranteed on all platforms, and Python-side JSON parsing of every row is O(n). This must be resolved before implementation (see Open Questions #7).
 
 ### Why a list, not a single recommendation
 
@@ -365,7 +426,7 @@ Ship:
 - `ResolvedPart` dataclass + JSON serialization
 - First-use ToS acceptance flow (file at `~/.cache/kicad-mcp/lcsc_tos_acceptance.json`)
 - jlcparts snapshot download + metadata tracking
-- Freshness thresholds (14/30 days) with `mcp-events` emissions
+- Freshness thresholds (four tiers: quiet ≤7d, info 8–14d, warn 15–30d, strong warn 31+d) with `mcp-events` emissions
 - Static package → footprint mapping (~200 entries; see `lcsc_footprint_mapping.yaml`)
 - Match scoring per the criteria/weights table above
 - Telemetry integration: every call records to `calls`; events persist via OOB
@@ -402,6 +463,9 @@ Approximately +50 tests. The match-scoring algorithm needs thorough boundary cov
 3. **What happens if `assign` is called for a part whose `kicad_symbol_lib_id` is None?** Proposal: still proceed with `Value` and `LCSC` property; skip the symbol; emit a `warn` event. Assign is a "do as much as you can" operation.
 4. **Should `search` honor a `min_score` threshold to filter out very-poor matches?** Proposal: not in v1. Return up to `max_results` regardless of score; let the caller filter. The `match_score` is in the response for caller decisions.
 5. **What's the maximum `description` length the search engine handles cleanly?** Proposal: 256 chars; truncate longer queries with a `warn` event. Forces concise spec, avoids confusion when an LLM accidentally pastes a paragraph.
+6. **`library_index.db` symbol lookup — exact match or FTS, and disambiguation?** The existing `library_index.db` was designed for interactive symbol search (`library(operation="search", ...)`). Using it for MPN → `lib_id` resolution may require a different query path (exact-match on the symbol name column rather than FTS keyword search, which would return too many false positives). If multiple library entries match the same MPN (e.g., `AMS1117-3.3` appears in both `Regulator_Linear` and a vendor-specific library), the disambiguation rule must be pinned. Proposal: exact-match the FTS index on the symbol `name` field; if multiple hits, prefer the canonical KiCad library (non-vendor-specific). Requires verification against the actual `library_index.db` schema.
+7. **Search performance strategy — SQLite FTS5 or hybrid pre-filter?** Options: (a) build an FTS5 virtual table over `description` at snapshot load time and use it for keyword matching; (b) pre-filter by `assembly_tier`, `package`, and `stock > 0` using indexed columns, then score in Python; (c) hybrid. `extra_filters` against the JSON `extra` blob is the hard case — propose either: ban it in v1 (return `status: "error"` with `code: "extra_filters_not_supported"`), or restrict to the small set of keys that jlcparts exposes as top-level columns. Proposal: defer `extra_filters` to v2; remove the parameter from v1 to keep the search contract clean.
+8. **When does the live JLCPCB API get called?** The spec mentions the live API for "on-demand fresh data when the snapshot would be too stale" but gives no trigger rule. Proposal: the live API is called ONLY for `resolve(part_number=...)` when the LCSC number is not found in the snapshot (i.e., a very new part). It is NOT used for search or to refresh stock/price for snapshot-found parts. `fetched_live=True` signals this to callers. This avoids rate-limit risk during search operations.
 
 ## Testing strategy
 
@@ -475,12 +539,15 @@ For an implementer picking this up cold:
 
 1. Read this SPEC end-to-end.
 2. Read the design-philosophy feedback memories: `feedback_context_frugality.md`, `feedback_synchronous_at_call_boundary.md`, `feedback_prefer_packaging_over_vendoring.md`.
-3. **Verify the `mcp-events` package exists** at `/Volumes/Files/claude/mcp-events/` and is installed. If not, this PR blocks on that.
-4. **Verify the Feedback Infrastructure is implemented** (`SPEC_Feedback_Infrastructure.md`). If not, this tool can ship with no-op telemetry calls, but the calibration loop is missing — prefer to land it first.
-5. Implement against the v1 scope above. Defer everything in "Deferred from v1."
-6. The test suite is the acceptance criterion. Unit tests run in the existing `uv run pytest` invocation with no KiCad installation required (using the synthetic SQLite fixture). Integration tests require KiCad and are marked accordingly.
-7. Hand-curate the initial `lcsc_footprint_mapping.yaml` from ~200 most-common JLCPCB packages. The dataset audit in this session noted the canonical sources; consult `project_component_intelligence.md`.
-8. Update `MEMORY.md` and `project_component_intelligence.md` to mark this as **implemented** when the PR merges; note any deviations.
+3. **Verify the `mcp-events` package exists** at `/Volumes/Files/claude/mcp-events/` and is installed. If not, this PR is blocked — `mcp-events` must be on PyPI before the PR can merge (CI uses `uv sync --frozen`).
+4. **Verify the Feedback Infrastructure is merged to main.** If not merged: `record_call` and `record_warning` are unavailable. Use no-op stubs — `def record_call(*args, **kwargs): pass` — guarded by a `try/except ImportError`. Do not add a runtime `if feedback_available:` flag; just let the import fail gracefully.
+5. **Before writing any data-layer code:** download a live jlcparts snapshot and verify: (a) column names match the schema above, (b) `price` column raw format, (c) `extra` JSON structure, (d) top-50 `package` values for mapping YAML seeding, (e) whether `lifecycle` data is in `jlc_extra` or absent. Budget 30 minutes for this — it will save days of debugging.
+6. **Resolve Open Questions 6–8** (library lookup, search performance, live API trigger) before writing implementation code. See the section above.
+7. Implement against the v1 scope above. Defer everything in "Deferred from v1."
+8. The test suite is the acceptance criterion. Unit tests run in the existing `uv run pytest` invocation with no KiCad installation required (using the synthetic SQLite fixture). Integration tests require KiCad and are marked accordingly.
+9. Hand-curate the initial `lcsc_footprint_mapping.yaml` from the top-50 package values found in step 5, plus common additions. Consult `project_component_intelligence.md` for context.
+10. **Tool count 4-file lockstep:** adding this tool requires updating `tests/test_server.py`, `README.md`, `AGENT-INSTALL.md`, and `TOOLS.md` to reflect 14 tools. The `check-docs` CI job validates all four match. Do all four or the CI will fail.
+11. Update `MEMORY.md` and `project_component_intelligence.md` to mark this as **implemented** when the PR merges; note any deviations from this spec.
 
 Tool count after this PR: 13 → 14. Test count target: ~+50 tests.
 
