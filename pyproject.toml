@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kicad-mcp"
-version = "0.10.0.dev0"
+version = "0.10.0"
 description = "MCP server for KiCad electronic design automation — schematic, PCB layout, and analysis"
 readme = "README.md"
 license = { text = "MIT" }
