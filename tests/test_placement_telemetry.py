@@ -191,33 +191,28 @@ class TestSuggestTelemetry:
 
 
 class TestApplyTelemetry:
-    def test_apply_records_call_row(
-        self, schematic_layout_fn, tmp_path, monkeypatch, isolated_telemetry,
-    ):
-        sch = tmp_path / "x.kicad_sch"
-        sch.write_text("(kicad_sch)")
+    def _build_sch(self, tmp_path):
+        """Build a real one-component schematic on disk so apply runs
+        end-to-end against kicad-sch-api rather than a hand-rolled stub."""
+        import kicad_sch_api as ksa
+        sch = ksa.create_schematic("x")
+        sch.components.add("Device:R", "R1", "10k", position=(50, 50))
+        path = tmp_path / "x.kicad_sch"
+        sch.save(str(path))
+        return path
 
+    def test_apply_records_call_row(
+        self, schematic_layout_fn, tmp_path, isolated_telemetry,
+    ):
+        sch_path = self._build_sch(tmp_path)
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
             "state_id": "7777aaaa8888bbbb",
-            "schematic_path": str(sch),
+            "schematic_path": str(sch_path),
             "schematic_hash": "",
             "components": {},
             "clusters": {},
         })
-
-        class _StubSch:
-            def __init__(self):
-                self.components = self._Filter()
-            class _Filter:
-                def filter(self, reference=None):
-                    return []
-            def save(self):
-                pass
-
-        monkeypatch.setattr(
-            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
-        )
         schematic_layout_fn(operation="apply", state_id="7777aaaa8888bbbb")
         rows = _query(
             isolated_telemetry,
@@ -229,35 +224,21 @@ class TestApplyTelemetry:
         assert "errors_count" in out
 
     def test_apply_records_is_fresh_state_false(
-        self, schematic_layout_fn, tmp_path, monkeypatch, isolated_telemetry,
+        self, schematic_layout_fn, tmp_path, isolated_telemetry,
     ):
         """apply does NOT reset the suggest/place cycle — it consumes a
         cached state. If is_fresh_state were True, the telemetry sweep
         would abandon prior pending warnings on the same schematic before
         the next suggest could attribute them. Pin the False value here."""
-        sch = tmp_path / "x.kicad_sch"
-        sch.write_text("(kicad_sch)")
+        sch_path = self._build_sch(tmp_path)
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
             "state_id": "1111222233334444",
-            "schematic_path": str(sch),
+            "schematic_path": str(sch_path),
             "schematic_hash": "",
             "components": {},
             "clusters": {},
         })
-
-        class _StubSch:
-            def __init__(self):
-                self.components = self._Components()
-            class _Components:
-                def get(self, _reference):
-                    return None
-            def save(self):
-                pass
-
-        monkeypatch.setattr(
-            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
-        )
         schematic_layout_fn(operation="apply", state_id="1111222233334444")
         rows = _query(
             isolated_telemetry,
