@@ -414,9 +414,31 @@ def _op_apply(
                 "message": f"Could not load schematic: {e}",
             }
 
+        # Wire-stale detection (spec § Open Question #2, option b): emit a
+        # warning if any of the components we're about to move has wires
+        # attached to pin positions that will no longer match. We proceed
+        # with the apply either way — caller decides whether to re-wire.
+        ref_filter = set(refs) if refs else None
+        target_components = cached.get("components") or {}
+        if ref_filter is not None:
+            target_components = {
+                r: v for r, v in target_components.items() if r in ref_filter
+            }
+        stale_refs = _detect_stale_wires(sch, target_components)
+        if stale_refs:
+            emit_event(
+                "warn", "wires_will_be_stale",
+                (
+                    f"{len(stale_refs)} component(s) being moved have wires "
+                    "attached at the current pin positions; those wires will "
+                    "no longer terminate on the pin after the move. Re-wire "
+                    "the schematic to restore connectivity."
+                ),
+                {"refs": stale_refs},
+            )
+
         applied_count = 0
         errors: list[dict[str, Any]] = []
-        ref_filter = set(refs) if refs else None
 
         for ref, comp_state in (cached.get("components") or {}).items():
             if ref_filter is not None and ref not in ref_filter:
@@ -648,3 +670,87 @@ def _partition_from_state(state: dict[str, Any]) -> ClusterPartition:
     for cid, cluster in (state.get("clusters") or {}).items():
         members[cid] = list(cluster.get("members") or [])
     return ClusterPartition(members=members)
+
+
+# Pin-vs-wire endpoint tolerance: KiCad rounds positions to 3 decimal places
+# (microns), so a 0.05 mm tolerance comfortably covers float jitter without
+# matching unrelated nearby endpoints.
+_PIN_WIRE_TOLERANCE_MM = 0.05
+
+
+def _detect_stale_wires(
+    sch: Any,
+    target_components: dict[str, Any],
+) -> list[str]:
+    """Return the sorted refs whose pre-move pin positions coincide with
+    existing wire endpoints. After the apply moves those components, the
+    wires will no longer terminate on the pins.
+
+    Components whose target position equals the current position are not
+    treated as moves and never count as stale (regardless of wires).
+    """
+    import math
+
+    # Symbol cache resolves pins from lib_id; works for both freshly-added
+    # components and components loaded from disk (where comp.list_pins()
+    # comes back empty under current kicad-sch-api versions).
+    try:
+        from kicad_sch_api.library.cache import get_symbol_cache  # type: ignore[import-untyped]
+    except ImportError:
+        return []
+
+    try:
+        wires = list(sch.wires.all())
+    except Exception:
+        return []
+    if not wires:
+        return []
+
+    endpoints: list[tuple[float, float]] = []
+    for w in wires:
+        for p in getattr(w, "points", ()) or ():
+            endpoints.append((round(p.x, 3), round(p.y, 3)))
+    if not endpoints:
+        return []
+
+    sym_cache = get_symbol_cache()
+    affected: set[str] = set()
+    tol = _PIN_WIRE_TOLERANCE_MM
+    for ref, comp_state in target_components.items():
+        target_x = float(comp_state.get("x_mm", 0.0))
+        target_y = float(comp_state.get("y_mm", 0.0))
+        try:
+            matches = list(sch.components.filter(reference=ref))
+        except Exception:
+            continue
+        if not matches:
+            continue
+        comp = matches[0]
+        if not comp.position:
+            continue
+        # Skip components that aren't actually moving.
+        if (abs(comp.position.x - target_x) <= tol
+                and abs(comp.position.y - target_y) <= tol):
+            continue
+
+        # Resolve pin positions via symbol cache; same transform as
+        # schematic_impl._kicad_pin_position.
+        sym = sym_cache.get_symbol(comp.lib_id) if comp.lib_id else None
+        pin_locals = getattr(sym, "pins", None) if sym else None
+        if not pin_locals:
+            continue
+        angle_rad = math.radians(comp.rotation)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        for pin in pin_locals:
+            rx = pin.position.x * cos_a - pin.position.y * sin_a
+            ry = pin.position.x * sin_a + pin.position.y * cos_a
+            abs_x = round(comp.position.x + rx, 3)
+            abs_y = round(comp.position.y - ry, 3)
+            for ex, ey in endpoints:
+                if abs(abs_x - ex) <= tol and abs(abs_y - ey) <= tol:
+                    affected.add(ref)
+                    break
+            if ref in affected:
+                break
+    return sorted(affected)
