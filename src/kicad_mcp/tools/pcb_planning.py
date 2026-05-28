@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastmcp import FastMCP
 
@@ -181,7 +181,8 @@ print(json.dumps({
 
         Args:
             pcb_path: Path to the .kicad_pcb file with footprints placed
-                and nets assigned (run update_pcb_from_schematic first).
+                and nets assigned (run build_pcb_from_schematic first, or
+                use pcb(operation="add_net") + pcb(operation="bulk_assign_pad_nets")).
             spacing_mm: Minimum gap between component courtyards in mm (default 1.0).
         """
         if not os.path.exists(pcb_path):

@@ -1,7 +1,6 @@
 """PCB pipeline tool: build a routed PCB from a schematic in one step."""
 
 import logging
-import math
 import os
 import re
 import subprocess
@@ -288,7 +287,8 @@ def _step_inject_nets_and_assign_pads(
 ) -> Dict[str, Any]:
     """Step 4: Inject nets into PCB file and assign pads.
 
-    Reuses the same pattern as update_pcb_from_schematic.
+    Implements the net-injection + pad-assignment pattern used internally
+    by build_pcb_from_schematic.
     """
     # Build net definitions and pad assignments from netlist data
     net_definitions = list(nets.keys())

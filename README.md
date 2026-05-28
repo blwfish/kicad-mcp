@@ -4,7 +4,7 @@ This tool enables your AI agent to use [KiCad](https://www.kicad.org/) — the i
 
 ## What This Does
 
-You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 90 tools covering the full design workflow.
+You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 14 tools covering the full design workflow.
 
 You don't need to know KiCad. You don't need to know what a PCB layout tool does. You just need an AI agent (like [Claude](https://claude.ai/)).
 
@@ -18,7 +18,7 @@ Your agent will handle the rest — installing prerequisites, cloning the repo, 
 
 **For best results:** Use Claude Opus (not Haiku or Sonnet) with the ability to spawn subagents. For autorouting, use [FreeRouter v2.2.4+](https://github.com/freerouting/freerouting/releases) — v2.2.3+ is 10–30× faster than v2.1.0 and deterministic; see [AGENT-INSTALL.md](AGENT-INSTALL.md) for details. The combination of a capable model and parallel exploration (component research, placement suggestions) dramatically improves PCB design workflows. [Claude Code](https://claude.ai/code) provides automatic prompt caching that speeds up iterative design tasks.
 
-**Client compatibility — read this first:** Many MCP clients impose hard limits on the number of tools a server can expose. kicad-mcp requires more tools than several popular clients support. If your client has a hard tool count limit that is lower than what this server exposes, it **will not work** — tools will be silently dropped and the agent will fail in ways that are confusing and hard to diagnose. Cursor (40-tool limit) and Gemini (100-tool limit) are both below this server's tool count and are not supported. Claude Code has no hard tool count limit (tested to 1000+ tools) and is the required client.
+**Client compatibility:** kicad-mcp exposes 14 tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support.
 
 ## What You Can Ask Your Agent To Do
 
@@ -34,7 +34,7 @@ The agent knows the full workflow — schematic → board sizing → component p
 
 I built this because I need it. I'm not an electrical engineer — I build things for my model railroad that need custom PCBs, and I can't design circuits without this tool and Claude. This is how I actually get boards made: I describe what I need, Claude drives KiCad through this server, and I send the Gerbers to fab. It's not a demo or a hackathon project.
 
-That means reliability matters. The test suite (479 tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
+That means reliability matters. The test suite (609 tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
 
 I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
 
@@ -42,25 +42,35 @@ If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/ne
 
 ### What's Under the Hood
 
-The server provides 97 tools organized into three groups:
+The server provides 13 domain-router tools:
 
-- **Schematic tools** (29) — create and edit circuit schematics, place components, wire connections, pin collision detection
-- **PCB tools** (49) — board layout, footprint placement, pre-route readiness checks, autorouting via [FreeRouter](https://github.com/freerouting/freerouting), copper zones, silkscreen management, design rule checking and auto-fix
-- **Analysis & export tools** (19) — project management, BOM generation, Gerber/drill export, netlist extraction, circuit pattern recognition
+- **`schematic`** — create and edit circuit schematics, place components, wire connections, labels, sheets
+- **`pcb`** — board layout, footprint placement, nets, routing, copper zones, silkscreen management
+- **`audit`** — placement verification, clearance checks, auto-fix, keepout zones, pre-route checks
+- **`drc`** — KiCad DRC engine: run, autofix, history
+- **`autoroute`** — FreeRouter integration: sync run, async start/poll/cancel, job list
+- **`library`** — symbol and footprint library search and index rebuild
+- **`project`** — project file management: list, open, structure, validate
+- **`analyze`** — read-only analysis: connections, circuit patterns, BOM, netlist
+- **`export`** — manufacturing output: Gerbers, BOM CSV, PCB thumbnail
+- **`build_pcb_from_schematic`** *(standalone)* — top-level schematic → board pipeline
+- **`panelize_pcb`** *(standalone)* — manufacturing panelization
+- **`estimate_board_size`** *(standalone)* — pre-PCB board size estimation
+- **`suggest_placement`** *(standalone)* — connectivity-based component placement suggestions
 
 The server uses [FastMCP](https://github.com/jlowin/fastmcp) and delegates PCB operations to KiCad's bundled Python via subprocess. Schematic operations use [kicad-sch-api](https://pypi.org/project/kicad-sch-api/).
 
 ### For Developers
 
 ```bash
-# 479 tests, no KiCad installation required — runs in ~9 seconds
+# 609 tests, no KiCad installation required — runs in ~4 seconds
 pytest
 
 # Lint
 ruff check src/ tests/
 ```
 
-Tests cover all 97 tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
+Tests cover all 14 tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
 
 See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 

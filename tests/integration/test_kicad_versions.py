@@ -28,6 +28,28 @@ pytestmark = pytest.mark.skipif(
 # Helpers
 # ---------------------------------------------------------------------------
 
+_ROUTER_OP_MAP = {
+    # Schematic router operations
+    "create_schematic":   ("schematic", "create"),
+    "load_schematic":     ("schematic", "load"),
+    "save_schematic":     ("schematic", "save"),
+    "add_component":      ("schematic", "add_component"),
+    # PCB router operations
+    "create_pcb":         ("pcb", "create"),
+    "load_pcb":           ("pcb", "load"),
+    "add_board_outline":  ("pcb", "set_outline"),
+    "place_footprint":    ("pcb", "place_footprint"),
+    "add_net":            ("pcb", "add_net"),
+    "bulk_assign_pad_nets": ("pcb", "bulk_assign_pad_nets"),
+    # Audit router
+    "audit_all":          ("audit", "all"),
+    # DRC router
+    "run_drc_check":      ("drc", "run"),
+    # Autoroute router
+    "autoroute_pcb":      ("autoroute", "run"),
+}
+
+
 def _get_tool(mcp, name):
     """Return a callable that takes a kwargs-dict and invokes the named tool.
 
@@ -40,8 +62,35 @@ def _get_tool(mcp, name):
     them as kwargs because each registered tool declares an explicit
     parameter list (e.g. `search(query, type, library, limit)`), not a
     single args-dict.
+
+    Backward compatibility: if `name` is a pre-consolidation tool name
+    (e.g. "create_pcb"), it is translated to the corresponding router
+    operation (e.g. pcb(operation="create", ...)).
     """
-    fn = asyncio.run(mcp.get_tool(name)).fn
+    if name in _ROUTER_OP_MAP:
+        router_name, op_name = _ROUTER_OP_MAP[name]
+        tool = asyncio.run(mcp.get_tool(router_name))
+        if tool is None:
+            raise ValueError(f"Router {router_name!r} (for {name!r}) not found")
+        fn = tool.fn
+        needs_ctx = "ctx" in inspect.signature(fn).parameters
+
+        def call(args=None):
+            args = dict(args or {})
+            args["operation"] = op_name
+            if needs_ctx and "ctx" not in args:
+                args["ctx"] = None
+            result = fn(**args)
+            if inspect.iscoroutine(result):
+                result = asyncio.run(result)
+            return result
+
+        return call
+
+    tool = asyncio.run(mcp.get_tool(name))
+    if tool is None:
+        raise ValueError(f"Tool {name!r} not found")
+    fn = tool.fn
 
     # Async tools (DRC, BOM, netlist, patterns) declare a required `ctx:
     # Context | None` parameter for progress reporting.  In integration
@@ -153,7 +202,7 @@ def test_schematic_create_and_save(mcp_server, workspace):
     assert result.get("status") == "ok"
 
     save = _get_tool(mcp_server, "save_schematic")
-    result = save({"file_path": sch_path})
+    result = save({"schematic_path": sch_path})
     assert result.get("status") == "ok"
     assert os.path.isfile(sch_path)
 

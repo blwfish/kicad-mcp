@@ -1,48 +1,34 @@
-"""PCB routing tools: traces, vias, and routing management."""
+"""PCB routing ops: traces, vias, and routing management.
+
+These are module-level _op_* helpers consumed by the pcb router (pcb.py).
+"""
 
 import logging
 import os
 from typing import Any, Dict
-
-from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
 logger = logging.getLogger(__name__)
 
 
-def register_pcb_routing_tools(mcp: FastMCP) -> None:
-    """Register PCB routing tools."""
+def _op_add_trace(
+    pcb_path: str,
+    start_x_mm: float,
+    start_y_mm: float,
+    end_x_mm: float,
+    end_y_mm: float,
+    width_mm: float = 0.25,
+    layer: str = "F.Cu",
+    net_name: str = "",
+) -> Dict[str, Any]:
+    """Add a copper trace between two points on the PCB."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
+    if width_mm <= 0:
+        return {"error": f"width_mm must be positive (got {width_mm})"}
 
-    @mcp.tool()
-    def add_trace(
-        pcb_path: str,
-        start_x_mm: float,
-        start_y_mm: float,
-        end_x_mm: float,
-        end_y_mm: float,
-        width_mm: float = 0.25,
-        layer: str = "F.Cu",
-        net_name: str = "",
-    ) -> Dict[str, Any]:
-        """Add a copper trace between two points on the PCB.
-
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            start_x_mm: Start X position in mm.
-            start_y_mm: Start Y position in mm.
-            end_x_mm: End X position in mm.
-            end_y_mm: End Y position in mm.
-            width_mm: Trace width in mm (default 0.25).
-            layer: Copper layer name (default "F.Cu").
-            net_name: Net name to assign (empty for unassigned).
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-        if width_mm <= 0:
-            return {"error": f"width_mm must be positive (got {width_mm})"}
-
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -56,10 +42,6 @@ track.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(params["end_x_mm"]), pcbnew.FromMM(pa
 track.SetWidth(pcbnew.FromMM(params["width_mm"]))
 track.SetLayer(board.GetLayerID(params["layer"]))
 
-# Net assignment: explicit error if the requested net doesn't exist.
-# Silently dropping the assignment would write an unconnected trace and
-# return status=ok, leaving the caller to discover the problem only when
-# DRC flags an unconnected item.
 net_name = params["net_name"]
 if net_name:
     net = board.FindNet(net_name)
@@ -82,51 +64,41 @@ print(json.dumps({
     },
 }))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "start_x_mm": start_x_mm,
-            "start_y_mm": start_y_mm,
-            "end_x_mm": end_x_mm,
-            "end_y_mm": end_y_mm,
-            "width_mm": width_mm,
-            "layer": layer,
-            "net_name": net_name,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "start_x_mm": start_x_mm,
+        "start_y_mm": start_y_mm,
+        "end_x_mm": end_x_mm,
+        "end_y_mm": end_y_mm,
+        "width_mm": width_mm,
+        "layer": layer,
+        "net_name": net_name,
+    })
 
-    @mcp.tool()
-    def add_via(
-        pcb_path: str,
-        x_mm: float,
-        y_mm: float,
-        drill_mm: float = 0.3,
-        size_mm: float = 0.6,
-        net_name: str = "",
-        via_type: str = "through",
-    ) -> Dict[str, Any]:
-        """Add a via to the PCB.
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            x_mm: X position in millimeters.
-            y_mm: Y position in millimeters.
-            drill_mm: Drill diameter in mm (default 0.3).
-            size_mm: Via pad diameter in mm (default 0.6).
-            net_name: Net name to assign (empty for unassigned).
-            via_type: Via type - "through", "blind_buried", or "micro" (default "through").
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-        if drill_mm <= 0:
-            return {"error": f"drill_mm must be positive (got {drill_mm})"}
-        if size_mm <= 0:
-            return {"error": f"size_mm must be positive (got {size_mm})"}
-        if drill_mm >= size_mm:
-            return {"error": f"drill_mm ({drill_mm}) must be less than size_mm ({size_mm}) — a drill ≥ pad means no annular ring"}
-        valid_via_types = ("through", "blind_buried", "micro")
-        if via_type not in valid_via_types:
-            return {"error": f"via_type must be one of {valid_via_types}; got {via_type!r}"}
+def _op_add_via(
+    pcb_path: str,
+    x_mm: float,
+    y_mm: float,
+    drill_mm: float = 0.3,
+    size_mm: float = 0.6,
+    net_name: str = "",
+    via_type: str = "through",
+) -> Dict[str, Any]:
+    """Add a via to the PCB."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
+    if drill_mm <= 0:
+        return {"error": f"drill_mm must be positive (got {drill_mm})"}
+    if size_mm <= 0:
+        return {"error": f"size_mm must be positive (got {size_mm})"}
+    if drill_mm >= size_mm:
+        return {"error": f"drill_mm ({drill_mm}) must be less than size_mm ({size_mm}) — a drill >= pad means no annular ring"}
+    valid_via_types = ("through", "blind_buried", "micro")
+    if via_type not in valid_via_types:
+        return {"error": f"via_type must be one of {valid_via_types}; got {via_type!r}"}
 
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -139,8 +111,6 @@ via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(par
 via.SetDrill(pcbnew.FromMM(params["drill_mm"]))
 via.SetWidth(pcbnew.FromMM(params["size_mm"]))
 
-# Via type already validated at the Python tool layer; this dispatch is
-# total over the validated set.
 via_type = params["via_type"]
 _VIATYPE_MAP = {
     "through":      pcbnew.VIATYPE_THROUGH,
@@ -149,7 +119,6 @@ _VIATYPE_MAP = {
 }
 via.SetViaType(_VIATYPE_MAP[via_type])
 
-# Net assignment: explicit error if the requested net doesn't exist.
 net_name = params["net_name"]
 if net_name:
     net = board.FindNet(net_name)
@@ -173,46 +142,34 @@ print(json.dumps({
     },
 }))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "x_mm": x_mm,
-            "y_mm": y_mm,
-            "drill_mm": drill_mm,
-            "size_mm": size_mm,
-            "via_type": via_type,
-            "net_name": net_name,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "x_mm": x_mm,
+        "y_mm": y_mm,
+        "drill_mm": drill_mm,
+        "size_mm": size_mm,
+        "via_type": via_type,
+        "net_name": net_name,
+    })
 
-    @mcp.tool()
-    def edit_trace_width(
-        pcb_path: str,
-        new_width_mm: float,
-        net_name: str = "",
-        layer: str = "",
-    ) -> Dict[str, Any]:
-        """Change the width of existing traces.
 
-        Filters by net name and/or layer; if neither is supplied, updates
-        every track on the board.  Vias are never modified.
+def _op_edit_trace_width(
+    pcb_path: str,
+    new_width_mm: float,
+    net_name: str = "",
+    layer: str = "",
+) -> Dict[str, Any]:
+    """Change the width of existing traces."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
+    if new_width_mm <= 0:
+        return {"error": f"new_width_mm must be positive (got {new_width_mm})"}
+    if net_name and net_name != net_name.strip():
+        return {"error": f"net_name has surrounding whitespace; use empty string for 'all nets', not {net_name!r}"}
+    if layer and layer != layer.strip():
+        return {"error": f"layer has surrounding whitespace; use empty string for 'all layers', not {layer!r}"}
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            new_width_mm: New trace width in mm.
-            net_name: Limit to traces on this net. Empty string = all nets.
-            layer: Limit to traces on this layer (e.g. "F.Cu"). Empty = all layers.
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-        if new_width_mm <= 0:
-            return {"error": f"new_width_mm must be positive (got {new_width_mm})"}
-        # Whitespace-padded filter strings are almost certainly a typo;
-        # an empty string is the documented "all" sentinel.
-        if net_name and net_name != net_name.strip():
-            return {"error": f"net_name has surrounding whitespace; use empty string for 'all nets', not {net_name!r}"}
-        if layer and layer != layer.strip():
-            return {"error": f"layer has surrounding whitespace; use empty string for 'all layers', not {layer!r}"}
-
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -250,35 +207,25 @@ print(json.dumps({
     "layer_filter": layer_filter or "(all)",
 }))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "new_width_mm": new_width_mm,
-            "net_name": net_name,
-            "layer": layer,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "new_width_mm": new_width_mm,
+        "net_name": net_name,
+        "layer": layer,
+    })
 
-    @mcp.tool()
-    def clear_routing(
-        pcb_path: str,
-        clear_tracks: bool = True,
-        clear_vias: bool = True,
-        clear_zones: bool = False,
-    ) -> Dict[str, Any]:
-        """Remove tracks, vias, and/or copper zones from the PCB.
 
-        Useful before re-autorouting after component placement changes.
-        By default removes tracks and vias but preserves zones.
+def _op_clear_routing(
+    pcb_path: str,
+    clear_tracks: bool = True,
+    clear_vias: bool = True,
+    clear_zones: bool = False,
+) -> Dict[str, Any]:
+    """Remove tracks, vias, and/or copper zones from the PCB."""
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
 
-        Args:
-            pcb_path: Path to the .kicad_pcb file.
-            clear_tracks: Remove all tracks (default True).
-            clear_vias: Remove all vias (default True).
-            clear_zones: Remove all copper zones (default False).
-        """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
-
-        script = """
+    script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -305,13 +252,10 @@ if params["clear_tracks"] or params["clear_vias"]:
         board.Remove(item)
 
 if params["clear_zones"]:
-    # Collect zone references from Zones() iterator (not GetArea index)
-    # and remove them. Using list() materialises the iterator before
-    # we start mutating the board.
     zone_list = list(board.Zones())
     for zone in zone_list:
         if zone.GetIsRuleArea():
-            continue  # Preserve keepout/rule areas, only remove copper zones
+            continue
         board.Remove(zone)
         zones_removed += 1
 
@@ -324,9 +268,9 @@ print(json.dumps({
     "zones_removed": zones_removed,
 }))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "clear_tracks": clear_tracks,
-            "clear_vias": clear_vias,
-            "clear_zones": clear_zones,
-        })
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "clear_tracks": clear_tracks,
+        "clear_vias": clear_vias,
+        "clear_zones": clear_zones,
+    })

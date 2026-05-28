@@ -13,8 +13,7 @@ import pytest
 from fastmcp import FastMCP
 
 from kicad_mcp.server import create_server
-from kicad_mcp.tools.pcb_board import register_pcb_board_tools
-from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
+from kicad_mcp.tools.pcb import register_pcb_tools
 from kicad_mcp.tools.pcb_keepout import register_pcb_keepout_tools
 from kicad_mcp.tools.export import register_export_tools
 
@@ -63,51 +62,61 @@ def _get_tool_fn(mcp_server, tool_name):
     return tool.fn
 
 
-# -- check_pin_collisions tests ---------------------------------------------
+# -- check_pin_collisions tests (via schematic router) ----------------------
 
 class TestCheckPinCollisions:
 
+    def _sch(self, mcp_server):
+        """Get the schematic router function and return an async-wrapped caller."""
+        tool = asyncio.run(mcp_server.get_tool("schematic"))
+        if tool is None:
+            raise ValueError("Tool 'schematic' not found")
+        fn = tool.fn
+
+        def call(operation, **kwargs):
+            return asyncio.run(fn(operation=operation, **kwargs))
+
+        return call
+
     def test_tool_registered(self, mcp_server):
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        assert fn is not None
+        call = self._sch(mcp_server)
+        # Just verify calling works without error
+        assert call is not None
 
     def test_requires_schematic(self, mcp_server):
         """Should raise RuntimeError if no schematic is loaded."""
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
+        import kicad_mcp.tools.schematic as sch_module
+        sch_module._current_schematic = None
+        call = self._sch(mcp_server)
         with pytest.raises(RuntimeError, match="No schematic loaded"):
-            fn()
+            call("check_pin_collisions")
 
     def test_no_collisions_empty_schematic(self, mcp_server):
         """Creating an empty schematic should return no collisions."""
-        create_fn = _get_tool_fn(mcp_server, "create_schematic")
-        create_fn("test")
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        result = fn()
+        call = self._sch(mcp_server)
+        call("create", name="test")
+        result = call("check_pin_collisions")
         assert result["status"] == "ok"
         assert result["collision_count"] == 0
 
     def test_no_collisions_separate_components(self, mcp_server):
         """Two resistors placed far apart should have no pin collisions."""
-        create_fn = _get_tool_fn(mcp_server, "create_schematic")
-        create_fn("test")
-        add_fn = _get_tool_fn(mcp_server, "add_component")
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
-        add_fn(lib_id="Device:R", reference="R2", value="10k", position=[100, 50])
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        result = fn()
+        call = self._sch(mcp_server)
+        call("create", name="test")
+        call("add_component", lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
+        call("add_component", lib_id="Device:R", reference="R2", value="10k", position=[100, 50])
+        result = call("check_pin_collisions")
         assert result["status"] == "ok"
         assert result["collision_count"] == 0
 
     def test_detects_collision(self, mcp_server):
         """Two components placed at the same position should have pin collisions."""
-        create_fn = _get_tool_fn(mcp_server, "create_schematic")
-        create_fn("test")
-        add_fn = _get_tool_fn(mcp_server, "add_component")
+        call = self._sch(mcp_server)
+        call("create", name="test")
         # Place two resistors at exact same position — their pins will collide
-        add_fn(lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
-        add_fn(lib_id="Device:R", reference="R2", value="10k", position=[50, 50])
-        fn = _get_tool_fn(mcp_server, "check_pin_collisions")
-        result = fn()
+        call("add_component", lib_id="Device:R", reference="R1", value="10k", position=[50, 50])
+        call("add_component", lib_id="Device:R", reference="R2", value="10k", position=[50, 50])
+        result = call("check_pin_collisions")
         assert result["status"] == "ok"
         assert result["collision_count"] > 0
         # Each collision should involve pins from different components
@@ -121,17 +130,23 @@ class TestCheckPinCollisions:
 class TestGetFootprintDimensions:
 
     @pytest.fixture
-    def fp_server(self):
-        mcp = FastMCP("test-fp")
-        register_pcb_footprint_tools(mcp)
+    def pcb_server(self):
+        mcp = FastMCP("test-pcb")
+        register_pcb_tools(mcp)
         return mcp
 
-    def test_tool_registered(self, fp_server):
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
+    def _get_pcb_fn(self, mcp_server):
+        tool = asyncio.run(mcp_server.get_tool("pcb"))
+        if tool is None:
+            raise ValueError("Tool 'pcb' not found")
+        return tool.fn
+
+    def test_tool_registered(self, pcb_server):
+        fn = self._get_pcb_fn(pcb_server)
         assert fn is not None
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_script_loads_footprint(self, mock_run, fp_server):
+    def test_script_loads_footprint(self, mock_run, pcb_server):
         mock_run.return_value = {
             "status": "ok",
             "library": "Resistor_SMD",
@@ -149,15 +164,16 @@ class TestGetFootprintDimensions:
                 "width_mm": 1.6, "height_mm": 0.8,
             },
         }
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        result = fn(library="Resistor_SMD", footprint_name="R_0603_1608Metric")
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("get_footprint_dimensions",
+                    library="Resistor_SMD", footprint_name="R_0603_1608Metric")
         assert result["status"] == "ok"
         assert result["pad_count"] == 2
         assert "body_bbox" in result
         assert "pad_span" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_script_handles_keepout_zones(self, mock_run, fp_server):
+    def test_script_handles_keepout_zones(self, mock_run, pcb_server):
         """ESP32-WROOM-32E should report embedded keepout zones."""
         mock_run.return_value = {
             "status": "ok",
@@ -191,18 +207,21 @@ class TestGetFootprintDimensions:
             ],
             "keepout_count": 1,
         }
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        result = fn(library="RF_Module", footprint_name="ESP32-WROOM-32E")
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("get_footprint_dimensions",
+                    library="RF_Module", footprint_name="ESP32-WROOM-32E")
         assert "keepout_zones" in result
         assert result["keepout_count"] == 1
         kz = result["keepout_zones"][0]
         assert kz["constraints"]["no_footprints"] is True
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
-    def test_rotation_passed_to_script(self, mock_run, fp_server):
+    def test_rotation_passed_to_script(self, mock_run, pcb_server):
         mock_run.return_value = {"status": "ok", "rotation_deg": 90}
-        fn = _get_tool_fn(fp_server, "get_footprint_dimensions")
-        fn(library="Resistor_SMD", footprint_name="R_0603_1608Metric", rotation_deg=90)
+        fn = self._get_pcb_fn(pcb_server)
+        fn("get_footprint_dimensions",
+           library="Resistor_SMD", footprint_name="R_0603_1608Metric",
+           rotation_deg=90)
         params = mock_run.call_args[1]["params"]
         assert params["rotation_deg"] == 90
 
@@ -212,22 +231,28 @@ class TestGetFootprintDimensions:
 class TestPreRouteCheck:
 
     @pytest.fixture
-    def keepout_server(self):
-        mcp = FastMCP("test-keepout")
+    def audit_server(self):
+        mcp = FastMCP("test-audit")
         register_pcb_keepout_tools(mcp)
         return mcp
 
-    def test_tool_registered(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
+    def _get_audit_fn(self, mcp_server):
+        tool = asyncio.run(mcp_server.get_tool("audit"))
+        if tool is None:
+            raise ValueError("Tool 'audit' not found")
+        return tool.fn
+
+    def test_tool_registered(self, audit_server):
+        fn = self._get_audit_fn(audit_server)
         assert fn is not None
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, audit_server):
+        fn = self._get_audit_fn(audit_server)
+        result = fn("pre_route_check", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_route_ready_true(self, mock_run, keepout_server, pcb_file):
+    def test_route_ready_true(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "route_ready": True,
@@ -243,13 +268,13 @@ class TestPreRouteCheck:
             "warnings": [],
             "summary": "Ready to route: 10 footprints, 30 pads all clear",
         }
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        result = fn(pcb_file)
+        fn = self._get_audit_fn(audit_server)
+        result = fn("pre_route_check", pcb_path=pcb_file)
         assert result["route_ready"] is True
         assert result["error_count"] == 0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_route_ready_false_with_overlaps(self, mock_run, keepout_server, pcb_file):
+    def test_route_ready_false_with_overlaps(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "route_ready": False,
@@ -267,14 +292,14 @@ class TestPreRouteCheck:
             "warnings": [],
             "summary": "NOT ready to route: 1 courtyard overlap(s)",
         }
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        result = fn(pcb_file)
+        fn = self._get_audit_fn(audit_server)
+        result = fn("pre_route_check", pcb_path=pcb_file)
         assert result["route_ready"] is False
         assert result["error_count"] == 1
         assert len(result["courtyard_overlaps"]) == 1
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_checks_all_three(self, mock_run, keepout_server, pcb_file):
+    def test_script_checks_all_three(self, mock_run, audit_server, pcb_file):
         """Script should contain courtyard, keepout, and pad clearance checks."""
         mock_run.return_value = {
             "status": "ok", "route_ready": True, "total_footprints": 0,
@@ -284,8 +309,8 @@ class TestPreRouteCheck:
             "pad_violations": [], "errors": [], "warnings": [],
             "summary": "",
         }
-        fn = _get_tool_fn(keepout_server, "pre_route_check")
-        fn(pcb_file)
+        fn = self._get_audit_fn(audit_server)
+        fn("pre_route_check", pcb_path=pcb_file)
         script = mock_run.call_args[0][0]
         # Courtyard check
         assert "CrtYd" in script
@@ -302,13 +327,19 @@ class TestPreRouteCheck:
 class TestSetDesignRulesProjectFile:
 
     @pytest.fixture
-    def board_server(self):
-        mcp = FastMCP("test-board")
-        register_pcb_board_tools(mcp)
+    def pcb_server(self):
+        mcp = FastMCP("test-pcb")
+        register_pcb_tools(mcp)
         return mcp
 
+    def _get_pcb_fn(self, mcp_server):
+        tool = asyncio.run(mcp_server.get_tool("pcb"))
+        if tool is None:
+            raise ValueError("Tool 'pcb' not found")
+        return tool.fn
+
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_updates_kicad_pro(self, mock_run, board_server, pcb_with_pro):
+    def test_updates_kicad_pro(self, mock_run, pcb_server, pcb_with_pro):
         pcb_path, pro_path = pcb_with_pro
         mock_run.return_value = {
             "status": "ok",
@@ -322,9 +353,9 @@ class TestSetDesignRulesProjectFile:
                 "min_copper_edge_clearance_mm": 0.0,
             },
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
+        fn = self._get_pcb_fn(pcb_server)
         result = fn(
-            pcb_path,
+            "set_design_rules", pcb_path=pcb_path,
             min_through_hole_diameter_mm=0.15,
             min_copper_edge_clearance_mm=0.0,
         )
@@ -338,28 +369,28 @@ class TestSetDesignRulesProjectFile:
         assert rules["min_copper_edge_clearance"] == 0.0
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_no_pro_file_still_works(self, mock_run, board_server, pcb_file):
+    def test_no_pro_file_still_works(self, mock_run, pcb_server, pcb_file):
         """When no .kicad_pro exists, PCB rules are still set."""
         mock_run.return_value = {
             "status": "ok",
             "design_rules": {},
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn(pcb_file)
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path=pcb_file)
         assert result["project_rules_updated"] is False
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_default_values(self, mock_run, board_server, pcb_file):
+    def test_default_values(self, mock_run, pcb_server, pcb_file):
         """Default min_through_hole_diameter should be 0.3mm."""
         mock_run.return_value = {"status": "ok", "design_rules": {}}
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        fn(pcb_file)
+        fn = self._get_pcb_fn(pcb_server)
+        fn("set_design_rules", pcb_path=pcb_file)
         params = mock_run.call_args[1]["params"]
         # Params should contain the default via drill value
         assert params["min_via_drill_mm"] == 0.3
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_creates_rules_section_if_missing(self, mock_run, board_server, tmp_path):
+    def test_creates_rules_section_if_missing(self, mock_run, pcb_server, tmp_path):
         """If .kicad_pro exists but has no rules section, create it."""
         pcb = tmp_path / "test.kicad_pcb"
         pcb.write_text("(kicad_pcb)")
@@ -367,8 +398,9 @@ class TestSetDesignRulesProjectFile:
         pro.write_text("{}")  # Empty project file
 
         mock_run.return_value = {"status": "ok", "design_rules": {}}
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn(str(pcb), min_through_hole_diameter_mm=0.15)
+        fn = self._get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path=str(pcb),
+                    min_through_hole_diameter_mm=0.15)
         assert result["project_rules_updated"] is True
 
         with open(str(pro)) as f:
@@ -523,8 +555,8 @@ class TestAutoroutePreflight:
         }
         mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
 
-        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
 
         assert result["status"] == "ok"
         mock_fix.assert_not_called()
@@ -557,8 +589,8 @@ class TestAutoroutePreflight:
         mock_fix.return_value = {"status": "ok", "components_moved": 1, "moved": ["R1"]}
         mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
 
-        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
 
         assert result["status"] == "ok"
         mock_fix.assert_called_once()
@@ -582,8 +614,8 @@ class TestAutoroutePreflight:
         }
         mock_route.return_value = {"status": "ok", "tracks_after": 100, "vias_after": 10}
 
-        fn = _get_tool_fn(mcp_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
 
         assert result["status"] == "ok"
         mock_fix.assert_not_called()  # No overlaps, so no fix attempted

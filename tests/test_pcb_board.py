@@ -13,16 +13,16 @@ from unittest.mock import patch
 import pytest
 from fastmcp import FastMCP
 
-from kicad_mcp.tools.pcb_board import register_pcb_board_tools
+from kicad_mcp.tools.pcb import register_pcb_tools
 
 
 # -- Fixtures ----------------------------------------------------------------
 
 @pytest.fixture
-def board_server():
-    """Create a FastMCP server with only board tools registered."""
-    mcp = FastMCP("test-board")
-    register_pcb_board_tools(mcp)
+def pcb_server():
+    """Create a FastMCP server with the pcb router registered."""
+    mcp = FastMCP("test-pcb")
+    register_pcb_tools(mcp)
     return mcp
 
 
@@ -43,25 +43,25 @@ def pcb_with_project(tmp_path):
     return {"pcb_path": str(pcb), "pro_path": str(pro)}
 
 
-def _get_tool_fn(mcp_server, tool_name):
-    tool = asyncio.run(mcp_server.get_tool(tool_name))
+def _get_pcb_fn(mcp_server):
+    tool = asyncio.run(mcp_server.get_tool("pcb"))
     if tool is None:
-        raise ValueError(f"Tool {tool_name!r} not found")
+        raise ValueError("Tool 'pcb' not found")
     return tool.fn
 
 
-# -- load_pcb tests ----------------------------------------------------------
+# -- load tests --------------------------------------------------------------
 
 class TestLoadPcb:
 
-    def test_file_not_found(self, board_server):
-        fn = _get_tool_fn(board_server, "load_pcb")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("load", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
         assert "not found" in result["error"].lower()
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_returns_board_summary(self, mock_run, board_server, pcb_file):
+    def test_returns_board_summary(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "file": pcb_file,
@@ -72,57 +72,58 @@ class TestLoadPcb:
                  "x_mm": 100.0, "y_mm": 80.0, "layer": "F.Cu"},
             ],
         }
-        fn = _get_tool_fn(board_server, "load_pcb")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("load", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["footprint_count"] == 3
         assert result["track_count"] == 12
         mock_run.assert_called_once()
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_passes_path_via_params(self, mock_run, board_server, pcb_file):
+    def test_passes_path_via_params(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "file": pcb_file,
                                   "footprint_count": 0, "track_count": 0,
                                   "footprints": []}
-        fn = _get_tool_fn(board_server, "load_pcb")
-        fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        fn("load", pcb_path=pcb_file)
         params = mock_run.call_args[1]["params"]
         assert params["pcb_path"] == pcb_file
 
 
-# -- create_pcb tests --------------------------------------------------------
+# -- create tests ------------------------------------------------------------
 
 class TestCreatePcb:
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_create_returns_ok(self, mock_run, board_server, tmp_path):
+    def test_create_returns_ok(self, mock_run, pcb_server, tmp_path):
         pcb_path = str(tmp_path / "new.kicad_pcb")
         mock_run.return_value = {"status": "ok", "file": pcb_path}
-        fn = _get_tool_fn(board_server, "create_pcb")
-        result = fn(pcb_path)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("create", pcb_path=pcb_path)
         assert result["status"] == "ok"
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_passes_path_via_params(self, mock_run, board_server, tmp_path):
+    def test_passes_path_via_params(self, mock_run, pcb_server, tmp_path):
         pcb_path = str(tmp_path / "new.kicad_pcb")
         mock_run.return_value = {"status": "ok", "file": pcb_path}
-        fn = _get_tool_fn(board_server, "create_pcb")
-        fn(pcb_path)
+        fn = _get_pcb_fn(pcb_server)
+        fn("create", pcb_path=pcb_path)
         params = mock_run.call_args[1]["params"]
         assert params["pcb_path"] == pcb_path
 
 
-# -- add_board_outline tests -------------------------------------------------
+# -- set_outline tests -------------------------------------------------------
 
-class TestAddBoardOutline:
+class TestSetOutline:
 
-    def test_file_not_found(self, board_server):
-        fn = _get_tool_fn(board_server, "add_board_outline")
-        result = fn("/nonexistent/board.kicad_pcb", 0, 0, 50, 30)
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_outline", pcb_path="/nonexistent/board.kicad_pcb",
+                    x_mm=0, y_mm=0, width_mm=50, height_mm=30)
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_returns_outline_info(self, mock_run, board_server, pcb_file):
+    def test_returns_outline_info(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "previous_edge_cuts_removed": 0,
@@ -131,19 +132,21 @@ class TestAddBoardOutline:
                 "width_mm": 50.0, "height_mm": 30.0,
             },
         }
-        fn = _get_tool_fn(board_server, "add_board_outline")
-        result = fn(pcb_file, 100.0, 80.0, 50.0, 30.0)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_outline", pcb_path=pcb_file,
+                    x_mm=100.0, y_mm=80.0, width_mm=50.0, height_mm=30.0)
         assert result["status"] == "ok"
         assert result["outline"]["width_mm"] == 50.0
         assert result["outline"]["height_mm"] == 30.0
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_passes_all_params(self, mock_run, board_server, pcb_file):
+    def test_passes_all_params(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "previous_edge_cuts_removed": 4,
                                   "outline": {"x_mm": 10, "y_mm": 20,
                                               "width_mm": 60, "height_mm": 40}}
-        fn = _get_tool_fn(board_server, "add_board_outline")
-        fn(pcb_file, 10, 20, 60, 40)
+        fn = _get_pcb_fn(pcb_server)
+        fn("set_outline", pcb_path=pcb_file,
+           x_mm=10, y_mm=20, width_mm=60, height_mm=40)
         params = mock_run.call_args[1]["params"]
         assert params["x_mm"] == 10
         assert params["y_mm"] == 20
@@ -151,14 +154,15 @@ class TestAddBoardOutline:
         assert params["height_mm"] == 40
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_removes_existing_outline(self, mock_run, board_server, pcb_file):
+    def test_removes_existing_outline(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "previous_edge_cuts_removed": 4,
             "outline": {"x_mm": 0, "y_mm": 0, "width_mm": 50, "height_mm": 30},
         }
-        fn = _get_tool_fn(board_server, "add_board_outline")
-        result = fn(pcb_file, 0, 0, 50, 30)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_outline", pcb_path=pcb_file,
+                    x_mm=0, y_mm=0, width_mm=50, height_mm=30)
         assert result["previous_edge_cuts_removed"] == 4
 
 
@@ -166,13 +170,13 @@ class TestAddBoardOutline:
 
 class TestSetDesignRules:
 
-    def test_file_not_found(self, board_server):
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_returns_design_rules(self, mock_run, board_server, pcb_with_project):
+    def test_returns_design_rules(self, mock_run, pcb_server, pcb_with_project):
         pcb_path = pcb_with_project["pcb_path"]
         mock_run.return_value = {
             "status": "ok",
@@ -186,13 +190,13 @@ class TestSetDesignRules:
                 "min_copper_edge_clearance_mm": 0.5,
             },
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn(pcb_path, min_track_width_mm=0.25)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path=pcb_path, min_track_width_mm=0.25)
         assert result["status"] == "ok"
         assert result["design_rules"]["min_track_width_mm"] == 0.25
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_updates_project_file(self, mock_run, board_server, pcb_with_project):
+    def test_updates_project_file(self, mock_run, pcb_server, pcb_with_project):
         pcb_path = pcb_with_project["pcb_path"]
         pro_path = pcb_with_project["pro_path"]
         mock_run.return_value = {
@@ -207,9 +211,9 @@ class TestSetDesignRules:
                 "min_copper_edge_clearance_mm": 0.0,
             },
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
+        fn = _get_pcb_fn(pcb_server)
         result = fn(
-            pcb_path,
+            "set_design_rules", pcb_path=pcb_path,
             min_track_width_mm=0.3,
             min_clearance_mm=0.25,
             min_through_hole_diameter_mm=0.2,
@@ -226,7 +230,7 @@ class TestSetDesignRules:
         assert rules["min_track_width"] == 0.3
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
-    def test_no_project_file(self, mock_run, board_server, pcb_file):
+    def test_no_project_file(self, mock_run, pcb_server, pcb_file):
         """set_design_rules works even without a .kicad_pro file."""
         mock_run.return_value = {
             "status": "ok",
@@ -240,7 +244,19 @@ class TestSetDesignRules:
                 "min_copper_edge_clearance_mm": 0.5,
             },
         }
-        fn = _get_tool_fn(board_server, "set_design_rules")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("set_design_rules", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["project_rules_updated"] is False
+
+
+# -- unknown operation -------------------------------------------------------
+
+class TestUnknownOperation:
+
+    def test_unknown_op_returns_error(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("bogus_op", pcb_path="/some/board.kicad_pcb")
+        assert "error" in result
+        assert "unknown operation" in result["error"]
+        assert "bogus_op" in result["error"]

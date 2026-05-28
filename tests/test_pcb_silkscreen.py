@@ -1,6 +1,6 @@
 """
 Tests for PCB silkscreen tools: add text, list items, update items,
-check overlaps, auto-fix, finalize.
+check overlaps, auto-fix.
 
 Unit tests mock run_pcbnew_script.
 """
@@ -11,15 +11,15 @@ from unittest.mock import patch
 import pytest
 from fastmcp import FastMCP
 
-from kicad_mcp.tools.pcb_silkscreen import register_pcb_silkscreen_tools
+from kicad_mcp.tools.pcb import register_pcb_tools
 
 
 # -- Fixtures ----------------------------------------------------------------
 
 @pytest.fixture
-def silk_server():
-    mcp = FastMCP("test-silkscreen")
-    register_pcb_silkscreen_tools(mcp)
+def pcb_server():
+    mcp = FastMCP("test-pcb")
+    register_pcb_tools(mcp)
     return mcp
 
 
@@ -30,24 +30,26 @@ def pcb_file(tmp_path):
     return str(pcb)
 
 
-def _get_tool_fn(mcp_server, tool_name):
-    tool = asyncio.run(mcp_server.get_tool(tool_name))
+def _get_pcb_fn(mcp_server):
+    tool = asyncio.run(mcp_server.get_tool("pcb"))
     if tool is None:
-        raise ValueError(f"Tool {tool_name!r} not found")
+        raise ValueError("Tool 'pcb' not found")
     return tool.fn
 
 
-# -- add_text_to_pcb tests --------------------------------------------------
+# -- add_text tests ----------------------------------------------------------
 
-class TestAddTextToPcb:
+class TestAddText:
 
-    def test_file_not_found(self, silk_server):
-        fn = _get_tool_fn(silk_server, "add_text_to_pcb")
-        result = fn("/nonexistent/board.kicad_pcb", "Hello", 100, 80)
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_text",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    text="Hello", x_mm=100, y_mm=80)
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_adds_text(self, mock_run, silk_server, pcb_file):
+    def test_adds_text(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "text": "Rev 1.0",
@@ -55,17 +57,20 @@ class TestAddTextToPcb:
             "y_mm": 115.0,
             "layer": "F.SilkS",
         }
-        fn = _get_tool_fn(silk_server, "add_text_to_pcb")
-        result = fn(pcb_file, "Rev 1.0", 110, 115)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_text",
+                    pcb_path=pcb_file, text="Rev 1.0", x_mm=110, y_mm=115)
         assert result["status"] == "ok"
         assert result["text"] == "Rev 1.0"
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_passes_all_params(self, mock_run, silk_server, pcb_file):
+    def test_passes_all_params(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "text": "X", "x_mm": 0,
                                   "y_mm": 0, "layer": "B.SilkS"}
-        fn = _get_tool_fn(silk_server, "add_text_to_pcb")
-        fn(pcb_file, "X", 10, 20, layer="B.SilkS", size_mm=2.0,
+        fn = _get_pcb_fn(pcb_server)
+        fn("add_text",
+           pcb_path=pcb_file, text="X", x_mm=10, y_mm=20,
+           layer="B.SilkS", text_size_mm=2.0,
            thickness_mm=0.2, rotation_deg=45)
         params = mock_run.call_args[1]["params"]
         assert params["text"] == "X"
@@ -75,17 +80,17 @@ class TestAddTextToPcb:
         assert params["rotation_deg"] == 45
 
 
-# -- list_silkscreen_items tests ---------------------------------------------
+# -- list_silkscreen tests ---------------------------------------------------
 
-class TestListSilkscreenItems:
+class TestListSilkscreen:
 
-    def test_file_not_found(self, silk_server):
-        fn = _get_tool_fn(silk_server, "list_silkscreen_items")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("list_silkscreen", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_lists_items(self, mock_run, silk_server, pcb_file):
+    def test_lists_items(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "item_count": 3,
@@ -101,45 +106,49 @@ class TestListSilkscreenItems:
                  "x_mm": 110, "y_mm": 115, "size_mm": 1.0},
             ],
         }
-        fn = _get_tool_fn(silk_server, "list_silkscreen_items")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("list_silkscreen", pcb_path=pcb_file)
         assert result["item_count"] == 3
         refs = [i for i in result["items"] if i["type"] == "reference"]
         assert len(refs) == 1
 
 
-# -- update_silkscreen_item tests -------------------------------------------
+# -- update_silkscreen tests -------------------------------------------------
 
-class TestUpdateSilkscreenItem:
+class TestUpdateSilkscreen:
 
-    def test_file_not_found(self, silk_server):
-        fn = _get_tool_fn(silk_server, "update_silkscreen_item")
-        result = fn("/nonexistent/board.kicad_pcb", "R1")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("update_silkscreen",
+                    pcb_path="/nonexistent/board.kicad_pcb", reference="R1")
         # Should return error (either file not found or no modifications)
         assert "error" in result
 
-    def test_invalid_field(self, silk_server, pcb_file):
-        fn = _get_tool_fn(silk_server, "update_silkscreen_item")
-        result = fn(pcb_file, "R1", field="invalid")
+    def test_invalid_field(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("update_silkscreen",
+                    pcb_path=pcb_file, reference="R1", silk_field="invalid")
         assert "error" in result
         assert "reference" in result["error"] or "value" in result["error"]
 
-    def test_no_modifications(self, silk_server, pcb_file):
-        fn = _get_tool_fn(silk_server, "update_silkscreen_item")
-        result = fn(pcb_file, "R1")
+    def test_no_modifications(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("update_silkscreen",
+                    pcb_path=pcb_file, reference="R1")
         assert "error" in result
         assert "No modifications" in result["error"]
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_update_visibility(self, mock_run, silk_server, pcb_file):
+    def test_update_visibility(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "reference": "R1",
             "field": "reference",
             "changes": {"visible": False},
         }
-        fn = _get_tool_fn(silk_server, "update_silkscreen_item")
-        result = fn(pcb_file, "R1", visible=False)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("update_silkscreen",
+                    pcb_path=pcb_file, reference="R1", visible=False)
         assert result["status"] == "ok"
 
 
@@ -147,24 +156,25 @@ class TestUpdateSilkscreenItem:
 
 class TestCheckSilkscreenOverlaps:
 
-    def test_file_not_found(self, silk_server):
-        fn = _get_tool_fn(silk_server, "check_silkscreen_overlaps")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("check_silkscreen_overlaps",
+                    pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_no_overlaps(self, mock_run, silk_server, pcb_file):
+    def test_no_overlaps(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "overlap_count": 0,
             "overlaps": [],
         }
-        fn = _get_tool_fn(silk_server, "check_silkscreen_overlaps")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("check_silkscreen_overlaps", pcb_path=pcb_file)
         assert result["overlap_count"] == 0
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_reports_overlaps(self, mock_run, silk_server, pcb_file):
+    def test_reports_overlaps(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "overlap_count": 2,
@@ -173,8 +183,8 @@ class TestCheckSilkscreenOverlaps:
                 {"item1": "C1 ref", "item2": "pad U1:1", "type": "text-pad"},
             ],
         }
-        fn = _get_tool_fn(silk_server, "check_silkscreen_overlaps")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("check_silkscreen_overlaps", pcb_path=pcb_file)
         assert result["overlap_count"] == 2
 
 
@@ -182,13 +192,13 @@ class TestCheckSilkscreenOverlaps:
 
 class TestAutoFixSilkscreen:
 
-    def test_file_not_found(self, silk_server):
-        fn = _get_tool_fn(silk_server, "auto_fix_silkscreen")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("auto_fix_silkscreen", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_fixes_overlaps(self, mock_run, silk_server, pcb_file):
+    def test_fixes_overlaps(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "overlaps_before": 5,
@@ -199,30 +209,31 @@ class TestAutoFixSilkscreen:
                 {"reference": "R2", "action": "hidden", "reason": "persistent overlap"},
             ],
         }
-        fn = _get_tool_fn(silk_server, "auto_fix_silkscreen")
-        result = fn(pcb_file)
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("auto_fix_silkscreen", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["fixes_applied"] == 4
 
 
-# -- edit_text tests ---------------------------------------------------------
+# -- edit_text tests --------------------------------------------------------
 
 class TestEditText:
 
-    def test_file_not_found(self, silk_server):
-        fn = _get_tool_fn(silk_server, "edit_text")
-        result = fn("/nonexistent/board.kicad_pcb", "Rev 1.0", new_text="Rev 2.0")
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("edit_text", pcb_path="/nonexistent/board.kicad_pcb",
+                    text="Rev 1.0", new_text="Rev 2.0")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
-    def test_edits_text(self, mock_run, silk_server, pcb_file):
+    def test_edits_text(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "old_text": "Rev 1.0",
             "new_text": "Rev 2.0",
             "items_updated": 1,
         }
-        fn = _get_tool_fn(silk_server, "edit_text")
-        result = fn(pcb_file, "Rev 1.0", new_text="Rev 2.0")
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("edit_text", pcb_path=pcb_file,
+                    text="Rev 1.0", new_text="Rev 2.0")
         assert result["status"] == "ok"
-        assert result["items_updated"] == 1

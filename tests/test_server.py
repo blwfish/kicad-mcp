@@ -29,12 +29,19 @@ class TestCreateServer:
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: update when tools are intentionally added or removed.
 
-        Tool-consolidation in progress (see docs/SPEC_Tool_Consolidation.md).
-        Target: 14 tools. Current count tracks the in-progress migration.
+        Tool-consolidation complete (see docs/SPEC_Tool_Consolidation.md).
+        Final surface: 9 routers + 5 standalones = 14 tools.
+          Phase 1: library + analyze + export routers (10 → 3)
+          Phase 2: project + drc + autoroute routers (12 → 3)
+          Phase 3: audit router replaces 9 keepout tools → 73 total
+          Phase 4: pcb router replaces 27 individual pcb_* tools → 45 total
+          Phase 5: schematic router replaces 32 schematic tools + find_component_connections → 13 total
+          Phase 6: no-op stubs deleted; final count confirmed at 13.
+          Post-consolidation: analyze_placement_telemetry added → 14 total.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 90, (
-            f"Expected 90 tools, got {len(tools)}. "
+        assert len(tools) == 14, (
+            f"Expected 14 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -43,89 +50,29 @@ class TestExpectedToolsExist:
     """Verify that specific important tools are registered."""
 
     EXPECTED_TOOLS = [
-        # PCB board tools
-        "create_pcb",
-        "load_pcb",
-        "add_board_outline",
-        # PCB footprint tools
-        "place_footprint",
-        "move_footprint",
-        "list_pcb_footprints",
-        "get_pad_positions",
-        "get_footprint_dimensions",
-        # PCB net tools
-        "add_net",
-        "assign_pad_net",
-        "bulk_assign_pad_nets",
-        "list_pcb_nets",
-        # PCB routing tools
-        "add_trace",
-        "add_via",
-        "clear_routing",
-        "set_design_rules",
-        # PCB zone tools
-        "add_copper_zone",
-        "fill_zones",
-        # PCB silkscreen tools
-        "list_silkscreen_items",
-        "update_silkscreen_item",
-        "check_silkscreen_overlaps",
-        "auto_fix_silkscreen",
-        "add_text_to_pcb",
-        # PCB autoroute tools
-        "autoroute_pcb",
-        "autoroute_pcb_async",
-        "poll_autoroute",
-        "cancel_autoroute",
-        "list_autoroute_jobs",
+        # Phase 5 router (schematic — replaces 32 schematic tools + find_component_connections)
+        "schematic",
+        # Phase 4 router (pcb — replaces all individual pcb_* tools)
+        "pcb",
         # PCB panelize tools
         "panelize_pcb",
-        # PCB keepout tools
-        "get_keepout_zones",
-        "get_board_constraints",
-        "validate_placement",
-        "audit_pcb_placement",
-        "audit_footprint_overlaps",
-        "audit_all",
-        "pre_route_check",
-        "auto_fix_placement",
-        # PCB DRC fix tools
-        "drc_autofix",
+        # Phase 3 router (audit)
+        "audit",
         # PCB planning tools
         "estimate_board_size",
         "suggest_placement",
-        # Project tools
-        "list_projects",
-        "get_project_structure",
-        "open_project",
-        "validate_project",
         # Phase 1 routers (library + analyze + export)
         "library",
         "analyze",
         "export",
-        # DRC (still standalone until phase 2)
-        "run_drc_check",
-        # Schematic tools
-        "create_schematic",
-        "load_schematic",
-        "save_schematic",
-        "add_component",
-        "remove_component",
-        "list_components",
-        "add_wire",
-        "remove_wire",
-        "add_label",
-        "remove_label",
-        "add_junction",
-        "get_component_pin_position",
-        "list_component_pins",
-        "add_label_to_pin",
-        "connect_pins_with_labels",
-        "check_pin_collisions",
-        "validate_schematic",
-        "get_schematic_info",
+        # Phase 2 routers (project + drc + autoroute)
+        "project",
+        "drc",
+        "autoroute",
         # Pipeline tools
         "build_pcb_from_schematic",
+        # Telemetry analysis (post-consolidation standalone)
+        "analyze_placement_telemetry",
     ]
 
     @pytest.fixture(autouse=True)
