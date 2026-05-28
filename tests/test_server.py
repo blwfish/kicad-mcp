@@ -19,18 +19,18 @@ class TestCreateServer:
         server = create_server()
         assert server.name == "KiCad"
 
-    def test_at_least_14_tools_registered(self, mcp_server):
-        """Floor — the consolidated surface targets 14 tools."""
+    def test_at_least_15_tools_registered(self, mcp_server):
+        """Floor — the consolidated surface targets 15 tools."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) >= 14, (
-            f"Expected at least 14 tools, got {len(tools)}"
+        assert len(tools) >= 15, (
+            f"Expected at least 15 tools, got {len(tools)}"
         )
 
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: update when tools are intentionally added or removed.
 
         Tool-consolidation complete (see docs/SPEC_Tool_Consolidation.md).
-        Final surface: 9 routers + 5 standalones = 14 tools.
+        Final surface: 10 routers + 5 standalones = 15 tools.
           Phase 1: library + analyze + export routers (10 → 3)
           Phase 2: project + drc + autoroute routers (12 → 3)
           Phase 3: audit router replaces 9 keepout tools → 73 total
@@ -38,10 +38,11 @@ class TestCreateServer:
           Phase 5: schematic router replaces 32 schematic tools + find_component_connections → 13 total
           Phase 6: no-op stubs deleted; final count confirmed at 13.
           Post-consolidation: analyze_placement_telemetry added → 14 total.
+          Post-consolidation: lcsc component-intelligence router added → 15 total.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 14, (
-            f"Expected 14 tools, got {len(tools)}. "
+        assert len(tools) == 15, (
+            f"Expected 15 tools, got {len(tools)}. "
             "Update this test if tools were intentionally added or removed."
         )
 
@@ -73,6 +74,8 @@ class TestExpectedToolsExist:
         "build_pcb_from_schematic",
         # Telemetry analysis (post-consolidation standalone)
         "analyze_placement_telemetry",
+        # LCSC component intelligence router
+        "lcsc",
     ]
 
     @pytest.fixture(autouse=True)

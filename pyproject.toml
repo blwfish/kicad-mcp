@@ -103,7 +103,7 @@ module = ["pcbnew", "kicad_sch_api.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["pandas", "defusedxml.*", "sexpdata"]
+module = ["pandas", "defusedxml.*", "sexpdata", "yaml"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
