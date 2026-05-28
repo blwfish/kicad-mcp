@@ -151,6 +151,142 @@ class TestStateShape:
         assert len(result["state_id"]) == 16
 
 
+class TestApplyAndClearCache:
+    """Slice 5 — apply + clear_cache operations.
+
+    These tests stub ``kicad_sch_api`` so they don't require a real
+    schematic loaded; the goal is to verify the router's apply flow,
+    drift detection, and cache management.
+    """
+
+    def _isolate_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "KICAD_MCP_PLACEMENT_CACHE_DIR", str(tmp_path / "cache"),
+        )
+
+    def test_clear_cache_with_no_path_returns_count(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        self._isolate_cache(tmp_path, monkeypatch)
+        # Populate via two suggest calls (different schematics).
+        sch1 = tmp_path / "a.kicad_sch"
+        sch1.write_text("(kicad_sch)")
+        sch2 = tmp_path / "b.kicad_sch"
+        sch2.write_text("(kicad_sch)")
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.extract_netlist_via_cli",
+            lambda _path: {"components": {}, "nets": {}},
+        )
+        schematic_layout_fn(operation="suggest", schematic_path=str(sch1))
+        schematic_layout_fn(operation="suggest", schematic_path=str(sch2))
+        result = schematic_layout_fn(operation="clear_cache")
+        assert result["status"] == "ok"
+        assert result["cleared_count"] >= 2
+
+    def test_clear_cache_for_specific_path_only_clears_that_path(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        self._isolate_cache(tmp_path, monkeypatch)
+        sch1 = tmp_path / "a.kicad_sch"
+        sch1.write_text("(kicad_sch)")
+        sch2 = tmp_path / "b.kicad_sch"
+        sch2.write_text("(kicad_sch)")
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.extract_netlist_via_cli",
+            lambda _path: {"components": {}, "nets": {}},
+        )
+        schematic_layout_fn(operation="suggest", schematic_path=str(sch1))
+        schematic_layout_fn(operation="suggest", schematic_path=str(sch2))
+        result = schematic_layout_fn(
+            operation="clear_cache", schematic_path=str(sch1),
+        )
+        assert result["cleared_count"] == 1
+
+    def test_apply_missing_both_state_id_and_path(self, schematic_layout_fn):
+        result = schematic_layout_fn(operation="apply")
+        assert result["status"] == "error"
+        assert result["code"] == "missing_parameter"
+
+    def test_apply_state_not_found(self, schematic_layout_fn, tmp_path, monkeypatch):
+        self._isolate_cache(tmp_path, monkeypatch)
+        result = schematic_layout_fn(operation="apply", state_id="nonexistent")
+        assert result["status"] == "error"
+        assert result["code"] == "state_not_found"
+
+    def test_apply_drift_warning_when_hash_differs(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        """Stub kicad_sch_api; populate a cached state with a stale hash;
+        verify the drift warning fires."""
+        self._isolate_cache(tmp_path, monkeypatch)
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch v1)")
+
+        # Build a cached state with a bogus hash so drift detection trips.
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "drift_test",
+            "schematic_path": str(sch),
+            "schematic_hash": "deadbeef" * 8,  # 64-char fake
+            "components": {},
+            "clusters": {},
+        })
+
+        # Stub kicad_sch_api so apply doesn't actually need a real schematic.
+        class _StubSch:
+            def __init__(self):
+                self.components = self._Filter()
+            class _Filter:
+                def filter(self, reference=None):
+                    return []
+            def save(self):
+                pass
+
+        monkeypatch.setattr(
+            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
+        )
+
+        result = schematic_layout_fn(operation="apply", state_id="drift_test")
+        assert result["status"] == "ok"
+        # placement_state_stale was emitted; envelope is a list of dicts.
+        events_envelope = result.get("events", [])
+        codes = [e.get("code") for e in events_envelope]
+        assert "placement_state_stale" in codes
+
+    def test_apply_handles_missing_refs_as_errors(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        self._isolate_cache(tmp_path, monkeypatch)
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "missing_refs",
+            "schematic_path": str(sch),
+            "schematic_hash": "",  # disable drift check
+            "components": {"U1": {"x_mm": 10.0, "y_mm": 20.0}},
+            "clusters": {},
+        })
+
+        class _StubSch:
+            def __init__(self):
+                self.components = self._Filter()
+            class _Filter:
+                def filter(self, reference=None):
+                    return []  # no components → all refs are errors
+            def save(self):
+                pass
+
+        monkeypatch.setattr(
+            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
+        )
+        result = schematic_layout_fn(operation="apply", state_id="missing_refs")
+        assert result["status"] == "ok"
+        assert result["applied"] == 0
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["ref"] == "U1"
+
+
 class TestLabelingIntegration:
     """Slice 2 — confirm Layers 2/3/4 land on cluster dicts in the state."""
 
