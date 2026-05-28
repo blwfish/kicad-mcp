@@ -90,6 +90,29 @@ class TestAssignTiers:
         assert "ca" in ta.cluster_tier
         assert "cb" in ta.cluster_tier
 
+    def test_cycle_breaking_is_deterministic_across_runs(self):
+        """All-bidirectional triangle (A↔B↔C↔A, every edge weight 0.5) is
+        a worst-case for cycle-break tie-breaking. Sets used to iterate in
+        PYTHONHASHSEED-randomized order, so the chosen edge varied per
+        process. Now: nodes added in sorted order; min() tie-breaks by
+        (weight, src, dst). Same netlist must produce identical cluster_tier
+        on repeated calls within a process (the across-process check needs a
+        subprocess and is impractical here, but the within-process
+        invariant is the necessary precondition)."""
+        nets = {
+            "AB": [_pin("A", "1", "bidirectional"), _pin("B", "1", "bidirectional")],
+            "BC": [_pin("B", "2", "bidirectional"), _pin("C", "1", "bidirectional")],
+            "CA": [_pin("C", "2", "bidirectional"), _pin("A", "2", "bidirectional")],
+        }
+        comp_cluster = {"A": "ca", "B": "cb", "C": "cc"}
+        results = [
+            assign_tiers(_netlist(["A", "B", "C"], nets), comp_cluster).cluster_tier
+            for _ in range(5)
+        ]
+        # Every call must produce the same partition.
+        for r in results[1:]:
+            assert r == results[0]
+
     def test_no_source_fallback_warns_and_picks_origin(self):
         # Construct a degenerate graph: every cluster has incoming edges
         # before any cycle-breaking happens. The cycle-breaker should
