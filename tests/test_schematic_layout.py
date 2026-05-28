@@ -151,6 +151,91 @@ class TestStateShape:
         assert len(result["state_id"]) == 16
 
 
+class TestWiresWillBeStaleDetection:
+    """The _detect_stale_wires helper uses real kicad-sch-api to compute
+    absolute pin positions and compare them against wire endpoints. These
+    tests build small in-memory schematics rather than mocking, since the
+    geometry transform is the load-bearing part."""
+
+    def _build_sch_with_wire_on_pin(self):
+        import kicad_sch_api as ksa
+        sch = ksa.create_schematic("x")
+        sch.components.add("Device:R", "R1", "10k", position=(50, 50))
+        # Pin 1 of R1 at (50, 50) sits at component_y + 3.81 (KiCad inverts y).
+        # Add a wire whose endpoint touches that pin.
+        from kicad_mcp.tools.schematic_impl import _kicad_pin_position
+        comp = sch.components.get("R1")
+        pin_pos = _kicad_pin_position(comp, "1")
+        sch.add_wire((pin_pos.x, pin_pos.y), (pin_pos.x + 10, pin_pos.y))
+        return sch
+
+    def test_no_wires_returns_empty(self, tmp_path):
+        import kicad_sch_api as ksa
+        sch = ksa.create_schematic("x")
+        sch.components.add("Device:R", "R1", "10k", position=(50, 50))
+        from kicad_mcp.tools.schematic_layout import _detect_stale_wires
+        result = _detect_stale_wires(sch, {"R1": {"x_mm": 100, "y_mm": 100}})
+        assert result == []
+
+    def test_wire_on_moving_pin_is_stale(self):
+        from kicad_mcp.tools.schematic_layout import _detect_stale_wires
+        sch = self._build_sch_with_wire_on_pin()
+        # Target is a new position → R1 will move → its wire goes stale.
+        result = _detect_stale_wires(sch, {"R1": {"x_mm": 100, "y_mm": 100}})
+        assert result == ["R1"]
+
+    def test_wire_on_stationary_component_not_stale(self):
+        from kicad_mcp.tools.schematic_layout import _detect_stale_wires
+        sch = self._build_sch_with_wire_on_pin()
+        # kicad-sch-api snaps positions to grid (~1.27 mm), so read back the
+        # actual position rather than reusing the requested value.
+        pos = sch.components.get("R1").position
+        # Target equals current position → no move → no stale wire.
+        result = _detect_stale_wires(sch, {"R1": {"x_mm": pos.x, "y_mm": pos.y}})
+        assert result == []
+
+    def test_wire_far_from_pins_not_stale(self):
+        import kicad_sch_api as ksa
+        sch = ksa.create_schematic("x")
+        sch.components.add("Device:R", "R1", "10k", position=(50, 50))
+        # Wire nowhere near R1's pins.
+        sch.add_wire((200, 200), (220, 200))
+        from kicad_mcp.tools.schematic_layout import _detect_stale_wires
+        result = _detect_stale_wires(sch, {"R1": {"x_mm": 100, "y_mm": 100}})
+        assert result == []
+
+    def test_apply_emits_wires_will_be_stale_warning(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        """End-to-end: a cached state that moves R1 surfaces the warning."""
+        monkeypatch.setenv(
+            "KICAD_MCP_PLACEMENT_CACHE_DIR", str(tmp_path / "cache"),
+        )
+        # Build and save a real schematic with a wire on R1's pin.
+        import kicad_sch_api as ksa
+        sch_obj = ksa.create_schematic("x")
+        sch_obj.components.add("Device:R", "R1", (50, 50))
+        from kicad_mcp.tools.schematic_impl import _kicad_pin_position
+        pin_pos = _kicad_pin_position(sch_obj.components.get("R1"), "1")
+        sch_obj.add_wire((pin_pos.x, pin_pos.y), (pin_pos.x + 10, pin_pos.y))
+        sch_path = tmp_path / "x.kicad_sch"
+        sch_obj.save(str(sch_path))
+
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "stale_check",
+            "schematic_path": str(sch_path),
+            "schematic_hash": "",
+            "components": {"R1": {"x_mm": 100.0, "y_mm": 100.0}},
+            "clusters": {},
+        })
+
+        result = schematic_layout_fn(operation="apply", state_id="stale_check")
+        assert result["status"] == "ok"
+        codes = [e.get("code") for e in result.get("events", [])]
+        assert "wires_will_be_stale" in codes
+
+
 class TestApplyAndClearCache:
     """Slice 5 — apply + clear_cache operations.
 
