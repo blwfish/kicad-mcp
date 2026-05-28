@@ -53,27 +53,34 @@ def assign_tiers(
         return TierAssignment()
 
     cluster_edges = _build_inter_cluster_edges(netlist, component_cluster)
-    all_clusters = set(component_cluster.values())
+    # Use a sorted list (not a set) so DiGraph node order and downstream
+    # iteration are deterministic across Python processes. Python sets
+    # iterate in PYTHONHASHSEED-randomized order, which makes cycle-break
+    # edge choice non-deterministic when weights tie — the spec's
+    # cluster-id stability guarantee depends on this being reproducible.
+    all_clusters_sorted: list[str] = sorted(set(component_cluster.values()))
 
     events: list[dict[str, Any]] = []
 
     # Build a NetworkX DiGraph so we can detect cycles cleanly.
     dg: nx.DiGraph = nx.DiGraph()
-    dg.add_nodes_from(all_clusters)
-    for src, dsts in cluster_edges.items():
-        for dst, w in dsts.items():
-            dg.add_edge(src, dst, weight=w)
+    dg.add_nodes_from(all_clusters_sorted)
+    for src in sorted(cluster_edges):
+        for dst in sorted(cluster_edges[src]):
+            dg.add_edge(src, dst, weight=cluster_edges[src][dst])
 
-    # Cycle breaking: while a cycle exists, drop the lowest-weight edge on it.
+    # Cycle breaking: while a cycle exists, drop the lowest-weight edge on
+    # it. Tie-break by (src, dst) ref order so equal-weight cycles
+    # (e.g. all-bidirectional with weight 0.5) break the same edge across
+    # processes — see the deterministic-cycle tests in test_placement_rank_pack.
     cycles_broken: list[tuple[str, str]] = []
     while True:
         try:
             cycle = nx.find_cycle(dg, orientation="original")
         except nx.NetworkXNoCycle:
             break
-        # cycle is a list of (u, v, key, direction) — pick min weight.
         edges = [(u, v) for (u, v, *_rest) in cycle]
-        u, v = min(edges, key=lambda e: dg[e[0]][e[1]].get("weight", 1.0))
+        u, v = min(edges, key=lambda e: (dg[e[0]][e[1]].get("weight", 1.0), e[0], e[1]))
         dg.remove_edge(u, v)
         cycles_broken.append((u, v))
 
@@ -89,11 +96,14 @@ def assign_tiers(
         })
 
     # Source clusters: in-degree 0 in the now-acyclic graph.
-    sources = [c for c in all_clusters if dg.in_degree(c) == 0]
+    sources = [c for c in all_clusters_sorted if dg.in_degree(c) == 0]
 
-    if not sources and all_clusters:
+    if not sources and all_clusters_sorted:
         # Fallback per spec: pick the cluster with the most outgoing edges.
-        fallback = max(all_clusters, key=lambda c: dg.out_degree(c))
+        # max() over a sorted list returns the FIRST element on ties, which
+        # — combined with alphabetic ordering — gives a deterministic
+        # fallback across Python processes.
+        fallback = max(all_clusters_sorted, key=dg.out_degree)
         sources = [fallback]
         events.append({
             "level": "warn",
@@ -121,7 +131,7 @@ def assign_tiers(
 
     # Any clusters still untiered (disconnected components in another
     # cycle component) → place them at tier 0 alongside sources.
-    for c in all_clusters:
+    for c in all_clusters_sorted:
         if c not in cluster_tier:
             cluster_tier[c] = 0
 
