@@ -443,18 +443,21 @@ def _op_apply(
         for ref, comp_state in (cached.get("components") or {}).items():
             if ref_filter is not None and ref not in ref_filter:
                 continue
+            # IMPORTANT: use components.get(ref), NOT components.filter(reference=ref).
+            # kicad_sch_api's filter() silently ignores unknown kwargs and returns
+            # ALL components — using it here would mutate the wrong component.
             try:
-                matches = list(sch.components.filter(reference=ref))
+                comp = sch.components.get(ref)
             except Exception as e:
                 errors.append({"ref": ref, "error": str(e)})
                 continue
-            if not matches:
+            if comp is None:
                 errors.append({"ref": ref, "error": "component not found in schematic"})
                 continue
             x = float(comp_state.get("x_mm", 0.0))
             y = float(comp_state.get("y_mm", 0.0))
             try:
-                matches[0].position = (x, y)
+                comp.position = (x, y)
                 applied_count += 1
             except Exception as e:
                 errors.append({"ref": ref, "error": str(e)})
@@ -719,14 +722,12 @@ def _detect_stale_wires(
     for ref, comp_state in target_components.items():
         target_x = float(comp_state.get("x_mm", 0.0))
         target_y = float(comp_state.get("y_mm", 0.0))
+        # See _op_apply: components.get(ref), not filter(reference=ref).
         try:
-            matches = list(sch.components.filter(reference=ref))
+            comp = sch.components.get(ref)
         except Exception:
             continue
-        if not matches:
-            continue
-        comp = matches[0]
-        if not comp.position:
+        if comp is None or not comp.position:
             continue
         # Skip components that aren't actually moving.
         if (abs(comp.position.x - target_x) <= tol

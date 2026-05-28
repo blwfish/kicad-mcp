@@ -320,10 +320,10 @@ class TestApplyAndClearCache:
         # Stub kicad_sch_api so apply doesn't actually need a real schematic.
         class _StubSch:
             def __init__(self):
-                self.components = self._Filter()
-            class _Filter:
-                def filter(self, reference=None):
-                    return []
+                self.components = self._Components()
+            class _Components:
+                def get(self, _reference):
+                    return None
             def save(self):
                 pass
 
@@ -447,3 +447,53 @@ class TestLabelingIntegration:
         # Layer 3 declined → Layer 2 still wins.
         assert cluster["label"] == "mcu"
         assert cluster["label_source"] == "pattern_recognition"
+
+
+class TestApplyMovesOnlyTargetedRefs:
+    """Regression for the filter(reference=) silent-all bug: kicad_sch_api
+    silently ignores unknown kwargs and returns ALL components, so the
+    previous matches[0].position = (x, y) loop mutated whichever component
+    happened to come first. This test uses a REAL schematic with multiple
+    components and asserts only the targeted one moves."""
+
+    def test_apply_moves_only_named_ref(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "KICAD_MCP_PLACEMENT_CACHE_DIR", str(tmp_path / "cache"),
+        )
+        import kicad_sch_api as ksa
+        sch_obj = ksa.create_schematic("x")
+        sch_obj.components.add("Device:R", "R1", "10k", position=(50, 50))
+        sch_obj.components.add("Device:R", "R2", "20k", position=(60, 60))
+        sch_obj.components.add("Device:C", "C1", "1nF", position=(70, 70))
+        sch_path = tmp_path / "x.kicad_sch"
+        sch_obj.save(str(sch_path))
+
+        r2_pos_before = sch_obj.components.get("R2").position
+        c1_pos_before = sch_obj.components.get("C1").position
+
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "move_r1_only",
+            "schematic_path": str(sch_path),
+            "schematic_hash": "",  # disable drift check
+            "components": {"R1": {"x_mm": 100.0, "y_mm": 100.0}},
+            "clusters": {},
+        })
+
+        result = schematic_layout_fn(operation="apply", state_id="move_r1_only")
+        assert result["status"] == "ok"
+        assert result["applied"] == 1
+        assert result["errors"] == []
+
+        # Reload from disk to confirm only R1 moved.
+        sch_after = ksa.load_schematic(str(sch_path))
+        r1_after = sch_after.components.get("R1").position
+        r2_after = sch_after.components.get("R2").position
+        c1_after = sch_after.components.get("C1").position
+        # R1 moved to (or near) the requested (100, 100), grid-snapped.
+        assert abs(r1_after.x - 100) < 2 and abs(r1_after.y - 100) < 2
+        # R2 and C1 must NOT have moved — the bug used to overwrite them.
+        assert (r2_after.x, r2_after.y) == (r2_pos_before.x, r2_pos_before.y)
+        assert (c1_after.x, c1_after.y) == (c1_pos_before.x, c1_pos_before.y)
