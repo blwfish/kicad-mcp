@@ -3,7 +3,20 @@
 Per ``docs/SPEC_Schematic_Placement.md`` § Stateful vs stateless modes.
 
 Layout:
-  ~/.cache/kicad-mcp/placement_states/<state_id>.json
+  ~/.cache/kicad-mcp/placement_states/<schematic_hash>/<state_id>.json
+
+The ``schematic_hash`` directory is the first 16 hex chars of
+``sha256(schematic_path)`` — a stable per-schematic shard so per-schematic
+operations (``find_latest_for_schematic``, ``_evict_lru_for_schematic``)
+only scan that schematic's own files instead of the whole cache. With 200
+schematics × 5 states each (= 1000 files), the previous flat layout
+made every ``suggest`` call do two full-cache JSON parses; now it's
+a glob of ≤5 files in one subdirectory.
+
+``load_state(state_id)`` doesn't carry the schematic context, so it
+short-circuits by globbing ``*/<state_id>.json`` and checking ``exists()``
+on each candidate — O(num_shards) ``stat`` syscalls but no file reads
+until a match is found.
 
 Retention:
   - 5 states per schematic max (LRU by mtime, eviction on save)
@@ -18,6 +31,7 @@ exception leaks to the calling tool).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -62,6 +76,19 @@ def _ensure_dir() -> Path:
     return d
 
 
+def _schematic_shard(schematic_path: str) -> str:
+    """Stable per-schematic shard name. First 16 hex chars of
+    sha256(schematic_path) — enough entropy that path-collision is
+    vanishingly unlikely within a single cache."""
+    if not schematic_path:
+        return "_unknown"
+    return hashlib.sha256(schematic_path.encode("utf-8")).hexdigest()[:16]
+
+
+def _shard_dir(schematic_path: str) -> Path:
+    return cache_dir() / _schematic_shard(schematic_path)
+
+
 def save_state(state: dict[str, Any]) -> str | None:
     """Persist a PlacementState to disk. Returns the state_id on success,
     ``None`` on disk-write failure.
@@ -84,10 +111,13 @@ def save_state(state: dict[str, Any]) -> str | None:
             f"state_id must be 16 lowercase hex chars; got {state_id!r}"
         )
     try:
-        d = _ensure_dir()
-        path = d / f"{state_id}.json"
+        _ensure_dir()
+        schematic_path = state.get("schematic_path", "")
+        shard = _shard_dir(schematic_path)
+        shard.mkdir(parents=True, exist_ok=True)
+        path = shard / f"{state_id}.json"
         path.write_text(json.dumps(state, indent=2))
-        _evict_lru_for_schematic(state.get("schematic_path", ""))
+        _evict_lru_for_schematic(schematic_path)
         _sweep_expired()
     except OSError as e:
         logger.warning("placement cache save failed: %s", e)
@@ -107,8 +137,8 @@ def load_state(state_id: str) -> dict[str, Any] | None:
     if not _valid_state_id(state_id):
         return None
     try:
-        path = cache_dir() / f"{state_id}.json"
-        if not path.exists():
+        path = _find_state_file(state_id)
+        if path is None:
             return None
         if _expired(path):
             with contextlib.suppress(OSError):
@@ -121,21 +151,46 @@ def load_state(state_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _find_state_file(state_id: str) -> Path | None:
+    """Locate <state_id>.json across all shard subdirectories.
+
+    O(num_shards) ``exists()`` syscalls; no file reads or parses. The
+    state_id is validated as 16-hex by the caller, so the join is safe.
+    """
+    d = cache_dir()
+    if not d.exists():
+        return None
+    fname = f"{state_id}.json"
+    for shard in d.iterdir():
+        if not shard.is_dir():
+            continue
+        candidate = shard / fname
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def find_latest_for_schematic(schematic_path: str) -> dict[str, Any] | None:
     """Return the most recently saved state for this schematic path,
     or None if none exists. Useful for cluster_id stability across
-    iterations: ``suggest`` calls this to feed previous_partition."""
+    iterations: ``suggest`` calls this to feed previous_partition.
+
+    Falls back to the next-newest candidate if the most-recent file is
+    unreadable/corrupt — a partially-written file from a crashed save
+    shouldn't blind the entire stability mechanism."""
     if not schematic_path:
         return None
     candidates = _states_for_schematic(schematic_path)
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    try:
-        obj: dict[str, Any] = json.loads(candidates[0].read_text())
-        return obj
-    except (OSError, json.JSONDecodeError):
-        return None
+    for candidate in candidates:
+        try:
+            obj: dict[str, Any] = json.loads(candidate.read_text())
+            return obj
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
 
 
 def clear_cache(schematic_path: str | None = None) -> int:
@@ -147,19 +202,16 @@ def clear_cache(schematic_path: str | None = None) -> int:
         return 0
     count = 0
     if schematic_path is None:
-        for path in d.glob("*.json"):
-            try:
+        # All shards.
+        for path in d.glob("*/*.json"):
+            with contextlib.suppress(OSError):
                 path.unlink()
                 count += 1
-            except OSError:
-                pass
     else:
         for path in _states_for_schematic(schematic_path):
-            try:
+            with contextlib.suppress(OSError):
                 path.unlink()
                 count += 1
-            except OSError:
-                pass
     return count
 
 
@@ -168,19 +220,12 @@ def clear_cache(schematic_path: str | None = None) -> int:
 # ---------------------------------------------------------------------------
 
 def _states_for_schematic(schematic_path: str) -> list[Path]:
-    """All cached state files whose stored schematic_path matches."""
-    out: list[Path] = []
-    d = cache_dir()
-    if not d.exists():
-        return out
-    for path in d.glob("*.json"):
-        try:
-            obj = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if obj.get("schematic_path") == schematic_path:
-            out.append(path)
-    return out
+    """All cached state files for this schematic — just a directory listing,
+    no JSON parsing. O(states_for_this_schematic), not O(total_states)."""
+    shard = _shard_dir(schematic_path)
+    if not shard.exists():
+        return []
+    return list(shard.glob("*.json"))
 
 
 def _evict_lru_for_schematic(schematic_path: str) -> None:
@@ -190,7 +235,6 @@ def _evict_lru_for_schematic(schematic_path: str) -> None:
     states = _states_for_schematic(schematic_path)
     if len(states) <= MAX_STATES_PER_SCHEMATIC:
         return
-    # Sort oldest first; drop the excess.
     states.sort(key=lambda p: p.stat().st_mtime)
     for path in states[: len(states) - MAX_STATES_PER_SCHEMATIC]:
         with contextlib.suppress(OSError):
@@ -198,12 +242,12 @@ def _evict_lru_for_schematic(schematic_path: str) -> None:
 
 
 def _sweep_expired(max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> None:
-    """Drop any cache file older than the expiry window."""
+    """Drop any cache file older than the expiry window. Walks all shards."""
     d = cache_dir()
     if not d.exists():
         return
     cutoff = time.time() - max_age_days * 86400
-    for path in d.glob("*.json"):
+    for path in d.glob("*/*.json"):
         try:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
