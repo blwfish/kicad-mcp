@@ -50,6 +50,7 @@ from kicad_mcp.tools.pcb_silkscreen import (
     _op_add_text,
     _op_list_silkscreen,
     _op_update_silkscreen,
+    _op_edit_text,
     _op_auto_fix_silkscreen,
     _op_check_silkscreen_overlaps,
 )
@@ -136,6 +137,12 @@ def register_pcb_tools(mcp: FastMCP) -> None:
         silk_thickness_mm: Optional[float] = None,
         angle_deg: Optional[float] = None,
         silk_layer: Optional[str] = None,
+        new_text: Optional[str] = None,
+        near_x_mm: Optional[float] = None,
+        near_y_mm: Optional[float] = None,
+        edit_size_mm: Optional[float] = None,
+        edit_thickness_mm: Optional[float] = None,
+        edit_rotation_deg: Optional[float] = None,
     ) -> Dict[str, Any]:
         """PCB domain router — board lifecycle, footprints, nets, routing, zones, silkscreen.
 
@@ -246,6 +253,13 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                             rel_y_mm=None, silk_size_mm=None, silk_thickness_mm=None,
                             angle_deg=None, silk_layer=None)
               -> {status, reference, field, text, visible, ...}
+
+          edit_text(pcb_path, text, new_text=None, x_mm=None, y_mm=None,
+                    layer=None, edit_size_mm=None, edit_thickness_mm=None,
+                    edit_rotation_deg=None, near_x_mm=None, near_y_mm=None)
+              -> {status, text, x_mm, y_mm, layer, size_mm, thickness_mm, rotation_deg}
+                 Edits a standalone PCB text item in place. If multiple items
+                 share the same text, supply near_x_mm/near_y_mm to disambiguate.
 
           auto_fix_silkscreen(pcb_path)
               -> {status, already_ok, moved, hidden, fixes}
@@ -529,6 +543,22 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 layer=silk_layer,
             )
 
+        if operation == "edit_text":
+            if pcb_path is None:
+                return {"error": "operation='edit_text' requires 'pcb_path'"}
+            if text is None:
+                return {"error": "operation='edit_text' requires 'text'"}
+            return _op_edit_text(
+                pcb_path, text,
+                new_text=new_text,
+                x_mm=x_mm, y_mm=y_mm,
+                layer=layer,
+                size_mm=edit_size_mm,
+                thickness_mm=edit_thickness_mm,
+                rotation_deg=edit_rotation_deg,
+                near_x_mm=near_x_mm, near_y_mm=near_y_mm,
+            )
+
         if operation == "auto_fix_silkscreen":
             if pcb_path is None:
                 return {"error": "operation='auto_fix_silkscreen' requires 'pcb_path'"}
@@ -551,6 +581,6 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 f"add_trace|add_via|clear_routing|edit_trace_width|"
                 f"add_zone|fill_zones|"
                 f"add_text|list_silkscreen|update_silkscreen|"
-                f"auto_fix_silkscreen|check_silkscreen_overlaps"
+                f"edit_text|auto_fix_silkscreen|check_silkscreen_overlaps"
             )
         }

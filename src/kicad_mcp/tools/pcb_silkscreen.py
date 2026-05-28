@@ -234,6 +234,113 @@ print(json.dumps({
     })
 
 
+def _op_edit_text(
+    pcb_path: str,
+    text: str,
+    new_text: Optional[str] = None,
+    x_mm: Optional[float] = None,
+    y_mm: Optional[float] = None,
+    layer: Optional[str] = None,
+    size_mm: Optional[float] = None,
+    thickness_mm: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    near_x_mm: Optional[float] = None,
+    near_y_mm: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Edit a standalone PCB text item in place.
+
+    Finds the text by its current content and applies updates without
+    requiring delete-and-recreate.  If multiple items share the same
+    text, supply near_x_mm / near_y_mm to pick the closest one.
+    """
+    if not os.path.exists(pcb_path):
+        return {"error": f"PCB file not found: {pcb_path}"}
+
+    if all(v is None for v in (new_text, x_mm, y_mm, layer, size_mm, thickness_mm, rotation_deg)):
+        return {"error": "No modifications specified"}
+
+    script = """
+import pcbnew, json, math, sys
+
+params = json.loads(open(sys.argv[1]).read())
+pcb_path = params["pcb_path"]
+
+board = pcbnew.LoadBoard(pcb_path)
+
+target_text = params["text"]
+near_x = params["near_x_mm"]
+near_y = params["near_y_mm"]
+
+candidates = []
+for drawing in board.GetDrawings():
+    if hasattr(drawing, 'GetText') and drawing.GetText() == target_text:
+        candidates.append(drawing)
+
+if not candidates:
+    print(json.dumps({"error": f"No standalone text matching {target_text!r} found"}))
+    raise SystemExit(0)
+
+if len(candidates) > 1:
+    if near_x is not None and near_y is not None:
+        ref_x = pcbnew.FromMM(near_x)
+        ref_y = pcbnew.FromMM(near_y)
+        candidates.sort(key=lambda d: math.hypot(d.GetPosition().x - ref_x, d.GetPosition().y - ref_y))
+    else:
+        positions = [f"({round(pcbnew.ToMM(d.GetPosition().x),2)}, {round(pcbnew.ToMM(d.GetPosition().y),2)})" for d in candidates]
+        print(json.dumps({"error": f"Multiple items match {target_text!r}: {positions}. Supply near_x_mm/near_y_mm to disambiguate."}))
+        raise SystemExit(0)
+
+item = candidates[0]
+
+if params["new_text"] is not None:
+    item.SetText(params["new_text"])
+if params["x_mm"] is not None and params["y_mm"] is not None:
+    item.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(params["y_mm"])))
+elif params["x_mm"] is not None:
+    pos = item.GetPosition()
+    item.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pos.y))
+elif params["y_mm"] is not None:
+    pos = item.GetPosition()
+    item.SetPosition(pcbnew.VECTOR2I(pos.x, pcbnew.FromMM(params["y_mm"])))
+if params["layer"] is not None:
+    item.SetLayer(board.GetLayerID(params["layer"]))
+if params["size_mm"] is not None:
+    item.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(params["size_mm"]), pcbnew.FromMM(params["size_mm"])))
+if params["thickness_mm"] is not None:
+    item.SetTextThickness(pcbnew.FromMM(params["thickness_mm"]))
+if params["rotation_deg"] is not None:
+    item.SetTextAngle(pcbnew.EDA_ANGLE(params["rotation_deg"], pcbnew.DEGREES_T))
+
+board.Save(pcb_path)
+
+pos = item.GetPosition()
+size = item.GetTextSize()
+print(json.dumps({
+    "status": "ok",
+    "text": item.GetText(),
+    "x_mm": round(pcbnew.ToMM(pos.x), 3),
+    "y_mm": round(pcbnew.ToMM(pos.y), 3),
+    "layer": board.GetLayerName(item.GetLayer()),
+    "size_mm": round(pcbnew.ToMM(size.x), 3),
+    "thickness_mm": round(pcbnew.ToMM(item.GetTextThickness()), 3),
+    "rotation_deg": item.GetTextAngle().AsDegrees(),
+}))
+"""
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "text": text,
+        "new_text": new_text,
+        "x_mm": x_mm,
+        "y_mm": y_mm,
+        "layer": layer,
+        "size_mm": size_mm,
+        "thickness_mm": thickness_mm,
+        "rotation_deg": rotation_deg,
+        "near_x_mm": near_x_mm,
+        "near_y_mm": near_y_mm,
+    })
+
+
 def _op_check_silkscreen_overlaps(pcb_path: str) -> Dict[str, Any]:
     """Find silkscreen text items that overlap copper pads or other silkscreen text.
 

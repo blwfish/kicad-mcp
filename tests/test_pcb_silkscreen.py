@@ -213,3 +213,27 @@ class TestAutoFixSilkscreen:
         result = fn("auto_fix_silkscreen", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["fixes_applied"] == 4
+
+
+# -- edit_text tests --------------------------------------------------------
+
+class TestEditText:
+
+    def test_file_not_found(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("edit_text", pcb_path="/nonexistent/board.kicad_pcb",
+                    text="Rev 1.0", new_text="Rev 2.0")
+        assert "error" in result
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_edits_text(self, mock_run, pcb_server, pcb_file):
+        mock_run.return_value = {
+            "status": "ok",
+            "old_text": "Rev 1.0",
+            "new_text": "Rev 2.0",
+            "items_updated": 1,
+        }
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("edit_text", pcb_path=pcb_file,
+                    text="Rev 1.0", new_text="Rev 2.0")
+        assert result["status"] == "ok"

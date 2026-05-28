@@ -21,10 +21,10 @@ from kicad_mcp.utils.file_utils import get_project_files
 
 
 def _op_history(project_path: str) -> Dict[str, Any]:
-    print(f"Getting DRC history for project: {project_path}")
+    logger.debug("Getting DRC history for project: %s", project_path)
 
     if not os.path.exists(project_path):
-        print(f"Project not found: {project_path}")
+        logger.warning("Project not found: %s", project_path)
         return {"success": False, "error": f"Project not found: {project_path}"}
 
     history_entries = get_drc_history(project_path)
@@ -55,19 +55,19 @@ def _op_history(project_path: str) -> Dict[str, Any]:
 
 
 async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
-    print(f"Running DRC check for project: {project_path}")
+    logger.debug("Running DRC check for project: %s", project_path)
 
     if not os.path.exists(project_path):
-        print(f"Project not found: {project_path}")
+        logger.warning("Project not found: %s", project_path)
         return {"success": False, "error": f"Project not found: {project_path}"}
 
     files = get_project_files(project_path)
     if "pcb" not in files:
-        print("PCB file not found in project")
+        logger.warning("PCB file not found in project")
         return {"success": False, "error": "PCB file not found in project"}
 
     pcb_file = files["pcb"]
-    print(f"Found PCB file: {pcb_file}")
+    logger.debug("Found PCB file: %s", pcb_file)
 
     if ctx:
         await ctx.report_progress(10, 100)
@@ -75,7 +75,7 @@ async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
 
     drc_results = None
 
-    print("Using kicad-cli for DRC")
+    logger.debug("Using kicad-cli for DRC")
     if ctx:
         await ctx.info("Using KiCad CLI for DRC check...")
     drc_results = await run_drc_via_cli(pcb_file, ctx)
