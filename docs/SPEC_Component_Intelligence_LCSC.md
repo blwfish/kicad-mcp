@@ -49,7 +49,7 @@ The investigation in this session (see memory: `project_component_intelligence.m
 - `POST https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList/v2` — keyword search
 - **Critical**: requires a browser User-Agent header (their CDN blocks `python-requests` defaults)
 - No documented rate limit; we self-throttle to ~1 req/sec
-- Used for **on-demand fresh data** (current stock, current price) when the snapshot would be too stale
+- Used **only as a cache-miss fallback** in `resolve(part_number=...)` when the LCSC number is absent from the snapshot (new or unlisted part). The live API is NOT called during `search`, and is NOT called for snapshot-found parts even when the snapshot is stale — if users need fresher data they call `refresh_snapshot`. This keeps search latency deterministic and avoids rate-limit risk.
 
 ### 2. yaqwsx/jlcparts SQLite snapshot (community-maintained)
 - Downloaded from `https://bouni.github.io/jlcparts/data/` (Bouni's GitHub Pages hosting the processed SQLite, ~100-500 MB across split zip chunks)
@@ -66,7 +66,7 @@ The investigation in this session (see memory: `project_component_intelligence.m
 ### 3. kicad-mcp `library_index.db` (existing)
 - Full-text search over KiCad's bundled symbol libraries
 - Used to resolve manufacturer part number → KiCad `lib_id` (e.g., `"AMS1117-3.3"` → `"Regulator_Linear:AMS1117-3.3"`)
-- **Lookup algorithm (open question — see Open Questions #6):** The query strategy (exact-match vs. FTS, column searched, disambiguation on multiple hits) must be decided before implementation. First-match-wins on duplicates is a Rule 3 violation if not pinned by a test.
+- **Lookup algorithm:** Two-tier. First attempt exact match on the symbol `name` field (fast, zero false positives). If no exact hit, fall back to an FTS query using the MPN as the search term — accept the top result only if its score exceeds a threshold and there's no ambiguity (multiple close hits → return `None`). If still nothing, return `kicad_symbol_lib_id=None` and include a deviation hint: `"symbol: no match found; use library(operation='search', ...) to find manually"`. On multiple exact hits (same MPN in different libraries), prefer the canonical KiCad library over any vendor-specific library. The threshold for "close enough" on the FTS fallback must be verified against real data and pinned by a test — first-match-wins without a threshold is a Rule 3 violation.
 
 ### 4. Package → KiCad footprint mapping table (new, hand-curated)
 - Static lookup: LCSC's `componentSpecificationEn` strings ("SOT-223", "SOIC-8", "0603") → KiCad footprint paths (`"Package_TO_SOT_SMD:SOT-223-3"`, `"Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"`, `"Resistor_SMD:R_0603_1608Metric"`)
@@ -114,10 +114,9 @@ class ResolvedPart:
                                     # likely a JSON string or bracket-delimited list. Verify
                                     # in a live snapshot before writing the parser.
     stock: int                      # global stock at time of snapshot
-    lifecycle: str                  # "active" | "nrnd" | "obsolete" | "unknown"
-                                    # NOTE: jlcparts has no lifecycle column; source is TBD —
-                                    # likely parsed from jlc_extra JSON or the description field.
-                                    # Verify before coding. Default to "unknown" if not resolvable.
+    # lifecycle: deferred to v2 — jlcparts has no lifecycle column and the source
+    # (jlc_extra JSON or description) is unverified. Telemetry will instrument how
+    # often jlc_extra contains lifecycle-like data to inform v2 implementation.
 
     # LCSC/JLCPCB-specific
     assembly_tier: str | None       # "basic" | "extended" | "preferred" — None for non-JLCPCB
@@ -158,7 +157,10 @@ lcsc(
     assembly_tier: str = "basic",          # "basic" | "extended" | "preferred" | "any"
     max_results: int = 3,                  # cap; default 3
     include_unresolvable: bool = False,    # if False (default), filter out results with no kicad_footprint_path mapping
-    extra_filters: dict | None = None,     # optional parametric filters, e.g. {"voltage": "3.3V"}
+    # extra_filters removed — deferred to v2 (requires json_extract or Python-side JSON
+    # parsing per row, neither of which is reliable across all platforms/scales).
+    # Telemetry proxy: track calls where top_match_score < 0.5 as signal that
+    # description-keyword search alone was insufficient.
 )
 -> {
     "status": "ok",
@@ -277,15 +279,20 @@ For each returned candidate, `match_deviations` lists every criterion where the 
 
 The LLM consumes these to decide whether to accept the top result, propose a different one to the user, or re-query with looser constraints.
 
-### Search implementation strategy (open question — see Open Questions #7)
+### Search implementation strategy
 
-The `description` keyword scoring runs against a potentially million-row snapshot. Python-side scoring of every row will time out. The strategy is one of:
+**Decided:** hybrid pre-filter. SQL pre-filters narrow the candidate set using indexed columns before any Python-side scoring:
 
-- **SQLite FTS5 virtual table** on `description` (pre-built at snapshot load time): fast, but requires an index-build step on first use.
-- **Pre-filter then score**: use SQL `WHERE description LIKE '%keyword%' AND basic=1` (or similar) to narrow to hundreds of rows, then score in Python. Simpler, but LIKE scans are linear and the approach scales poorly with OR-queries.
-- **Hybrid**: pre-filter by `assembly_tier`, `stock > 0`, and `package` (all indexed columns) before any text matching; score only the survivors.
+```sql
+SELECT * FROM components
+WHERE (basic = 1 OR preferred = 1 OR :tier = 'any')   -- assembly_tier pre-filter
+  AND stock > 0                                          -- exclude out-of-stock
+  AND (:package IS NULL OR package = :package)           -- package pre-filter when specified
+```
 
-`extra_filters` against the `extra` JSON blob column is a particular risk — `json_extract()` requires SQLite ≥ 3.38 and is not guaranteed on all platforms, and Python-side JSON parsing of every row is O(n). This must be resolved before implementation (see Open Questions #7).
+The survivors (expected: low thousands after tier + stock filter, much fewer with package) are scored in Python against the full criteria table. This avoids full-table scans while keeping the scoring logic in Python where it's testable without SQLite.
+
+`extra_filters` is deferred to v2 — it requires `json_extract()` (SQLite ≥ 3.38, not universal) or O(n) Python JSON parsing. See Deferred section.
 
 ### Why a list, not a single recommendation
 
@@ -383,7 +390,14 @@ A static lookup file at `src/kicad_mcp/data/lcsc_footprint_mapping.yaml`:
 ```
 
 Caveats:
-- **Resistor vs capacitor at the same package size**: the file maps to the resistor variant by default. The `lcsc` tool inspects the part's category (resistor / capacitor / inductor) before picking the appropriate footprint family.
+- **Resistor vs capacitor at the same package size**: passive packages (0402, 0603, 0805, etc.) map to different KiCad footprint libraries depending on part type. **Decided approach:** inspect `description.lower()` for substrings (`"capacitor"`, `"inductor"`, `"ferrite"`) to pick the right family; default to resistor footprint if ambiguous. This avoids needing to join `category_id` against a `categories` table whose schema we haven't verified. A single `_passive_family(description: str) -> str` function must be the single source of truth for this classification — do not inline the keyword list. The mapping YAML comments must document the per-family variants so the lookup is unambiguous:
+  ```yaml
+  "0402":     # family determined at runtime from description
+    resistor:  "Resistor_SMD:R_0402_1005Metric"
+    capacitor: "Capacitor_SMD:C_0402_1005Metric"
+    inductor:  "Inductor_SMD:L_0402_1005Metric"
+    default:   "Resistor_SMD:R_0402_1005Metric"
+  ```
 - **Hand-soldering vs reflow variants**: KiCad libraries often have multiple footprints for the same package (e.g., `SOIC-8_3.9x4.9mm_P1.27mm` vs `SOIC-8_3.9x4.9mm_P1.27mm_HandSoldering`). The default is the reflow variant; assembly-aware projects can override.
 
 This file is hand-maintained. When a part comes back with an unmapped package, the tool emits a `warn` event noting the unmapped package; over time the maintenance pattern is "see the warnings, add entries."
@@ -397,6 +411,11 @@ This tool is a heavy producer of both telemetry data (for tuning) and OOB events
 For each `lcsc(operation="search"|"resolve"|"assign", ...)` call:
 - `record_call` with `tool_name="lcsc.{operation}"`, `output_summary` including `result_count`, `top_match_score`, `snapshot_age_days`, `fetched_live` flag
 - `record_warning` for any uncertain-match (low score) or unresolvable-footprint cases
+
+**Additional instrumentation for deferred features:**
+- `top_match_score < 0.5` on a search: increment a counter in `output_summary` as `low_score_count`. This is the proxy signal for "description-keyword search alone was insufficient" — informs when to prioritize `extra_filters` in v2.
+- On `resolve` where the LCSC number is found via the live API (cache miss): log `fetched_live=True` and the part number to understand how often new/unlisted parts are requested.
+- On any part where `jlc_extra` is non-null: log `jlc_extra_present=True` in `output_summary`. Accumulated counts inform whether lifecycle data is reliably available in v2.
 
 ### OOB events surfaced to the calling LLM
 
@@ -447,6 +466,8 @@ Approximately +50 tests. The match-scoring algorithm needs thorough boundary cov
 
 ## Deferred from v1
 
+- **`lifecycle` field on `ResolvedPart`.** jlcparts has no lifecycle column; the source (jlc_extra JSON or description text) is unverified. v1 telemetry instruments `jlc_extra_present` to build evidence before implementing. Add in v2 once the data source is confirmed.
+- **`extra_filters` on `search`.** Parametric attribute filtering (e.g., `{"voltage": "3.3V"}`) requires querying the `extra` JSON blob column — either via `json_extract()` (SQLite ≥ 3.38, not universal) or O(n) Python-side parsing. Deferred until `top_match_score < 0.5` telemetry shows how often this would be needed.
 - **DigiKey supplier integration.** Separate router (`digikey`) sharing only the `ResolvedPart` type. Planned for soon-after; spec to be written separately when prioritized.
 - **Auto-best-pick mode.** A `lcsc(operation="search_one", ...)` that returns just the top result without the list. Aggressive default, can be added once base usage patterns are observed.
 - **Reverse MPN → LCSC lookup.** Given a manufacturer part number, find its LCSC equivalent. Useful for "I designed against this part, now find a JLCPCB-stocked equivalent" — a real workflow but not v1.
@@ -463,9 +484,9 @@ Approximately +50 tests. The match-scoring algorithm needs thorough boundary cov
 3. **What happens if `assign` is called for a part whose `kicad_symbol_lib_id` is None?** Proposal: still proceed with `Value` and `LCSC` property; skip the symbol; emit a `warn` event. Assign is a "do as much as you can" operation.
 4. **Should `search` honor a `min_score` threshold to filter out very-poor matches?** Proposal: not in v1. Return up to `max_results` regardless of score; let the caller filter. The `match_score` is in the response for caller decisions.
 5. **What's the maximum `description` length the search engine handles cleanly?** Proposal: 256 chars; truncate longer queries with a `warn` event. Forces concise spec, avoids confusion when an LLM accidentally pastes a paragraph.
-6. **`library_index.db` symbol lookup — exact match or FTS, and disambiguation?** The existing `library_index.db` was designed for interactive symbol search (`library(operation="search", ...)`). Using it for MPN → `lib_id` resolution may require a different query path (exact-match on the symbol name column rather than FTS keyword search, which would return too many false positives). If multiple library entries match the same MPN (e.g., `AMS1117-3.3` appears in both `Regulator_Linear` and a vendor-specific library), the disambiguation rule must be pinned. Proposal: exact-match the FTS index on the symbol `name` field; if multiple hits, prefer the canonical KiCad library (non-vendor-specific). Requires verification against the actual `library_index.db` schema.
-7. **Search performance strategy — SQLite FTS5 or hybrid pre-filter?** Options: (a) build an FTS5 virtual table over `description` at snapshot load time and use it for keyword matching; (b) pre-filter by `assembly_tier`, `package`, and `stock > 0` using indexed columns, then score in Python; (c) hybrid. `extra_filters` against the JSON `extra` blob is the hard case — propose either: ban it in v1 (return `status: "error"` with `code: "extra_filters_not_supported"`), or restrict to the small set of keys that jlcparts exposes as top-level columns. Proposal: defer `extra_filters` to v2; remove the parameter from v1 to keep the search contract clean.
-8. **When does the live JLCPCB API get called?** The spec mentions the live API for "on-demand fresh data when the snapshot would be too stale" but gives no trigger rule. Proposal: the live API is called ONLY for `resolve(part_number=...)` when the LCSC number is not found in the snapshot (i.e., a very new part). It is NOT used for search or to refresh stock/price for snapshot-found parts. `fetched_live=True` signals this to callers. This avoids rate-limit risk during search operations.
+6. **`library_index.db` symbol lookup — decided.** Two-tier lookup: exact match on symbol `name` → FTS fallback with score threshold → `None` + LLM hint. See Data source #3 for the full algorithm.
+7. **Search performance strategy — decided.** Hybrid pre-filter: SQL WHERE clause on indexed columns (`assembly_tier`, `stock > 0`, `package`) narrows the candidate set; Python scores survivors. `extra_filters` removed from v1 entirely. See "Search implementation strategy" section above.
+8. **When does the live JLCPCB API get called — decided.** Cache miss in `resolve` only. Snapshot-found parts always use snapshot data; cache staleness alone does not trigger a live fetch. `refresh_snapshot` is the user-facing escape hatch for fresher data.
 
 ## Testing strategy
 
@@ -478,7 +499,9 @@ A small (~100-row) SQLite file at `tests/fixtures/jlcparts_synthetic.sqlite3` ma
 - Multiple parts at adjacent assembly tiers (for tier-downgrade test)
 - Parts with and without resolvable footprints
 - Parts with and without datasheet URLs
-- Parts in each lifecycle state
+- Passives at shared package sizes (0402, 0603) with varied descriptions (for category-disambiguation tests)
+- Parts with non-null `jlc_extra` (for telemetry instrumentation tests)
+- Parts absent from the snapshot (to test live-API fallback path in `resolve`)
 
 ### Test cases
 
