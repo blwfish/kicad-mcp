@@ -4,7 +4,7 @@ This tool enables your AI agent to use [KiCad](https://www.kicad.org/) — the i
 
 ## What This Does
 
-You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with 15 tools covering the full design workflow.
+You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with <!-- tool-count -->15<!-- /tool-count --> tools covering the full design workflow.
 
 You don't need to know KiCad. You don't need to know what a PCB layout tool does. You just need an AI agent (like [Claude](https://claude.ai/)).
 
@@ -18,7 +18,7 @@ Your agent will handle the rest — installing prerequisites, cloning the repo, 
 
 **For best results:** Use Claude Opus (not Haiku or Sonnet) with the ability to spawn subagents. For autorouting, use [FreeRouter v2.2.4+](https://github.com/freerouting/freerouting/releases) — v2.2.3+ is 10–30× faster than v2.1.0 and deterministic; see [AGENT-INSTALL.md](AGENT-INSTALL.md) for details. The combination of a capable model and parallel exploration (component research, placement suggestions) dramatically improves PCB design workflows. [Claude Code](https://claude.ai/code) provides automatic prompt caching that speeds up iterative design tasks.
 
-**Client compatibility:** kicad-mcp exposes 15 tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support.
+**Client compatibility:** kicad-mcp exposes <!-- tool-count -->15<!-- /tool-count --> tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support.
 
 ## What You Can Ask Your Agent To Do
 
@@ -34,7 +34,7 @@ The agent knows the full workflow — schematic → board sizing → component p
 
 I built this because I need it. I'm not an electrical engineer — I build things for my model railroad that need custom PCBs, and I can't design circuits without this tool and Claude. This is how I actually get boards made: I describe what I need, Claude drives KiCad through this server, and I send the Gerbers to fab. It's not a demo or a hackathon project.
 
-That means reliability matters. The test suite (609 tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
+That means reliability matters. The test suite (1134 tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
 
 I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
 
@@ -42,7 +42,7 @@ If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/ne
 
 ### What's Under the Hood
 
-The server provides 13 domain-router tools:
+The server provides <!-- tool-count -->15<!-- /tool-count --> tools — 10 domain routers and 5 standalones:
 
 - **`schematic`** — create and edit circuit schematics, place components, wire connections, labels, sheets
 - **`pcb`** — board layout, footprint placement, nets, routing, copper zones, silkscreen management
@@ -53,24 +53,26 @@ The server provides 13 domain-router tools:
 - **`project`** — project file management: list, open, structure, validate
 - **`analyze`** — read-only analysis: connections, circuit patterns, BOM, netlist
 - **`export`** — manufacturing output: Gerbers, BOM CSV, PCB thumbnail
+- **`lcsc`** — LCSC/JLCPCB component search, footprint resolution, and part selection
 - **`build_pcb_from_schematic`** *(standalone)* — top-level schematic → board pipeline
 - **`panelize_pcb`** *(standalone)* — manufacturing panelization
 - **`estimate_board_size`** *(standalone)* — pre-PCB board size estimation
 - **`suggest_placement`** *(standalone)* — connectivity-based component placement suggestions
+- **`analyze_placement_telemetry`** *(standalone)* — placement quality scoring and telemetry analysis
 
 The server uses [FastMCP](https://github.com/jlowin/fastmcp) and delegates PCB operations to KiCad's bundled Python via subprocess. Schematic operations use [kicad-sch-api](https://pypi.org/project/kicad-sch-api/).
 
 ### For Developers
 
 ```bash
-# 609 tests, no KiCad installation required — runs in ~4 seconds
+# 1134 tests, no KiCad installation required — runs in ~14 seconds
 pytest
 
 # Lint
 ruff check src/ tests/
 ```
 
-Tests cover all 15 tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
+Tests cover all <!-- tool-count -->15<!-- /tool-count --> tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
 
 See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 

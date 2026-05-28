@@ -7,6 +7,8 @@ from fastmcp import FastMCP
 
 from kicad_mcp.server import create_server
 
+EXPECTED_TOOL_COUNT = 15  # updated by scripts/sync_tool_count.py
+
 
 class TestCreateServer:
     """Verify that create_server() returns a properly configured FastMCP instance."""
@@ -22,12 +24,14 @@ class TestCreateServer:
     def test_at_least_15_tools_registered(self, mcp_server):
         """Floor — the consolidated surface targets 15 tools."""
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) >= 15, (
-            f"Expected at least 15 tools, got {len(tools)}"
+        assert len(tools) >= EXPECTED_TOOL_COUNT, (
+            f"Expected at least {EXPECTED_TOOL_COUNT} tools, got {len(tools)}"
         )
 
     def test_current_tool_count(self, mcp_server):
         """Snapshot test: update when tools are intentionally added or removed.
+
+        Run scripts/sync_tool_count.py to update this constant and all docs in one pass.
 
         Tool-consolidation complete (see docs/SPEC_Tool_Consolidation.md).
         Final surface: 10 routers + 5 standalones = 15 tools.
@@ -41,9 +45,9 @@ class TestCreateServer:
           Post-consolidation: lcsc component-intelligence router added → 15 total.
         """
         tools = asyncio.run(mcp_server.list_tools())
-        assert len(tools) == 15, (
-            f"Expected 15 tools, got {len(tools)}. "
-            "Update this test if tools were intentionally added or removed."
+        assert len(tools) == EXPECTED_TOOL_COUNT, (
+            f"Expected {EXPECTED_TOOL_COUNT} tools, got {len(tools)}. "
+            "Run scripts/sync_tool_count.py and commit the result."
         )
 
 

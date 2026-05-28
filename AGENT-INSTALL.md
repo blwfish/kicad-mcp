@@ -4,7 +4,7 @@ This file is for you, the AI agent. It tells you what needs to be true on this s
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server providing 15 tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
+kicad-mcp is a Model Context Protocol (MCP) server providing <!-- tool-count -->15<!-- /tool-count --> tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
 **Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
@@ -156,7 +156,7 @@ If you are registered as an MCP server for a project that does KiCad work, the p
 
 ### Client Compatibility
 
-kicad-mcp exposes 13 tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
+kicad-mcp exposes <!-- tool-count -->15<!-- /tool-count --> tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
 
 Claude Code is the recommended client: it provides automatic prompt caching (critical for iterative KiCad workflows) and subagent support for parallel exploration tasks.
 
@@ -260,7 +260,7 @@ When filing an issue, include:
 - PRs for bug fixes, new platform support, and new tools are welcome
 - New operations fold into an existing router (schematic, pcb, audit, drc, autoroute, library, project, analyze, export) or add a new standalone tool if they don't fit any router's domain
 - PCB tools use the subprocess bridge (`run_pcbnew_script`); schematic tools use kicad-sch-api in-process
-- Run `pytest` before submitting — all tests should pass (currently 609 tests)
+- Run `pytest` before submitting — all tests should pass (currently 1134 tests)
 - Tools return `{"status": "ok", ...}` on success or `{"error": "..."}` on failure — follow this convention
 
 ### Adding a New Operation to an Existing Router
@@ -277,7 +277,7 @@ When filing an issue, include:
 2. Register it in the module's `register_*_tools(mcp)` function
 3. If it's a new module, import and call the registration function in `server.py`
 4. Add the tool name to `EXPECTED_TOOLS` in `tests/test_server.py`
-5. Update the snapshot tool count in `test_server.py`
+5. Run `python scripts/sync_tool_count.py` to update the count in all docs
 6. Run `pytest` to verify
 
 ## License
