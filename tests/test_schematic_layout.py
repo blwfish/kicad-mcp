@@ -223,14 +223,14 @@ class TestWiresWillBeStaleDetection:
 
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
-            "state_id": "stale_check",
+            "state_id": "aaaa1111bbbb2222",
             "schematic_path": str(sch_path),
             "schematic_hash": "",
             "components": {"R1": {"x_mm": 100.0, "y_mm": 100.0}},
             "clusters": {},
         })
 
-        result = schematic_layout_fn(operation="apply", state_id="stale_check")
+        result = schematic_layout_fn(operation="apply", state_id="aaaa1111bbbb2222")
         assert result["status"] == "ok"
         codes = [e.get("code") for e in result.get("events", [])]
         assert "wires_will_be_stale" in codes
@@ -294,7 +294,8 @@ class TestApplyAndClearCache:
 
     def test_apply_state_not_found(self, schematic_layout_fn, tmp_path, monkeypatch):
         self._isolate_cache(tmp_path, monkeypatch)
-        result = schematic_layout_fn(operation="apply", state_id="nonexistent")
+        # valid hex but never saved → state_not_found
+        result = schematic_layout_fn(operation="apply", state_id="ffff0000ffff0000")
         assert result["status"] == "error"
         assert result["code"] == "state_not_found"
 
@@ -310,7 +311,7 @@ class TestApplyAndClearCache:
         # Build a cached state with a bogus hash so drift detection trips.
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
-            "state_id": "drift_test",
+            "state_id": "cccc3333dddd4444",
             "schematic_path": str(sch),
             "schematic_hash": "deadbeef" * 8,  # 64-char fake
             "components": {},
@@ -331,7 +332,7 @@ class TestApplyAndClearCache:
             "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
         )
 
-        result = schematic_layout_fn(operation="apply", state_id="drift_test")
+        result = schematic_layout_fn(operation="apply", state_id="cccc3333dddd4444")
         assert result["status"] == "ok"
         # placement_state_stale was emitted; envelope is a list of dicts.
         events_envelope = result.get("events", [])
@@ -346,7 +347,7 @@ class TestApplyAndClearCache:
         sch.write_text("(kicad_sch)")
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
-            "state_id": "missing_refs",
+            "state_id": "eeee5555ffff6666",
             "schematic_path": str(sch),
             "schematic_hash": "",  # disable drift check
             "components": {"U1": {"x_mm": 10.0, "y_mm": 20.0}},
@@ -365,7 +366,7 @@ class TestApplyAndClearCache:
         monkeypatch.setattr(
             "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
         )
-        result = schematic_layout_fn(operation="apply", state_id="missing_refs")
+        result = schematic_layout_fn(operation="apply", state_id="eeee5555ffff6666")
         assert result["status"] == "ok"
         assert result["applied"] == 0
         assert len(result["errors"]) == 1
@@ -475,14 +476,14 @@ class TestApplyMovesOnlyTargetedRefs:
 
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
-            "state_id": "move_r1_only",
+            "state_id": "00112233aabbccdd",
             "schematic_path": str(sch_path),
             "schematic_hash": "",  # disable drift check
             "components": {"R1": {"x_mm": 100.0, "y_mm": 100.0}},
             "clusters": {},
         })
 
-        result = schematic_layout_fn(operation="apply", state_id="move_r1_only")
+        result = schematic_layout_fn(operation="apply", state_id="00112233aabbccdd")
         assert result["status"] == "ok"
         assert result["applied"] == 1
         assert result["errors"] == []

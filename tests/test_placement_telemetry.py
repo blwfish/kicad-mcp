@@ -199,7 +199,7 @@ class TestApplyTelemetry:
 
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
-            "state_id": "tele_apply",
+            "state_id": "7777aaaa8888bbbb",
             "schematic_path": str(sch),
             "schematic_hash": "",
             "components": {},
@@ -218,7 +218,7 @@ class TestApplyTelemetry:
         monkeypatch.setattr(
             "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
         )
-        schematic_layout_fn(operation="apply", state_id="tele_apply")
+        schematic_layout_fn(operation="apply", state_id="7777aaaa8888bbbb")
         rows = _query(
             isolated_telemetry,
             "SELECT * FROM calls WHERE tool_name = 'schematic_layout.apply'",
