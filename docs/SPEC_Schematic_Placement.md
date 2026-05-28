@@ -34,8 +34,9 @@ This SPEC depends on:
 - **`mcp-events` package** (per [`SPEC_OOB_Events.md`](SPEC_OOB_Events.md), implemented 2026-05-27) — for surfacing warnings (bus-bridge detection, low-confidence labels, etc.)
 - **Feedback Infrastructure** (per [`SPEC_Feedback_Infrastructure.md`](SPEC_Feedback_Infrastructure.md)) — for telemetry-driven calibration of the algorithm
 - **Component Intelligence (LCSC)** (per [`SPEC_Component_Intelligence_LCSC.md`](SPEC_Component_Intelligence_LCSC.md)) — *optional* but strongly enhances Layer 3 (resolved-part labeling). The tool degrades gracefully when no LCSC data is assigned.
-- **Existing kicad-cli netlist export** with `pintype` extraction (already happens silently in `extract_netlist_via_cli`; this SPEC formalizes its use)
+- **Existing kicad-cli netlist export** with `pintype` extraction (already happens silently in `extract_netlist_via_cli`; this SPEC formalizes its use). Note: `pintype` and `pinfunction` are captured dynamically from XML attributes — they are present only if the symbol author defined them. Missing `pintype` is common on older community symbols and passives. See the "Missing `pintype` fallback" bullet in Layer 1 below.
 - **Existing `pattern_recognition.py`** — but demoted from cluster-driver to labeling-layer (see Layer 2 below)
+- **`networkx` ≥ 2.7** — for graph construction and Louvain community detection (`networkx.algorithms.community.louvain_communities`, added in networkx 2.7). No separate community-detection package required; `networkx` should be added to `pyproject.toml` if not already present.
 
 **Implementation order**: all three named SPECs above must land first. This is the capstone.
 
@@ -56,7 +57,9 @@ Each layer adds semantic richness when its inputs are present; the next layer do
 Community-detection clustering on the signal-net graph.
 
 - **Graph construction**: nodes are components; edges are signal-net connections (power nets filtered via `pintype in {"power_in", "power_out"}` exclusion). Edges are weighted by net multiplicity (a component pair sharing multiple non-power nets has higher weight).
-- **Clustering**: Louvain community detection (modularity maximization). Produces a partition of components into clusters with no labels yet.
+- **Missing `pintype` fallback**: pins with no `pintype` in the netlist XML are treated as `passive`. A `missing_pintypes` info-level event is emitted with a count of affected pins when this fallback fires, so telemetry can surface how often symbol authors omit it.
+- **Clustering**: Louvain community detection via `networkx.algorithms.community.louvain_communities`. Produces a partition of components into clusters with no labels yet.
+- **Determinism**: Louvain is seeded with a hash of the schematic path so repeated `suggest` calls on the same schematic produce the same partition. This is required for `cluster_id` stability guarantees (see Stateful mode). When `state=previous` is passed, new Louvain output is relabeled to best-match previous cluster assignments before returning (greedy overlap matching), so `cluster_id`s survive minor topology changes.
 - **Output**: `cluster_id` per component; `members` and `louvain_modularity` per cluster.
 
 Failure modes (and how the algorithm reports them):
@@ -80,12 +83,13 @@ For each cluster from Layer 1:
 
 When components have LCSC part numbers assigned (via the Component Intelligence tool), the supplier-provided category dominates pattern_recognition.
 
-- For each component with an LCSC `Value` and `LCSC` property: look up the part in the jlcparts SQLite, read its category (`firstSortName`, `secondSortName`)
+- **Interface to Component Intelligence**: call `kicad_mcp.tools.component_intelligence.lookup_lcsc_category(lcsc_id: str) -> dict | None`. Returns `{"firstSortName": str, "secondSortName": str}` on hit, `None` on miss or if the jlcparts database is not configured. Layer 3 is a no-op (degrades silently to Layer 2) whenever this returns `None` — no error, no warning.
+- For each component with an `LCSC` property: call `lookup_lcsc_category`, read its category
 - Map category → cluster label (e.g., `"Power Management (PMIC) > Voltage Regulators - Linear, Low Drop Out (LDO)"` → `"ldo"`)
 - When a cluster's anchor component has a confident resolved-part label, that label wins over pattern_recognition's guess
 - `label_source="resolved_part"`, `label_confidence ∈ [0.8, 1.0]` (high because we *asked* the supplier)
 
-This is the highest-quality labeling layer when data is available, but doesn't require all components to be resolved — it dominates per-cluster based on what's known.
+This is the highest-quality labeling layer when data is available, but doesn't require all components to be resolved — it dominates per-cluster based on what's known. The Component Intelligence spec owns the database location and schema; this layer consumes only the function above.
 
 ### Layer 4 — Caller hints (override)
 
@@ -107,7 +111,7 @@ Layered understanding feeds a 3-phase layout algorithm.
 
 ### Phase 1 — Cluster
 
-Run Layer 1 (topology) → Layer 2 (labels) → Layer 3 (resolved-part) → Layer 4 (hints, applied first if present). Output: cluster assignments + labels + confidence per cluster.
+Run Layer 1 (topology) → Layer 2 (labels) → Layer 3 (resolved-part) → Layer 4 (hints). Layers are processed in this order, with each layer able to override the previous; Layer 4 has highest precedence. Output: cluster assignments + labels + confidence per cluster.
 
 ### Phase 2 — Rank (signal flow → column tiers)
 
@@ -115,7 +119,7 @@ Directed BFS on the signal-net graph using `pintype`:
 
 - Build directed edges: pin `output`/`power_out` → pin `input`/`power_in` on the same net (within a non-power net)
 - For `bidirectional` pins: add soft edges in both directions (weighted lower than directed edges)
-- For `passive` pins: propagate direction transitively (a resistor between MCU output and LED input forwards the direction)
+- For `passive` pins (including those whose `pintype` was absent and fell back to `passive` in Layer 1): propagate direction transitively (a resistor between MCU output and LED input forwards the direction)
 - Identify source nodes: clusters whose anchor component has no signal inputs (connectors, regulators, oscillators)
 - BFS from source nodes; assign each cluster a tier (column index, 0 = leftmost = sources)
 - Within a tier, secondary sort by cluster size (larger clusters more central)
@@ -157,6 +161,7 @@ The structured output that Claude reads. Same shape returned by every call.
     "schematic_path": str,
     "algorithm_version": str,
     "computed_at": iso8601_str,
+    "schematic_hash": str,  # SHA-256 of schematic file at suggest time; checked at apply time for drift
 
     "components": {
         "<ref>": {
@@ -209,7 +214,7 @@ Sparse encoding: omit fields equal to defaults (`rotation: 0`, `mirror_x: false`
 
 **Stateless** (caller has runway): caller passes full state in via `state` param; tool returns full state. Auditable, self-contained.
 
-**Stateful** (caller is context-constrained): caller holds only `state_id`; tool persists state server-side at `~/.cache/kicad-mcp/placement_states/<state_id>.json` and returns only deltas. Last 5 states per schematic kept; 30-day expiry.
+**Stateful** (caller is context-constrained): caller holds only `state_id`; tool persists state server-side at `~/.cache/kicad-mcp/placement_states/<state_id>.json` and returns only deltas. Last 5 states per schematic kept; 30-day expiry. The JSON file is the source of truth — in-memory state is a cache on top of it. After a server restart, a `state_id` remains valid as long as its JSON file exists; the first access after restart loads from disk.
 
 Both modes accept the same input parameters; the difference is what gets returned and what the caller has to track.
 
