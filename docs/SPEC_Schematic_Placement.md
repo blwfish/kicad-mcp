@@ -34,7 +34,7 @@ This SPEC depends on:
 - **`mcp-events` package** (per [`SPEC_OOB_Events.md`](SPEC_OOB_Events.md), implemented 2026-05-27) — for surfacing warnings (bus-bridge detection, low-confidence labels, etc.)
 - **Feedback Infrastructure** (per [`SPEC_Feedback_Infrastructure.md`](SPEC_Feedback_Infrastructure.md)) — for telemetry-driven calibration of the algorithm
 - **Component Intelligence (LCSC)** (per [`SPEC_Component_Intelligence_LCSC.md`](SPEC_Component_Intelligence_LCSC.md)) — *optional* but strongly enhances Layer 3 (resolved-part labeling). The tool degrades gracefully when no LCSC data is assigned.
-- **Existing kicad-cli netlist export** with `pintype` extraction (already happens silently in `extract_netlist_via_cli`; this SPEC formalizes its use). Note: `pintype` and `pinfunction` are captured dynamically from XML attributes — they are present only if the symbol author defined them. Missing `pintype` is common on older community symbols and passives. See "Missing pintype fallback" below.
+- **Existing kicad-cli netlist export** with `pintype` extraction (already happens silently in `extract_netlist_via_cli`; this SPEC formalizes its use). Note: `pintype` and `pinfunction` are captured dynamically from XML attributes — they are present only if the symbol author defined them. Missing `pintype` is common on older community symbols and passives. See the "Missing `pintype` fallback" bullet in Layer 1 below.
 - **Existing `pattern_recognition.py`** — but demoted from cluster-driver to labeling-layer (see Layer 2 below)
 - **`networkx` ≥ 2.7** — for graph construction and Louvain community detection (`networkx.algorithms.community.louvain_communities`, added in networkx 2.7). No separate community-detection package required; `networkx` should be added to `pyproject.toml` if not already present.
 
@@ -111,7 +111,7 @@ Layered understanding feeds a 3-phase layout algorithm.
 
 ### Phase 1 — Cluster
 
-Run Layer 1 (topology) → Layer 2 (labels) → Layer 3 (resolved-part) → Layer 4 (hints, applied first if present). Output: cluster assignments + labels + confidence per cluster.
+Run Layer 1 (topology) → Layer 2 (labels) → Layer 3 (resolved-part) → Layer 4 (hints). Layers are processed in this order, with each layer able to override the previous; Layer 4 has highest precedence. Output: cluster assignments + labels + confidence per cluster.
 
 ### Phase 2 — Rank (signal flow → column tiers)
 
