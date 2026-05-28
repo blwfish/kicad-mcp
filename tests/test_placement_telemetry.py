@@ -228,6 +228,45 @@ class TestApplyTelemetry:
         assert "applied" in out
         assert "errors_count" in out
 
+    def test_apply_records_is_fresh_state_false(
+        self, schematic_layout_fn, tmp_path, monkeypatch, isolated_telemetry,
+    ):
+        """apply does NOT reset the suggest/place cycle — it consumes a
+        cached state. If is_fresh_state were True, the telemetry sweep
+        would abandon prior pending warnings on the same schematic before
+        the next suggest could attribute them. Pin the False value here."""
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "1111222233334444",
+            "schematic_path": str(sch),
+            "schematic_hash": "",
+            "components": {},
+            "clusters": {},
+        })
+
+        class _StubSch:
+            def __init__(self):
+                self.components = self._Components()
+            class _Components:
+                def get(self, _reference):
+                    return None
+            def save(self):
+                pass
+
+        monkeypatch.setattr(
+            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
+        )
+        schematic_layout_fn(operation="apply", state_id="1111222233334444")
+        rows = _query(
+            isolated_telemetry,
+            "SELECT is_fresh_state FROM calls "
+            "WHERE tool_name = 'schematic_layout.apply'",
+        )
+        assert len(rows) == 1
+        assert rows[0]["is_fresh_state"] == 0
+
 
 class TestClearCacheTelemetry:
     def test_clear_cache_records_call_row(
@@ -241,3 +280,17 @@ class TestClearCacheTelemetry:
         assert len(rows) == 1
         out = json.loads(rows[0]["output_summary"])
         assert "cleared_count" in out
+
+    def test_clear_cache_records_is_fresh_state_false(
+        self, schematic_layout_fn, isolated_telemetry,
+    ):
+        """Cache eviction is bookkeeping, not a fresh suggest cycle.
+        Same rationale as apply — must not trigger pending-warning sweep."""
+        schematic_layout_fn(operation="clear_cache")
+        rows = _query(
+            isolated_telemetry,
+            "SELECT is_fresh_state FROM calls "
+            "WHERE tool_name = 'schematic_layout.clear_cache'",
+        )
+        assert len(rows) == 1
+        assert rows[0]["is_fresh_state"] == 0

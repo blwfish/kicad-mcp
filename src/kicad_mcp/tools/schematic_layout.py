@@ -490,6 +490,13 @@ def _op_apply(
                     },
                     elapsed_ms=elapsed_ms,
                     state_id=cached.get("state_id"),
+                    # apply is NOT a fresh-state event — it consumes an
+                    # existing cached state. Without this, record_call's
+                    # default (is_fresh_state=True) would trick the telemetry
+                    # sweep into abandoning pending suggest-phase warnings on
+                    # this schematic before the next suggest could attribute
+                    # them, permanently skewing action_rate calibration.
+                    is_fresh_state=False,
                 )
 
         result: dict[str, Any] = {
@@ -518,6 +525,8 @@ def _op_clear_cache(*, schematic_path: str | None) -> dict[str, Any]:
                 inputs_summary={"schematic_path": schematic_path or ""},
                 output_summary={"cleared_count": count},
                 elapsed_ms=elapsed_ms,
+                # Cache eviction is not a fresh-state event either.
+                is_fresh_state=False,
             )
     return {"status": "ok", "cleared_count": count}
 
