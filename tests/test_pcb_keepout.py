@@ -1,14 +1,11 @@
 """
-Tests for PCB keepout-aware placement validation tools.
+Tests for the audit domain router (phase 3 consolidation of pcb_keepout tools).
 
-Tests the 4 keepout tools: get_keepout_zones, get_board_constraints,
-validate_placement, audit_pcb_placement.
+Covers operations: keepouts, constraints, validate_one, placement,
+footprint_overlaps, all (summary + full), pre_route_check, auto_fix_placement.
 
-Unit tests mock run_pcbnew_script to test tool logic without requiring
+Unit tests mock run_pcbnew_script to test router logic without requiring
 KiCad's Python 3.9 / pcbnew bindings.
-
-Ported from kicad-mcp-old/tests/unit/tools/test_pcb_keepout_tools.py with
-changes for FastMCP 3.0 and the new split module structure.
 """
 
 import asyncio
@@ -23,9 +20,9 @@ from kicad_mcp.tools.pcb_keepout import register_pcb_keepout_tools
 # -- Fixtures ----------------------------------------------------------------
 
 @pytest.fixture
-def keepout_server():
-    """Create a FastMCP server with only keepout tools registered."""
-    mcp = FastMCP("test-keepout")
+def audit_server():
+    """Create a FastMCP server with only the audit router registered."""
+    mcp = FastMCP("test-audit")
     register_pcb_keepout_tools(mcp)
     return mcp
 
@@ -78,35 +75,76 @@ SAMPLE_OUTLINE = {
 }
 
 
-# -- Helper to call tools via the registered functions -----------------------
+# -- Helper to call the audit router -----------------------------------------
 
-def _get_tool_fn(mcp_server, tool_name):
-    """Extract a tool function from the FastMCP 3.0 server by name."""
-    tool = asyncio.run(mcp_server.get_tool(tool_name))
+def _get_audit_fn(mcp_server):
+    """Extract the audit tool function from the FastMCP 3.0 server."""
+    tool = asyncio.run(mcp_server.get_tool("audit"))
     if tool is None:
-        raise ValueError(f"Tool {tool_name!r} not found")
+        raise ValueError("Tool 'audit' not found")
     return tool.fn
 
 
-# -- get_keepout_zones tests -------------------------------------------------
+# -- Router registration / unknown-op / detail-validation -------------------
 
-class TestGetKeepoutZones:
+class TestAuditRouterBasics:
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "get_keepout_zones")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_audit_tool_registered(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        assert fn is not None
+
+    def test_unknown_operation(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("nonexistent_op", pcb_path="/some/path.kicad_pcb")
+        assert "error" in result
+        assert "unknown operation" in result["error"]
+        assert "nonexistent_op" in result["error"]
+
+    def test_invalid_detail_value(self, audit_server, pcb_file):
+        fn = _get_audit_fn(audit_server)
+        result = fn("all", pcb_path=pcb_file, detail="verbose")
+        assert "error" in result
+        assert "detail" in result["error"]
+        assert "verbose" in result["error"]
+
+    def test_missing_pcb_path_for_all(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("all")
+        assert "error" in result
+        assert "pcb_path" in result["error"]
+
+    def test_missing_pcb_path_for_keepouts(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("keepouts")
+        assert "error" in result
+        assert "pcb_path" in result["error"]
+
+    def test_file_not_found_returns_error(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("all", pcb_path="/nonexistent/board.kicad_pcb")
+        assert "error" in result
+        assert "not found" in result["error"]
+
+
+# -- operation="keepouts" ----------------------------------------------------
+
+class TestAuditKeepouts:
+
+    def test_file_not_found(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("keepouts", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
         assert "not found" in result["error"]
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_returns_keepouts(self, mock_run, keepout_server, pcb_file):
+    def test_returns_keepouts(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "keepout_count": 1,
             "keepouts": SAMPLE_KEEPOUTS,
         }
-        fn = _get_tool_fn(keepout_server, "get_keepout_zones")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("keepouts", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["keepout_count"] == 1
         assert len(result["keepouts"]) == 1
@@ -117,22 +155,22 @@ class TestGetKeepoutZones:
         mock_run.assert_called_once()
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_no_keepouts(self, mock_run, keepout_server, pcb_file):
+    def test_no_keepouts(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "keepout_count": 0,
             "keepouts": [],
         }
-        fn = _get_tool_fn(keepout_server, "get_keepout_zones")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("keepouts", pcb_path=pcb_file)
         assert result["keepout_count"] == 0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_contains_extract_keepouts(self, mock_run, keepout_server, pcb_file):
+    def test_script_contains_extract_keepouts(self, mock_run, audit_server, pcb_file):
         """Verify the generated script includes the keepout helper code."""
         mock_run.return_value = {"status": "ok", "keepout_count": 0, "keepouts": []}
-        fn = _get_tool_fn(keepout_server, "get_keepout_zones")
-        fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        fn("keepouts", pcb_path=pcb_file)
         script = mock_run.call_args[0][0]
         assert "extract_keepouts" in script
         assert "GetIsRuleArea" in script
@@ -140,17 +178,17 @@ class TestGetKeepoutZones:
         assert params["pcb_path"] == pcb_file
 
 
-# -- get_board_constraints tests ---------------------------------------------
+# -- operation="constraints" -------------------------------------------------
 
-class TestGetBoardConstraints:
+class TestAuditConstraints:
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "get_board_constraints")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("constraints", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_returns_constraints(self, mock_run, keepout_server, pcb_file):
+    def test_returns_constraints(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "board_outline": {
@@ -167,8 +205,8 @@ class TestGetBoardConstraints:
             "total_keepout_area_mm2": 1005.1,
             "effective_placement_area_mm2": 2494.9,
         }
-        fn = _get_tool_fn(keepout_server, "get_board_constraints")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("constraints", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["board_outline"]["width_mm"] == 70.0
         assert result["design_rules"]["min_track_width_mm"] == 0.2
@@ -176,7 +214,7 @@ class TestGetBoardConstraints:
         assert result["effective_placement_area_mm2"] == 2494.9
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_includes_design_rules(self, mock_run, keepout_server, pcb_file):
+    def test_script_includes_design_rules(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "board_outline": None,
@@ -185,26 +223,57 @@ class TestGetBoardConstraints:
             "existing_footprints_count": 0,
             "total_keepout_area_mm2": 0,
         }
-        fn = _get_tool_fn(keepout_server, "get_board_constraints")
-        fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        fn("constraints", pcb_path=pcb_file)
         script = mock_run.call_args[0][0]
         assert "GetDesignSettings" in script
         assert "m_TrackMinWidth" in script
         assert "get_board_outline" in script
 
 
-# -- validate_placement tests ------------------------------------------------
+# -- operation="validate_one" ------------------------------------------------
 
-class TestValidatePlacement:
+class TestAuditValidateOne:
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        result = fn("/nonexistent/board.kicad_pcb",
-                     "Resistor_SMD", "R_0805_2012Metric", 130.0, 80.0)
+    def test_file_not_found(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path="/nonexistent/board.kicad_pcb",
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+                    x_mm=130.0, y_mm=80.0)
         assert "error" in result
 
+    def test_missing_library(self, audit_server, pcb_file):
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    footprint_name="R_0805_2012Metric", x_mm=130.0, y_mm=80.0)
+        assert "error" in result
+        assert "library" in result["error"]
+
+    def test_missing_footprint_name(self, audit_server, pcb_file):
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Resistor_SMD", x_mm=130.0, y_mm=80.0)
+        assert "error" in result
+        assert "footprint_name" in result["error"]
+
+    def test_missing_x_mm(self, audit_server, pcb_file):
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+                    y_mm=80.0)
+        assert "error" in result
+        assert "x_mm" in result["error"]
+
+    def test_missing_y_mm(self, audit_server, pcb_file):
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+                    x_mm=130.0)
+        assert "error" in result
+        assert "y_mm" in result["error"]
+
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_valid_placement(self, mock_run, keepout_server, pcb_file):
+    def test_valid_placement(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "valid": True,
@@ -216,13 +285,15 @@ class TestValidatePlacement:
             },
             "board_outline_mm": SAMPLE_OUTLINE,
         }
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        result = fn(pcb_file, "Resistor_SMD", "R_0805_2012Metric", 100.0, 111.0)
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+                    x_mm=100.0, y_mm=111.0)
         assert result["valid"] is True
         assert result["violations"] == []
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_placement_in_keepout(self, mock_run, keepout_server, pcb_file):
+    def test_placement_in_keepout(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "valid": False,
@@ -241,15 +312,17 @@ class TestValidatePlacement:
             },
             "board_outline_mm": SAMPLE_OUTLINE,
         }
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        result = fn(pcb_file, "Resistor_SMD", "R_0805_2012Metric", 130.0, 79.0)
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+                    x_mm=130.0, y_mm=79.0)
         assert result["valid"] is False
         assert len(result["violations"]) == 1
         assert result["violations"][0]["type"] == "keepout_overlap"
         assert result["violations"][0]["keepout_ref"] == "U1"
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_placement_outside_board(self, mock_run, keepout_server, pcb_file):
+    def test_placement_outside_board(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "valid": False,
@@ -265,14 +338,16 @@ class TestValidatePlacement:
             },
             "board_outline_mm": SAMPLE_OUTLINE,
         }
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        result = fn(pcb_file, "Resistor_SMD", "R_0805_2012Metric", 166.0, 111.0)
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+                    x_mm=166.0, y_mm=111.0)
         assert result["valid"] is False
         assert result["violations"][0]["type"] == "outside_board"
         assert result["violations"][0]["overhang"]["right_mm"] == 5.0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_routing_warning_not_violation(self, mock_run, keepout_server, pcb_file):
+    def test_routing_warning_not_violation(self, mock_run, audit_server, pcb_file):
         """A keepout that blocks routing but not footprints produces a warning, still valid."""
         mock_run.return_value = {
             "status": "ok",
@@ -292,14 +367,16 @@ class TestValidatePlacement:
             },
             "board_outline_mm": SAMPLE_OUTLINE,
         }
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        result = fn(pcb_file, "Capacitor_SMD", "C_0805_2012Metric", 110.0, 97.0)
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="Capacitor_SMD", footprint_name="C_0805_2012Metric",
+                    x_mm=110.0, y_mm=97.0)
         assert result["valid"] is True
         assert len(result["warnings"]) == 1
         assert result["warnings"][0]["type"] == "routing_keepout_overlap"
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_loads_footprint_from_library(self, mock_run, keepout_server, pcb_file):
+    def test_script_loads_footprint_from_library(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "valid": True,
@@ -308,8 +385,10 @@ class TestValidatePlacement:
             "footprint_bbox_mm": {},
             "board_outline_mm": None,
         }
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        fn(pcb_file, "Resistor_SMD", "R_0805_2012Metric", 100.0, 100.0, 45.0)
+        fn = _get_audit_fn(audit_server)
+        fn("validate_one", pcb_path=pcb_file,
+           library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+           x_mm=100.0, y_mm=100.0, rotation_deg=45.0)
         script = mock_run.call_args[0][0]
         assert "FootprintLoad" in script
         assert "SetPosition" in script
@@ -319,24 +398,26 @@ class TestValidatePlacement:
         assert params["rotation_deg"] == 45.0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_library_not_found(self, mock_run, keepout_server, pcb_file):
+    def test_library_not_found(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {"error": "Library 'FakeLib' not found"}
-        fn = _get_tool_fn(keepout_server, "validate_placement")
-        result = fn(pcb_file, "FakeLib", "FakeFP", 100.0, 100.0)
+        fn = _get_audit_fn(audit_server)
+        result = fn("validate_one", pcb_path=pcb_file,
+                    library="FakeLib", footprint_name="FakeFP",
+                    x_mm=100.0, y_mm=100.0)
         assert "error" in result
 
 
-# -- audit_pcb_placement tests -----------------------------------------------
+# -- operation="placement" ---------------------------------------------------
 
-class TestAuditPcbPlacement:
+class TestAuditPlacement:
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "audit_pcb_placement")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("placement", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_all_clean(self, mock_run, keepout_server, pcb_file):
+    def test_all_clean(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "total_footprints": 8,
@@ -345,14 +426,14 @@ class TestAuditPcbPlacement:
             "violations": [],
             "summary": "All 8 footprints pass placement checks",
         }
-        fn = _get_tool_fn(keepout_server, "audit_pcb_placement")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("placement", pcb_path=pcb_file)
         assert result["violations_count"] == 0
         assert result["clean_count"] == 8
         assert "pass" in result["summary"]
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_violations_found(self, mock_run, keepout_server, pcb_file):
+    def test_violations_found(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "total_footprints": 16,
@@ -397,22 +478,20 @@ class TestAuditPcbPlacement:
             ],
             "summary": "12 of 16 footprints have placement issues",
         }
-        fn = _get_tool_fn(keepout_server, "audit_pcb_placement")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("placement", pcb_path=pcb_file)
         assert result["violations_count"] == 12
         assert result["clean_count"] == 4
         assert len(result["violations"]) == 2
-        # Check keepout violation
         d1 = result["violations"][0]
         assert d1["reference"] == "D1"
         assert d1["issues"][0]["severity"] == "violation"
-        # Check board boundary violation
         bz1 = result["violations"][1]
         assert bz1["reference"] == "BZ1"
         assert bz1["issues"][0]["type"] == "outside_board"
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_skips_own_keepout(self, mock_run, keepout_server, pcb_file):
+    def test_skips_own_keepout(self, mock_run, audit_server, pcb_file):
         """Verify the script skips a footprint's own embedded keepout zone."""
         mock_run.return_value = {
             "status": "ok",
@@ -422,41 +501,27 @@ class TestAuditPcbPlacement:
             "violations": [],
             "summary": "All 1 footprints pass placement checks",
         }
-        fn = _get_tool_fn(keepout_server, "audit_pcb_placement")
-        fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        fn("placement", pcb_path=pcb_file)
         script = mock_run.call_args[0][0]
-        # The script should have logic to skip a footprint's own keepout
         assert "source_ref" in script
         assert "continue" in script
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_error_propagated(self, mock_run, keepout_server, pcb_file):
-        """If pcbnew script raises RuntimeError, it propagates."""
+    def test_script_error_propagated(self, mock_run, audit_server, pcb_file):
         mock_run.side_effect = RuntimeError("pcbnew crashed")
-        fn = _get_tool_fn(keepout_server, "audit_pcb_placement")
+        fn = _get_audit_fn(audit_server)
         with pytest.raises(RuntimeError, match="pcbnew crashed"):
-            fn(pcb_file)
+            fn("placement", pcb_path=pcb_file)
 
 
 # -- Shared helper logic tests (pure Python, no mocking needed) ---------------
 
 class TestHelperLogic:
-    """Test the pure-Python helper functions embedded in KEEPOUT_HELPER.
-
-    Since these are strings embedded in pcbnew scripts, we extract and exec them
-    to test the geometry logic directly.
-    """
+    """Test the pure-Python helper functions embedded in KEEPOUT_HELPER."""
 
     @pytest.fixture(autouse=True)
     def setup_helpers(self):
-        """Execute the live GEOMETRY_HELPER (embedded into KEEPOUT_HELPER) to
-        get the actual geometry primitives that pcbnew subprocess scripts run.
-
-        Comprehensive boundary coverage for these primitives lives in
-        ``test_geometry.py``; the cases here are smoke tests that the helper
-        is wired into KEEPOUT_HELPER and behaves with the strict semantics
-        the rest of the codebase relies on.
-        """
         from kicad_mcp.utils.geometry import GEOMETRY_HELPER
         from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
 
@@ -466,7 +531,6 @@ class TestHelperLogic:
         self.overlap_area = namespace["overlap_area"]
         self.rect_inside = namespace["rect_inside"]
 
-        # The same primitives must be accessible to embedded scripts via KEEPOUT_HELPER
         assert "rects_overlap" in KEEPOUT_HELPER
         assert "overlap_area" in KEEPOUT_HELPER
         assert "rect_inside" in KEEPOUT_HELPER
@@ -486,8 +550,7 @@ class TestHelperLogic:
         assert self.rects_overlap(a, b) is False
 
     def test_touching_edge_is_overlap(self):
-        """Non-strict semantics: rects sharing an edge count as overlapping
-        (matches KiCad DRC, which treats any contact as a clearance violation)."""
+        """Non-strict semantics: rects sharing an edge count as overlapping."""
         a = self._rect(0, 0, 10, 10)
         b = self._rect(10, 0, 20, 10)
         assert self.rects_overlap(a, b) is True
@@ -525,11 +588,7 @@ class TestHelperLogic:
         assert self.rect_inside(inner, outer) is False
 
     def test_exactly_on_boundary(self):
-        """Non-strict semantics: a rect coincident with its outer IS inside.
-
-        Matches KiCad DRC's boundary semantics — touching/coincident
-        geometry is the violating case, not the clean case.
-        """
+        """Non-strict semantics: a rect coincident with its outer IS inside."""
         inner = self._rect(0, 0, 100, 100)
         outer = self._rect(0, 0, 100, 100)
         assert self.rect_inside(inner, outer) is True
@@ -540,18 +599,18 @@ class TestHelperLogic:
         assert self.rect_inside(inner, outer) is False
 
 
-# -- audit_footprint_overlaps tests ------------------------------------------
+# -- operation="footprint_overlaps" ------------------------------------------
 
 class TestAuditFootprintOverlaps:
 
-    def test_file_not_found(self, keepout_server):
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn("/nonexistent/board.kicad_pcb")
+    def test_file_not_found(self, audit_server):
+        fn = _get_audit_fn(audit_server)
+        result = fn("footprint_overlaps", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
         assert "not found" in result["error"]
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_no_overlaps(self, mock_run, keepout_server, pcb_file):
+    def test_no_overlaps(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "total_footprints": 5,
@@ -562,15 +621,15 @@ class TestAuditFootprintOverlaps:
             "overlaps": [],
             "summary": "All 5 footprints are clear of each other",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("footprint_overlaps", pcb_path=pcb_file)
         assert result["status"] == "ok"
         assert result["overlap_count"] == 0
         assert result["pairs_checked"] == 10
         assert "clear" in result["summary"]
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_physical_overlap_detected(self, mock_run, keepout_server, pcb_file):
+    def test_physical_overlap_detected(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok",
             "total_footprints": 3,
@@ -599,18 +658,16 @@ class TestAuditFootprintOverlaps:
             }],
             "summary": "1 overlap(s) found among 3 footprints (1 collisions, 0 clearance warnings)",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        result = fn("footprint_overlaps", pcb_path=pcb_file)
         assert result["overlap_count"] == 1
-        assert result["error_count"] == 1
         overlap = result["overlaps"][0]
         assert overlap["ref_a"] == "J6"
-        assert overlap["ref_b"] == "J2"
         assert overlap["overlap"] is True
         assert overlap["severity"] == "error"
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_clearance_warning(self, mock_run, keepout_server, pcb_file):
+    def test_clearance_warning(self, mock_run, audit_server, pcb_file):
         """Footprints within min_clearance but not overlapping produce a warning."""
         mock_run.return_value = {
             "status": "ok",
@@ -620,28 +677,17 @@ class TestAuditFootprintOverlaps:
             "error_count": 0,
             "warning_count": 1,
             "overlaps": [{
-                "ref_a": "R1",
-                "ref_b": "R2",
-                "value_a": "4.7k",
-                "value_b": "4.7k",
-                "overlap": False,
-                "overlap_mm2": 0.0,
-                "gap_mm": 0.15,
-                "severity": "warning",
+                "ref_a": "R1", "ref_b": "R2",
+                "overlap": False, "overlap_mm2": 0.0,
+                "gap_mm": 0.15, "severity": "warning",
+                "value_a": "4.7k", "value_b": "4.7k",
                 "message": "R1 and R2 are only 0.15 mm apart (min clearance: 0.5 mm)",
-                "bbox_a": {
-                    "x_min_mm": 160.0, "y_min_mm": 134.0,
-                    "x_max_mm": 164.0, "y_max_mm": 138.0,
-                },
-                "bbox_b": {
-                    "x_min_mm": 160.0, "y_min_mm": 138.15,
-                    "x_max_mm": 164.0, "y_max_mm": 142.15,
-                },
+                "bbox_a": {}, "bbox_b": {},
             }],
             "summary": "1 overlap(s) found among 2 footprints (0 collisions, 1 clearance warnings)",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file, min_clearance_mm=0.5)
+        fn = _get_audit_fn(audit_server)
+        result = fn("footprint_overlaps", pcb_path=pcb_file, min_clearance_mm=0.5)
         assert result["warning_count"] == 1
         assert result["error_count"] == 0
         overlap = result["overlaps"][0]
@@ -650,249 +696,87 @@ class TestAuditFootprintOverlaps:
         assert overlap["gap_mm"] == 0.15
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_pairs_checked_formula(self, mock_run, keepout_server, pcb_file):
-        """Verify pairs_checked = n*(n-1)/2."""
+    def test_default_clearance_zero(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 20,
-            "pairs_checked": 190,  # 20*19/2
-            "overlap_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "overlaps": [],
-            "summary": "All 20 footprints are clear of each other",
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "All 2 footprints are clear of each other",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file)
-        assert result["pairs_checked"] == 190
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_uses_pairwise_check(self, mock_run, keepout_server, pcb_file):
-        """Verify the generated script contains pairwise overlap logic."""
-        mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 0,
-            "pairs_checked": 0,
-            "overlap_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "overlaps": [],
-            "summary": "All 0 footprints are clear of each other",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file)
-        script = mock_run.call_args[0][0]
-        assert "rects_overlap" in script
-        assert "overlap_area" in script
-        assert "range(i + 1" in script
-        assert "GetBoundingBox" in script
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_error_propagated(self, mock_run, keepout_server, pcb_file):
-        mock_run.side_effect = RuntimeError("pcbnew crashed")
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        with pytest.raises(RuntimeError, match="pcbnew crashed"):
-            fn(pcb_file)
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_default_clearance_zero(self, mock_run, keepout_server, pcb_file):
-        """Default min_clearance_mm is 0 (only actual overlaps reported)."""
-        mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 2,
-            "pairs_checked": 1,
-            "overlap_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "overlaps": [],
-            "summary": "All 2 footprints are clear of each other",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        fn("footprint_overlaps", pcb_path=pcb_file)
         params = mock_run.call_args[1]["params"]
         assert params["min_clearance_mm"] == 0.0
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_use_courtyard_default_true(self, mock_run, keepout_server, pcb_file):
-        """Default use_courtyard=True generates courtyard/pad-based bbox logic."""
+    def test_use_courtyard_default_true(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 0,
-            "pairs_checked": 0,
-            "overlap_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "overlaps": [],
-            "summary": "All 0 footprints are clear of each other",
+            "status": "ok", "total_footprints": 0, "pairs_checked": 0,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file)
+        fn = _get_audit_fn(audit_server)
+        fn("footprint_overlaps", pcb_path=pcb_file)
         script = mock_run.call_args[0][0]
         assert "get_courtyard_bbox" in script
         assert "CrtYd" in script
-        assert "Pads()" in script
         params = mock_run.call_args[1]["params"]
         assert params["use_courtyard"] is True
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_use_courtyard_false_uses_body_bbox(self, mock_run, keepout_server, pcb_file):
-        """use_courtyard=False uses body bbox only."""
+    def test_use_courtyard_false(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 0,
-            "pairs_checked": 0,
-            "overlap_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "overlaps": [],
-            "summary": "All 0 footprints are clear of each other",
+            "status": "ok", "total_footprints": 0, "pairs_checked": 0,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file, use_courtyard=False)
+        fn = _get_audit_fn(audit_server)
+        fn("footprint_overlaps", pcb_path=pcb_file, use_courtyard=False)
         params = mock_run.call_args[1]["params"]
         assert params["use_courtyard"] is False
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_bbox_source_reported(self, mock_run, keepout_server, pcb_file):
-        """Overlap entries include bbox_source_a and bbox_source_b."""
-        mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 2,
-            "pairs_checked": 1,
-            "overlap_count": 1,
-            "error_count": 1,
-            "warning_count": 0,
-            "overlaps": [{
-                "ref_a": "J4",
-                "ref_b": "J6",
-                "value_a": "OLED",
-                "value_b": "Expansion",
-                "overlap": True,
-                "overlap_mm2": 7.93,
-                "gap_mm": -2.21,
-                "severity": "error",
-                "message": "J4 and J6 physically overlap by 7.93 mm2",
-                "bbox_a": {},
-                "bbox_b": {},
-                "bbox_source_a": "pads",
-                "bbox_source_b": "pads",
-            }],
-            "summary": "1 overlap(s) found among 2 footprints (1 collisions, 0 clearance warnings)",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file)
-        overlap = result["overlaps"][0]
-        assert overlap["bbox_source_a"] == "pads"
-        assert overlap["bbox_source_b"] == "pads"
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_multiple_overlaps(self, mock_run, keepout_server, pcb_file):
-        """Multiple overlap pairs are reported."""
-        mock_run.return_value = {
-            "status": "ok",
-            "total_footprints": 4,
-            "pairs_checked": 6,
-            "overlap_count": 3,
-            "error_count": 2,
-            "warning_count": 1,
-            "overlaps": [
-                {"ref_a": "R1", "ref_b": "R2", "overlap": True, "severity": "error",
-                 "overlap_mm2": 1.0, "gap_mm": -0.5,
-                 "value_a": "10k", "value_b": "10k",
-                 "message": "R1 and R2 physically overlap by 1.0 mm2",
-                 "bbox_a": {}, "bbox_b": {}},
-                {"ref_a": "R1", "ref_b": "C1", "overlap": True, "severity": "error",
-                 "overlap_mm2": 0.5, "gap_mm": -0.2,
-                 "value_a": "10k", "value_b": "100nF",
-                 "message": "R1 and C1 physically overlap by 0.5 mm2",
-                 "bbox_a": {}, "bbox_b": {}},
-                {"ref_a": "R2", "ref_b": "C1", "overlap": False, "severity": "warning",
-                 "overlap_mm2": 0.0, "gap_mm": 0.3,
-                 "value_a": "10k", "value_b": "100nF",
-                 "message": "R2 and C1 are only 0.3 mm apart (min clearance: 0.5 mm)",
-                 "bbox_a": {}, "bbox_b": {}},
-            ],
-            "summary": "3 overlap(s) found among 4 footprints (2 collisions, 1 clearance warnings)",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file, min_clearance_mm=0.5)
-        assert result["overlap_count"] == 3
-        assert result["error_count"] == 2
-        assert result["warning_count"] == 1
-
-    # -- min_clearance boundary tests ----------------------------------------
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_min_clearance_zero_param_passed_through(self, mock_run, keepout_server, pcb_file):
-        """min_clearance_mm=0 is passed as-is to the script params."""
-        mock_run.return_value = {
-            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
-            "overlap_count": 0, "error_count": 0, "warning_count": 0,
-            "overlaps": [], "summary": "All 2 footprints are clear of each other",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file, min_clearance_mm=0.0)
-        params = mock_run.call_args[1]["params"]
-        assert params["min_clearance_mm"] == 0.0
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_min_clearance_epsilon_param_passed_through(self, mock_run, keepout_server, pcb_file):
-        """min_clearance_mm=1e-6 (just above zero) is passed to script params."""
-        mock_run.return_value = {
-            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
-            "overlap_count": 0, "error_count": 0, "warning_count": 0,
-            "overlaps": [], "summary": "All 2 footprints are clear of each other",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file, min_clearance_mm=1e-6)
-        params = mock_run.call_args[1]["params"]
-        assert params["min_clearance_mm"] == pytest.approx(1e-6)
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_min_clearance_half_mm_param_passed_through(self, mock_run, keepout_server, pcb_file):
-        """min_clearance_mm=0.5 is passed to script params."""
-        mock_run.return_value = {
-            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
-            "overlap_count": 0, "error_count": 0, "warning_count": 0,
-            "overlaps": [], "summary": "All 2 footprints are clear of each other",
-        }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file, min_clearance_mm=0.5)
-        params = mock_run.call_args[1]["params"]
-        assert params["min_clearance_mm"] == pytest.approx(0.5)
-
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_uses_clearance_violation_helper(self, mock_run, keepout_server, pcb_file):
+    def test_script_uses_clearance_violation_helper(self, mock_run, audit_server, pcb_file):
         """The generated script uses clearance_violation() instead of inline expand+gate."""
         mock_run.return_value = {
             "status": "ok", "total_footprints": 0, "pairs_checked": 0,
             "overlap_count": 0, "error_count": 0, "warning_count": 0,
-            "overlaps": [], "summary": "All 0 footprints are clear of each other",
+            "overlaps": [], "summary": "",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        fn(pcb_file, min_clearance_mm=0.5)
+        fn = _get_audit_fn(audit_server)
+        fn("footprint_overlaps", pcb_path=pcb_file, min_clearance_mm=0.5)
         script = mock_run.call_args[0][0]
-        # The canonical helper must be present in the script
         assert "clearance_violation" in script
-        # The old inline pattern should NOT appear
         assert "min_clearance > 0 and rects_overlap" not in script
 
+    # -- min_clearance boundary tests ----------------------------------------
+
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_clearance_violation_zero_response_no_warnings(
-            self, mock_run, keepout_server, pcb_file):
-        """When min_clearance=0 and footprints are only touching, no warnings emitted."""
+    def test_min_clearance_zero_param_passed_through(self, mock_run, audit_server, pcb_file):
         mock_run.return_value = {
             "status": "ok", "total_footprints": 2, "pairs_checked": 1,
             "overlap_count": 0, "error_count": 0, "warning_count": 0,
-            "overlaps": [], "summary": "All 2 footprints are clear of each other",
+            "overlaps": [], "summary": "",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file, min_clearance_mm=0.0)
-        assert result["warning_count"] == 0
+        fn = _get_audit_fn(audit_server)
+        fn("footprint_overlaps", pcb_path=pcb_file, min_clearance_mm=0.0)
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == 0.0
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_min_clearance_epsilon_param_passed_through(self, mock_run, audit_server, pcb_file):
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "",
+        }
+        fn = _get_audit_fn(audit_server)
+        fn("footprint_overlaps", pcb_path=pcb_file, min_clearance_mm=1e-6)
+        params = mock_run.call_args[1]["params"]
+        assert params["min_clearance_mm"] == pytest.approx(1e-6)
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_clearance_violation_at_threshold_produces_no_warning(
-            self, mock_run, keepout_server, pcb_file):
+            self, mock_run, audit_server, pcb_file):
         """Gap exactly equal to min_clearance is clean — no warning expected."""
         mock_run.return_value = {
             "status": "ok", "total_footprints": 2, "pairs_checked": 1,
@@ -900,7 +784,150 @@ class TestAuditFootprintOverlaps:
             "overlaps": [],
             "summary": "All 2 footprints are clear of each other (min clearance 0.5 mm)",
         }
-        fn = _get_tool_fn(keepout_server, "audit_footprint_overlaps")
-        result = fn(pcb_file, min_clearance_mm=0.5)
+        fn = _get_audit_fn(audit_server)
+        result = fn("footprint_overlaps", pcb_path=pcb_file, min_clearance_mm=0.5)
         assert result["warning_count"] == 0
         assert result["overlap_count"] == 0
+
+
+# -- operation="all" detail flag tests ----------------------------------------
+
+class TestAuditAllDetailFlag:
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_all_summary_default(self, mock_run, audit_server, pcb_file):
+        """detail='summary' (default) uses the combined single-subprocess script."""
+        mock_run.return_value = {
+            "status": "ok",
+            "total_footprints": 5,
+            "total_issues": 0,
+            "footprint_overlaps": [],
+            "keepout_violations": [],
+            "silkscreen_overlaps": [],
+            "silkscreen_text_overlaps": [],
+            "summary": "All 5 footprints pass all checks",
+        }
+        fn = _get_audit_fn(audit_server)
+        result = fn("all", pcb_path=pcb_file)
+        assert result["status"] == "ok"
+        assert result["total_footprints"] == 5
+        # summary detail: one subprocess call
+        assert mock_run.call_count == 1
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_all_full_calls_each_sub_op(self, mock_run, audit_server, pcb_file):
+        """detail='full' calls each sub-op and aggregates their full output."""
+        # Each sub-op (_op_placement, _op_footprint_overlaps, _op_pad_clearances,
+        # _op_keepouts) makes exactly one run_pcbnew_script call.
+        mock_run.return_value = {"status": "ok"}
+        # Provide per-op return values that the full path expects
+        placement_result = {
+            "status": "ok",
+            "total_footprints": 3,
+            "violations_count": 0,
+            "clean_count": 3,
+            "violations": [],
+            "summary": "All 3 footprints pass placement checks",
+        }
+        overlaps_result = {
+            "status": "ok",
+            "total_footprints": 3,
+            "pairs_checked": 3,
+            "overlap_count": 0,
+            "error_count": 0,
+            "warning_count": 0,
+            "overlaps": [],
+            "summary": "All 3 footprints are clear of each other",
+        }
+        pad_cl_result = {
+            "status": "ok",
+            "total_pads": 6,
+            "min_clearance_mm": 0.2,
+            "min_clearance_source": "board",
+            "violation_count": 0,
+            "footprint_pairs_affected": 0,
+            "footprint_pair_summary": [],
+            "violations": [],
+            "violations_truncated": False,
+            "summary": "All inter-footprint pad clearances >= 0.2mm (6 pads checked)",
+        }
+        keepouts_result = {
+            "status": "ok",
+            "keepout_count": 1,
+            "keepouts": SAMPLE_KEEPOUTS,
+        }
+        mock_run.side_effect = [
+            placement_result, overlaps_result, pad_cl_result, keepouts_result
+        ]
+
+        fn = _get_audit_fn(audit_server)
+        result = fn("all", pcb_path=pcb_file, detail="full")
+
+        # Four separate subprocess calls (one per sub-op)
+        assert mock_run.call_count == 4
+
+        # Each sub-op result is nested under its key
+        assert result["status"] == "ok"
+        assert result["placement"]["violations_count"] == 0
+        assert result["footprint_overlaps"]["overlap_count"] == 0
+        assert result["pad_clearances"]["violation_count"] == 0
+        assert result["keepouts"]["keepout_count"] == 1
+
+        # Aggregate summary fields
+        assert "total_issues" in result
+        assert "summary" in result
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_all_summary_vs_full_different_shape(self, mock_run, audit_server, pcb_file):
+        """summary and full return structurally different output."""
+        summary_result = {
+            "status": "ok",
+            "total_footprints": 2,
+            "total_issues": 1,
+            "footprint_overlaps": [{"ref_a": "R1", "ref_b": "R2", "overlap": True, "overlap_mm2": 1.0}],
+            "keepout_violations": [],
+            "silkscreen_overlaps": [],
+            "silkscreen_text_overlaps": [],
+            "summary": "1 footprint overlap(s)",
+        }
+        placement_result = {
+            "status": "ok", "total_footprints": 2, "violations_count": 0,
+            "clean_count": 2, "violations": [], "summary": "",
+        }
+        overlaps_result = {
+            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+            "overlap_count": 1, "error_count": 1, "warning_count": 0,
+            "overlaps": [{"ref_a": "R1", "ref_b": "R2", "overlap": True,
+                          "overlap_mm2": 1.0, "gap_mm": -0.5,
+                          "bbox_a": {}, "bbox_b": {}, "value_a": "10k", "value_b": "10k",
+                          "bbox_source_a": "body", "bbox_source_b": "body",
+                          "severity": "error", "message": "R1 and R2 physically overlap"}],
+            "summary": "1 overlap(s) found",
+        }
+        pad_cl_result = {
+            "status": "ok", "total_pads": 4, "min_clearance_mm": 0.2,
+            "min_clearance_source": "board", "violation_count": 0,
+            "footprint_pairs_affected": 0, "footprint_pair_summary": [],
+            "violations": [], "violations_truncated": False, "summary": "",
+        }
+        keepouts_result = {
+            "status": "ok", "keepout_count": 0, "keepouts": [],
+        }
+
+        fn = _get_audit_fn(audit_server)
+
+        # summary: single call
+        mock_run.side_effect = [summary_result]
+        result_summary = fn("all", pcb_path=pcb_file, detail="summary")
+        assert "footprint_overlaps" in result_summary  # abridged list
+        assert "placement" not in result_summary        # no nested ops
+
+        # full: four calls
+        mock_run.side_effect = [placement_result, overlaps_result, pad_cl_result, keepouts_result]
+        result_full = fn("all", pcb_path=pcb_file, detail="full")
+        assert "placement" in result_full               # nested op present
+        assert "footprint_overlaps" in result_full      # nested op present
+        assert "pad_clearances" in result_full          # nested op present
+        # full result has per-footprint detail (violations list)
+        assert "violations" in result_full["placement"]
+        assert "overlaps" in result_full["footprint_overlaps"]

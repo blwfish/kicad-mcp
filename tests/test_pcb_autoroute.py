@@ -110,30 +110,36 @@ class TestCleanupStaleJobs:
             assert "running-job" in _autoroute_jobs
 
 
-# -- autoroute_pcb tool tests -----------------------------------------------
+# -- autoroute router: run operation tests -----------------------------------
 
-class TestAutoroutePcb:
+class TestAutorouteRun:
 
     def test_file_not_found(self, route_server):
-        fn = _get_tool_fn(route_server, "autoroute_pcb")
-        result = fn("/nonexistent/board.kicad_pcb")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("run", pcb_path="/nonexistent/board.kicad_pcb")
         assert "error" in result
+
+    def test_requires_pcb_path(self, route_server):
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("run")
+        assert "error" in result
+        assert "pcb_path" in result["error"]
 
     @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value=None)
     def test_no_freerouter(self, mock_jar, route_server, pcb_file):
-        fn = _get_tool_fn(route_server, "autoroute_pcb")
-        result = fn(pcb_file)
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
         assert "error" in result
         assert "FreeRouter" in result["error"] or "freerouter" in result["error"].lower()
 
 
-# -- list_autoroute_jobs tool tests ------------------------------------------
+# -- autoroute router: list_jobs operation tests -----------------------------
 
-class TestListAutorouteJobs:
+class TestAutorouteListJobs:
 
     def test_empty_job_list(self, route_server):
-        fn = _get_tool_fn(route_server, "list_autoroute_jobs")
-        result = fn()
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("list_jobs")
         assert result["count"] == 0
         assert result["jobs"] == {}
 
@@ -145,20 +151,26 @@ class TestListAutorouteJobs:
                 "pcb_path": "/tmp/test.kicad_pcb",
                 "passes": 2,
             }
-        fn = _get_tool_fn(route_server, "list_autoroute_jobs")
-        result = fn()
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("list_jobs")
         assert result["count"] == 1
         assert "test-job" in result["jobs"]
 
 
-# -- cancel_autoroute tool tests --------------------------------------------
+# -- autoroute router: cancel operation tests --------------------------------
 
-class TestCancelAutoroute:
+class TestAutorouteCancel:
 
     def test_cancel_nonexistent_job(self, route_server):
-        fn = _get_tool_fn(route_server, "cancel_autoroute")
-        result = fn("nonexistent-job-id")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("cancel", job_id="nonexistent-job-id")
         assert "error" in result
+
+    def test_cancel_requires_job_id(self, route_server):
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("cancel")
+        assert "error" in result
+        assert "job_id" in result["error"]
 
     def test_cancel_running_job(self, route_server):
         with _autoroute_lock:
@@ -169,19 +181,25 @@ class TestCancelAutoroute:
                 "passes": 2,
                 "process": MagicMock(),
             }
-        fn = _get_tool_fn(route_server, "cancel_autoroute")
-        result = fn("test-cancel")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("cancel", job_id="test-cancel")
         assert result["status"] == "ok" or "cancel" in str(result).lower()
 
 
-# -- poll_autoroute tool tests -----------------------------------------------
+# -- autoroute router: poll operation tests ----------------------------------
 
-class TestPollAutoroute:
+class TestAutoroutePoll:
 
     def test_poll_nonexistent_job(self, route_server):
-        fn = _get_tool_fn(route_server, "poll_autoroute")
-        result = fn("nonexistent-job-id")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("poll", job_id="nonexistent-job-id")
         assert "error" in result
+
+    def test_poll_requires_job_id(self, route_server):
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("poll")
+        assert "error" in result
+        assert "job_id" in result["error"]
 
     def test_poll_running_job(self, route_server):
         with _autoroute_lock:
@@ -191,8 +209,8 @@ class TestPollAutoroute:
                 "pcb_path": "/tmp/test.kicad_pcb",
                 "passes": 2,
             }
-        fn = _get_tool_fn(route_server, "poll_autoroute")
-        result = fn("running")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("poll", job_id="running")
         assert result["status"] == "running"
 
     def test_poll_completed_job(self, route_server):
@@ -204,6 +222,18 @@ class TestPollAutoroute:
                 "passes": 2,
                 "result": {"traces_added": 50, "unrouted": 0},
             }
-        fn = _get_tool_fn(route_server, "poll_autoroute")
-        result = fn("done")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("poll", job_id="done")
         assert result["status"] == "done"
+
+
+# -- autoroute router: unknown operation -------------------------------------
+
+class TestAutorouteUnknownOperation:
+
+    def test_unknown_op(self, route_server):
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("bogus")
+        assert "error" in result
+        assert "bogus" in result["error"]
+        assert "run|start|poll|cancel|list_jobs" in result["error"]

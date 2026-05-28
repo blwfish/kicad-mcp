@@ -10,31 +10,19 @@ def create_server() -> FastMCP:
     """Create and configure the KiCad MCP server."""
     mcp = FastMCP("KiCad")
 
-    # PCB tools (split from former monolithic pcb_tools.py)
-    from kicad_mcp.tools.pcb_board import register_pcb_board_tools
-    from kicad_mcp.tools.pcb_footprints import register_pcb_footprint_tools
-    from kicad_mcp.tools.pcb_nets import register_pcb_net_tools
-    from kicad_mcp.tools.pcb_routing import register_pcb_routing_tools
-    from kicad_mcp.tools.pcb_zones import register_pcb_zone_tools
-    from kicad_mcp.tools.pcb_silkscreen import register_pcb_silkscreen_tools
+    # PCB domain router (phase 4: replaces 27 individual pcb_* tools)
+    from kicad_mcp.tools.pcb import register_pcb_tools
     from kicad_mcp.tools.pcb_keepout import register_pcb_keepout_tools
     from kicad_mcp.tools.pcb_autoroute import register_pcb_autoroute_tools
     from kicad_mcp.tools.pcb_panelize import register_pcb_panelize_tools
     from kicad_mcp.tools.pcb_planning import register_pcb_planning_tools
-    from kicad_mcp.tools.pcb_drc_fix import register_pcb_drc_fix_tools
     from kicad_mcp.tools.pcb_pipeline import register_pipeline_tools
 
-    register_pcb_board_tools(mcp)
-    register_pcb_footprint_tools(mcp)
-    register_pcb_net_tools(mcp)
-    register_pcb_routing_tools(mcp)
-    register_pcb_zone_tools(mcp)
-    register_pcb_silkscreen_tools(mcp)
+    register_pcb_tools(mcp)
     register_pcb_keepout_tools(mcp)
     register_pcb_autoroute_tools(mcp)
     register_pcb_panelize_tools(mcp)
     register_pcb_planning_tools(mcp)
-    register_pcb_drc_fix_tools(mcp)
     register_pipeline_tools(mcp)
 
     # Domain routers (phase 1: library + analyze + export)
@@ -46,19 +34,20 @@ def create_server() -> FastMCP:
     register_analyze_tools(mcp)
     register_export_tools(mcp)
 
-    # Tools not yet consolidated into routers
+    # Domain routers (phase 2: project + drc + autoroute)
     from kicad_mcp.tools.project import register_project_tools
     from kicad_mcp.tools.drc import register_drc_tools
-    from kicad_mcp.tools.netlist import register_netlist_tools
 
     register_project_tools(mcp)
     register_drc_tools(mcp)
-    register_netlist_tools(mcp)
 
-    # Schematic tools (wrapping kicad-sch-api)
-    from kicad_mcp.tools.schematic import register_schematic_tools
+    # Domain routers (phase 3: audit)
+    # Note: register_pcb_keepout_tools is imported above and already called.
 
-    register_schematic_tools(mcp)
+    # Schematic router (phase 5: replaces 32 individual schematic tools + find_component_connections)
+    from kicad_mcp.tools.schematic import register_schematic_router
+
+    register_schematic_router(mcp)
 
     # Telemetry analyze tool (read-only access to feedback infrastructure)
     from kicad_mcp.tools.telemetry_analyze import register_telemetry_analyze_tools

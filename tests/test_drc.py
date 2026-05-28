@@ -1,7 +1,7 @@
 """
 Tests for DRC tools and DRC history utilities.
 
-Tests drc.py tools and utils/drc_history.py functions.
+Tests drc.py router and utils/drc_history.py functions.
 """
 
 import asyncio
@@ -203,14 +203,20 @@ class TestCompareWithPrevious:
         assert "resolved_categories" in comparison
 
 
-# -- get_drc_history_tool tests ----------------------------------------------
+# -- drc router: history operation tests -------------------------------------
 
-class TestGetDrcHistoryTool:
+class TestDrcHistoryOperation:
 
     def test_project_not_found(self, drc_server):
-        fn = _get_tool_fn(drc_server, "get_drc_history_tool")
-        result = fn("/nonexistent/project.kicad_pro")
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("history", None, project_path="/nonexistent/project.kicad_pro"))
         assert result["success"] is False
+
+    def test_requires_project_path(self, drc_server):
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("history", None))
+        assert "error" in result
+        assert "project_path" in result["error"]
 
     @patch("kicad_mcp.tools.drc.get_drc_history")
     def test_returns_history(self, mock_hist, drc_server, tmp_path):
@@ -220,8 +226,8 @@ class TestGetDrcHistoryTool:
             {"timestamp": 1000, "total_violations": 5},
             {"timestamp": 900, "total_violations": 10},
         ]
-        fn = _get_tool_fn(drc_server, "get_drc_history_tool")
-        result = fn(str(pro))
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("history", None, project_path=str(pro)))
         assert result["success"] is True
         assert result["entry_count"] == 2
         assert result["trend"] == "improving"
@@ -231,24 +237,42 @@ class TestGetDrcHistoryTool:
         pro = tmp_path / "test.kicad_pro"
         pro.write_text("{}")
         mock_hist.return_value = [{"timestamp": 1000, "total_violations": 5}]
-        fn = _get_tool_fn(drc_server, "get_drc_history_tool")
-        result = fn(str(pro))
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("history", None, project_path=str(pro)))
         assert result["trend"] is None
 
 
-# -- run_drc_check tests -----------------------------------------------------
+# -- drc router: run operation tests -----------------------------------------
 
-class TestRunDrcCheck:
+class TestDrcRunOperation:
 
     def test_project_not_found(self, drc_server):
-        fn = _get_tool_fn(drc_server, "run_drc_check")
-        result = asyncio.run(fn("/nonexistent/project.kicad_pro", None))
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("run", None, project_path="/nonexistent/project.kicad_pro"))
         assert result["success"] is False
+
+    def test_requires_project_path(self, drc_server):
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("run", None))
+        assert "error" in result
+        assert "project_path" in result["error"]
 
     def test_no_pcb_file(self, drc_server, tmp_path):
         pro = tmp_path / "test.kicad_pro"
         pro.write_text("{}")
-        fn = _get_tool_fn(drc_server, "run_drc_check")
-        result = asyncio.run(fn(str(pro), None))
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("run", None, project_path=str(pro)))
         assert result["success"] is False
         assert "PCB file not found" in result["error"]
+
+
+# -- drc router: unknown operation -------------------------------------------
+
+class TestDrcUnknownOperation:
+
+    def test_unknown_op(self, drc_server):
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("bogus", None))
+        assert "error" in result
+        assert "bogus" in result["error"]
+        assert "run|autofix|history" in result["error"]
