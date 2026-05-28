@@ -1,6 +1,5 @@
 """DRC auto-fix: compound tool that reads DRC, fixes violations, re-verifies."""
 
-import asyncio
 import logging
 import os
 from typing import Any, Dict

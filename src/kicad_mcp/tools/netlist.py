@@ -10,7 +10,7 @@ import os
 import re
 from typing import Any, Dict
 
-from fastmcp import FastMCP, Context
+from fastmcp import Context
 
 logger = logging.getLogger(__name__)
 

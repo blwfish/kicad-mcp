@@ -1,7 +1,6 @@
 """PCB pipeline tool: build a routed PCB from a schematic in one step."""
 
 import logging
-import math
 import os
 import re
 import subprocess

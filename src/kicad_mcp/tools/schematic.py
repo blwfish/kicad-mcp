@@ -23,7 +23,6 @@ from kicad_mcp.tools.schematic_impl import (
     _pin_wire_offset,
     _find_component_for_pin,
     _parse_unit_pin_mapping,
-    SCHEMATIC_GRID_MM,
 )
 
 
@@ -280,26 +279,26 @@ def register_schematic_router(mcp: FastMCP) -> None:
                     pin_pos = _kicad_pin_position(comp, pin.number)
                     if pin_pos is None:
                         continue
-                    key = (round(pin_pos.x, 2), round(pin_pos.y, 2))
-                    position_map.setdefault(key, []).append({
+                    pos_key = (round(pin_pos.x, 2), round(pin_pos.y, 2))
+                    position_map.setdefault(pos_key, []).append({
                         "reference": ref,
                         "pin_number": pin.number,
                         "pin_name": pin.name,
                     })
             collisions = []
-            for pos, pins in position_map.items():
+            for collision_pos, pins in position_map.items():
                 if len(pins) < 2:
                     continue
                 refs = {p["reference"] for p in pins}
                 if len(refs) < 2:
                     continue
                 collisions.append({
-                    "position": [pos[0], pos[1]],
+                    "position": [collision_pos[0], collision_pos[1]],
                     "pins": pins,
                     "component_count": len(refs),
                     "message": (
                         f"{len(pins)} pins from {len(refs)} components collide at "
-                        f"({pos[0]}, {pos[1]}): "
+                        f"({collision_pos[0]}, {collision_pos[1]}): "
                         + ", ".join(f"{p['reference']}:{p['pin_number']}" for p in pins)
                     ),
                 })
@@ -565,11 +564,11 @@ def register_schematic_router(mcp: FastMCP) -> None:
                 comp = all_comps[0]
                 for pin in comp.pins:
                     pin_pos = _kicad_pin_position(comp, pin.number)
-                    entry: Dict[str, Any] = {"number": pin.number, "name": pin.name}
+                    pin_entry: Dict[str, Any] = {"number": pin.number, "name": pin.name}
                     if pin_pos:
-                        entry["x"] = round(pin_pos.x, 3)
-                        entry["y"] = round(pin_pos.y, 3)
-                    pins_data.append(entry)
+                        pin_entry["x"] = round(pin_pos.x, 3)
+                        pin_entry["y"] = round(pin_pos.y, 3)
+                    pins_data.append(pin_entry)
             else:
                 from kicad_sch_api.library.cache import get_symbol_cache
                 cache = get_symbol_cache()

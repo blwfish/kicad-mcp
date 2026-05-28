@@ -9,7 +9,6 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from fastmcp import FastMCP
 
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
