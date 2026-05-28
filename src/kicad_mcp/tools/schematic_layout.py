@@ -20,6 +20,12 @@ from mcp_events import emit_event, event_context
 from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 from kicad_mcp.utils.placement import state as placement_state
 from kicad_mcp.utils.placement.labeling import label_clusters
+from kicad_mcp.utils.placement.pack import (
+    DEFAULT_COLUMN_PITCH_MM,
+    DEFAULT_ROW_PITCH_MM,
+    pack_layout,
+)
+from kicad_mcp.utils.placement.rank import assign_tiers
 from kicad_mcp.utils.placement.topology import cluster_components
 
 logger = logging.getLogger(__name__)
@@ -50,28 +56,35 @@ def register_schematic_layout_tools(mcp: FastMCP) -> None:
         schematic_path: str | None = None,
         verbosity: str = "minimal",
         hints: dict[str, str] | None = None,
+        column_pitch_mm: float = DEFAULT_COLUMN_PITCH_MM,
+        row_pitch_mm: float = DEFAULT_ROW_PITCH_MM,
     ) -> dict:
         """Topology-aware automatic placement of schematic components.
 
         Operations:
           suggest — compute a placement state for the given schematic.
-                    Returns Layer 1 (topology) clustering + Layers 2/3/4
-                    labeling. Ranking and packing land in later slices.
+                    Returns Layer 1-4 labeling, Phase 2 tier assignment,
+                    and Phase 3 basic packing (coordinates per component).
+                    Convention rules land in Slice 4.
 
         Args:
-          schematic_path : Path to .kicad_sch. Required.
-          verbosity      : "minimal" (default) or "full". Per spec § Verbosity.
-          hints          : Optional ``{ref: label}`` override map (Layer 4).
-                           ``label`` must be one of the canonical labels:
-                           mcu, ldo, switching_regulator, op_amp, filter,
-                           oscillator, digital_interface, sensor, connector,
-                           crystal, unclassified. Unknown labels are ignored.
+          schematic_path  : Path to .kicad_sch. Required.
+          verbosity       : "minimal" (default) or "full". Per spec § Verbosity.
+          hints           : Optional ``{ref: label}`` override map (Layer 4).
+                            ``label`` must be one of the canonical labels:
+                            mcu, ldo, switching_regulator, op_amp, filter,
+                            oscillator, digital_interface, sensor, connector,
+                            crystal, unclassified. Unknown labels are ignored.
+          column_pitch_mm : Horizontal spacing between tiers (default 25.4 mm).
+          row_pitch_mm    : Vertical spacing between components (default 12.7 mm).
         """
         if operation == "suggest":
             return _op_suggest(
                 schematic_path=schematic_path,
                 verbosity=verbosity,
                 hints=hints,
+                column_pitch_mm=column_pitch_mm,
+                row_pitch_mm=row_pitch_mm,
             )
         return {
             "status": "error",
@@ -88,6 +101,8 @@ def _op_suggest(
     schematic_path: str | None,
     verbosity: str,
     hints: dict[str, str] | None,
+    column_pitch_mm: float,
+    row_pitch_mm: float,
 ) -> dict[str, Any]:
     if not schematic_path:
         return {
@@ -129,9 +144,7 @@ def _op_suggest(
 
         partition = cluster_components(netlist, schematic_path=str(sch_path))
 
-        # Layers 2/3/4 — labeling. LCSC lookup is wired through
-        # ``_lcsc_lookup`` so tests can monkeypatch it without dragging
-        # in the LCSC subsystem.
+        # Layers 2/3/4 — labeling.
         labels, label_events = label_clusters(
             partition.members,
             netlist,
@@ -144,6 +157,20 @@ def _op_suggest(
         )
         state["inputs_honored"]["hints_applied"] = hints_applied
 
+        # Phase 2 — Rank clusters into tiers.
+        tier_assignment = assign_tiers(netlist, partition.component_cluster)
+        state["tiers"] = {str(t): cids for t, cids in tier_assignment.tiers.items()}
+
+        # Phase 3 — Pack into coordinates.
+        pack = pack_layout(
+            members_by_cluster=partition.members,
+            cluster_tier=tier_assignment.cluster_tier,
+            tiers=tier_assignment.tiers,
+            cluster_edges=tier_assignment.cluster_edges,
+            column_pitch_mm=column_pitch_mm,
+            row_pitch_mm=row_pitch_mm,
+        )
+
         # Bridge results into the PlacementState skeleton.
         for cid, refs in partition.members.items():
             cl = labels[cid]
@@ -153,23 +180,28 @@ def _op_suggest(
                 "label": cl.label,
                 "label_confidence": cl.label_confidence,
                 "label_source": cl.label_source,
-                "tier": None,
-                "bbox_mm": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
+                "tier": tier_assignment.cluster_tier.get(cid),
+                "bbox_mm": pack.bboxes.get(
+                    cid, {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0},
+                ),
             }
         for ref, cid in partition.component_cluster.items():
+            x, y = pack.positions.get(ref, (0.0, 0.0))
             state["components"][ref] = {
-                "x_mm": 0.0,
-                "y_mm": 0.0,
+                "x_mm": x,
+                "y_mm": y,
                 "rotation": 0,
                 "mirror_x": False,
                 "cluster_id": cid,
                 "fixed_by": None,
             }
 
-        # Surface layer-1 + layer-2 events through mcp-events.
+        # Surface events from every layer.
         for ev in partition.events:
             emit_event(ev["level"], ev["code"], ev["message"], ev.get("data", {}))
         for ev in label_events:
+            emit_event(ev["level"], ev["code"], ev["message"], ev.get("data", {}))
+        for ev in tier_assignment.events:
             emit_event(ev["level"], ev["code"], ev["message"], ev.get("data", {}))
 
         # Sliced output: drop bbox_mm/label_source from the in-memory state
