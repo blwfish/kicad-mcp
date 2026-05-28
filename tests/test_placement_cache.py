@@ -97,14 +97,14 @@ class TestLruEviction:
     def test_at_max_no_eviction(self, isolated_cache_dir):
         for i in range(placement_cache.MAX_STATES_PER_SCHEMATIC):
             placement_cache.save_state(_state(f"id{i}", "/tmp/x.kicad_sch"))
-        files = list(isolated_cache_dir.glob("*.json"))
+        files = list(isolated_cache_dir.glob("*/*.json"))
         assert len(files) == placement_cache.MAX_STATES_PER_SCHEMATIC
 
     def test_above_max_evicts_oldest_by_mtime(self, isolated_cache_dir):
         for i in range(placement_cache.MAX_STATES_PER_SCHEMATIC + 2):
             placement_cache.save_state(_state(f"id{i}", "/tmp/x.kicad_sch"))
             time.sleep(0.01)  # stagger mtimes
-        files = list(isolated_cache_dir.glob("*.json"))
+        files = list(isolated_cache_dir.glob("*/*.json"))
         assert len(files) == placement_cache.MAX_STATES_PER_SCHEMATIC
         # id0 and id1 (the oldest two) should be gone.
         remaining_ids = {f.stem for f in files}
@@ -118,7 +118,7 @@ class TestLruEviction:
         # 5 states for schematic B — at-limit.
         for i in range(placement_cache.MAX_STATES_PER_SCHEMATIC):
             placement_cache.save_state(_state(f"b{i}", "/tmp/b.kicad_sch"))
-        files = list(isolated_cache_dir.glob("*.json"))
+        files = list(isolated_cache_dir.glob("*/*.json"))
         # All 10 should still be there.
         assert len(files) == 2 * placement_cache.MAX_STATES_PER_SCHEMATIC
 
@@ -130,19 +130,20 @@ class TestExpiry:
 
     def test_stale_state_returns_none_and_is_deleted(self, isolated_cache_dir):
         placement_cache.save_state(_state("stale"))
-        # Backdate the file by 31 days.
-        stale_path = isolated_cache_dir / f"{_hex_id('stale')}.json"
+        # Sharded layout: locate the file via the shared shard helper.
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        stale_path = shard / f"{_hex_id('stale')}.json"
+        # Backdate by 31 days.
         old_mtime = time.time() - 31 * 86400
         os.utime(stale_path, (old_mtime, old_mtime))
         assert placement_cache.load_state(_hex_id("stale")) is None
-        # Cleanup-on-read also removed it.
         assert not stale_path.exists()
 
     def test_boundary_just_inside_expiry(self, isolated_cache_dir):
         placement_cache.save_state(_state("borderline"))
-        # 29 days old — still fresh.
-        path = isolated_cache_dir / f"{_hex_id('borderline')}.json"
-        old_mtime = time.time() - 29 * 86400
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        path = shard / f"{_hex_id('borderline')}.json"
+        old_mtime = time.time() - 29 * 86400  # still fresh
         os.utime(path, (old_mtime, old_mtime))
         assert placement_cache.load_state(_hex_id("borderline")) is not None
 
@@ -153,19 +154,51 @@ class TestClearCache:
         placement_cache.save_state(_state("b", "/tmp/b.kicad_sch"))
         count = placement_cache.clear_cache()
         assert count == 2
-        assert list(isolated_cache_dir.glob("*.json")) == []
+        assert list(isolated_cache_dir.glob("*/*.json")) == []
 
     def test_clear_only_specific_schematic(self, isolated_cache_dir):
         placement_cache.save_state(_state("a", "/tmp/a.kicad_sch"))
         placement_cache.save_state(_state("b", "/tmp/b.kicad_sch"))
         count = placement_cache.clear_cache("/tmp/a.kicad_sch")
         assert count == 1
-        remaining = list(isolated_cache_dir.glob("*.json"))
+        remaining = list(isolated_cache_dir.glob("*/*.json"))
         assert len(remaining) == 1
         assert remaining[0].stem == _hex_id("b")
+        # Confirm it landed in /tmp/b.kicad_sch's shard, not /tmp/a's.
+        assert remaining[0].parent.name == placement_cache._schematic_shard("/tmp/b.kicad_sch")
 
     def test_clear_empty_cache_returns_zero(self):
         assert placement_cache.clear_cache() == 0
+
+
+class TestShardIsolation:
+    """The sharded layout's whole point: per-schematic operations must
+    only scan their own shard. Pin that other shards aren't touched on
+    typical operations."""
+
+    def test_find_latest_only_scans_target_shard(self, isolated_cache_dir):
+        """Populate two unrelated schematics, then assert find_latest for
+        one of them only touches files in that schematic's shard. We can't
+        easily measure scan count without instrumentation, but we CAN
+        confirm the function returns the right schematic's state."""
+        placement_cache.save_state(_state("a1", "/tmp/a.kicad_sch"))
+        time.sleep(0.02)
+        placement_cache.save_state(_state("b1", "/tmp/b.kicad_sch"))
+        # /tmp/b's save happened later. Without shard isolation, a global
+        # mtime-sorted scan would return b1 when asked about /tmp/a.
+        latest_a = placement_cache.find_latest_for_schematic("/tmp/a.kicad_sch")
+        assert latest_a is not None
+        assert latest_a["state_id"] == _hex_id("a1")
+
+    def test_save_lands_in_correct_shard_subdirectory(self, isolated_cache_dir):
+        placement_cache.save_state(_state("solo", "/tmp/uniq.kicad_sch"))
+        expected_shard = placement_cache._schematic_shard("/tmp/uniq.kicad_sch")
+        files = list((isolated_cache_dir / expected_shard).glob("*.json"))
+        assert len(files) == 1
+        assert files[0].stem == _hex_id("solo")
+        # No stray files at the cache root.
+        root_files = [p for p in isolated_cache_dir.iterdir() if p.is_file()]
+        assert root_files == []
 
 
 class TestStateIdValidation:
@@ -209,12 +242,19 @@ class TestStateIdValidation:
 class TestCorruptCacheFile:
     def test_corrupt_json_returns_none_and_doesnt_crash(self, isolated_cache_dir):
         bogus_id = _hex_id("bogus")
-        (isolated_cache_dir / f"{bogus_id}.json").write_text("not json {")
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        shard.mkdir(parents=True, exist_ok=True)
+        (shard / f"{bogus_id}.json").write_text("not json {")
         assert placement_cache.load_state(bogus_id) is None
 
     def test_corrupt_files_are_skipped_in_find_latest(self, isolated_cache_dir):
-        (isolated_cache_dir / f"{_hex_id('bogus')}.json").write_text("not json {")
+        # Put a corrupt file in the same shard as the good one — the
+        # corrupt one is newer (mtime), so find_latest must skip it and
+        # fall back to the readable file.
         placement_cache.save_state(_state("good", "/tmp/x.kicad_sch"))
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        time.sleep(0.02)
+        (shard / f"{_hex_id('bogus')}.json").write_text("not json {")
         latest = placement_cache.find_latest_for_schematic("/tmp/x.kicad_sch")
         assert latest is not None
         assert latest["state_id"] == _hex_id("good")
