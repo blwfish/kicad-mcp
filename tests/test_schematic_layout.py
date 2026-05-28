@@ -20,6 +20,24 @@ def schematic_layout_fn():
     return tool.fn
 
 
+def _build_real_sch(tmp_path, components=()):
+    """Build a real kicad-sch-api schematic on disk; return its path.
+
+    Use this instead of a stub when testing the apply path, so unknown-
+    kwarg silent-all bugs in kicad_sch_api (like the filter(reference=)
+    issue that originally shipped) can't hide behind a hand-rolled stub.
+
+    components: iterable of (ref, value, (x, y)) tuples.
+    """
+    import kicad_sch_api as ksa
+    sch = ksa.create_schematic("x")
+    for ref, value, pos in components:
+        sch.components.add("Device:R", ref, value, position=pos)
+    path = tmp_path / "x.kicad_sch"
+    sch.save(str(path))
+    return path
+
+
 class TestUnknownOperation:
     def test_returns_error_with_listed_valid_ops(self, schematic_layout_fn):
         result = schematic_layout_fn(operation="bogus")
@@ -302,75 +320,53 @@ class TestApplyAndClearCache:
     def test_apply_drift_warning_when_hash_differs(
         self, schematic_layout_fn, tmp_path, monkeypatch,
     ):
-        """Stub kicad_sch_api; populate a cached state with a stale hash;
-        verify the drift warning fires."""
+        """Use a real schematic on disk; populate the cache with a bogus
+        hash so drift detection trips. Real ksa.load_schematic runs end-
+        to-end so no stub can mask the apply path."""
         self._isolate_cache(tmp_path, monkeypatch)
-        sch = tmp_path / "x.kicad_sch"
-        sch.write_text("(kicad_sch v1)")
+        sch_path = _build_real_sch(tmp_path, [
+            ("R1", "10k", (50, 50)),
+        ])
 
-        # Build a cached state with a bogus hash so drift detection trips.
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
             "state_id": "cccc3333dddd4444",
-            "schematic_path": str(sch),
-            "schematic_hash": "deadbeef" * 8,  # 64-char fake
+            "schematic_path": str(sch_path),
+            "schematic_hash": "deadbeef" * 8,  # 64-char fake → trips drift
             "components": {},
             "clusters": {},
         })
 
-        # Stub kicad_sch_api so apply doesn't actually need a real schematic.
-        class _StubSch:
-            def __init__(self):
-                self.components = self._Components()
-            class _Components:
-                def get(self, _reference):
-                    return None
-            def save(self):
-                pass
-
-        monkeypatch.setattr(
-            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
-        )
-
         result = schematic_layout_fn(operation="apply", state_id="cccc3333dddd4444")
         assert result["status"] == "ok"
-        # placement_state_stale was emitted; envelope is a list of dicts.
-        events_envelope = result.get("events", [])
-        codes = [e.get("code") for e in events_envelope]
+        codes = [e.get("code") for e in result.get("events", [])]
         assert "placement_state_stale" in codes
 
     def test_apply_handles_missing_refs_as_errors(
         self, schematic_layout_fn, tmp_path, monkeypatch,
     ):
+        """Real schematic with no U1; state targets U1; apply must report
+        an error for that ref against the real ksa lookup, not via a
+        stub-induced AttributeError."""
         self._isolate_cache(tmp_path, monkeypatch)
-        sch = tmp_path / "x.kicad_sch"
-        sch.write_text("(kicad_sch)")
+        sch_path = _build_real_sch(tmp_path, [
+            ("R1", "10k", (50, 50)),
+        ])
         from kicad_mcp.utils.placement import cache as pc
         pc.save_state({
             "state_id": "eeee5555ffff6666",
-            "schematic_path": str(sch),
-            "schematic_hash": "",  # disable drift check
+            "schematic_path": str(sch_path),
+            "schematic_hash": "",  # disable drift
             "components": {"U1": {"x_mm": 10.0, "y_mm": 20.0}},
             "clusters": {},
         })
 
-        class _StubSch:
-            def __init__(self):
-                self.components = self._Filter()
-            class _Filter:
-                def filter(self, reference=None):
-                    return []  # no components → all refs are errors
-            def save(self):
-                pass
-
-        monkeypatch.setattr(
-            "kicad_sch_api.load_schematic", lambda _path: _StubSch(),
-        )
         result = schematic_layout_fn(operation="apply", state_id="eeee5555ffff6666")
         assert result["status"] == "ok"
         assert result["applied"] == 0
         assert len(result["errors"]) == 1
         assert result["errors"][0]["ref"] == "U1"
+        assert "not found" in result["errors"][0]["error"]
 
 
 class TestLabelingIntegration:
