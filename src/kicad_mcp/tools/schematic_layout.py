@@ -19,6 +19,7 @@ from mcp_events import emit_event, event_context
 
 from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 from kicad_mcp.utils.placement import state as placement_state
+from kicad_mcp.utils.placement.conventions import apply_conventions
 from kicad_mcp.utils.placement.labeling import label_clusters
 from kicad_mcp.utils.placement.pack import (
     DEFAULT_COLUMN_PITCH_MM,
@@ -171,6 +172,19 @@ def _op_suggest(
             row_pitch_mm=row_pitch_mm,
         )
 
+        # Phase 3 — apply v1 convention rules (mutates pack in place).
+        # Labels need to be in dict form keyed by cluster_id.
+        cluster_label_map = {cid: labels[cid] for cid in partition.members}
+        convention_events = apply_conventions(
+            members_by_cluster=partition.members,
+            cluster_labels=cluster_label_map,
+            netlist=netlist,
+            pack=pack,
+            cluster_tier=tier_assignment.cluster_tier,
+            column_pitch_mm=column_pitch_mm,
+            row_pitch_mm=row_pitch_mm,
+        )
+
         # Bridge results into the PlacementState skeleton.
         for cid, refs in partition.members.items():
             cl = labels[cid]
@@ -203,6 +217,12 @@ def _op_suggest(
             emit_event(ev["level"], ev["code"], ev["message"], ev.get("data", {}))
         for ev in tier_assignment.events:
             emit_event(ev["level"], ev["code"], ev["message"], ev.get("data", {}))
+        for cev in convention_events:
+            emit_event(cev.level, cev.code, cev.message, {
+                "rule": cev.rule,
+                "cluster_id": cev.cluster_id,
+                "refs": cev.affected_refs,
+            })
 
         # Sliced output: drop bbox_mm/label_source from the in-memory state
         # only for minimal mode (kept in full).
