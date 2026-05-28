@@ -59,6 +59,11 @@ def create_server() -> FastMCP:
 
     register_lcsc_tools(mcp)
 
+    # Topology-aware schematic placement (per docs/SPEC_Schematic_Placement.md)
+    from kicad_mcp.tools.schematic_layout import register_schematic_layout_tools
+
+    register_schematic_layout_tools(mcp)
+
     logger.info("KiCad MCP server initialized with all tool modules")
     return mcp
 
