@@ -1,0 +1,187 @@
+"""Server-side cache for PlacementState round-trips.
+
+Per ``docs/SPEC_Schematic_Placement.md`` § Stateful vs stateless modes.
+
+Layout:
+  ~/.cache/kicad-mcp/placement_states/<state_id>.json
+
+Retention:
+  - 5 states per schematic max (LRU by mtime, eviction on save)
+  - 30-day expiry from mtime (sweep on save; also enforced on read)
+
+The JSON file is the source of truth — there is no in-memory cache on
+top. After a server restart, a ``state_id`` remains valid as long as
+its JSON file exists. Save/load failures fall back gracefully (no
+exception leaks to the calling tool).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Override-able for tests.
+CACHE_DIR_ENV = "KICAD_MCP_PLACEMENT_CACHE_DIR"
+_DEFAULT_CACHE_DIR = Path.home() / ".cache" / "kicad-mcp" / "placement_states"
+
+MAX_STATES_PER_SCHEMATIC = 5
+DEFAULT_MAX_AGE_DAYS = 30
+
+
+def cache_dir() -> Path:
+    """Resolved cache directory. Honors KICAD_MCP_PLACEMENT_CACHE_DIR
+    so tests can isolate without touching the user's real cache."""
+    override = os.environ.get(CACHE_DIR_ENV)
+    if override:
+        return Path(override)
+    return _DEFAULT_CACHE_DIR
+
+
+def _ensure_dir() -> Path:
+    d = cache_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_state(state: dict[str, Any]) -> str:
+    """Persist a PlacementState to disk. Returns the cache path.
+
+    Also runs eviction (per-schematic LRU) and expiry sweep so the cache
+    doesn't grow unbounded. Errors are logged and swallowed — the state
+    object is still returned to the caller, just not cached.
+    """
+    state_id = state.get("state_id")
+    if not state_id:
+        raise ValueError("state must have a state_id")
+    try:
+        d = _ensure_dir()
+        path = d / f"{state_id}.json"
+        path.write_text(json.dumps(state, indent=2))
+        _evict_lru_for_schematic(state.get("schematic_path", ""))
+        _sweep_expired()
+    except OSError as e:
+        logger.warning("placement cache save failed: %s", e)
+    return str(state_id)
+
+
+def load_state(state_id: str) -> dict[str, Any] | None:
+    """Read a cached state. Returns None on miss, on parse error, or if
+    the file is older than the expiry window."""
+    try:
+        path = cache_dir() / f"{state_id}.json"
+        if not path.exists():
+            return None
+        if _expired(path):
+            with contextlib.suppress(OSError):
+                path.unlink()
+            return None
+        obj: dict[str, Any] = json.loads(path.read_text())
+        return obj
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("placement cache load failed for %r: %s", state_id, e)
+        return None
+
+
+def find_latest_for_schematic(schematic_path: str) -> dict[str, Any] | None:
+    """Return the most recently saved state for this schematic path,
+    or None if none exists. Useful for cluster_id stability across
+    iterations: ``suggest`` calls this to feed previous_partition."""
+    if not schematic_path:
+        return None
+    candidates = _states_for_schematic(schematic_path)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    try:
+        obj: dict[str, Any] = json.loads(candidates[0].read_text())
+        return obj
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def clear_cache(schematic_path: str | None = None) -> int:
+    """Delete cached states. With no path, clears everything; with a
+    path, clears only states for that schematic. Returns the number of
+    files deleted."""
+    d = cache_dir()
+    if not d.exists():
+        return 0
+    count = 0
+    if schematic_path is None:
+        for path in d.glob("*.json"):
+            try:
+                path.unlink()
+                count += 1
+            except OSError:
+                pass
+    else:
+        for path in _states_for_schematic(schematic_path):
+            try:
+                path.unlink()
+                count += 1
+            except OSError:
+                pass
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _states_for_schematic(schematic_path: str) -> list[Path]:
+    """All cached state files whose stored schematic_path matches."""
+    out: list[Path] = []
+    d = cache_dir()
+    if not d.exists():
+        return out
+    for path in d.glob("*.json"):
+        try:
+            obj = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if obj.get("schematic_path") == schematic_path:
+            out.append(path)
+    return out
+
+
+def _evict_lru_for_schematic(schematic_path: str) -> None:
+    """Keep at most MAX_STATES_PER_SCHEMATIC states for this schematic."""
+    if not schematic_path:
+        return
+    states = _states_for_schematic(schematic_path)
+    if len(states) <= MAX_STATES_PER_SCHEMATIC:
+        return
+    # Sort oldest first; drop the excess.
+    states.sort(key=lambda p: p.stat().st_mtime)
+    for path in states[: len(states) - MAX_STATES_PER_SCHEMATIC]:
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def _sweep_expired(max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> None:
+    """Drop any cache file older than the expiry window."""
+    d = cache_dir()
+    if not d.exists():
+        return
+    cutoff = time.time() - max_age_days * 86400
+    for path in d.glob("*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+
+
+def _expired(path: Path, max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> bool:
+    try:
+        age_s = time.time() - path.stat().st_mtime
+        return age_s > max_age_days * 86400
+    except OSError:
+        return False
