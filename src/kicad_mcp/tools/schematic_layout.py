@@ -1,19 +1,22 @@
 """``schematic_layout`` router — topology-aware schematic placement.
 
-See ``docs/SPEC_Schematic_Placement.md``. Current slices:
+See ``docs/SPEC_Schematic_Placement.md``. Slices:
 
   Slice 1 — operation ``suggest`` + Layer 1 (topology)
   Slice 2 — Layers 2/3/4 (pattern_recognition + LCSC + caller hints)
   Slice 3 — Phase 2 ranking + Phase 3 packing
   Slice 4 — v1 convention rules
   Slice 5 — apply + stateful cache + clear_cache
-
-Telemetry integration lands in Slice 6.
+  Slice 6 — telemetry integration (record_call / record_cluster_decision
+            / record_warning / attribute_pending_warnings)
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +27,10 @@ from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 from kicad_mcp.utils.placement import cache as placement_cache
 from kicad_mcp.utils.placement import state as placement_state
 from kicad_mcp.utils.placement.conventions import apply_conventions
-from kicad_mcp.utils.placement.labeling import label_clusters
+from kicad_mcp.utils.placement.labeling import (
+    LABEL_SOURCE_RESOLVED,
+    label_clusters,
+)
 from kicad_mcp.utils.placement.pack import (
     DEFAULT_COLUMN_PITCH_MM,
     DEFAULT_ROW_PITCH_MM,
@@ -35,6 +41,17 @@ from kicad_mcp.utils.placement.topology import (
     ClusterPartition,
     cluster_components,
 )
+
+try:
+    from kicad_mcp.utils.telemetry import (
+        attribute_pending_warnings,
+        record_call,
+        record_cluster_decision,
+        record_warning,
+    )
+    _TELEMETRY_AVAILABLE = True
+except Exception:
+    _TELEMETRY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +169,7 @@ def _op_suggest(
             "message": f"Schematic file not found: {schematic_path}",
         }
 
+    t_start = time.monotonic()
     with event_context() as events:
         netlist = extract_netlist_via_cli(str(sch_path))
         if netlist is None:
@@ -263,6 +281,33 @@ def _op_suggest(
         # for output. Apply later loads the full version.
         placement_cache.save_state(state)
 
+        # Telemetry — Slice 6.
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+        is_fresh_state = prev_state is None
+        all_events = (
+            list(partition.events)
+            + list(label_events)
+            + list(tier_assignment.events)
+        )
+        _record_suggest_telemetry(
+            state=state,
+            netlist=netlist,
+            inputs={
+                "schematic_path": str(sch_path),
+                "verbosity": verbosity,
+                "hints": hints or {},
+                "column_pitch_mm": column_pitch_mm,
+                "row_pitch_mm": row_pitch_mm,
+            },
+            partition=partition,
+            tier_assignment_cluster_tier=tier_assignment.cluster_tier,
+            cluster_labels=cluster_label_map,
+            convention_events=convention_events,
+            layer_events=all_events,
+            elapsed_ms=elapsed_ms,
+            is_fresh_state=is_fresh_state,
+        )
+
         # Sliced output: drop bbox_mm/label_source from the in-memory state
         # only for minimal mode (kept in full).
         trimmed = placement_state.trim_for_verbosity(state, verbosity)
@@ -294,6 +339,7 @@ def _op_apply(
     ``state.components`` and moves each into place via the
     ``kicad_sch_api`` schematic object.
     """
+    t_start = time.monotonic()
     with event_context() as events:
         cached: dict[str, Any] | None
         if state_id:
@@ -403,6 +449,24 @@ def _op_apply(
                 "errors": errors,
             }
 
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+        if _TELEMETRY_AVAILABLE:
+            with contextlib.suppress(Exception):
+                record_call(
+                    tool_name="schematic_layout.apply",
+                    schematic_hash=current_hash,
+                    inputs_summary={
+                        "state_id": state_id or "",
+                        "refs_count": len(refs) if refs else 0,
+                    },
+                    output_summary={
+                        "applied": applied_count,
+                        "errors_count": len(errors),
+                    },
+                    elapsed_ms=elapsed_ms,
+                    state_id=cached.get("state_id"),
+                )
+
         result: dict[str, Any] = {
             "status": "ok",
             "applied": applied_count,
@@ -418,8 +482,158 @@ def _op_apply(
 # ---------------------------------------------------------------------------
 
 def _op_clear_cache(*, schematic_path: str | None) -> dict[str, Any]:
+    t_start = time.monotonic()
     count = placement_cache.clear_cache(schematic_path)
+    elapsed_ms = int((time.monotonic() - t_start) * 1000)
+    if _TELEMETRY_AVAILABLE:
+        with contextlib.suppress(Exception):
+            record_call(
+                tool_name="schematic_layout.clear_cache",
+                schematic_hash="",
+                inputs_summary={"schematic_path": schematic_path or ""},
+                output_summary={"cleared_count": count},
+                elapsed_ms=elapsed_ms,
+            )
     return {"status": "ok", "cleared_count": count}
+
+
+# ---------------------------------------------------------------------------
+# Telemetry helpers
+# ---------------------------------------------------------------------------
+
+def _record_suggest_telemetry(
+    *,
+    state: dict[str, Any],
+    netlist: dict[str, Any],
+    inputs: dict[str, Any],
+    partition: ClusterPartition,
+    tier_assignment_cluster_tier: dict[str, int],
+    cluster_labels: dict[str, Any],
+    convention_events: list[Any],
+    layer_events: list[dict[str, Any]],
+    elapsed_ms: int,
+    is_fresh_state: bool,
+) -> None:
+    """Write the suggest call's telemetry: one call row + cluster
+    decisions + warnings + action attribution. Swallows all errors
+    so telemetry failure can't break the main suggest response."""
+    if not _TELEMETRY_AVAILABLE:
+        return
+
+    try:
+        schematic_hash = state.get("schematic_hash", "") or ""
+        clusters = state.get("clusters") or {}
+        tier_count = len({
+            c.get("tier") for c in clusters.values() if c.get("tier") is not None
+        })
+
+        # Label-source breakdown
+        source_breakdown: Counter[str] = Counter()
+        low_confidence_count = 0
+        lcsc_resolved = 0
+        for cl in cluster_labels.values():
+            source_breakdown[cl.label_source] += 1
+            if cl.label_confidence < 0.5:
+                low_confidence_count += 1
+            if cl.label_source == LABEL_SOURCE_RESOLVED:
+                # Count LCSC-resolved *components*, not clusters.
+                pass
+        # LCSC-resolved count is sourced from the *netlist* component dicts
+        # (which carry the `properties` field from the kicad-cli output) —
+        # the placement state's component dicts don't include properties.
+        netlist_components = netlist.get("components") or {}
+        for comp in netlist_components.values():
+            props = (comp.get("properties") or {}) if isinstance(comp, dict) else {}
+            if props.get("LCSC"):
+                lcsc_resolved += 1
+
+        warning_events = [
+            e for e in layer_events if e.get("level") == "warn"
+        ] + [
+            {"code": cev.code, "level": cev.level}
+            for cev in convention_events
+            if getattr(cev, "level", "") == "warn"
+        ]
+
+        output_summary = {
+            "cluster_count": len(clusters),
+            "tier_count": tier_count,
+            "label_source_breakdown": dict(source_breakdown),
+            "low_confidence_cluster_count": low_confidence_count,
+            "warnings_emitted_count": len(warning_events),
+            "lcsc_resolved_component_count": lcsc_resolved,
+            "verbosity": inputs.get("verbosity", "minimal"),
+            "graph_modularity": round(partition.graph_modularity, 4),
+        }
+
+        call_id = record_call(
+            tool_name="schematic_layout.suggest",
+            schematic_hash=schematic_hash,
+            inputs_summary={
+                "hints_count": len(inputs.get("hints") or {}),
+                "column_pitch_mm": inputs.get("column_pitch_mm"),
+                "row_pitch_mm": inputs.get("row_pitch_mm"),
+                "verbosity": inputs.get("verbosity"),
+            },
+            output_summary=output_summary,
+            elapsed_ms=elapsed_ms,
+            state_id=state.get("state_id"),
+            is_fresh_state=is_fresh_state,
+        )
+        if call_id is None:
+            return
+
+        for cid, cluster in clusters.items():
+            cl = cluster_labels.get(cid)
+            record_cluster_decision(
+                call_id=call_id,
+                cluster_id=cid,
+                member_count=len(cluster.get("members") or []),
+                anchor_ref=cluster.get("anchor"),
+                label=cluster.get("label"),
+                label_confidence=cluster.get("label_confidence"),
+                label_source=cluster.get("label_source", ""),
+                tier=cluster.get("tier"),
+                louvain_modularity=(
+                    partition.graph_modularity if cl is not None else None
+                ),
+            )
+
+        for ev in warning_events:
+            code = ev.get("code", "unknown")
+            data = ev.get("data") or {}
+            refs = []
+            cluster_ids = []
+            if isinstance(data, dict):
+                if isinstance(data.get("refs"), list):
+                    refs = data["refs"]
+                if isinstance(data.get("ref"), str):
+                    refs = [data["ref"]]
+                if isinstance(data.get("cluster_id"), str):
+                    cluster_ids = [data["cluster_id"]]
+                if isinstance(data.get("candidates"), list):
+                    cluster_ids = cluster_ids or [data.get("cluster_id", "")]
+            if not refs and not cluster_ids:
+                # Warning has no target — skip (record_warning would reject).
+                continue
+            record_warning(
+                call_id=call_id,
+                warning_type=code,
+                severity=ev.get("level", "warn"),
+                affected_refs=refs,
+                affected_cluster_ids=cluster_ids,
+            )
+
+        # Action attribution: did this call's inputs address any prior
+        # warnings? Compare the raw caller payload against pending warnings
+        # on the same schematic.
+        attribute_pending_warnings(
+            schematic_hash=schematic_hash,
+            new_call_id=call_id,
+            inputs=inputs,
+        )
+    except Exception as e:
+        logger.warning("schematic_layout telemetry failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
