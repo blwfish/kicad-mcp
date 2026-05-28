@@ -450,6 +450,85 @@ class TestLabelingIntegration:
         assert cluster["label_source"] == "pattern_recognition"
 
 
+class TestApplyEarlyReturnsPreserveEvents:
+    """Drift + wires_will_be_stale warnings are emitted before the load
+    and save steps. If those steps fail, the early-return error dict
+    must still carry the events envelope so the caller has context for
+    why the schematic is in an inconsistent state."""
+
+    def _isolate_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "KICAD_MCP_PLACEMENT_CACHE_DIR", str(tmp_path / "cache"),
+        )
+
+    def test_load_failed_preserves_drift_warning(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        self._isolate_cache(tmp_path, monkeypatch)
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch v1)")
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "9999aaaa1111bbbb",
+            "schematic_path": str(sch),
+            "schematic_hash": "deadbeef" * 8,  # forces drift warning
+            "components": {},
+            "clusters": {},
+        })
+
+        # Force ksa.load_schematic to raise → schematic_load_failed.
+        def boom(_path):
+            raise RuntimeError("corrupted file")
+        monkeypatch.setattr("kicad_sch_api.load_schematic", boom)
+
+        result = schematic_layout_fn(
+            operation="apply", state_id="9999aaaa1111bbbb",
+        )
+        assert result["status"] == "error"
+        assert result["code"] == "schematic_load_failed"
+        codes = [e.get("code") for e in result.get("events", [])]
+        assert "placement_state_stale" in codes, (
+            "Drift warning was emitted before load failure but lost in the "
+            "error response"
+        )
+
+    def test_save_failed_preserves_drift_warning(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        self._isolate_cache(tmp_path, monkeypatch)
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "8888cccc2222dddd",
+            "schematic_path": str(sch),
+            "schematic_hash": "deadbeef" * 8,
+            "components": {},
+            "clusters": {},
+        })
+
+        # Stub schematic that raises on save.
+        class _StubSch:
+            def __init__(self):
+                self.components = self._Components()
+            class _Components:
+                def get(self, _ref):
+                    return None
+            def save(self):
+                raise RuntimeError("read-only filesystem")
+        monkeypatch.setattr(
+            "kicad_sch_api.load_schematic", lambda _p: _StubSch(),
+        )
+
+        result = schematic_layout_fn(
+            operation="apply", state_id="8888cccc2222dddd",
+        )
+        assert result["status"] == "error"
+        assert result["code"] == "save_failed"
+        codes = [e.get("code") for e in result.get("events", [])]
+        assert "placement_state_stale" in codes
+
+
 class TestSuggestSurfacesCacheSaveFailure:
     """When the cache write fails (disk full, read-only fs), the returned
     state_id is unusable. suggest must surface a cache_save_failed warning

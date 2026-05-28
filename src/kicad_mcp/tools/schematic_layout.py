@@ -56,6 +56,18 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+def _with_events(result: dict[str, Any], events: Any) -> dict[str, Any]:
+    """Append ``events.to_envelope()`` onto ``result`` if any events were
+    accumulated. Use this on EVERY return inside an ``event_context``
+    block so early-return paths (errors) don't silently drop warnings
+    (placement_state_stale, wires_will_be_stale, etc.) that were emitted
+    before the failure point.
+    """
+    if events.has_any("warn") or events.has_any("error") or events.has_any("info"):
+        result["events"] = events.to_envelope()
+    return result
+
+
 def _lcsc_lookup(lcsc_id: str) -> dict[str, Any] | None:
     """Thin shim over ``lcsc_db.get_component`` for Layer 3.
 
@@ -423,11 +435,12 @@ def _op_apply(
             import kicad_sch_api as ksa  # type: ignore[import-untyped]
             sch = ksa.load_schematic(target_path)
         except Exception as e:
-            return {
+            # Drift warning may already be in the event_context — preserve it.
+            return _with_events({
                 "status": "error",
                 "code": "schematic_load_failed",
                 "message": f"Could not load schematic: {e}",
-            }
+            }, events)
 
         # Wire-stale detection (spec § Open Question #2, option b): emit a
         # warning if any of the components we're about to move has wires
@@ -481,13 +494,16 @@ def _op_apply(
         try:
             sch.save()
         except Exception as e:
-            return {
+            # Drift + wires_will_be_stale warnings may already be in the
+            # event_context — preserve them so the caller has full context
+            # for why the schematic is in an inconsistent state.
+            return _with_events({
                 "status": "error",
                 "code": "save_failed",
                 "message": f"Schematic save failed: {e}",
                 "applied": applied_count,
                 "errors": errors,
-            }
+            }, events)
 
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
         if _TELEMETRY_AVAILABLE:
@@ -514,14 +530,11 @@ def _op_apply(
                     is_fresh_state=False,
                 )
 
-        result: dict[str, Any] = {
+        return _with_events({
             "status": "ok",
             "applied": applied_count,
             "errors": errors,
-        }
-        if events.has_any("warn") or events.has_any("error"):
-            result["events"] = events.to_envelope()
-        return result
+        }, events)
 
 
 # ---------------------------------------------------------------------------
