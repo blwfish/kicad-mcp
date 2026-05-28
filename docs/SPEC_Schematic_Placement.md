@@ -1,8 +1,8 @@
 # SPEC — Schematic Auto-Placement
 
-**Status:** Approved for implementation (pending the ground-truth fixture set, see Open Questions)
+**Status:** Approved for implementation. All three prerequisite SPECs (mcp-events, Feedback Infrastructure, Component Intelligence) have landed; the remaining gate is the ground-truth fixture set (see Open Questions).
 **Author:** Brian + Claude
-**Date:** 2026-05-27
+**Date:** 2026-05-27 (revised 2026-05-28 for Layer 3 API correction, prereq status, tool-count drift)
 **Target:** Topology-aware automatic placement of components in a KiCad schematic. Produces a structured state object that a calling LLM iterates against.
 **Trigger:** [GitHub issue #11](https://github.com/blwfish/kicad-mcp/issues/11) — external user asked whether AI-generated schematics always need manual reorganization. Baseline today: yes; this SPEC's goal is "first draft is usable in 70-85% of cases."
 
@@ -31,14 +31,14 @@ We're not competing with Altium's auto-placer or a human designer. We're competi
 
 This SPEC depends on:
 
-- **`mcp-events` package** (per [`SPEC_OOB_Events.md`](SPEC_OOB_Events.md), implemented 2026-05-27) — for surfacing warnings (bus-bridge detection, low-confidence labels, etc.)
-- **Feedback Infrastructure** (per [`SPEC_Feedback_Infrastructure.md`](SPEC_Feedback_Infrastructure.md)) — for telemetry-driven calibration of the algorithm
-- **Component Intelligence (LCSC)** (per [`SPEC_Component_Intelligence_LCSC.md`](SPEC_Component_Intelligence_LCSC.md)) — *optional* but strongly enhances Layer 3 (resolved-part labeling). The tool degrades gracefully when no LCSC data is assigned.
-- **Existing kicad-cli netlist export** with `pintype` extraction (already happens silently in `extract_netlist_via_cli`; this SPEC formalizes its use). Note: `pintype` and `pinfunction` are captured dynamically from XML attributes — they are present only if the symbol author defined them. Missing `pintype` is common on older community symbols and passives. See the "Missing `pintype` fallback" bullet in Layer 1 below.
-- **Existing `pattern_recognition.py`** — but demoted from cluster-driver to labeling-layer (see Layer 2 below)
-- **`networkx` ≥ 2.7** — for graph construction and Louvain community detection (`networkx.algorithms.community.louvain_communities`, added in networkx 2.7). No separate community-detection package required; `networkx` should be added to `pyproject.toml` if not already present.
+- **`mcp-events` package** (per [`SPEC_OOB_Events.md`](SPEC_OOB_Events.md), implemented 2026-05-27, published as `mcp-events>=0.1.0`) — for surfacing warnings (bus-bridge detection, low-confidence labels, etc.)
+- **Feedback Infrastructure** (per [`SPEC_Feedback_Infrastructure.md`](SPEC_Feedback_Infrastructure.md), merged via PR #39 on 2026-05-27) — for telemetry-driven calibration of the algorithm
+- **Component Intelligence (LCSC)** (per [`SPEC_Component_Intelligence_LCSC.md`](SPEC_Component_Intelligence_LCSC.md), merged via PR #40 on 2026-05-28; module is `kicad_mcp.tools.lcsc`, not `component_intelligence`) — *optional* but enhances Layer 3 (resolved-part labeling). The tool degrades gracefully when no LCSC data is assigned. Note: the shipped jlcparts local schema does not retain the upstream `firstSortName`/`secondSortName` category columns; Layer 3 derives labels from the `ResolvedPart` fields that *are* exposed. See Layer 3 below.
+- **Existing kicad-cli netlist export** with `pintype` extraction (already happens in [`extract_netlist_via_cli`](../src/kicad_mcp/utils/netlist_parser.py:472); this SPEC formalizes its use). Verified 2026-05-28 against KiCad 10's `kicadxml` format on the bundled `stm32f100-discovery-shield` template: every `<node>` element carries `pintype` and `pinfunction` attributes (62/62 on that template). The catch-all attribute capture in `extract_netlist_via_cli` already harvests them under the same key names. `pintype` may still be absent on user-defined symbols where the symbol author omitted the electrical-type field; see the "Missing `pintype` fallback" bullet in Layer 1 below.
+- **Existing `pattern_recognition.py`** — but demoted from cluster-driver to labeling-layer (see Layer 2 below). The `MCP\d+` voltage-collision and RC-filter false-positive issues called out in earlier drafts of this SPEC were already fixed in PR #38 (2026-05-27) as a pre-flight pass; nothing further needed here.
+- **`networkx` ≥ 3.0** — for graph construction and Louvain community detection (`networkx.algorithms.community.louvain_communities`). Added to `pyproject.toml` in the same revision as this SPEC update (2026-05-28); `uv.lock` resolves to 3.6.x at time of writing.
 
-**Implementation order**: all three named SPECs above must land first. This is the capstone.
+**Implementation order**: all three named prerequisite SPECs above have landed. This is the capstone and is now unblocked on dependency work; the remaining gate is the ground-truth fixture set.
 
 ## Design principles
 
@@ -77,19 +77,22 @@ For each cluster from Layer 1:
 - If multiple identifiers match (collision) → emit `pattern_recognition_collision` warning; label with lower confidence
 - If none match → label = `"unclassified"`, `label_confidence=0.0`, `label_source="topology_only"`
 
-**Coverage**: the 2026-05-27 audit found `pattern_recognition.py` classifies ~33% of components on a representative IoT fixture. The known false-positives (`MCP\d+` collision, RC-filter false positive on I²C pull-ups) must be fixed before this layer ships — but expanding coverage is NOT in scope. Calibrated honesty (33% covered, 67% honestly unclassified) is more valuable than expanded coverage with the existing bugs.
+**Coverage**: the 2026-05-27 audit found `pattern_recognition.py` classifies ~33% of components on a representative IoT fixture. The known false-positives (`MCP\d+` collision, RC-filter false positive on I²C pull-ups) were fixed in PR #38 (2026-05-27) ahead of this SPEC; no further `pattern_recognition.py` work is in scope here. Expanding coverage (level shifters, motor drivers, voltage references, etc.) is its own future project. Calibrated honesty (33% covered, 67% honestly unclassified) is the right shape for this layer.
 
 ### Layer 3 — Resolved-part labeling (when LCSC data present)
 
-When components have LCSC part numbers assigned (via the Component Intelligence tool), the supplier-provided category dominates pattern_recognition.
+When components have an `LCSC` property assigned (via the `lcsc` router's `assign` operation), supplier metadata is used to label clusters with higher confidence than pattern_recognition alone.
 
-- **Interface to Component Intelligence**: call `kicad_mcp.tools.component_intelligence.lookup_lcsc_category(lcsc_id: str) -> dict | None`. Returns `{"firstSortName": str, "secondSortName": str}` on hit, `None` on miss or if the jlcparts database is not configured. Layer 3 is a no-op (degrades silently to Layer 2) whenever this returns `None` — no error, no warning.
-- For each component with an `LCSC` property: call `lookup_lcsc_category`, read its category
-- Map category → cluster label (e.g., `"Power Management (PMIC) > Voltage Regulators - Linear, Low Drop Out (LDO)"` → `"ldo"`)
-- When a cluster's anchor component has a confident resolved-part label, that label wins over pattern_recognition's guess
-- `label_source="resolved_part"`, `label_confidence ∈ [0.8, 1.0]` (high because we *asked* the supplier)
+- **Interface**: call [`kicad_mcp.tools.lcsc`](../src/kicad_mcp/tools/lcsc.py)'s `resolve` operation (or `lcsc_db.get_component(lcsc_id)` directly for an in-process path that avoids the MCP tool overhead). On hit, returns a `ResolvedPart` (see `lcsc.py:72`) with fields: `mpn`, `manufacturer`, `description`, `package`, `pin_count`, `assembly_tier`, `kicad_symbol_lib_id`, `kicad_footprint_path`. On miss, returns `None`. Layer 3 is a no-op (degrades silently to Layer 2) whenever the lookup returns `None`, the ToS has not been accepted, or the jlcparts snapshot is unavailable — no error, no warning.
+- **No upstream category fields**: the upstream jlcparts dataset has `firstSortName` / `secondSortName` category columns, but the kicad-mcp local SQLite schema (see [`utils/lcsc_db.py`](../src/kicad_mcp/utils/lcsc_db.py) `_create_schema`) does NOT retain them. Earlier drafts of this SPEC assumed those columns were available; they are not. Label derivation works against the fields that *are* exposed:
+  - `mpn` + `manufacturer` — strong signal for well-known parts (e.g., MPN starting with `LM`, `TPS`, `LT` and manufacturer in `{Texas Instruments, Linear Technology, ...}` → likely an analog IC; matched against a small lookup table)
+  - `description` — short product description string. Keyword match against label vocabulary (e.g., `"LDO"`, `"buck"`, `"op-amp"`, `"comparator"`, `"MCU"`, `"FRAM"`, `"crystal"`, `"connector"`). Substring matching is acceptable here only via a single, named classifier function — per the project's syntactic-seam rule, do NOT scatter ad-hoc `"ldo" in description.lower()` checks across the layer
+  - `package` — supporting signal, never primary (`SOT-23` could be anything)
+  - `pin_count` — supporting signal (a 100-pin part is not a passive)
+- **Future option**: if Layer 3 quality is materially limited by the missing category columns, the jlcparts retention schema can be extended (one-line addition to `_create_schema` + rebuild). Out of scope for v1.
+- **Precedence**: when a cluster's anchor component has a confident resolved-part label, that label wins over pattern_recognition's guess. `label_source="resolved_part"`, `label_confidence ∈ [0.7, 0.95]` (high but not 1.0 — we asked the supplier about the *part*, not the *role in this schematic*; the description-keyword step is still heuristic).
 
-This is the highest-quality labeling layer when data is available, but doesn't require all components to be resolved — it dominates per-cluster based on what's known. The Component Intelligence spec owns the database location and schema; this layer consumes only the function above.
+This is the highest-quality labeling layer when data is available, but doesn't require all components to be resolved — it dominates per-cluster based on what's known. The `lcsc` tool owns the database location and schema; this layer consumes only the public interface above.
 
 ### Layer 4 — Caller hints (override)
 
@@ -378,7 +381,7 @@ Ship:
 
 ### Tool count after this PR
 
-14 → 15 (`schematic_layout` router).
+15 → 16 (`schematic_layout` router). Main is currently at 15 tools post-LCSC merge ([PR #40](https://github.com/blwfish/kicad-mcp/pull/40), 2026-05-28); the four-file lockstep applies per `project_docs_count_check` (`tests/test_server.py::test_current_tool_count` + `README.md` + `AGENT-INSTALL.md` + `TOOLS.md`).
 
 ### Test count target
 
@@ -414,7 +417,7 @@ These are decisions Brian needs to weigh in on before implementation begins:
 
 4. **The `role` field on components (deferred from earlier in this session).** Currently I'm using a 3-value enum: `"anchor" | "peripheral" | "passive"`. Brian deferred more granular options (`decoupling_cap`, `pull_up`, etc.); when telemetry shows callers wanting finer roles, expand.
 
-5. **Pattern recognition fixes scope.** The `MCP\d+` collision and RC-filter false-positive are blockers (without fixing them, labeling has confidently-wrong outputs that poison the iteration loop). But what about the broader coverage limitations? Recommended: fix only the collisions/false-positives in this PR. Coverage expansion (handling voltage refs, level shifters, motor drivers, etc.) is its own project.
+5. **Pattern recognition fixes scope.** *Resolved.* The `MCP\d+` collision and RC-filter false-positive were fixed in PR #38 (2026-05-27) ahead of this SPEC. Broader coverage expansion (voltage refs, level shifters, motor drivers, etc.) remains its own future project — explicitly out of scope here.
 
 ## Testing strategy
 
@@ -422,7 +425,7 @@ These are decisions Brian needs to weigh in on before implementation begins:
 
 - **Layer 1 (topology)**: synthetic netlist fixtures with known cluster structure; verify Louvain finds them; verify bus-bridge detection on synthetic merge scenarios
 - **Layer 2 (pattern recognition)**: verify the `MCP\d+` collision is fixed (TLV70 / MCP6002 / MCP23017 / MCP2200 all correctly classified, not misidentified as "voltage_sensor"); RC-filter detector excludes pull-ups (R to VCC, not R to signal source)
-- **Layer 3 (resolved-part)**: synthetic jlcparts SQLite fixture; verify category → label mapping; verify resolved-part dominates pattern_recognition when both present
+- **Layer 3 (resolved-part)**: monkeypatch `kicad_mcp.utils.lcsc_db.get_component` to return synthetic `ResolvedPart` rows (the shipped layer is JSONL-shard-backed SQLite, but Layer 3 tests should mock at the function boundary rather than building a real DB fixture); verify the description-keyword classifier maps known descriptions to expected labels; verify resolved-part dominates pattern_recognition when both present; verify clean degrade to Layer 2 when `get_component` returns `None`
 - **Layer 4 (hints)**: caller hints override all lower layers; absent hints don't crash anything
 - **Phase 2 (rank/BFS)**: synthetic netlist with known signal flow; verify tier assignment; verify cycle handling
 - **Phase 3 (pack)**: barycentric ordering reduces crossings on synthetic test cases; convention rules apply correctly
@@ -460,24 +463,22 @@ For an implementer picking this up cold:
 
 1. Read this SPEC end-to-end.
 2. Read the design-philosophy memories: `feedback_context_frugality.md`, `feedback_synchronous_at_call_boundary.md`, `feedback_prefer_packaging_over_vendoring.md`.
-3. **Verify the prerequisite chain is implemented**:
-   - `mcp-events` package (published to PyPI, integrated into kicad-mcp)
-   - Feedback Infrastructure (per `SPEC_Feedback_Infrastructure.md`)
-   - Component Intelligence (per `SPEC_Component_Intelligence_LCSC.md`) — *optional but enhances Layer 3*
+3. **Verify the prerequisite chain is implemented** (all expected to be ✅ as of 2026-05-28):
+   - `mcp-events` package — published as `mcp-events>=0.1.0`, integrated via PR #39
+   - Feedback Infrastructure — merged via [PR #39](https://github.com/blwfish/kicad-mcp/pull/39) (2026-05-27)
+   - Component Intelligence — merged via [PR #40](https://github.com/blwfish/kicad-mcp/pull/40) (2026-05-28); module is `kicad_mcp.tools.lcsc`
 4. **Confirm the ground-truth fixtures exist** at `tests/fixtures/schematic_placement/`. If not, this PR can begin but quality-benchmarking is blocked on Brian providing them.
-5. Pre-flight fixes to `pattern_recognition.py`: fix the `MCP\d+` collision and RC-filter false-positive. These are tracked as their own commits within the same PR.
-6. Implement against the v1 scope. Defer everything in "Deferred from v1."
-7. The test suite is the acceptance criterion. Unit tests run in `uv run pytest` without KiCad. Integration tests require KiCad and are marked appropriately.
-8. Update `MEMORY.md` and `project_schematic_placement.md` to mark this implemented when the PR merges; note any deviations.
+5. Implement against the v1 scope. Defer everything in "Deferred from v1." Note that the previously-listed pre-flight fixes to `pattern_recognition.py` (MCP\d+ collision, RC-filter false-positive) were already shipped in PR #38 and are NOT part of this PR's scope.
+6. The test suite is the acceptance criterion. Unit tests run in `uv run pytest` without KiCad. Integration tests require KiCad and are marked appropriately.
+7. Update `MEMORY.md` and `project_schematic_placement.md` to mark this implemented when the PR merges; note any deviations.
 
-Tool count after this PR: 14 → 15. Test count target: +60-80.
+Tool count after this PR: 15 → 16. Test count target: +60-80. Don't forget the four-file lockstep (`tests/test_server.py::test_current_tool_count` + `README.md` + `AGENT-INSTALL.md` + `TOOLS.md`) per `project_docs_count_check`.
 
 Implementation order recap:
 
 ```
-✅ OOB Events Subsystem        (mcp-events package implemented)
-⏳ mcp-events PyPI publication (blocker)
-→  Feedback Infrastructure     (spec ready)
-→  Component Intelligence      (spec ready)
-→  Schematic Auto-Placement    (this spec — capstone)
+✅ OOB Events Subsystem        (mcp-events package implemented, published to PyPI)
+✅ Feedback Infrastructure     (merged via PR #39, 2026-05-27)
+✅ Component Intelligence      (merged via PR #40, 2026-05-28)
+→  Schematic Auto-Placement    (this spec — capstone, ready to implement)
 ```
