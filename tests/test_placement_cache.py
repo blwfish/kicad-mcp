@@ -63,6 +63,18 @@ class TestSaveLoadRoundTrip:
         with pytest.raises(ValueError):
             placement_cache.save_state({})
 
+    def test_save_state_returns_none_when_write_fails(
+        self, isolated_cache_dir, monkeypatch,
+    ):
+        """OSError on disk write must surface as a None return, not a
+        ghost state_id that later load_state can't find."""
+        # Make Path.write_text raise.
+        def boom(self, *args, **kwargs):
+            raise OSError("disk full")
+        monkeypatch.setattr("pathlib.Path.write_text", boom)
+        result = placement_cache.save_state(_state("aaaa1111bbbb2222"))
+        assert result is None
+
 
 class TestFindLatestForSchematic:
     def test_returns_most_recently_mtimed_state(self, isolated_cache_dir, monkeypatch):

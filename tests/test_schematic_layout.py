@@ -450,6 +450,34 @@ class TestLabelingIntegration:
         assert cluster["label_source"] == "pattern_recognition"
 
 
+class TestSuggestSurfacesCacheSaveFailure:
+    """When the cache write fails (disk full, read-only fs), the returned
+    state_id is unusable. suggest must surface a cache_save_failed warning
+    so the caller doesn't store the id and hit state_not_found later."""
+
+    def test_warning_emitted_when_save_fails(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "KICAD_MCP_PLACEMENT_CACHE_DIR", str(tmp_path / "cache"),
+        )
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.extract_netlist_via_cli",
+            lambda _path: {"components": {}, "nets": {}},
+        )
+        # Force save_state to return None (simulating disk failure).
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.placement_cache.save_state",
+            lambda _state: None,
+        )
+        result = schematic_layout_fn(operation="suggest", schematic_path=str(sch))
+        assert result["status"] == "ok"
+        codes = [e.get("code") for e in result.get("events", [])]
+        assert "cache_save_failed" in codes
+
+
 class TestApplyMovesOnlyTargetedRefs:
     """Regression for the filter(reference=) silent-all bug: kicad_sch_api
     silently ignores unknown kwargs and returns ALL components, so the

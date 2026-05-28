@@ -278,8 +278,23 @@ def _op_suggest(
             })
 
         # Persist the FULL state to the server-side cache before trimming
-        # for output. Apply later loads the full version.
-        placement_cache.save_state(state)
+        # for output. Apply later loads the full version. If the write
+        # fails (disk full, read-only fs, etc.), the returned state_id
+        # would be unusable — surface that to the caller via a warning
+        # so they don't store it and hit state_not_found later.
+        saved_id = placement_cache.save_state(state)
+        cache_persisted = saved_id is not None
+        if not cache_persisted:
+            emit_event(
+                "warn", "cache_save_failed",
+                (
+                    f"Placement cache write failed; state_id "
+                    f"{state['state_id']!r} will not be loadable by a later "
+                    "apply call. Pass the full state explicitly via the "
+                    "state parameter (stateless mode) instead."
+                ),
+                {"state_id": state["state_id"]},
+            )
 
         # Telemetry — Slice 6.
         elapsed_ms = int((time.monotonic() - t_start) * 1000)

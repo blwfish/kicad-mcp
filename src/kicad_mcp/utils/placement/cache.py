@@ -62,12 +62,17 @@ def _ensure_dir() -> Path:
     return d
 
 
-def save_state(state: dict[str, Any]) -> str:
-    """Persist a PlacementState to disk. Returns the cache path.
+def save_state(state: dict[str, Any]) -> str | None:
+    """Persist a PlacementState to disk. Returns the state_id on success,
+    ``None`` on disk-write failure.
+
+    Returning ``None`` (rather than always returning the id and silently
+    eating the OSError) gives the caller a signal that the cache write
+    failed — important because a state_id the caller stores but can never
+    load back is worse than no state_id at all.
 
     Also runs eviction (per-schematic LRU) and expiry sweep so the cache
-    doesn't grow unbounded. Errors are logged and swallowed — the state
-    object is still returned to the caller, just not cached.
+    doesn't grow unbounded.
     """
     state_id = state.get("state_id")
     if not state_id:
@@ -86,6 +91,7 @@ def save_state(state: dict[str, Any]) -> str:
         _sweep_expired()
     except OSError as e:
         logger.warning("placement cache save failed: %s", e)
+        return None
     return str(state_id)
 
 
