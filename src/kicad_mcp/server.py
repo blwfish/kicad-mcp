@@ -54,6 +54,11 @@ def create_server() -> FastMCP:
 
     register_telemetry_analyze_tools(mcp)
 
+    # LCSC/JLCPCB component intelligence
+    from kicad_mcp.tools.lcsc import register_lcsc_tools
+
+    register_lcsc_tools(mcp)
+
     logger.info("KiCad MCP server initialized with all tool modules")
     return mcp
 
