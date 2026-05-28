@@ -276,10 +276,12 @@ The score is computed as a weighted average of per-criterion match scores:
 | `"any"` | 1.0 | 1.0 | 1.0 |
 
 Rationale for the non-obvious cells:
-- `"preferred"` and `"extended"` score the same when `"basic"` is requested — both add a per-part setup fee, so neither is better than the other from a cost standpoint.
+- `"preferred"` and `"extended"` score the same when `"basic"` is requested — both add a per-part setup fee; neither is better than the other from a cost standpoint.
 - When `"extended"` is requested and `"preferred"` is found: `preferred` IS a subset of extended — score 1.0.
-- When `"extended"` is requested and `"basic"` is found: basic is cheaper and works fine — scored 0.8 rather than 0.5 because finding a basic part when you expected extended is a positive surprise, not a failure. If telemetry shows this is wrong (users expected extended specifically and basic misses the mark), tune toward 0.5.
+- When `"extended"` is requested and `"basic"` is found: basic is cheaper and always works — 0.8 rather than 0.5 because finding a basic part when you expected extended is a positive surprise, not a failure. The argument for 0.5 would be that a user specifying "extended" has a specific part in mind that only comes in extended; the argument for 0.8 is that most of the time they just want something that works and basic is strictly better. 0.8 is the reasoned default; it stands without tuning data.
 - When `"preferred"` is requested and non-preferred is found: both `"basic"` and `"extended"` equally fall short of the JLCPCB-recommended designation — both 0.7.
+
+These are **reasoned defaults.** The kicad-mcp distribution model is local SQLite with no upload, so community-scale calibration won't materialize. Brian's own usage will surface gross miscalibrations; the values are designed to be defensible without that data.
 
 Overall score = sum of (weight × per-criterion score). Score in [0, 1]. The configurable parameter is whether unresolvable-footprint candidates are returned at all (`include_unresolvable` arg, default False).
 
@@ -368,7 +370,7 @@ The jlcparts SQLite is downloaded on first ToS-accepted call and cached at `~/.c
 | 15-30 days | Use snapshot; emit `warn` event `lcsc_snapshot_stale`; LLM sees in response `events` |
 | 31+ days | Use snapshot; emit `warn` event `lcsc_snapshot_very_stale`; suggest refresh |
 
-These thresholds are **initial guesses**. Telemetry records snapshot age at every call (in `calls.output_summary`). Once we have data on actual LCSC catalog churn rate, we tune.
+These thresholds are **reasoned defaults, not guesses.** JLCPCB's commodity catalog (passives, common ICs) is stable week-to-week; the main churn is new part additions and occasional stock changes, not wholesale price/availability swings. Seven days of quiet use reflects that. The warn threshold at 15 days is conservative — most searches will still find the right part with a two-week-old snapshot. Telemetry records snapshot age at every call so gross miscalibration in Brian's own usage will surface, but the distribution model (local SQLite, no upload) means community-scale tuning is aspirational. These values are designed to stand without it.
 
 ### Refresh
 
@@ -448,10 +450,11 @@ For each `lcsc(operation="search"|"resolve"|"assign", ...)` call:
 
 ### Future analyze queries (Feedback Infrastructure)
 
-Not in v1, but documented as targets for the calibration loop:
-- Distribution of `snapshot_age_days` across calls — tunes the freshness thresholds
-- Distribution of `top_match_score` for successful workflows vs. abandoned ones — tunes scoring weights
-- Most-frequently-emitted unmapped-package codes — drives footprint-mapping additions
+Not in v1, but documented as targets for the calibration loop. Note: kicad-mcp is local-only with no telemetry upload, so these queries run on Brian's data plus whatever users voluntarily share. That's enough to catch gross miscalibration but not enough for statistical confidence on edge cases. Treat the initial values as the real design; treat these queries as a safety net.
+
+- Distribution of `snapshot_age_days` across calls — catches cases where the quiet window is too long or warn fires too eagerly
+- Distribution of `top_match_score` — catches systematic search failure (many low-score results suggest the description pre-filter or keyword matching is off)
+- Most-frequently-emitted unmapped-package codes — directly actionable: add those packages to the YAML
 
 ## v1 scope
 
