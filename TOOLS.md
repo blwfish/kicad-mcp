@@ -1,6 +1,6 @@
 # Tool Summary
 
-This MCP server exposes <!-- tool-count -->15<!-- /tool-count --> MCP tools for KiCad EDA — 10 domain routers and 5 standalones.
+This MCP server exposes <!-- tool-count -->16<!-- /tool-count --> MCP tools for KiCad EDA — 11 domain routers and 5 standalones.
 
 Each router takes an `operation` parameter that selects the sub-operation.
 Unknown operations return an error listing valid choices.
@@ -58,6 +58,13 @@ Operations: `connections`, `circuit_patterns`, `project_patterns`, `bom`, `netli
 ### `export` — manufacturing output files
 Operations: `gerbers`, `bom_csv`, `thumbnail`
 
+### `lcsc` — LCSC/JLCPCB component intelligence
+Operations: `search`, `resolve`, `assign`, `accept_tos`, `refresh_snapshot`
+
+### `schematic_layout` — topology-aware schematic placement
+Operations: `suggest`, `apply`, `clear_cache`.
+See [docs/SPEC_Schematic_Placement.md](docs/SPEC_Schematic_Placement.md).
+
 ## Standalone Tools
 
 | Tool | Purpose |
@@ -66,6 +73,7 @@ Operations: `gerbers`, `bom_csv`, `thumbnail`
 | `panelize_pcb` | Manufacturing panelization with V-scores or mouse-bites |
 | `estimate_board_size` | Pre-PCB planning: estimate board dimensions from a footprint list |
 | `suggest_placement` | Connectivity-based component placement suggestions |
+| `analyze_placement_telemetry` | Read-only telemetry analysis for placement calibration |
 
 ## Migration from v0.9.0
 

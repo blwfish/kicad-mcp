@@ -112,3 +112,9 @@ ignore_missing_imports = true
 # when the upstream package adds typing markers.
 module = ["mcp_events"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# networkx 3.x ships no typing markers as of Aug 2024; types-networkx exists
+# but the stub coverage is partial. Treat as untyped for now.
+module = ["networkx", "networkx.*"]
+ignore_missing_imports = true
