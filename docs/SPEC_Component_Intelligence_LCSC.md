@@ -260,11 +260,26 @@ The score is computed as a weighted average of per-criterion match scores:
 
 | Criterion | Weight | Match scoring |
 |---|---|---|
-| Description / functional match | 0.40 | Full-text relevance against `description` and `attributes`; 1.0 = all query keywords match, 0.0 = none |
+| Description / functional match | 0.40 | Full-text relevance against `description` only (v1; `attributes` not used in scoring — see Search implementation strategy); 1.0 = all query keywords match, 0.0 = none |
 | Package | 0.25 | Exact package string match = 1.0; close family (e.g., SOT-23 vs SOT-23-5) = 0.7; different = 0.0 |
-| Assembly tier | 0.15 | Exact = 1.0; "extended" when "basic" requested = 0.5; "obsolete"/"unknown" = 0.0 |
+| Assembly tier | 0.15 | See tier scoring table below |
 | Stock availability | 0.10 | stock ≥ 1000 = 1.0; stock 100-999 = 0.7; stock 1-99 = 0.3; stock 0 = 0.0 |
 | KiCad footprint resolvable | 0.10 | Has mapping = 1.0; no mapping = 0.5 (reduced; user can still proceed) |
+
+**Assembly tier scoring** (initial values — instrument and tune from telemetry):
+
+| Requested \ Available | `"basic"` | `"extended"` | `"preferred"` |
+|---|---|---|---|
+| `"basic"` | 1.0 | 0.5 | 0.5 |
+| `"extended"` | 0.8 | 1.0 | 1.0 |
+| `"preferred"` | 0.7 | 0.7 | 1.0 |
+| `"any"` | 1.0 | 1.0 | 1.0 |
+
+Rationale for the non-obvious cells:
+- `"preferred"` and `"extended"` score the same when `"basic"` is requested — both add a per-part setup fee, so neither is better than the other from a cost standpoint.
+- When `"extended"` is requested and `"preferred"` is found: `preferred` IS a subset of extended — score 1.0.
+- When `"extended"` is requested and `"basic"` is found: basic is cheaper and works fine — scored 0.8 rather than 0.5 because finding a basic part when you expected extended is a positive surprise, not a failure. If telemetry shows this is wrong (users expected extended specifically and basic misses the mark), tune toward 0.5.
+- When `"preferred"` is requested and non-preferred is found: both `"basic"` and `"extended"` equally fall short of the JLCPCB-recommended designation — both 0.7.
 
 Overall score = sum of (weight × per-criterion score). Score in [0, 1]. The configurable parameter is whether unresolvable-footprint candidates are returned at all (`include_unresolvable` arg, default False).
 
@@ -477,16 +492,16 @@ Approximately +50 tests. The match-scoring algorithm needs thorough boundary cov
 - **Multi-snapshot history.** v1 holds one snapshot; v2 could keep history for "compare prices across snapshots" workflows.
 - **`refresh_snapshot` progress streaming.** v1 downloads silently and reports success/failure at end. v2 could stream progress via `mcp-events` for the user experience.
 
-## Open questions (proposed answers — confirm during implementation)
+## Open questions (delegate to implementation)
 
-1. **Should `lcsc(operation="assign", ...)` automatically resolve part_number, or require the caller to have already called `resolve` first?** Proposal: it resolves internally (single round-trip from the LLM's view). The downside is the LLM might be surprised by what `resolve` would have returned. Surface a `Resolved` summary in the `assign` response.
-2. **What happens if `assign` is called for a reference that doesn't exist in the schematic?** Proposal: `status: "error"` with `code: "reference_not_found"`. Don't silently no-op.
-3. **What happens if `assign` is called for a part whose `kicad_symbol_lib_id` is None?** Proposal: still proceed with `Value` and `LCSC` property; skip the symbol; emit a `warn` event. Assign is a "do as much as you can" operation.
-4. **Should `search` honor a `min_score` threshold to filter out very-poor matches?** Proposal: not in v1. Return up to `max_results` regardless of score; let the caller filter. The `match_score` is in the response for caller decisions.
-5. **What's the maximum `description` length the search engine handles cleanly?** Proposal: 256 chars; truncate longer queries with a `warn` event. Forces concise spec, avoids confusion when an LLM accidentally pastes a paragraph.
-6. **`library_index.db` symbol lookup — decided.** Two-tier lookup: exact match on symbol `name` → FTS fallback with score threshold → `None` + LLM hint. See Data source #3 for the full algorithm.
-7. **Search performance strategy — decided.** Hybrid pre-filter: SQL WHERE clause on indexed columns (`assembly_tier`, `stock > 0`, `package`) narrows the candidate set; Python scores survivors. `extra_filters` removed from v1 entirely. See "Search implementation strategy" section above.
-8. **When does the live JLCPCB API get called — decided.** Cache miss in `resolve` only. Snapshot-found parts always use snapshot data; cache staleness alone does not trigger a live fetch. `refresh_snapshot` is the user-facing escape hatch for fresher data.
+These are implementation-level decisions. Proposals are stated; implementer confirms or adjusts.
+
+1. **Should `assign` automatically resolve the part_number internally?** Proposal: yes — resolves internally, single round-trip from the LLM's view. Surface the resolved MPN in the `applied` response so the LLM isn't surprised.
+2. **`assign` when reference doesn't exist in schematic?** Proposal: `status: "error"`, `code: "reference_not_found"`. Don't silently no-op.
+3. **`assign` when `kicad_symbol_lib_id` is None?** Proposal: proceed with `Value` and `LCSC` property; skip symbol update; emit `warn`. "Do as much as you can."
+4. **`assign` when no schematic is loaded?** Proposal: `status: "error"`, `code: "no_schematic_loaded"`.
+5. **`search` `min_score` threshold?** Proposal: none in v1 — return up to `max_results` regardless; let caller filter. `match_score` is in the response.
+6. **`description` length cap?** Proposal: 256 chars; truncate with a `warn` event.
 
 ## Testing strategy
 
@@ -565,12 +580,11 @@ For an implementer picking this up cold:
 3. **Verify the `mcp-events` package exists** at `/Volumes/Files/claude/mcp-events/` and is installed. If not, this PR is blocked — `mcp-events` must be on PyPI before the PR can merge (CI uses `uv sync --frozen`).
 4. **Verify the Feedback Infrastructure is merged to main.** If not merged: `record_call` and `record_warning` are unavailable. Use no-op stubs — `def record_call(*args, **kwargs): pass` — guarded by a `try/except ImportError`. Do not add a runtime `if feedback_available:` flag; just let the import fail gracefully.
 5. **Before writing any data-layer code:** download a live jlcparts snapshot and verify: (a) column names match the schema above, (b) `price` column raw format, (c) `extra` JSON structure, (d) top-50 `package` values for mapping YAML seeding, (e) whether `lifecycle` data is in `jlc_extra` or absent. Budget 30 minutes for this — it will save days of debugging.
-6. **Resolve Open Questions 6–8** (library lookup, search performance, live API trigger) before writing implementation code. See the section above.
-7. Implement against the v1 scope above. Defer everything in "Deferred from v1."
-8. The test suite is the acceptance criterion. Unit tests run in the existing `uv run pytest` invocation with no KiCad installation required (using the synthetic SQLite fixture). Integration tests require KiCad and are marked accordingly.
-9. Hand-curate the initial `lcsc_footprint_mapping.yaml` from the top-50 package values found in step 5, plus common additions. Consult `project_component_intelligence.md` for context.
-10. **Tool count 4-file lockstep:** adding this tool requires updating `tests/test_server.py`, `README.md`, `AGENT-INSTALL.md`, and `TOOLS.md` to reflect 14 tools. The `check-docs` CI job validates all four match. Do all four or the CI will fail.
-11. Update `MEMORY.md` and `project_component_intelligence.md` to mark this as **implemented** when the PR merges; note any deviations from this spec.
+6. Implement against the v1 scope above. Defer everything in "Deferred from v1."
+7. The test suite is the acceptance criterion. Unit tests run in the existing `uv run pytest` invocation with no KiCad installation required (using the synthetic SQLite fixture). Integration tests require KiCad and are marked accordingly.
+8. Hand-curate the initial `lcsc_footprint_mapping.yaml` from the top-50 package values found in step 5, plus common additions. Consult `project_component_intelligence.md` for context.
+9. **Tool count 4-file lockstep:** adding this tool requires updating `tests/test_server.py`, `README.md`, `AGENT-INSTALL.md`, and `TOOLS.md` to reflect 14 tools. The `check-docs` CI job validates all four match. Do all four or the CI will fail.
+10. Update `MEMORY.md` and `project_component_intelligence.md` to mark this as **implemented** when the PR merges; note any deviations from this spec.
 
 Tool count after this PR: 13 → 14. Test count target: ~+50 tests.
 
