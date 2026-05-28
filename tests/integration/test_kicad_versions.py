@@ -202,7 +202,7 @@ def test_schematic_create_and_save(mcp_server, workspace):
     assert result.get("status") == "ok"
 
     save = _get_tool(mcp_server, "save_schematic")
-    result = save({"file_path": sch_path})
+    result = save({"schematic_path": sch_path})
     assert result.get("status") == "ok"
     assert os.path.isfile(sch_path)
 
