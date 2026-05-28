@@ -149,3 +149,80 @@ class TestStateShape:
         result = schematic_layout_fn(operation="suggest", schematic_path=str(sch))
         assert "state_id" in result
         assert len(result["state_id"]) == 16
+
+
+class TestLabelingIntegration:
+    """Slice 2 — confirm Layers 2/3/4 land on cluster dicts in the state."""
+
+    def test_pattern_recognition_label_lands_on_cluster(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        fake_netlist = {
+            "components": {"U1": {"reference": "U1", "value": "ATMEGA328P"}},
+            "nets": {},
+        }
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.extract_netlist_via_cli",
+            lambda _path: fake_netlist,
+        )
+        result = schematic_layout_fn(
+            operation="suggest", schematic_path=str(sch), verbosity="full",
+        )
+        cluster = next(iter(result["state"]["clusters"].values()))
+        assert cluster["label"] == "mcu"
+        assert cluster["label_source"] == "pattern_recognition"
+        assert cluster["anchor"] == "U1"
+
+    def test_caller_hint_overrides_pattern(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        fake_netlist = {
+            "components": {"U1": {"reference": "U1", "value": "ATMEGA328P"}},
+            "nets": {},
+        }
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.extract_netlist_via_cli",
+            lambda _path: fake_netlist,
+        )
+        result = schematic_layout_fn(
+            operation="suggest", schematic_path=str(sch),
+            hints={"U1": "connector"}, verbosity="full",
+        )
+        cluster = next(iter(result["state"]["clusters"].values()))
+        assert cluster["label"] == "connector"
+        assert cluster["label_source"] == "caller_hint"
+        assert cluster["label_confidence"] == 1.0
+        assert result["state"]["inputs_honored"]["hints_applied"] == ["U1"]
+
+    def test_lcsc_disabled_silently_when_no_db(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        """When LCSC isn't configured, Layer 3 must not raise."""
+        sch = tmp_path / "x.kicad_sch"
+        sch.write_text("(kicad_sch)")
+        fake_netlist = {
+            "components": {"U1": {"reference": "U1", "value": "ATMEGA328P",
+                                  "properties": {"LCSC": "C12345"}}},
+            "nets": {},
+        }
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout.extract_netlist_via_cli",
+            lambda _path: fake_netlist,
+        )
+        # Force the lcsc_db.db_exists path to fail; Layer 3 should swallow.
+        monkeypatch.setattr(
+            "kicad_mcp.tools.schematic_layout._lcsc_lookup",
+            lambda _pn: None,
+        )
+        result = schematic_layout_fn(
+            operation="suggest", schematic_path=str(sch), verbosity="full",
+        )
+        assert result["status"] == "ok"
+        cluster = next(iter(result["state"]["clusters"].values()))
+        # Layer 3 declined → Layer 2 still wins.
+        assert cluster["label"] == "mcu"
+        assert cluster["label_source"] == "pattern_recognition"
