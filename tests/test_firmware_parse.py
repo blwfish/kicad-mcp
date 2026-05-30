@@ -129,6 +129,19 @@ def test_second_instance_addr_is_classified_as_address():
     assert m.kind is MacroKind.ADDRESS and m.address == 0x69
 
 
+@pytest.mark.parametrize("name,expected", [
+    ("MPU-6050", "MPU6050"),       # symbol-name dash stripped
+    ("MPU6050", "MPU6050"),        # firmware-derived type unchanged
+    ("bme280", "BME280"),
+    ("SSD1306", "SSD1306"),
+])
+def test_canonical_type(name, expected):
+    # one source so firmware (MPU6050_ADDR), card lookup, auto-draft and pre-fetch
+    # all agree — a dashed symbol name resolves the same as the macro key.
+    from kicad_mcp.utils.firmware.parse import canonical_type
+    assert canonical_type(name) == expected
+
+
 # --- GPIO range boundaries (at / below / above) ------------------------------
 
 @pytest.mark.parametrize("value,valid", [

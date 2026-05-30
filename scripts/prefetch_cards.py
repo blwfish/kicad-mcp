@@ -92,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             draft = card.pop("_draft", {})
             dest = out_dir / f"{card['type'].lower()}.yaml"
+            if dest.exists():   # two symbols canonicalize to one type — don't hide it
+                dispositions["type-collision-skipped"] += 1
+                print(f"  ! {lib_id}: type {card['type']!r} already written "
+                      f"({dest.name}); skipping to avoid silent overwrite")
+                continue
             header = (f"# AUTO-GENERATED DRAFT — confidence={conf}. Review + confirm "
                       f"footprint before promoting into devices/.\n"
                       f"# reasons: {'; '.join(reasons)}\n")

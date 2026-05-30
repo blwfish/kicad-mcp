@@ -21,22 +21,18 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from kicad_mcp.utils.firmware.autodraft import _GROUND_RE, _SUPPLY_RE, identify_by_address
+from kicad_mcp.utils.firmware.autodraft import identify_by_address
+from kicad_mcp.utils.firmware.parse import canonical_type
+from kicad_mcp.utils.firmware.power_names import (
+    is_control_pin,
+    is_ground_pin,
+    is_nc_pin,
+    is_supply_pin,
+)
 
 # We auto-synthesize the high-confidence tier for I2C only — it's the common,
 # address-identifiable case. Other buses are reported but not auto-shipped.
 _I2C_ROLES = ("SDA", "SCL")
-_NC_NAMES = frozenset({"NC", "~", ""})
-
-
-def _type_from_symbol_name(name: str) -> str:
-    """Firmware-style type key from a symbol name: ``MPU-6050`` -> ``MPU6050``
-    (matches what ``parse.address_base`` yields from ``MPU6050_ADDR``)."""
-    return re.sub(r"[^A-Z0-9]", "", name.upper())
-
-
-def _is_nc(name: str) -> bool:
-    return name.strip().upper() in _NC_NAMES or name.strip().upper().startswith("NC")
 
 
 def synthesize_i2c_card(
@@ -61,13 +57,19 @@ def synthesize_i2c_card(
     if not set(_I2C_ROLES) <= names:
         return None, "skip", ["no clean I2C bus signature (need SDA + SCL by name)"]
 
-    supply = sorted(n for n in names if _SUPPLY_RE.match(n))
-    ground = sorted(n for n in names if _GROUND_RE.match(n))
-    explained = set(_I2C_ROLES) | set(supply) | set(ground)
-    unexplained = sorted(n for n in names if n not in explained and not _is_nc(n))
+    supply = sorted(n for n in names if is_supply_pin(n))
+    ground = sorted(n for n in names if is_ground_pin(n))
+    # A pin is "explained" if it's a bus role, power/ground/NC, or a control
+    # output a draft may leave floating (INT/DRDY/ALERT). Anything else means the
+    # symbol does more than an I2C bus -> identity uncertain -> not auto-high.
+    unexplained = sorted(
+        n for n in names
+        if n not in set(_I2C_ROLES) and not is_supply_pin(n) and not is_ground_pin(n)
+        and not is_nc_pin(n) and not is_control_pin(n)
+    )
 
     addr_type = identify_by_address(address)
-    corroborated = addr_type is not None and addr_type == _type_from_symbol_name(symbol_name)
+    corroborated = addr_type is not None and canonical_type(addr_type) == canonical_type(symbol_name)
     if addr_type:
         reasons.append(f"I2C address {hex(address or 0)} → {addr_type}"
                        + (" (corroborates symbol)" if corroborated else ""))
@@ -82,10 +84,10 @@ def synthesize_i2c_card(
                        "(multi-interface part — confirm before shipping)")
     else:
         confidence = "high"
-        reasons.append("clean I2C bus; all non-bus pins are power/ground/NC")
+        reasons.append("clean I2C bus; non-bus pins are power/ground/NC/control")
 
     card: dict[str, Any] = {
-        "type": _type_from_symbol_name(symbol_name),
+        "type": canonical_type(symbol_name),
         "lib_id": lib_id,
         "value": symbol_name,
         "bus": "I2C",

@@ -41,7 +41,12 @@ from kicad_mcp.utils.firmware.intent import (
     save_intent,
 )
 from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
-from kicad_mcp.utils.firmware.sidecar import apply_sidecar, find_sidecar, load_sidecar
+from kicad_mcp.utils.firmware.sidecar import (
+    SidecarError,
+    apply_sidecar,
+    find_sidecar,
+    load_sidecar,
+)
 from kicad_mcp.utils.firmware.parse import (
     idf_target_defines,
     parse_defines,
@@ -139,7 +144,11 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     sidecar_path = find_sidecar(str(cfg))
     sidecar_applied = None
     if sidecar_path is not None:
-        intent = apply_sidecar(intent, load_sidecar(sidecar_path))
+        try:
+            intent = apply_sidecar(intent, load_sidecar(sidecar_path))
+        except SidecarError as e:
+            return {"status": "error", "code": "invalid_sidecar",
+                    "message": f"Malformed {sidecar_path}: {e}"}
         sidecar_applied = sidecar_path
 
     dest = Path(out_path) if out_path else cfg.parent / "design_intent.yaml"
@@ -149,10 +158,15 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
         return {"status": "error", "code": "write_failed",
                 "message": f"Could not write intent doc: {e}"}
 
+    # power_source / board_size_mm are ADVISORY metadata recorded in the intent
+    # for the human + the PCB step — surfaced here (build_pcb does not yet apply
+    # board_size automatically; pass it explicitly).
     return {
         "status": "ok", "intent_path": str(dest),
         "board": board, "summary": _summary(intent), "gaps": _gaps_list(intent),
         "sidecar": sidecar_applied,
+        "board_size_mm": intent.source.get("board_size_mm"),
+        "power_source": intent.source.get("power_source"),
     }
 
 
