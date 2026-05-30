@@ -12,30 +12,33 @@ logger = logging.getLogger(__name__)
 
 # Single source of truth for power-net detection — used in analyze_netlist
 # and importable by other modules that need the same classification.
-_POWER_NET_PREFIXES = ("VCC", "VDD", "VSS", "VBUS", "GND", "+", "-")
+_POWER_NET_PREFIXES = ("VCC", "VDD", "VSS", "VBUS", "GND")
 
 
 def is_power_net(net_name: str) -> bool:
     """Heuristic classifier: does this net name designate a power/ground rail?
 
-    Matches common KiCad power-symbol naming conventions: VCC/VDD/VSS/VBUS/GND
-    prefixes, and signed-voltage prefixes like ``+3V3``, ``+5V``, ``-12V``.
+    Matches KiCad power-symbol conventions: VCC/VDD/VSS/VBUS/GND prefixes, and
+    SIGNED-VOLTAGE names like ``+3V3``/``+5V``/``-12V`` — a sign followed by a
+    DIGIT. Active-low / signed SIGNAL nets like ``-RESET`` or ``+CS`` (a sign
+    followed by a letter) are NOT power. The bare ``+``/``-`` prefixes used to
+    misclassify those as rails, which dropped them from the signal graph.
     """
     upper = net_name.upper()
-    return any(upper.startswith(p) for p in _POWER_NET_PREFIXES)
+    return (upper.startswith(_POWER_NET_PREFIXES)
+            or (len(upper) >= 2 and upper[0] in "+-" and upper[1].isdigit()))
 
 
 # Injectable source for embedded pcbnew scripts that need the same classifier.
-# Mirrors is_power_net above — same prefixes, same prefix-match semantics.
-# Embedded scripts cannot import from this module; they string-concatenate
-# POWER_NET_HELPER into their source. Update both sides together if the
-# prefix list ever changes (a comment guard is the only enforcement).
+# Mirrors is_power_net above (the prefix tuple is interpolated; the body is
+# byte-identical). test_power_net_helper_matches_python pins the agreement.
 POWER_NET_HELPER = f"""
 _POWER_NET_PREFIXES = {_POWER_NET_PREFIXES!r}
 
 def is_power_net(net_name):
     upper = net_name.upper()
-    return any(upper.startswith(p) for p in _POWER_NET_PREFIXES)
+    return (upper.startswith(_POWER_NET_PREFIXES)
+            or (len(upper) >= 2 and upper[0] in "+-" and upper[1].isdigit()))
 """
 
 
