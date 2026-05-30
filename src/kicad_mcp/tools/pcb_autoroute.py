@@ -143,13 +143,18 @@ _FREEROUTER_INCOMPLETE_PATTERNS = [
 ]
 
 
-def _parse_freerouter_incomplete(stdout: str) -> int:
+def _parse_freerouter_incomplete(stdout: str) -> int | None:
     """Parse FreeRouter stdout to find the number of incomplete connections.
 
     Patterns are tried in priority order; the first match across all lines wins.
     FreeRouter prints lines like:
         "0 connections not found"
         "3 connections not found"
+
+    Returns ``None`` when no pattern matches — "unparsed" is distinct from
+    "parsed zero". The old behavior (return 0 = "assume success") let a pass
+    whose output format FreeRouter changed score as perfectly routed and win
+    best-pass selection over a pass that genuinely routed everything.
     """
     lines = stdout.split("\n")
     for pattern in _FREEROUTER_INCOMPLETE_PATTERNS:
@@ -157,7 +162,20 @@ def _parse_freerouter_incomplete(stdout: str) -> int:
             m = pattern.search(line)
             if m:
                 return int(m.group(1))
-    return 0  # Assume success if no indication of failure
+    return None  # unparsed — caller must distinguish from a real 0
+
+
+def _freerouter_pass_key(incomplete: int | None) -> tuple[int, float]:
+    """Best-pass ranking key (lower wins).
+
+    A pass whose incomplete count parsed cleanly — including a genuine 0 —
+    always ranks before an unparsed pass (None). Among parsed passes, fewer
+    incomplete connections is better. This stops an unrecognized-output pass
+    from being mistaken for a perfect route and winning selection.
+    """
+    if incomplete is None:
+        return (1, float("inf"))
+    return (0, float(incomplete))
 
 
 def _export_dsn(
@@ -322,7 +340,8 @@ def _run_freerouter_pass(
         return {"status": "no_output"}
 
     incomplete = _parse_freerouter_incomplete(stdout)
-    return {"status": "ok", "incomplete": incomplete, "stdout": stdout}
+    return {"status": "ok", "incomplete": incomplete,
+            "parse_failed": incomplete is None, "stdout": stdout}
 
 
 def _run_full_autoroute(
@@ -376,7 +395,12 @@ def _run_full_autoroute(
 
         # Step 2: Run FreeRouter passes
         best_ses = None
-        best_incomplete = float("inf")
+        best_incomplete: int | None = None
+        # Ranking key: (parse_failed, incomplete). A pass whose incomplete
+        # count parsed cleanly always beats an unparsed one; among parsed
+        # passes, fewer incomplete wins. This keeps an unrecognized-output
+        # pass from winning over a pass that genuinely routed everything.
+        best_key: tuple[int, float] | None = None
         pass_results: list[dict] = []
 
         for pass_num in range(1, passes + 1):
@@ -411,11 +435,15 @@ def _run_full_autoroute(
                 pass_result["error"] = result["error"]
             if "incomplete" in result:
                 pass_result["incomplete"] = result["incomplete"]
+            if result.get("parse_failed"):
+                pass_result["parse_failed"] = True
             pass_results.append(pass_result)
 
             if result["status"] == "ok":
-                incomplete = result["incomplete"]
-                if incomplete < best_incomplete:
+                incomplete = result["incomplete"]  # int or None (unparsed)
+                key = _freerouter_pass_key(incomplete)
+                if best_key is None or key < best_key:
+                    best_key = key
                     best_incomplete = incomplete
                     best_ses = pass_ses
 
@@ -468,9 +496,10 @@ def _run_full_autoroute(
             "net_count": import_result.get("net_count", 0),
             "unconnected_after_routing": unconnected,
             "passes_run": len(pass_results),
-            "best_incomplete": (
-                best_incomplete if best_incomplete != float("inf") else None
-            ),
+            # int when the winning pass parsed a count; None when the only
+            # ok passes had unrecognized output (incomplete count unknown).
+            "best_incomplete": best_incomplete,
+            "best_incomplete_parsed": best_key is not None and best_key[0] == 0,
             "pass_results": pass_results,
             "note": note,
         }
