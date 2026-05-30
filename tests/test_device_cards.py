@@ -82,6 +82,7 @@ def test_good_cards_validate_clean():
 
 @pytest.mark.parametrize("mutate,needle", [
     (lambda c: c.pop("lib_id"), "missing required"),
+    (lambda c: c.pop("bus"), "missing required"),   # was a KeyError before the fix
     (lambda c: c.update(lib_id="NoColon"), "lib_id"),
     (lambda c: c.update(bus="SDIO"), "bus"),
     (lambda c: c.update(module="yes"), "module must be a bool"),
