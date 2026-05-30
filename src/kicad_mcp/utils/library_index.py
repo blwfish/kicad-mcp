@@ -321,7 +321,8 @@ class LibraryIndex:
         """Check if the footprint index needs rebuilding."""
         if not self.footprint_lib_path or not os.path.isdir(self.footprint_lib_path):
             return True
-        return self._is_stale("fp_build_time", "fp_lib_path", self.footprint_lib_path, ".pretty")
+        return self._is_stale("fp_build_time", "fp_lib_path", self.footprint_lib_path,
+                              ".pretty", tuple(self.extra_footprint_dirs))
 
     def rebuild_footprints(self) -> int:
         """Rebuild the footprint index. Returns count."""
@@ -454,7 +455,8 @@ class LibraryIndex:
         """Check if the symbol index needs rebuilding."""
         if not self.symbol_lib_path or not os.path.isdir(self.symbol_lib_path):
             return True
-        return self._is_stale("sym_build_time", "sym_lib_path", self.symbol_lib_path, ".kicad_sym")
+        return self._is_stale("sym_build_time", "sym_lib_path", self.symbol_lib_path,
+                              ".kicad_sym", tuple(self.extra_symbol_dirs))
 
     def rebuild_symbols(self) -> int:
         """Rebuild the symbol index. Returns count."""
@@ -588,9 +590,13 @@ class LibraryIndex:
     # -------------------------------------------------------------------
 
     def _is_stale(
-        self, time_key: str, path_key: str, lib_path: str, suffix: str
+        self, time_key: str, path_key: str, lib_path: str, suffix: str,
+        extra_dirs: tuple[str, ...] = (),
     ) -> bool:
-        """Generic staleness check for a library type."""
+        """Generic staleness check. Scans the system path AND the same extra user
+        dirs the rebuild indexes (from KICAD_USER_LIB / lib-tables) — otherwise an
+        edit to a symbol/footprint in a USER library was never detected and the
+        index stayed stale forever (h-library-stale)."""
         if not os.path.exists(self.db_path):
             return True
         try:
@@ -633,7 +639,9 @@ class LibraryIndex:
             # every footprint content edit. Walk one level deeper to check
             # the actual .kicad_mod mtimes — adds maybe ~50ms on a typical
             # KiCad install, paid only on staleness checks.
-            for entry in os.scandir(lib_path):
+            scan_roots = [lib_path] + [d for d in extra_dirs if os.path.isdir(d)]
+            all_entries = [e for root in scan_roots for e in os.scandir(root)]
+            for entry in all_entries:
                 if suffix == ".pretty":
                     if entry.name.endswith(suffix) and entry.is_dir():
                         if entry.stat().st_mtime > build_time:
