@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 from kicad_mcp.utils.firmware.knowledge import resolve_mcu, resolve_peripheral
 from kicad_mcp.utils.firmware.parse import ParsedFirmware
 
-SCHEMA_VERSION = 2  # v2: power/passive nets, footprints, template origin, gap provenance
+SCHEMA_VERSION = 3  # v3: typed buses (I2S/I2C/UART) for bus-driven templates
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -84,11 +84,23 @@ class Gap:
 
 
 @dataclass
+class Bus:
+    """A grouped set of bus pins (e.g. an I2S output bus), the unit a bus-driven
+    template expands into a peripheral sub-circuit."""
+    name: str                       # the pin-name stem, e.g. "CMCA_I2S"
+    type: str                       # I2C | I2S_OUT | I2S_IN | UART | SPI
+    signals: dict[str, int] = field(default_factory=dict)  # role -> gpio
+    address: Optional[int] = None   # I2C devices
+    origin: str = "imported"
+
+
+@dataclass
 class DesignIntent:
     schema_version: int = SCHEMA_VERSION
     source: dict[str, Any] = field(default_factory=dict)
     mcu: Optional[Mcu] = None
     peripherals: list[Peripheral] = field(default_factory=list)
+    buses: list[Bus] = field(default_factory=list)
     nets: list[Net] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)
     provenance: dict[str, Any] = field(default_factory=dict)
@@ -101,16 +113,20 @@ _BOARD_RE = re.compile(r"^\s*board\s*=\s*(\S+)", re.MULTILINE)
 
 def find_board_id(start_path: str) -> Optional[str]:
     """Walk up from a firmware file/dir to find platformio.ini and read its
-    ``board =`` id. Returns None if not found."""
+    ``board =`` id. A platformio.ini can declare MULTIPLE envs (e.g. a legacy
+    ``esp32dev`` then a production ``esp32-s3-devkitc-1``); prefer the LAST one
+    that resolves to a known MCU (else the last declared). Returns None if not
+    found."""
     p = Path(start_path)
-    search_dirs = [p] if p.is_dir() else [p.parent]
-    cur = search_dirs[0]
+    cur = p if p.is_dir() else p.parent
     for _ in range(6):  # bounded walk-up
         ini = cur / "platformio.ini"
         if ini.exists():
-            m = _BOARD_RE.search(ini.read_text(errors="replace"))
-            if m:
-                return m.group(1).strip()
+            boards: list[str] = [str(b).strip()
+                                 for b in _BOARD_RE.findall(ini.read_text(errors="replace"))]
+            if boards:
+                known = [b for b in boards if resolve_mcu(b) is not None]
+                return known[-1] if known else boards[-1]
         if cur.parent == cur:
             break
         cur = cur.parent
@@ -131,6 +147,45 @@ def _peripheral_type_from_addr(name: str) -> str:
         if name.endswith(suf):
             return name[: -len(suf)]
     return name
+
+
+def _bus_type(roles: set[str]) -> Optional[str]:
+    """Classify a bus instance from the signal roles present on it."""
+    if {"SDA", "SCL"} <= roles:
+        return "I2C"
+    has_clk = bool(roles & {"BCLK", "SCK"})
+    has_ws = bool(roles & {"LRC", "LRCK", "WS"})
+    if has_clk and has_ws and "DIN" in roles:
+        return "I2S_OUT"
+    if has_clk and has_ws and (roles & {"SD", "DOUT"}):
+        return "I2S_IN"
+    if {"RX", "TX"} <= roles or {"RXD", "TXD"} <= roles:
+        return "UART"
+    if {"MOSI", "MISO"} <= roles:
+        return "SPI"
+    return None
+
+
+def _build_buses(parsed: ParsedFirmware, known_types: set[str]) -> list[Bus]:
+    """Group stemmed pin macros into typed buses. Pins whose stem is a recognized
+    peripheral (HX711, …) or has no stem (bare ``I2C_SDA``) are left to the
+    existing peripheral/bus-net path — this captures project-convention buses
+    like ``CMCA_I2S`` that have no ``_ADDR`` device."""
+    groups: dict[str, dict[str, int]] = {}
+    for m in parsed.pins:
+        stem, role = m.peripheral_hint, m.signal_role
+        if not stem or stem in known_types or role is None or m.gpio is None:
+            continue
+        groups.setdefault(stem, {})[role] = m.gpio
+    addr_by_stem = {_peripheral_type_from_addr(a.name): a.address for a in parsed.addresses}
+    buses: list[Bus] = []
+    for stem, signals in groups.items():
+        btype = _bus_type(set(signals))
+        if btype is None:
+            continue
+        buses.append(Bus(name=stem, type=btype, signals=signals,
+                         address=addr_by_stem.get(stem)))
+    return buses
 
 
 def build_intent(
@@ -186,10 +241,31 @@ def build_intent(
         if p.bus:
             by_bus.setdefault(p.bus, []).append(p)
 
+    # --- typed buses (project-convention buses a bus-driven template expands) ---
+    intent.buses = _build_buses(parsed, set(periph_by_type))
+    bus_stems = {b.name for b in intent.buses}
+
+    # --- pin conflicts: one GPIO claimed by two different signals (flag, never
+    # silently merge — e.g. I2S-bus-1 and the presence UART both on GPIO 5/6) ---
+    by_gpio: dict[int, list[str]] = {}
+    for m in parsed.pins:
+        if m.gpio is not None:
+            by_gpio.setdefault(m.gpio, []).append(m.name)
+    for gpio, names in sorted(by_gpio.items()):
+        if len(set(names)) > 1:
+            intent.gaps.append(Gap(
+                "pin_conflict",
+                f"GPIO{gpio} is claimed by multiple signals {sorted(set(names))} "
+                "(mutually exclusive at runtime); resolve before fabrication.",
+            ))
+
     # --- nets, with first-wins on duplicate net names ---
     mcu_ref = intent.mcu.ref if intent.mcu else "U1"
     seen_names: set[str] = set()
     for m in parsed.pins:
+        # Bus pins are wired by their bus-driven template, not as orphan nets.
+        if m.peripheral_hint in bus_stems:
+            continue
         name = _strip_pin_suffix(m.name)
         if name in seen_names:
             intent.gaps.append(Gap(
@@ -269,6 +345,7 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
         source=d.get("source", {}),
         mcu=Mcu(**mcu_d) if mcu_d else None,
         peripherals=[Peripheral(**p) for p in d.get("peripherals", [])],
+        buses=[Bus(**b) for b in d.get("buses", [])],
         nets=[
             Net(
                 name=n["name"], kind=n["kind"], confidence=n["confidence"],

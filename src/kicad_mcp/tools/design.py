@@ -34,7 +34,12 @@ from kicad_mcp.utils.firmware.intent import (
     load_intent,
     save_intent,
 )
-from kicad_mcp.utils.firmware.parse import parse_defines, partition
+from kicad_mcp.utils.firmware.parse import (
+    idf_target_defines,
+    parse_defines,
+    partition,
+    select_active_branches,
+)
 from kicad_mcp.utils.firmware.templates import expand_intent
 
 
@@ -110,7 +115,11 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
                 "message": f"No config.h found at or under {firmware_path!r}."}
 
     board = find_board_id(str(cfg))
-    parsed = partition(parse_defines(cfg.read_text(errors="replace")))
+    # Select the active #if branch for this MCU target before extracting macros
+    # (firmware wraps per-target pin maps in `#if CONFIG_IDF_TARGET_*`).
+    text = select_active_branches(cfg.read_text(errors="replace"),
+                                  idf_target_defines(board))
+    parsed = partition(parse_defines(text))
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
 
     dest = Path(out_path) if out_path else cfg.parent / "design_intent.yaml"

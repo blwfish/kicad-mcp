@@ -130,6 +130,59 @@ def test_merge_preserves_user_items_and_resolved_gaps():
     assert any(n.name == "I2C_SDA" for n in merged.nets)
 
 
+# --- typed buses (axis 4) ----------------------------------------------------
+
+_AUDIO = """\
+#define CMCA_I2S_BCLK 15
+#define CMCA_I2S_LRC 16
+#define CMCA_I2S_DIN 17
+#define CMCA_I2S2_BCLK 5
+#define CMCA_I2S2_LRC 6
+#define CMCA_I2S2_DIN 7
+#define CMCA_OLED_SDA 47
+#define CMCA_OLED_SCL 48
+#define CMCA_OLED_ADDR 0x3C
+#define CMCA_PRESENCE_RX_PIN 5
+#define CMCA_PRESENCE_TX_PIN 6
+#define CMCA_MIC_BCLK 8
+#define CMCA_MIC_WS 9
+#define CMCA_MIC_SD 10
+"""
+
+def _audio_intent():
+    return build_intent(partition(parse_defines(_AUDIO)),
+                        firmware_path="audio.h", board_id="esp32-s3-devkitc-1")
+
+def _bus(intent, name):
+    return next(b for b in intent.buses if b.name == name)
+
+def test_buses_typed():
+    i = _audio_intent()
+    assert {b.name: b.type for b in i.buses} == {
+        "CMCA_I2S": "I2S_OUT", "CMCA_I2S2": "I2S_OUT",
+        "CMCA_OLED": "I2C", "CMCA_PRESENCE": "UART", "CMCA_MIC": "I2S_IN",
+    }
+
+def test_bus_signals_and_address():
+    i = _audio_intent()
+    assert _bus(i, "CMCA_I2S").signals == {"BCLK": 15, "LRC": 16, "DIN": 17}
+    assert _bus(i, "CMCA_OLED").address == 0x3C    # _ADDR associated by stem
+    assert _bus(i, "CMCA_MIC").signals == {"BCLK": 8, "WS": 9, "SD": 10}
+
+def test_pin_conflict_flagged():
+    # GPIO 5/6 used by both I2S bus 2 and the presence UART.
+    i = _audio_intent()
+    conflicts = [g.detail for g in i.gaps if g.kind == "pin_conflict"]
+    assert any("GPIO5" in d for d in conflicts) and any("GPIO6" in d for d in conflicts)
+
+def test_audio_mcu_is_s3():
+    assert _audio_intent().mcu.part == "ESP32-S3-WROOM-1"
+
+def test_speedcal_has_no_buses():
+    # the WROOM sensor board's I2C/HX711 go through the peripheral path, not buses
+    assert _intent().buses == []
+
+
 # --- board detection on the real tree ----------------------------------------
 
 def test_find_board_id_real_speedcal():

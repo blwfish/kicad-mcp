@@ -31,6 +31,7 @@ class McuInfo(TypedDict):
     boot_pin: str        # boot/strap pin NAME (needs pull-up)
     uart_rx_pin: str     # console UART RX pin NAME (<- USB bridge TXD)
     uart_tx_pin: str     # console UART TX pin NAME (-> USB bridge RXD)
+    native_usb: bool     # True if the MCU has native USB (no CP2102 bridge needed)
 
 
 class PeripheralInfo(TypedDict):
@@ -52,10 +53,48 @@ _ESP32: McuInfo = {
     "needs_3v3": True, "supply_pin": "VDD", "ground_pin": "GND",
     "en_pin": "EN", "boot_pin": "IO0",
     "uart_rx_pin": "RXD0/IO3", "uart_tx_pin": "TXD0/IO1",
+    "native_usb": False,   # WROOM-32 needs a CP2102 USB-UART bridge
 }
 
-# board-id substrings (from platformio.ini ``board =``) -> MCU.
-_MCUS: dict[str, McuInfo] = {"esp32dev": _ESP32, "esp32": _ESP32}
+# ESP32-S3-WROOM-1. The KiCad symbol names GPIOs as IO{n} (same convention as
+# WROOM-32), so the IO{n} mapper works; UART0 pins are named RXD0/TXD0.
+_ESP32S3: McuInfo = {
+    "part": "ESP32-S3-WROOM-1", "lib_id": "RF_Module:ESP32-S3-WROOM-1",
+    "value": "ESP32-S3-WROOM-1", "footprint": "RF_Module:ESP32-S3-WROOM-1",
+    "needs_3v3": True, "supply_pin": "3V3", "ground_pin": "GND",
+    "en_pin": "EN", "boot_pin": "IO0",
+    "uart_rx_pin": "RXD0", "uart_tx_pin": "TXD0",
+    "native_usb": True,    # S3 has native USB — no CP2102 bridge
+}
+
+# --- audio peripherals + headers (verified pins; audio-node ground-truth FPs) -
+MAX98357A: dict[str, str] = {
+    "lib_id": "Audio:MAX98357A", "value": "MAX98357A",
+    "footprint": "Package_DFN_QFN:HVQFN-16-1EP_3x3mm_P0.5mm_EP1.5x1.5mm",
+    "din": "DIN", "bclk": "BCLK", "lrclk": "LRCLK", "sd_mode": "~{SD_MODE}",
+    "outp": "OUTP", "outn": "OUTN", "gain": "GAIN_SLOT",
+}
+MAX98357A_VDD_PINS = ["7", "8"]
+MAX98357A_GND_PINS = ["3", "11", "15", "17"]   # GND pins + EP pad 17
+SPH0645 = {
+    "lib_id": "Sensor_Audio:SPH0645LM4H", "value": "SPH0645LM4H",
+    "footprint": "Sensor_Audio:Knowles_SPH0645LM4H-6_3.5x2.65mm",
+    "ws": "WS", "bclk": "BCLK", "data": "DATA", "sel": "SEL",
+    "vdd": "VDD", "gnd": "GND",
+}
+# Generic module headers (lib_id, footprint). Pin numbers are "1".."N".
+HDR_1X2 = ("Connector_Generic:Conn_01x02",
+           "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical")
+HDR_1X4 = ("Connector_Generic:Conn_01x04",
+           "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical")
+
+# board-id substrings (from platformio.ini ``board =``) -> MCU. MORE-SPECIFIC
+# keys FIRST: resolve_mcu does substring matching, so `esp32-s3` must precede the
+# generic `esp32` or an S3 board would mis-resolve to WROOM-32.
+_MCUS: dict[str, McuInfo] = {
+    "esp32-s3-devkitc-1": _ESP32S3, "esp32-s3": _ESP32S3, "esp32s3": _ESP32S3,
+    "esp32dev": _ESP32, "esp32": _ESP32,
+}
 
 _PERIPHERALS: dict[str, PeripheralInfo] = {
     "MCP23017": {
