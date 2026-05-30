@@ -59,7 +59,11 @@ elif len(corners) < 3:
 
 zone = pcbnew.ZONE(board)
 zone.SetNet(net)
-zone.SetLayer(board.GetLayerID(params["layer"]))
+_layer_id = board.GetLayerID(params["layer"])
+if _layer_id < 0:   # GetLayerID returns -1 for an unknown name; SetLayer(-1) won't raise
+    print(json.dumps({"error": f"unknown layer {params['layer']!r}"}))
+    raise SystemExit(0)
+zone.SetLayer(_layer_id)
 zone.SetAssignedPriority(params["priority"])
 
 zone.SetLocalClearance(pcbnew.FromMM(params["clearance_mm"]))

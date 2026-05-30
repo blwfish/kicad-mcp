@@ -40,7 +40,11 @@ track = pcbnew.PCB_TRACK(board)
 track.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(params["start_x_mm"]), pcbnew.FromMM(params["start_y_mm"])))
 track.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(params["end_x_mm"]), pcbnew.FromMM(params["end_y_mm"])))
 track.SetWidth(pcbnew.FromMM(params["width_mm"]))
-track.SetLayer(board.GetLayerID(params["layer"]))
+_layer_id = board.GetLayerID(params["layer"])
+if _layer_id < 0:   # GetLayerID returns -1 for an unknown name; SetLayer(-1) won't raise
+    print(json.dumps({"error": f"unknown layer {params['layer']!r}"}))
+    raise SystemExit(0)
+track.SetLayer(_layer_id)
 
 net_name = params["net_name"]
 if net_name:
