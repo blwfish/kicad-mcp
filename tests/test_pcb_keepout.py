@@ -599,6 +599,150 @@ class TestHelperLogic:
         assert self.rect_inside(inner, outer) is False
 
 
+# -- extract_keepouts field capture (no-KiCad, duck-typed pcbnew) -------------
+
+class _FakeBBox:
+    def __init__(self, x, y, right, bottom):
+        self._x, self._y, self._r, self._b = x, y, right, bottom
+    def GetX(self): return self._x
+    def GetY(self): return self._y
+    def GetRight(self): return self._r
+    def GetBottom(self): return self._b
+
+
+class _FakeOutline:
+    def __init__(self, pts):
+        self._pts = pts
+    def PointCount(self): return len(self._pts)
+    def CPoint(self, i):
+        from types import SimpleNamespace
+        return SimpleNamespace(x=self._pts[i][0], y=self._pts[i][1])
+
+
+class _FakePolySet:
+    def __init__(self, pts):
+        self._outline = _FakeOutline(pts)
+    def OutlineCount(self): return 1
+    def Outline(self, i): return self._outline
+
+
+class _FakeLayerSet:
+    def __init__(self, ids):
+        self._ids = ids
+    def Seq(self): return self._ids
+
+
+class _FakeUuid:
+    def AsString(self): return "uuid-1234"
+
+
+class _FakeZone:
+    """Duck-typed pcbnew ZONE exposing exactly the surface extract_keepouts
+    touches, with each constraint flag independently settable so we can prove
+    every flag is captured (not hardcoded)."""
+    def __init__(self, *, is_rule_area=True, constraints=None, layer_ids=(0,),
+                 pts=((0, 0), (1_000_000, 1_000_000)), has_zonefills=True):
+        self._is_rule_area = is_rule_area
+        c = constraints or {}
+        self._tracks = c.get("no_tracks", False)
+        self._vias = c.get("no_vias", False)
+        self._pads = c.get("no_pads", False)
+        self._footprints = c.get("no_footprints", False)
+        self._pour = c.get("no_copper_pour", False)
+        self._layer_ids = list(layer_ids)
+        self._pts = list(pts)
+        self.m_Uuid = _FakeUuid()
+        # KiCad 10 exposes GetDoNotAllowZoneFills; KiCad 9 only the older
+        # GetDoNotAllowCopperPour. Install exactly one so hasattr() reflects
+        # the simulated API version.
+        if has_zonefills:
+            self.GetDoNotAllowZoneFills = lambda: self._pour
+        else:
+            self.GetDoNotAllowCopperPour = lambda: self._pour
+    def GetIsRuleArea(self): return self._is_rule_area
+    def GetBoundingBox(self): return _FakeBBox(0, 0, 1_000_000, 1_000_000)
+    def GetLayerSet(self): return _FakeLayerSet(self._layer_ids)
+    def Outline(self): return _FakePolySet(self._pts)
+    def GetDoNotAllowTracks(self): return self._tracks
+    def GetDoNotAllowVias(self): return self._vias
+    def GetDoNotAllowPads(self): return self._pads
+    def GetDoNotAllowFootprints(self): return self._footprints
+
+
+class _FakeBoard:
+    def __init__(self, zones):
+        self._zones = zones
+    def Zones(self): return self._zones
+    def GetFootprints(self): return []
+    def GetLayerName(self, lid): return {0: "F.Cu", 31: "B.Cu"}.get(lid, f"L{lid}")
+
+
+class TestExtractKeepoutsFieldCapture:
+    """The actual field-capture extractor (where KiCad rule-area data lands in
+    the constraint dict) was only covered behind requires_kicad + a hardcoded
+    path. Exec KEEPOUT_HELPER with a duck-typed pcbnew so the no-KiCad suite
+    verifies every constraint flag and field is captured (m-keepout-extract-test)."""
+
+    @pytest.fixture(autouse=True)
+    def _exec_helper(self, monkeypatch):
+        import sys
+        from types import SimpleNamespace
+        from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER
+        # extract_keepouts does `import pcbnew` internally and calls ToMM.
+        fake_pcbnew = SimpleNamespace(ToMM=lambda v: v / 1_000_000.0)
+        monkeypatch.setitem(sys.modules, "pcbnew", fake_pcbnew)
+        ns: dict = {}
+        exec(KEEPOUT_HELPER, ns)
+        self.extract_keepouts = ns["extract_keepouts"]
+
+    def test_all_constraint_flags_captured_true(self):
+        zone = _FakeZone(constraints={
+            "no_tracks": True, "no_vias": True, "no_pads": True,
+            "no_footprints": True, "no_copper_pour": True})
+        out = self.extract_keepouts(_FakeBoard([zone]))
+        assert len(out) == 1
+        c = out[0]["constraints"]
+        assert c == {"no_tracks": True, "no_vias": True, "no_pads": True,
+                     "no_footprints": True, "no_copper_pour": True}
+
+    def test_flags_are_not_hardcoded(self):
+        """A zone that allows everything must report every flag False — proves
+        the extractor reads the zone, not a constant."""
+        zone = _FakeZone(constraints={})  # all False
+        c = self.extract_keepouts(_FakeBoard([zone]))[0]["constraints"]
+        assert c == {"no_tracks": False, "no_vias": False, "no_pads": False,
+                     "no_footprints": False, "no_copper_pour": False}
+
+    def test_each_flag_independent(self):
+        """Only no_vias set — exactly that key True, others False (no bleed)."""
+        zone = _FakeZone(constraints={"no_vias": True})
+        c = self.extract_keepouts(_FakeBoard([zone]))[0]["constraints"]
+        assert c["no_vias"] is True
+        assert all(c[k] is False for k in c if k != "no_vias")
+
+    def test_metadata_fields_captured(self):
+        zone = _FakeZone(layer_ids=[0, 31])
+        info = self.extract_keepouts(_FakeBoard([zone]))[0]
+        assert info["source"] == "board"
+        assert info["uuid"] == "uuid-1234"
+        assert info["layers"] == ["F.Cu", "B.Cu"]
+        assert info["bounding_box"] == {
+            "x_min_mm": 0.0, "y_min_mm": 0.0, "x_max_mm": 1.0, "y_max_mm": 1.0}
+        assert info["polygon_pts_mm"] == [[0.0, 0.0], [1.0, 1.0]]
+
+    def test_non_rule_area_zone_skipped(self):
+        zone = _FakeZone(is_rule_area=False)
+        assert self.extract_keepouts(_FakeBoard([zone])) == []
+
+    def test_copper_pour_falls_back_when_zonefills_absent(self):
+        """KiCad 9 lacks GetDoNotAllowZoneFills — extractor must fall back to
+        GetDoNotAllowCopperPour, not crash."""
+        z9 = _FakeZone(constraints={"no_copper_pour": True}, has_zonefills=False)
+        assert not hasattr(z9, "GetDoNotAllowZoneFills")
+        c = self.extract_keepouts(_FakeBoard([z9]))[0]["constraints"]
+        assert c["no_copper_pour"] is True
+
+
 # -- operation="footprint_overlaps" ------------------------------------------
 
 class TestAuditFootprintOverlaps:
