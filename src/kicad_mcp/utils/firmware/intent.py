@@ -20,7 +20,11 @@ import yaml
 logger = logging.getLogger(__name__)
 
 from kicad_mcp.utils.firmware.knowledge import resolve_mcu, resolve_peripheral
-from kicad_mcp.utils.firmware.parse import ParsedFirmware, address_base
+from kicad_mcp.utils.firmware.parse import (
+    ParsedFirmware,
+    _strip_pin_suffix,
+    address_base,
+)
 
 SCHEMA_VERSION = 3  # v3: typed buses (I2S/I2C/UART) for bus-driven templates
 
@@ -134,13 +138,6 @@ def find_board_id(start_path: str) -> Optional[str]:
 
 
 # --- importer ----------------------------------------------------------------
-
-def _strip_pin_suffix(name: str) -> str:
-    for suf in ("_PIN", "_GPIO"):
-        if name.endswith(suf):
-            return name[: -len(suf)]
-    return name
-
 
 def _peripheral_type_from_addr(name: str) -> str:
     # Delegates to parse.address_base — the single source of truth for the
