@@ -64,6 +64,11 @@ def create_server() -> FastMCP:
 
     register_schematic_layout_tools(mcp)
 
+    # Firmware-spec front end (firmware -> design-intent -> partial schematic)
+    from kicad_mcp.tools.design import register_design_tools
+
+    register_design_tools(mcp)
+
     logger.info("KiCad MCP server initialized with all tool modules")
     return mcp
 

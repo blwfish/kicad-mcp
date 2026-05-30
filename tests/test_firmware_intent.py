@@ -1,0 +1,138 @@
+"""Tests for the design-intent importer + serialization."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from kicad_mcp.utils.firmware.intent import (
+    Gap,
+    Net,
+    build_intent,
+    find_board_id,
+    from_dict,
+    load_intent,
+    merge,
+    save_intent,
+    to_dict,
+)
+from kicad_mcp.utils.firmware.parse import parse_defines, partition
+
+SPEEDCAL_CONFIG = Path(
+    "/Volumes/Files/claude/mr-esp32/speed-cal/firmware/include/config.h"
+)
+
+_SAMPLE = """\
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define MCP23017_ADDR 0x27
+#define MCP23017_INT_PIN 13
+#define HX711_DOUT_PIN 16
+#define HX711_SCK_PIN 17
+#define I2S_SCK_PIN 18
+#define PIEZO_ADC_PIN 35
+#define BAD_PIN -1
+#define MCP_IODIRA 0x00
+#define NUM_SENSORS 6
+"""
+
+
+def _intent(board="esp32dev"):
+    parsed = partition(parse_defines(_SAMPLE))
+    return build_intent(parsed, firmware_path="config.h", board_id=board)
+
+
+def _net(intent, name):
+    return next(n for n in intent.nets if n.name == name)
+
+def _gap_kinds(intent):
+    return {g.kind for g in intent.gaps}
+
+
+def test_mcu_resolved():
+    assert _intent().mcu.part == "ESP32-WROOM-32E"
+
+def test_mcu_unknown_when_no_board():
+    i = _intent(board=None)
+    assert i.mcu is None and "mcu_unknown" in _gap_kinds(i)
+
+def test_peripherals_materialized():
+    types = {p.type for p in _intent().peripherals}
+    assert types == {"HX711", "MCP23017"}  # PIEZO has no symbol -> not placed
+
+def test_bus_net_tier():
+    n = _net(_intent(), "I2C_SDA")
+    assert n.kind == "bus" and n.confidence == "high"
+    # MCU + the one I2C device (MCP23017 = U3 in this sample)
+    assert any(e.role == "SDA" for e in n.endpoints)
+    assert any(e.gpio == 21 for e in n.endpoints)
+
+def test_peripheral_net_tier():
+    n = _net(_intent(), "HX711_DOUT")
+    assert n.kind == "peripheral" and n.confidence == "high"
+    assert {e.role for e in n.endpoints if e.role} == {"DOUT"}
+
+def test_orphan_net_tiers():
+    i = _intent()
+    assert _net(i, "I2S_SCK").kind == "orphan"     # no I2S device declared
+    assert _net(i, "PIEZO_ADC").kind == "orphan"   # PIEZO has no symbol
+
+def test_always_gaps_present():
+    assert {"power_tree", "decoupling", "pullups", "connectors", "parts"} <= _gap_kinds(_intent())
+
+def test_invalid_pin_becomes_gap_not_net():
+    i = _intent()
+    assert "invalid_pin" in _gap_kinds(i)
+    assert all(n.name != "BAD" for n in i.nets)
+
+def test_unknown_peripheral_gaps():
+    # I2S (no device) and PIEZO (no symbol) each flag a gap.
+    details = " ".join(g.detail for g in _intent().gaps if g.kind == "unknown_peripheral")
+    assert "I2S" in details and "PIEZO" in details
+
+def test_provenance_retains_unmodeled_macros():
+    prov = _intent().provenance
+    names = {u["name"] for u in prov["unparsed"]}
+    assert "MCP_IODIRA" in names and "NUM_SENSORS" in names
+    assert prov["unparsed_count"] >= 2
+
+def test_duplicate_signal_first_wins():
+    parsed = partition(parse_defines("#define FOO_PIN 5\n#define FOO_PIN 6\n"))
+    i = build_intent(parsed, firmware_path="c.h", board_id="esp32dev")
+    foo = [n for n in i.nets if n.name == "FOO"]
+    assert len(foo) == 1
+    assert foo[0].endpoints[0].gpio == 5            # first wins
+    assert "duplicate_signal" in _gap_kinds(i)
+
+
+# --- serialization + merge ---------------------------------------------------
+
+def test_yaml_round_trip(tmp_path):
+    i = _intent()
+    p = tmp_path / "intent.yaml"
+    save_intent(i, str(p))
+    assert to_dict(load_intent(str(p))) == to_dict(i)
+
+def test_from_dict_to_dict_identity():
+    i = _intent()
+    assert to_dict(from_dict(to_dict(i))) == to_dict(i)
+
+def test_merge_preserves_user_items_and_resolved_gaps():
+    fresh = _intent()
+    existing = _intent()
+    existing.nets.append(Net("USER_NET", "peripheral", "high", [], origin="user"))
+    # mark the power_tree gap resolved in the existing (edited) doc
+    for g in existing.gaps:
+        if g.kind == "power_tree":
+            g.resolved = True
+    merged = merge(existing, fresh)
+    assert any(n.name == "USER_NET" and n.origin == "user" for n in merged.nets)
+    assert any(g.kind == "power_tree" and g.resolved for g in merged.gaps)
+    # imported user-less nets still present
+    assert any(n.name == "I2C_SDA" for n in merged.nets)
+
+
+# --- board detection on the real tree ----------------------------------------
+
+def test_find_board_id_real_speedcal():
+    if not SPEEDCAL_CONFIG.exists():
+        return
+    assert find_board_id(str(SPEEDCAL_CONFIG)) == "esp32dev"
