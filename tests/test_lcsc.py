@@ -124,13 +124,22 @@ class TestScoreTier:
         assert score_tier("basic", "preferred") == pytest.approx(0.5)
 
     def test_extended_vs_basic(self):
-        assert score_tier("extended", "basic") == pytest.approx(0.8)
+        # 'extended' = "any tier, no preference" (mirrors the SQL no-filter
+        # branch), so a basic part is NOT penalized (m-extended-tier).
+        assert score_tier("extended", "basic") == 1.0
 
     def test_extended_vs_preferred(self):
         assert score_tier("extended", "preferred") == 1.0
 
     def test_extended_vs_extended(self):
         assert score_tier("extended", "extended") == 1.0
+
+    def test_extended_treats_all_tiers_equally(self):
+        # Coherent with the SQL filter: requesting 'extended' adds no tier
+        # preference, identical to 'any'.
+        assert (score_tier("extended", "basic")
+                == score_tier("extended", "preferred")
+                == score_tier("extended", "extended") == 1.0)
 
     def test_preferred_vs_preferred(self):
         assert score_tier("preferred", "preferred") == 1.0
@@ -354,6 +363,16 @@ class TestBuildDeviations:
         )
         fp_devs = [d for d in devs if "footprint" in d.lower()]
         assert fp_devs
+
+    def test_basic_part_not_flagged_when_requesting_extended(self):
+        # m-extended-tier: a basic part requested under 'extended' must NOT be
+        # flagged as a tier deviation (and certainly not "adds assembly fee").
+        devs = build_deviations(
+            {"package": "SOT-23", "assembly_tier": "basic", "stock": 5000},
+            None, "extended", "fp:X",
+        )
+        tier_devs = [d for d in devs if "assembly_tier" in d]
+        assert tier_devs == []
 
 
 # ---------------------------------------------------------------------------
