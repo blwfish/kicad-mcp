@@ -29,6 +29,18 @@ Welcome, but a couple of preflight things:
 4. **One concern per PR.** Bug fix and unrelated cleanup go in separate PRs.
 5. **Update `EXPECTED_TOOLS` in `tests/test_server.py`** if you're adding, removing, or renaming an MCP tool. The docs-check CI workflow will fail otherwise (and TOOLS.md / README.md tool counts need to match too).
 
+## Boundary ops (`pcbnew` / kicad-cli scripts): extract the logic first
+
+Tools that run work inside KiCad's Python ship a script string to
+`run_pcbnew_script`. Decision logic written *inside* that string has no
+in-process unit a test can reach, so the only possible test mocks the boundary
+and asserts its own configured return — a test that cannot fail. Before testing
+such code, **extract the pure decision logic into a `*_HELPER` that is `exec`'d
+directly in a no-KiCad test**, leaving only board I/O in the script. The pattern,
+a copyable skeleton, and the `GEOMETRY_HELPER` exemplar are in
+[`docs/BOUNDARY_OPS.md`](docs/BOUNDARY_OPS.md); `scripts/audit_testability.py`
+ratchets it. *Then* cover the helper's thresholds per the next section.
+
 ## Testing discipline for `utils/` and `tools/` helpers
 
 Most existing tests in this repo verify the Python function returned
