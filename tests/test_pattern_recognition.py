@@ -859,6 +859,16 @@ class TestSensorMCPCollision:
         types = {s.get("type") for s in sensors}
         assert "current_sensor" in types or "voltage_sensor" in types
 
+    def test_max_current_regex_narrowed(self):
+        """Bare MAX\\d+ used to classify any Maxim part as a current sensor."""
+        for non_current in ("MAX17048", "MAX98357A", "MAX7219", "MAX232"):
+            sensors = identify_sensor_interfaces({"U1": _comp(value=non_current)}, {})
+            assert "current_sensor" not in {s.get("type") for s in sensors}, non_current
+        # a real current-sense part is still classified (MAX9928; MAX4xxx parts
+        # collide with the broad 'light' MAX4\\d+ regex — a separate overlap)
+        sensors = identify_sensor_interfaces({"U1": _comp(value="MAX9928")}, {})
+        assert "current_sensor" in {s.get("type") for s in sensors}
+
     def test_mcp3204_still_classified_as_adc(self):
         """ADC path is unchanged. Emits type='analog_interface'."""
         components = {"U1": _comp(value="MCP3204")}

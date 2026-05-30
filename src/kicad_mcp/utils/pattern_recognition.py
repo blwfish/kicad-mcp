@@ -604,7 +604,10 @@ def identify_sensor_interfaces(
         "proximity": r"APDS9960|VL53L0X|VL6180|GP2Y|VCNL4040|VCNL4010",
         "light": r"BH1750|TSL\d+|MAX4\d+|VEML\d+|APDS9960|LTR329|OPT\d+",
         "air_quality": r"CCS811|BME680|SGP\d+|SEN\d+|MQ\d+|MiCS",
-        "current": r"ACS\d+|INA\d+|MAX\d+|ZXCT\d+",
+        # Curated Maxim current-sense families, not bare MAX\d+ — which caught any
+        # Maxim part (MAX17048 fuel gauge, MAX9814 mic amp, MAX98357A audio amp,
+        # MAX7219 LED driver, MAX232). Mirrors the MCP6\d{2,3} narrowing.
+        "current": r"ACS\d+|INA\d+|MAX4080|MAX4173|MAX4372|MAX4373|MAX9611|MAX9928|MAX9929|MAX40056|MAX44284|ZXCT\d+",
         # ADS\d+ removed from "voltage" — the entire ADS family (ADS1115,
         # ADS1015, ADS8688, ...) belongs in "ADC".  Without this fix the
         # ADS1115-specific branch in the ADC handler (with resolution and
