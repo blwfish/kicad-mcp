@@ -1,22 +1,34 @@
-"""Seed knowledge base — the single source of truth (CLAUDE.md Rule 3) for:
+"""Knowledge base — the single source of truth (CLAUDE.md Rule 3) for:
 
   * MCU board-id  -> symbol/part        (``resolve_mcu``)
   * peripheral type -> symbol + bus + role→pin-name map (``resolve_peripheral``)
 
-Deliberately small and explicit. A firmware ``#define`` names a *role*
-(``HX711_SCK_PIN``, role ``SCK``); the device symbol names the *pin*. These are
-NOT always equal — e.g. the MCP23017 symbol's I2C-clock pin is named ``SCK`` and
-its data pin ``SDA``; the HX711 clock pin is named ``PD_SCK``. The ``roles`` map
-below captures that firmware-role → symbol-pin-name translation per peripheral,
-so no caller assumes identity. (Pin *names* verified against the symbols used in
-the speed-cal v5 netlist.)
+Device facts now live in **YAML device cards** under ``devices/`` (loaded by
+``cards.py``), not hand-edited Python tables — a new recognized device is a data
+file, not a code edit. This module keeps the public ``resolve_*`` API, the typed
+shapes, the template-owned constants (passives, AMS1117, USB/CP2102 block,
+headers — design knowledge no firmware names), and the back-compat strap
+helpers (now thin wrappers over the card data).
+
+A firmware ``#define`` names a *role* (``HX711_SCK_PIN``, role ``SCK``); the
+device symbol names the *pin*. These are NOT always equal — the MCP23017 symbol's
+I2C-clock pin is named ``SCK``, the HX711 clock ``PD_SCK``. Each card's ``roles``
+map captures that firmware-role → symbol-pin translation.
 
 Unknown MCUs / peripherals resolve to ``None`` — the importer turns that into an
 explicit gap rather than guessing.
 """
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict, cast
+
+from kicad_mcp.utils.firmware.cards import compute_address_straps, load_cards
+
+__all__ = [
+    "McuInfo", "PeripheralInfo", "resolve_mcu", "resolve_mcu_by_part",
+    "resolve_peripheral", "role_to_pin_name", "compute_address_straps",
+    "mcp23017_address_straps", "mpu6050_ad0_strap",
+]
 
 
 class McuInfo(TypedDict):
@@ -34,45 +46,49 @@ class McuInfo(TypedDict):
     native_usb: bool     # True if the MCU has native USB (no CP2102 bridge needed)
 
 
-class PeripheralInfo(TypedDict):
+# Required fields + optional card extras (Python 3.10 has no typing.NotRequired,
+# so use the stdlib total=False inheritance pattern).
+class _PeripheralInfoBase(TypedDict):
     lib_id: str
     value: str
     bus: Optional[str]
     footprint: str
-    # firmware signal-role (upper-cased) -> symbol pin NAME
+    # firmware signal-role (upper-cased) -> symbol pin NAME or NUMBER
     roles: dict[str, str]
-    supply_pins: list[str]   # pin NAMES tied to +3V3
-    ground_pins: list[str]   # pin NAMES tied to GND
-    # True if this entry models the device as its breakout-MODULE header
-    # (e.g. a GY-521 / I2C OLED plugged onto a carrier) rather than a chip-down
-    # IC. Firmware names the device; "module vs chip-down" is a design choice we
-    # make explicit (build_intent flags it), same spirit as the AMS1117 default.
+    supply_pins: list[str]   # pin NAMES/NUMBERS tied to +3V3
+    ground_pins: list[str]   # pin NAMES/NUMBERS tied to GND
+    # True if modeled as a breakout-MODULE header (GY-521 / I2C OLED on a
+    # carrier) rather than a chip-down IC — build_intent flags the assumption.
     module: bool
 
 
-# ESP32-WROOM-32E facts. GND is the symbol's MERGED pin (physical pads
-# 1/15/38/39 collapsed) — resolve it by NAME, never by number.
-_ESP32: McuInfo = {
-    "part": "ESP32-WROOM-32E", "lib_id": "RF_Module:ESP32-WROOM-32E",
-    "value": "ESP32-WROOM-32E", "footprint": "RF_Module:ESP32-WROOM-32E",
-    "needs_3v3": True, "supply_pin": "VDD", "ground_pin": "GND",
-    "en_pin": "EN", "boot_pin": "IO0",
-    "uart_rx_pin": "RXD0/IO3", "uart_tx_pin": "TXD0/IO1",
-    "native_usb": False,   # WROOM-32 needs a CP2102 USB-UART bridge
-}
+class PeripheralInfo(_PeripheralInfoBase, total=False):
+    config: dict[str, Any]            # address_strap + static_ties (device_config)
+    decoupling: list[dict[str, Any]]  # optional per-IC bypass override
 
-# ESP32-S3-WROOM-1. The KiCad symbol names GPIOs as IO{n} (same convention as
-# WROOM-32), so the IO{n} mapper works; UART0 pins are named RXD0/TXD0.
-_ESP32S3: McuInfo = {
-    "part": "ESP32-S3-WROOM-1", "lib_id": "RF_Module:ESP32-S3-WROOM-1",
-    "value": "ESP32-S3-WROOM-1", "footprint": "RF_Module:ESP32-S3-WROOM-1",
-    "needs_3v3": True, "supply_pin": "3V3", "ground_pin": "GND",
-    "en_pin": "EN", "boot_pin": "IO0",
-    "uart_rx_pin": "RXD0", "uart_tx_pin": "TXD0",
-    "native_usb": True,    # S3 has native USB — no CP2102 bridge
-}
 
-# --- audio peripherals + headers (verified pins; audio-node ground-truth FPs) -
+# --- card cache (loaded once from the packaged + override dirs) ---------------
+
+_CACHE: Optional[tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]] = None
+
+
+def _cards() -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    global _CACHE
+    if _CACHE is None:
+        _CACHE = load_cards()
+    return _CACHE
+
+
+def reload_cards() -> None:
+    """Drop the card cache (tests / hot-reload). Next resolve_* reloads."""
+    global _CACHE
+    _CACHE = None
+
+
+# --- template-owned constants (NOT cards: design knowledge no firmware names) -
+# These are instantiated by templates, never by a firmware #define, so they stay
+# Python. Pins verified against the speed-cal v5 / audio-node ground-truth.
+
 MAX98357A: dict[str, str] = {
     "lib_id": "Audio:MAX98357A", "value": "MAX98357A",
     "footprint": "Package_DFN_QFN:HVQFN-16-1EP_3x3mm_P0.5mm_EP1.5x1.5mm",
@@ -94,69 +110,6 @@ HDR_1X4 = ("Connector_Generic:Conn_01x04",
            "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical")
 HDR_1X5 = ("Connector_Generic:Conn_01x05",
            "Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical")
-
-# board-id substrings (from platformio.ini ``board =``) -> MCU. MORE-SPECIFIC
-# keys FIRST: resolve_mcu does substring matching, so `esp32-s3` must precede the
-# generic `esp32` or an S3 board would mis-resolve to WROOM-32.
-_MCUS: dict[str, McuInfo] = {
-    "esp32-s3-devkitc-1": _ESP32S3, "esp32-s3": _ESP32S3, "esp32s3": _ESP32S3,
-    "esp32dev": _ESP32, "esp32": _ESP32,
-}
-
-_PERIPHERALS: dict[str, PeripheralInfo] = {
-    "MCP23017": {
-        "lib_id": "Interface_Expansion:MCP23017x-x-SO",
-        "value": "MCP23017", "bus": "I2C",
-        "footprint": "Package_SO:SOIC-28W_7.5x17.9mm_P1.27mm",
-        # NB: I2C clock pin is named "SCK" on this symbol, not "SCL".
-        "roles": {"SDA": "SDA", "SCL": "SCK", "INT": "INTA", "INTA": "INTA"},
-        "supply_pins": ["V_{DD}"], "ground_pins": ["V_{SS}"], "module": False,
-    },
-    "HX711": {
-        "lib_id": "Analog_ADC:HX711",
-        "value": "HX711", "bus": None,
-        "footprint": "Package_SO:SOIC-16_3.9x9.9mm_P1.27mm",
-        "roles": {"DOUT": "DOUT", "SCK": "PD_SCK", "PD_SCK": "PD_SCK"},
-        # HX711 has no separate DGND — analog + digital ground share AGND.
-        "supply_pins": ["VSUP", "AVDD", "DVDD"], "ground_pins": ["AGND"],
-        "module": False,
-    },
-    # --- I2C breakout modules (carrier-board representation) ------------------
-    # A GY-521 (MPU-6050) module exposes a header; we model the connection, not
-    # the bare QFN (whose charge-pump/REGOUT support firmware can't inform).
-    # Header pin convention (matches i2c_device_header): 1=GND 2=VCC 3=SCL 4=SDA,
-    # plus 5=AD0 for I2C address selection.
-    "MPU6050": {
-        "lib_id": HDR_1X5[0], "value": "GY-521 (MPU-6050)", "bus": "I2C",
-        "footprint": HDR_1X5[1],
-        "roles": {"SDA": "4", "SCL": "3"},
-        "supply_pins": ["2"], "ground_pins": ["1"], "module": True,
-    },
-    # I2C OLED module (SSD1306/SSD1315). 4-pin module: 1=GND 2=VCC 3=SCL 4=SDA.
-    "OLED": {
-        "lib_id": HDR_1X4[0], "value": "OLED (SSD1306)", "bus": "I2C",
-        "footprint": HDR_1X4[1],
-        "roles": {"SDA": "4", "SCL": "3"},
-        "supply_pins": ["2"], "ground_pins": ["1"], "module": True,
-    },
-}
-
-# MPU-6050 I2C address strapping: a single AD0 pin selects the LSB of the
-# address — AD0=low -> base 0x68, AD0=high -> 0x69. (GY-521 header pin 5 = AD0.)
-# Single source of truth for the address->AD0-rail map (boundary-tested).
-MPU6050_AD0_PIN = "5"
-MPU6050_ADDR_BASE = 0x68
-
-
-def mpu6050_ad0_strap(address: int) -> Optional[tuple[str, str]]:
-    """Return ``(ad0_pin_name, rail)`` for an MPU-6050 I2C address, or None if
-    the address is outside the strappable pair 0x68/0x69. AD0 ties to "GND"
-    (0x68) or "+3V3" (0x69)."""
-    if address == MPU6050_ADDR_BASE:
-        return (MPU6050_AD0_PIN, "GND")
-    if address == MPU6050_ADDR_BASE + 1:
-        return (MPU6050_AD0_PIN, "+3V3")
-    return None
 
 # --- verified footprints (speed-cal v5 BOM) for template-placed passives ---
 LIB_C = "Device:C"
@@ -199,62 +152,84 @@ SW_PUSH_FP = "Button_Switch_SMD:SW_SPST_B3S-1000"
 # 5.1k = USB-C CC sink resistors.
 FP_R_0603_5K1 = FP_R_0603
 
-# MCP23017 I2C address strapping. Base 0x20; bits A2 A1 A0 select 0x20..0x27.
-MCP23017_ADDRESS_BASE = 0x20
-MCP23017_ADDRESS_PINS = ("A0", "A1", "A2")   # index = bit position
+# --- back-compat strap constants/helpers -------------------------------------
+# The card is now the source of truth for strap pins/base; these mirror the card
+# data for the few call sites/tests that reference them by name. A parity test
+# (test_device_cards) pins that they match the cards, so they can't drift.
 MCP23017_RESET_PIN = "~{RESET}"
+MPU6050_AD0_PIN = "5"
 
 
 def mcp23017_address_straps(address: int) -> Optional[list[tuple[str, str]]]:
-    """Return [(addr_pin_name, rail)] for an MCP23017 I2C address, or None if the
-    address is outside the strappable range 0x20..0x27. Each address pin ties to
-    "+3V3" (bit set) or "GND" (bit clear). This is the single source of truth for
-    the address→strap mapping (the silent-wrong hotspot — boundary-tested)."""
-    offset = address - MCP23017_ADDRESS_BASE
-    if offset < 0 or offset > 0b111:
+    """[(addr_pin, rail)] for an MCP23017 I2C address (0x20..0x27), else None.
+    Thin wrapper over the MCP23017 card's address-strap spec."""
+    info = resolve_peripheral("MCP23017")
+    if info is None or "config" not in info:
         return None
-    out: list[tuple[str, str]] = []
-    for bit, pin in enumerate(MCP23017_ADDRESS_PINS):
-        rail = "+3V3" if (offset >> bit) & 1 else "GND"
-        out.append((pin, rail))
-    return out
+    return compute_address_straps(info["config"]["address_strap"], address)
 
+
+def mpu6050_ad0_strap(address: int) -> Optional[tuple[str, str]]:
+    """(ad0_pin, rail) for an MPU-6050 I2C address (0x68/0x69), else None. Thin
+    wrapper over the MPU6050 card; unpacks the single-bit list back to a tuple."""
+    info = resolve_peripheral("MPU6050")
+    if info is None or "config" not in info:
+        return None
+    straps = compute_address_straps(info["config"]["address_strap"], address)
+    return straps[0] if straps else None
+
+
+# --- resolution --------------------------------------------------------------
 
 def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
-    """Map a platformio ``board =`` id to an MCU. Exact match first, then
-    substring (so ``esp32dev`` and ``esp32-s3-...`` both resolve)."""
+    """Map a platformio ``board =`` id to an MCU card. Exact ``board_match`` /
+    ``part`` first, then the card with the LONGEST ``board_match`` substring in
+    the id (deterministic; no hand-ordered precedence — removes the Rule-3 seam
+    where ``esp32-s3`` had to precede ``esp32``)."""
     if not board_id:
         return None
     key = board_id.strip().lower()
-    if key in _MCUS:
-        return _MCUS[key]
-    for sub, info in _MCUS.items():
-        if sub in key:
-            return info
-    return None
+    _, mcus = _cards()
+    best: Optional[dict[str, Any]] = None
+    best_len = -1
+    for card in mcus:
+        matches = [str(s).lower() for s in card["board_match"]] + [str(card["part"]).lower()]
+        if key in matches:
+            return cast(McuInfo, card)
+        for sub in matches:
+            if sub and sub in key and len(sub) > best_len:
+                best, best_len = card, len(sub)
+            elif sub and sub in key and len(sub) == best_len and best is not None:
+                # deterministic tie-break by part, for stability
+                if str(card["part"]) < str(best["part"]):
+                    best = card
+    return cast(McuInfo, best) if best is not None else None
 
 
 def resolve_mcu_by_part(part: Optional[str]) -> Optional[McuInfo]:
     """Look up MCU facts by part string (templates have ``intent.mcu.part``)."""
     if not part:
         return None
-    for info in _MCUS.values():
-        if info["part"] == part:
-            return info
+    _, mcus = _cards()
+    for card in mcus:
+        if card["part"] == part:
+            return cast(McuInfo, card)
     return None
 
 
 def resolve_peripheral(type_name: Optional[str]) -> Optional[PeripheralInfo]:
     """Map a peripheral type (e.g. ``MCP23017``, derived from ``MCP23017_ADDR``
-    or a pin macro's name prefix) to its symbol + role map."""
+    or a pin macro's name prefix) to its card."""
     if not type_name:
         return None
-    return _PERIPHERALS.get(type_name.strip().upper())
+    peris, _ = _cards()
+    card = peris.get(type_name.strip().upper())
+    return cast(PeripheralInfo, card) if card is not None else None
 
 
 def role_to_pin_name(type_name: str, role: Optional[str]) -> Optional[str]:
-    """Translate a firmware signal-role to the device symbol's pin NAME, or
-    None if unknown (caller flags it)."""
+    """Translate a firmware signal-role to the device symbol's pin NAME/NUMBER,
+    or None if unknown (caller flags it)."""
     info = resolve_peripheral(type_name)
     if info is None or role is None:
         return None

@@ -38,6 +38,7 @@ class Expansion:
     joins: list[tuple[str, Endpoint]] = field(default_factory=list)
     new_nets: list[Net] = field(default_factory=list)
     resolved: list[str] = field(default_factory=list)
+    gaps: list[Gap] = field(default_factory=list)   # new gaps a template surfaces
 
 
 class RefAllocator:
@@ -183,40 +184,35 @@ def mcu_straps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
-def mcp23017_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """Strap each MCP23017's A0/A1/A2 per its I2C address, and tie RESET high.
-    Direct ties (no resistors) — correct for a fixed address. The bit→rail map is
-    knowledge.mcp23017_address_straps (the boundary-tested single source)."""
+def device_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Data-driven device configuration — strap each placed peripheral's address
+    pins + apply its static ties, ALL read from the device card's ``config``
+    (CLAUDE.md Rule 3: the card is the single source). Replaces the former
+    per-device ``mcp23017_config`` / ``mpu6050_config`` templates: a new
+    addressable device needs only a ``config.address_strap`` stanza in its card,
+    no new template. Direct ties (no resistors) — correct for a fixed address.
+    An out-of-range address is flagged as a gap, never silently strapped."""
     ex = Expansion()
     for p in intent.peripherals:
-        if p.type.upper() != "MCP23017" or p.address is None:
+        info = K.resolve_peripheral(p.type)
+        if info is None or "config" not in info:
             continue
-        straps = K.mcp23017_address_straps(p.address)
-        if straps is None:
-            ex.resolved.append("__invalid_address")  # surfaced as a gap below
-            continue
-        for addr_pin, rail in straps:
-            ex.power.append((rail, Endpoint(ref=p.ref, pin=addr_pin)))
-        # RESET is active-low — hold high.
-        ex.power.append(("+3V3", Endpoint(ref=p.ref, pin=K.MCP23017_RESET_PIN)))
-    return ex
-
-
-def mpu6050_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """Strap each MPU-6050's AD0 pin per its I2C address (0x68→GND, 0x69→+3V3).
-    Direct tie (no resistor) — correct for a fixed address. The address→rail map
-    is knowledge.mpu6050_ad0_strap (the boundary-tested single source). An
-    out-of-range address is surfaced as a gap, never silently strapped."""
-    ex = Expansion()
-    for p in intent.peripherals:
-        if p.type.upper() != "MPU6050" or p.address is None:
-            continue
-        strap = K.mpu6050_ad0_strap(p.address)
-        if strap is None:
-            ex.resolved.append("__invalid_mpu_address")  # surfaced as a gap below
-            continue
-        ad0_pin, rail = strap
-        ex.power.append((rail, Endpoint(ref=p.ref, pin=ad0_pin)))
+        cfg = info["config"]
+        strap = cfg.get("address_strap")
+        if strap is not None and p.address is not None:
+            straps = K.compute_address_straps(strap, p.address)
+            if straps is None:
+                ex.gaps.append(Gap(
+                    "invalid_address",
+                    f"{p.type} I2C address {hex(p.address)} is outside its "
+                    f"strappable range; address pins not strapped.",
+                ))
+            else:
+                for addr_pin, rail in straps:
+                    ex.power.append((rail, Endpoint(ref=p.ref, pin=addr_pin)))
+        # Fixed ties (e.g. MCP23017 RESET held high) — address-independent.
+        for tie in cfg.get("static_ties", []) or []:
+            ex.power.append((tie["rail"], Endpoint(ref=p.ref, pin=tie["pin"])))
     return ex
 
 
@@ -468,8 +464,7 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
     ("i2s_mic", i2s_mic),
     ("i2c_device_header", i2c_device_header),
     ("uart_device_header", uart_device_header),
-    ("mcp23017_config", mcp23017_config),
-    ("mpu6050_config", mpu6050_config),
+    ("device_config", device_config),
 ]
 
 
@@ -506,15 +501,10 @@ def expand_intent(intent: DesignIntent) -> DesignIntent:
             intent.nets.append(n)
             nets_by_name[n.name] = n
 
+        for g in ex.gaps:               # new gaps a template surfaces directly
+            intent.gaps.append(g)
+
         for kind in ex.resolved:
-            if kind == "__invalid_address":
-                intent.gaps.append(Gap("invalid_address",
-                                       "MCP23017 I2C address outside 0x20–0x27; not strapped."))
-                continue
-            if kind == "__invalid_mpu_address":
-                intent.gaps.append(Gap("invalid_address",
-                                       "MPU-6050 I2C address is not 0x68/0x69; AD0 not strapped."))
-                continue
             gap = gaps_by_kind.get(kind)
             if gap is not None and not gap.resolved:
                 gap.resolved = True

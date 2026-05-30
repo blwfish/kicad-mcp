@@ -45,3 +45,22 @@ def pin_number_by_name(symbol: Any, pin_name: Optional[str]) -> Optional[str]:
         if (pin.name or "") == pin_name:
             return str(pin.number)
     return None
+
+
+def resolve_pin_token(symbol: Any, token: Any) -> Optional[str]:
+    """Resolve a pin token to its NUMBER. A token is either a pin NAME
+    (MCP23017 ``SDA``) or already a literal pin NUMBER (a header pin ``4``, a
+    USB-C/QFN pad ``A4``/``29``). Name lookup first; else validate the token
+    against the symbol's real pin numbers (alphanumeric, so not a digit check).
+
+    Single source of truth for name-or-number pin resolution — consumed by the
+    generator (wiring), the card validator (pin-existence), and auto-draft
+    (role→pin scoring), so none re-encode the rule (CLAUDE.md Rule 3).
+    """
+    if symbol is None or token is None:
+        return None
+    num = pin_number_by_name(symbol, str(token))
+    if num is not None:
+        return num
+    valid = {str(p.number) for p in (getattr(symbol, "pins", None) or ())}
+    return str(token) if str(token) in valid else None

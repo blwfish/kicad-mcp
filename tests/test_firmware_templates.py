@@ -24,9 +24,8 @@ from kicad_mcp.utils.firmware.templates import (
     i2c_pullups,
     i2s_mic,
     i2s_output_amps,
-    mcp23017_config,
+    device_config,
     mcu_straps,
-    mpu6050_config,
     power_tree,
     uart_device_header,
     usb_programming,
@@ -134,7 +133,7 @@ def test_mcu_straps_en_and_boot():
     assert any(e.ref == "U1" and e.pin == "EN" for e in en.endpoints)
 
 def test_mcp23017_config_straps_for_0x27():
-    ex = mcp23017_config(_intent(), RefAllocator(_intent()))
+    ex = device_config(_intent(), RefAllocator(_intent()))
     assert not ex.components                             # direct ties, no parts
     # all three address pins on +3V3 (0x27) + RESET high
     plus3_pins = {ep.pin for rail, ep in ex.power if rail == "+3V3"}
@@ -160,7 +159,7 @@ def _hub():
 
 def test_mpu6050_config_straps_each_instance_by_address():
     i = _hub()
-    ex = mpu6050_config(i, RefAllocator(i))
+    ex = device_config(i, RefAllocator(i))
     assert not ex.components                             # direct ties, no parts
     # the 0x68 MPU's AD0 -> GND, the 0x69 MPU's AD0 -> +3V3 (per-instance)
     mpus = {p.ref: p.address for p in i.peripherals if p.type == "MPU6050"}

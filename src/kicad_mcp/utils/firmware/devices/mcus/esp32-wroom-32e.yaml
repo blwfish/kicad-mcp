@@ -1,0 +1,15 @@
+# ESP32-WROOM-32E. GND is the symbol's MERGED pin (physical pads 1/15/38/39
+# collapsed) — resolve it by NAME, never by number.
+part: ESP32-WROOM-32E
+lib_id: RF_Module:ESP32-WROOM-32E
+value: ESP32-WROOM-32E
+footprint: RF_Module:ESP32-WROOM-32E
+board_match: ["esp32dev", "esp32"]   # board-id substrings (longest match wins)
+needs_3v3: true
+supply_pin: VDD
+ground_pin: GND
+en_pin: EN
+boot_pin: IO0
+uart_rx_pin: RXD0/IO3
+uart_tx_pin: TXD0/IO1
+native_usb: false      # WROOM-32 needs a CP2102 USB-UART bridge

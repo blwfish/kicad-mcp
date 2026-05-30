@@ -18,6 +18,10 @@ Operations:
       Materialize MCU + recognized peripherals + signal nets into a .kicad_sch.
   show_intent(intent_path) -> {status, summary, gaps}
       Validate + summarize an intent doc (facts vs gaps).
+  suggest_cards(firmware_path) -> {status, drafts, count}
+      Offline auto-draft: propose device cards for the firmware's UNCARDED
+      peripherals (I2C-address identity + WHO_AM_I hints + local symbol-name
+      matching). Drafts are returned for review — never placed, no network used.
 """
 from __future__ import annotations
 
@@ -26,14 +30,17 @@ from typing import Any, Optional
 
 from fastmcp import FastMCP
 
+from kicad_mcp.utils.firmware.autodraft import draft_card, extract_whoami
 from kicad_mcp.utils.firmware.generate import generate_schematic as _generate
 from kicad_mcp.utils.firmware.intent import (
     DesignIntent,
     build_intent,
+    candidate_devices,
     find_board_id,
     load_intent,
     save_intent,
 )
+from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
 from kicad_mcp.utils.firmware.parse import (
     idf_target_defines,
     parse_defines,
@@ -98,10 +105,13 @@ def register_design_tools(mcp: FastMCP) -> None:
             return _op_generate(intent_path=intent_path, schematic_path=schematic_path)
         if operation == "show_intent":
             return _op_show(intent_path=intent_path)
+        if operation == "suggest_cards":
+            return _op_suggest_cards(firmware_path=firmware_path)
         return {
             "status": "error", "code": "unknown_operation",
             "message": (f"Unknown operation: {operation!r}. Valid: import_firmware, "
-                        "expand_templates, generate_schematic, show_intent."),
+                        "expand_templates, generate_schematic, show_intent, "
+                        "suggest_cards."),
         }
 
 
@@ -168,6 +178,46 @@ def _op_generate(*, intent_path: Optional[str], schematic_path: Optional[str]) -
                 "message": f"Intent doc not found: {intent_path}"}
     intent = load_intent(intent_path)
     return _generate(intent, schematic_path)
+
+
+def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
+    """Offline auto-draft: propose device cards for the firmware's UNCARDED
+    peripherals (Phase 7). Drafts are returned for review — nothing is placed,
+    no network is used. Symbol-based high-confidence drafting happens once a
+    lib_id is supplied/confirmed; an address-only device gets a flagged skeleton."""
+    if not firmware_path:
+        return {"status": "error", "code": "missing_parameter",
+                "message": "firmware_path is required."}
+    cfg = _find_config_header(firmware_path)
+    if cfg is None:
+        return {"status": "error", "code": "config_not_found",
+                "message": f"No config.h found at or under {firmware_path!r}."}
+    board = find_board_id(str(cfg))
+    text = select_active_branches(cfg.read_text(errors="replace"),
+                                  idf_target_defines(board))
+    parsed = partition(parse_defines(text))
+    intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
+    whoami = extract_whoami(intent.provenance)
+
+    drafts: list[dict] = []
+    for t, address in candidate_devices(parsed):
+        if resolve_peripheral(t) is not None:
+            continue  # already carded -> placed by import, nothing to draft
+        bus = "I2C" if address is not None else None
+        roles = {"SDA": "SDA", "SCL": "SCL"} if bus == "I2C" else {}
+        d = draft_card(type_name=t, address=address, bus=bus, roles=roles,
+                       whoami=whoami)
+        if d is not None:
+            drafts.append({"confidence": d.confidence, "reasons": d.reasons,
+                           "card": d.card})
+    return {
+        "status": "ok",
+        "drafts": drafts,
+        "count": len(drafts),
+        "note": ("Drafts are proposals — review/confirm lib_id, footprint, roles, "
+                 "supply/ground pins, then drop the card in a devices dir "
+                 "(KICAD_MCP_DEVICE_DIRS) and re-run import_firmware."),
+    }
 
 
 def _op_show(*, intent_path: Optional[str]) -> dict:
