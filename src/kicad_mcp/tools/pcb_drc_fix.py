@@ -5,8 +5,10 @@ import os
 from typing import Any, Dict
 
 
-from kicad_mcp.utils.geometry import GEOMETRY_HELPER
-from kicad_mcp.utils.keepout_helpers import COURTYARD_BBOX_TUPLE_HELPER
+from kicad_mcp.utils.keepout_helpers import (
+    COURTYARD_BBOX_TUPLE_HELPER,
+    NUDGE_PLACEMENT_HELPER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,78 +149,10 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
-spacing = 0.5
-max_passes = 3
 
-""" + COURTYARD_BBOX_TUPLE_HELPER + GEOMETRY_HELPER + """
+""" + COURTYARD_BBOX_TUPLE_HELPER + NUDGE_PLACEMENT_HELPER + """
 
-outline = None
-if hasattr(board, 'GetBoardEdgesBoundingBox'):
-    bb = board.GetBoardEdgesBoundingBox()
-    if bb.GetWidth() > 0:
-        outline = (pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY()),
-                   pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
-
-def bbox_inside_board(bx0, by0, bx1, by1):
-    if outline is None:
-        return True
-    return aabb_inside((bx0, by0, bx1, by1), outline)
-
-move_count = 0
-for pass_num in range(1, max_passes + 1):
-    fp_data = []
-    for fp in board.GetFootprints():
-        bbox = get_courtyard_bbox(fp)
-        if bbox is None:
-            continue
-        fp_data.append({"ref": fp.GetReference(), "fp": fp, "bbox": bbox, "nets": signal_net_count(fp)})
-    pairs = []
-    for i in range(len(fp_data)):
-        a = fp_data[i]; ab = a["bbox"]
-        for j in range(i + 1, len(fp_data)):
-            b = fp_data[j]; bb_ = b["bbox"]
-            if aabb_overlap(ab, bb_):
-                pairs.append((a, b))
-    if not pairs:
-        break
-    moved = False
-    for a, b in pairs:
-        # Move the footprint with fewer signal nets (less routing disruption).
-        # On ties, break by reference for determinism — board.GetFootprints()
-        # iteration order is not stable across pcbnew versions.
-        if (a["nets"], a["ref"]) <= (b["nets"], b["ref"]):
-            mover, anchor = a, b
-        else:
-            mover, anchor = b, a
-        mb = mover["bbox"]; ab_ = anchor["bbox"]
-        ox = min(mb[2], ab_[2]) - max(mb[0], ab_[0])
-        oy = min(mb[3], ab_[3]) - max(mb[1], ab_[1])
-        if ox < 0 or oy < 0:
-            continue
-        old_pos = mover["fp"].GetPosition()
-        old_x = pcbnew.ToMM(old_pos.x); old_y = pcbnew.ToMM(old_pos.y)
-        axes = []
-        if ox <= oy:
-            dx = ox + spacing; mc = (mb[0]+mb[2])/2; ac = (ab_[0]+ab_[2])/2; s = 1 if mc>=ac else -1
-            axes += [(s*dx,0),(-s*dx,0)]
-            dy = oy + spacing; mc = (mb[1]+mb[3])/2; ac = (ab_[1]+ab_[3])/2; s = 1 if mc>=ac else -1
-            axes += [(0,s*dy),(0,-s*dy)]
-        else:
-            dy = oy + spacing; mc = (mb[1]+mb[3])/2; ac = (ab_[1]+ab_[3])/2; s = 1 if mc>=ac else -1
-            axes += [(0,s*dy),(0,-s*dy)]
-            dx = ox + spacing; mc = (mb[0]+mb[2])/2; ac = (ab_[0]+ab_[2])/2; s = 1 if mc>=ac else -1
-            axes += [(s*dx,0),(-s*dx,0)]
-        for ddx, ddy in axes:
-            nx = old_x + ddx; ny = old_y + ddy
-            w = mb[2]-mb[0]; h = mb[3]-mb[1]
-            off_x = old_x-(mb[0]+w/2); off_y = old_y-(mb[1]+h/2)
-            nb = (nx-off_x-w/2, ny-off_y-h/2, nx-off_x+w/2, ny-off_y+h/2)
-            if bbox_inside_board(*nb):
-                mover["fp"].SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(nx), pcbnew.FromMM(ny)))
-                mover["bbox"] = nb; move_count += 1; moved = True; break
-    if not moved:
-        break
-
+move_count, _ = nudge_overlapping_footprints(board, 0.5, 3)
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "move_count": move_count}))
 """, params={"pcb_path": pcb_path})

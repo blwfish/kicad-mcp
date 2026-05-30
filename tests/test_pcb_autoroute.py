@@ -237,3 +237,82 @@ class TestAutorouteUnknownOperation:
         assert "error" in result
         assert "bogus" in result["error"]
         assert "run|start|poll|cancel|list_jobs" in result["error"]
+
+
+# --- h-autoroute-nudge: the shared NUDGE_PLACEMENT_HELPER, exec'd in-process ---
+# The autoroute and DRC-fix placement steps both consume one helper now. We exec
+# the real helper string against a duck-typed pcbnew board so its containment +
+# refresh logic is tested without KiCad (the autoroute copy used to ignore the
+# outline and could shove parts past Edge.Cuts).
+import types
+
+
+class _FakeFP:
+    def __init__(self, ref, cx, cy, half=5.0, nets=1):
+        self.ref, self.cx, self.cy, self.half, self.nets = ref, cx, cy, half, nets
+
+    def GetReference(self):
+        return self.ref
+
+    def GetPosition(self):
+        return types.SimpleNamespace(x=self.cx * 1e6, y=self.cy * 1e6)
+
+    def SetPosition(self, vec):
+        self.cx, self.cy = vec[0] / 1e6, vec[1] / 1e6
+
+    def bbox(self):
+        return (self.cx - self.half, self.cy - self.half,
+                self.cx + self.half, self.cy + self.half)
+
+
+class _FakeBoard:
+    def __init__(self, fps, outline=(0.0, 0.0, 100.0, 100.0)):
+        self._fps, self._o = fps, outline
+
+    def GetFootprints(self):
+        return list(self._fps)
+
+    def GetBoardEdgesBoundingBox(self):
+        o = self._o
+        return types.SimpleNamespace(
+            GetWidth=lambda: (o[2] - o[0]) * 1e6,
+            GetX=lambda: o[0] * 1e6, GetY=lambda: o[1] * 1e6,
+            GetRight=lambda: o[2] * 1e6, GetBottom=lambda: o[3] * 1e6)
+
+
+def _make_nudge():
+    from kicad_mcp.utils.keepout_helpers import NUDGE_PLACEMENT_HELPER
+    ns = {
+        "pcbnew": types.SimpleNamespace(
+            ToMM=lambda v: v / 1e6, FromMM=lambda v: int(v * 1e6),
+            VECTOR2I=lambda x, y: (x, y)),
+        "get_courtyard_bbox": lambda fp: fp.bbox(),
+        "signal_net_count": lambda fp: fp.nets,
+    }
+    exec(NUDGE_PLACEMENT_HELPER, ns)
+    return ns["nudge_overlapping_footprints"]
+
+
+def _overlap(p, q):
+    return p[0] < q[2] and p[2] > q[0] and p[1] < q[3] and p[3] > q[1]
+
+
+def test_nudge_separates_overlap_in_open_space():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 54, 50, nets=1)          # fewer nets -> the mover
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3)
+    assert count >= 1 and "R2" in moved
+    assert not _overlap(a.bbox(), b.bbox())
+
+
+def test_nudge_never_moves_a_footprint_off_board():
+    """h-autoroute-nudge: R2 overlaps R1 at the board's right edge, so the
+    separating move would go off-board. The shared helper keeps it inside the
+    outline (the old autoroute copy shoved it past Edge.Cuts)."""
+    a = _FakeFP("R1", 90, 50, nets=2)
+    b = _FakeFP("R2", 94, 50, nets=1)
+    _make_nudge()(_FakeBoard([a, b], outline=(0, 0, 100, 100)), 0.5, 3)
+    for fp in (a, b):
+        x0, y0, x1, y1 = fp.bbox()
+        assert x0 >= 0 and y0 >= 0 and x1 <= 100 and y1 <= 100, \
+            f"{fp.ref} moved outside the board outline: {fp.bbox()}"

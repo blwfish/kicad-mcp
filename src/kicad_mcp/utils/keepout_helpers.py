@@ -201,6 +201,93 @@ def signal_net_count(fp):
 """
 
 # ---------------------------------------------------------------------------
+# Footprint-nudge helper — SINGLE SOURCE OF TRUTH for the "push overlapping
+# footprints apart" operation, shared by the autoroute and DRC-fix placement
+# steps (previously two drifted copies; the autoroute copy ignored the board
+# outline and nudged against stale bboxes, so it could shove parts past
+# Edge.Cuts — h-autoroute-nudge).
+# Requires: pcbnew, and get_courtyard_bbox / signal_net_count from
+# COURTYARD_BBOX_TUPLE_HELPER. Overlap + containment are inlined so it carries
+# no other helper dependency. nudge_overlapping_footprints -> (count, refs).
+# ---------------------------------------------------------------------------
+NUDGE_PLACEMENT_HELPER = """
+def _board_outline_mm(board):
+    if hasattr(board, "GetBoardEdgesBoundingBox"):
+        bb = board.GetBoardEdgesBoundingBox()
+        if bb.GetWidth() > 0:
+            return (pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY()),
+                    pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
+    return None
+
+
+def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3):
+    # Move overlapping footprints apart, never outside the board outline, and
+    # refresh each mover's bbox so later pairs in the same pass see the new
+    # position. Returns (move_count, moved_refs).
+    outline = _board_outline_mm(board)
+
+    def _overlap(a, b):  # non-strict AABB overlap (touching counts)
+        return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
+
+    def _inside(nb):
+        return outline is None or (nb[0] >= outline[0] and nb[1] >= outline[1]
+                                   and nb[2] <= outline[2] and nb[3] <= outline[3])
+
+    moved_refs = []
+    move_count = 0
+    for _pass in range(max_passes):
+        fp_data = []
+        for fp in board.GetFootprints():
+            bbox = get_courtyard_bbox(fp)
+            if bbox is None:
+                continue
+            fp_data.append({"ref": fp.GetReference(), "fp": fp,
+                            "bbox": bbox, "nets": signal_net_count(fp)})
+        pairs = [(fp_data[i], fp_data[j])
+                 for i in range(len(fp_data)) for j in range(i + 1, len(fp_data))
+                 if _overlap(fp_data[i]["bbox"], fp_data[j]["bbox"])]
+        if not pairs:
+            break
+        moved = False
+        for a, b in pairs:
+            # move the less-connected footprint; deterministic tie-break by ref
+            mover, anchor = (a, b) if (a["nets"], a["ref"]) <= (b["nets"], b["ref"]) else (b, a)
+            mb = mover["bbox"]; ab = anchor["bbox"]
+            ox = min(mb[2], ab[2]) - max(mb[0], ab[0])
+            oy = min(mb[3], ab[3]) - max(mb[1], ab[1])
+            if ox < 0 or oy < 0:  # a prior move this pass already separated them
+                continue
+            old = mover["fp"].GetPosition()
+            old_x = pcbnew.ToMM(old.x); old_y = pcbnew.ToMM(old.y)
+            cand = []
+            axes = ((ox, 0), (oy, 1)) if ox <= oy else ((oy, 1), (ox, 0))
+            for overlap, axis in axes:
+                d = overlap + spacing
+                if axis == 0:
+                    s = 1 if (mb[0] + mb[2]) >= (ab[0] + ab[2]) else -1
+                    cand.extend([(s * d, 0), (-s * d, 0)])
+                else:
+                    s = 1 if (mb[1] + mb[3]) >= (ab[1] + ab[3]) else -1
+                    cand.extend([(0, s * d), (0, -s * d)])
+            w = mb[2] - mb[0]; h = mb[3] - mb[1]
+            off_x = old_x - (mb[0] + w / 2); off_y = old_y - (mb[1] + h / 2)
+            for ddx, ddy in cand:
+                nx = old_x + ddx; ny = old_y + ddy
+                nb = (nx - off_x - w / 2, ny - off_y - h / 2,
+                      nx - off_x + w / 2, ny - off_y + h / 2)
+                if _inside(nb):
+                    mover["fp"].SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(nx), pcbnew.FromMM(ny)))
+                    mover["bbox"] = nb
+                    move_count += 1
+                    moved = True
+                    moved_refs.append(mover["ref"])
+                    break
+        if not moved:
+            break
+    return move_count, moved_refs
+"""
+
+# ---------------------------------------------------------------------------
 # Library search helper
 # Provides: lib_search_paths list, find_lib(lib_name) -> path or None
 # Requires: os in scope
