@@ -201,8 +201,90 @@ def test_speedcal_has_no_buses():
 
 def test_find_board_id_real_speedcal():
     if not SPEEDCAL_CONFIG.exists():
-        return
+        import pytest
+        pytest.skip("speed-cal fixture tree not present in this checkout")
     assert find_board_id(str(SPEEDCAL_CONFIG)) == "esp32dev"
+
+
+# --- find_board_id multi-env "prefer last known board" seam (tmp_path) --------
+# The rule (intent.py:133): of the declared `board =` ids, prefer the LAST one
+# that resolves to a known MCU; if none are known, the LAST declared. These
+# cases were only covered by an integration test under KICAD_INTEGRATION=1.
+
+def _write_pio(tmp_path, *board_ids, with_config=True):
+    """Write a platformio.ini declaring one env per board id (in order) plus a
+    config.h, and return the config.h path to start the walk-up from."""
+    body = "".join(
+        f"[env:e{i}]\nboard = {bid}\n" for i, bid in enumerate(board_ids))
+    (tmp_path / "platformio.ini").write_text(body)
+    cfg = tmp_path / "config.h"
+    if with_config:
+        cfg.write_text("#define X 1\n")
+    return cfg
+
+
+def test_find_board_id_last_known_wins(tmp_path):
+    # two known boards -> the LAST declared known one
+    cfg = _write_pio(tmp_path, "esp32dev", "esp32-s3-devkitc-1")
+    assert find_board_id(str(cfg)) == "esp32-s3-devkitc-1"
+
+
+def test_find_board_id_prefers_known_over_last_declared(tmp_path):
+    # known then UNKNOWN -> the known one, even though it isn't last declared
+    cfg = _write_pio(tmp_path, "esp32dev", "totally-unknown-xyz")
+    assert find_board_id(str(cfg)) == "esp32dev"
+
+
+def test_find_board_id_none_known_falls_back_to_last_declared(tmp_path):
+    # no board resolves to a known MCU -> the LAST declared id
+    cfg = _write_pio(tmp_path, "esp32-c3", "totally-unknown-xyz")
+    assert find_board_id(str(cfg)) == "totally-unknown-xyz"
+
+
+def test_find_board_id_single_board(tmp_path):
+    cfg = _write_pio(tmp_path, "esp32dev")
+    assert find_board_id(str(cfg)) == "esp32dev"
+
+
+def test_find_board_id_no_ini_returns_none(tmp_path):
+    cfg = tmp_path / "config.h"
+    cfg.write_text("#define X 1\n")
+    assert find_board_id(str(cfg)) is None
+
+
+def test_find_board_id_ini_with_no_board_line_returns_none(tmp_path):
+    (tmp_path / "platformio.ini").write_text("[env:e0]\nframework = arduino\n")
+    cfg = tmp_path / "config.h"
+    cfg.write_text("#define X 1\n")
+    assert find_board_id(str(cfg)) is None
+
+
+def _nested_cfg(tmp_path, depth):
+    """platformio.ini at tmp_path, config.h `depth` directories below it.
+    The walk-up checks config.h's parent dir then 5 ancestors (range(6)), so
+    the ini is reachable iff depth <= 5."""
+    _write_pio(tmp_path, "esp32dev", with_config=False)
+    d = tmp_path
+    for i in range(depth):
+        d = d / f"d{i}"
+    d.mkdir(parents=True, exist_ok=True)
+    cfg = d / "config.h"
+    cfg.write_text("#define X 1\n")
+    return cfg
+
+
+def test_find_board_id_walks_up_from_nested_file(tmp_path):
+    assert find_board_id(str(_nested_cfg(tmp_path, 2))) == "esp32dev"
+
+
+def test_find_board_id_walk_up_at_bound_is_found(tmp_path):
+    # depth 5 = the deepest reachable within the 6-iteration bound
+    assert find_board_id(str(_nested_cfg(tmp_path, 5))) == "esp32dev"
+
+
+def test_find_board_id_walk_up_just_past_bound_not_found(tmp_path):
+    # depth 6 = one past the bound; the ini exists but must NOT be found
+    assert find_board_id(str(_nested_cfg(tmp_path, 6))) is None
 
 
 # --- I2C sensor-hub: multiple address-declared devices, incl. same-type pair --
