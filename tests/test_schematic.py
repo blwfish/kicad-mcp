@@ -1076,6 +1076,19 @@ class TestEditLabel:
         assert result["text"] == "VCC"
         assert result["label_uuid"] == uuid
 
+    def test_edit_text_preserves_rotation_and_size(self, sch_server):
+        """h-edit-label: a text-only edit must NOT reset rotation to 0 / size to
+        1.27. The buggy code applied both unconditionally on every edit."""
+        fn = _get_schematic_fn(sch_server)
+        added = _call(fn, "add_label", text="GND", position=[100.0, 100.0],
+                      rotation=90.0, size=2.54)
+        uuid = added["label_uuid"]
+        result = _call(fn, "edit_label", label_uuid=uuid, new_text="VCC")
+        assert result["status"] == "ok"
+        assert result["text"] == "VCC"
+        assert result["rotation"] == 90.0     # preserved, not reset to 0.0
+        assert result["size"] == 2.54         # preserved, not reset to 1.27
+
     def test_edit_position(self, sch_server):
         uuid = self._add_label(sch_server, "SDA")
         fn = _get_schematic_fn(sch_server)
