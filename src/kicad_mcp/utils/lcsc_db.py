@@ -342,6 +342,67 @@ def _parse_price(price_raw: Any) -> list[dict]:
     return []
 
 
+def _decode_shard_rows(
+    data_lines: list[str],
+    col_map: dict[str, int],
+    lut: list[list],
+) -> tuple[list[tuple], dict[str, int]]:
+    """Decode one shard's data lines into INSERT tuples + a drop counter.
+
+    Pure (no I/O) so the row-level drop accounting is unit-testable. Every
+    dropped row is counted by reason; none are silently skipped. Reasons:
+      bad_json — line is not valid JSON
+      not_list — row is JSON but not the expected positional list
+      no_lcsc  — row lacks the LCSC part number (the primary key)
+    """
+    batch: list[tuple] = []
+    drops = {"bad_json": 0, "not_list": 0, "no_lcsc": 0}
+    for line in data_lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            drops["bad_json"] += 1
+            continue
+        if not isinstance(row, list):
+            drops["not_list"] += 1
+            continue
+
+        def get(col: str) -> Any:
+            idx = col_map.get(col)
+            return row[idx] if idx is not None and idx < len(row) else None
+
+        attr_indices = get("attributes") or []
+        if not isinstance(attr_indices, list):
+            attr_indices = []
+
+        package = _package_from_attributes(attr_indices, lut)
+        manufacturer = _manufacturer_from_attributes(attr_indices, lut)
+        assembly_tier = _tier_from_attributes(attr_indices, lut)
+        price_list = _parse_price(get("price"))
+
+        lcsc_raw = get("lcsc")
+        if lcsc_raw is None:
+            drops["no_lcsc"] += 1
+            continue
+        lcsc = str(lcsc_raw) if str(lcsc_raw).startswith("C") else f"C{lcsc_raw}"
+
+        batch.append((
+            lcsc,
+            get("mfr") or "",
+            manufacturer,
+            package,
+            get("joints"),
+            assembly_tier,
+            get("description") or "",
+            get("datasheet") or "",
+            get("stock") or 0,
+            json.dumps(price_list),
+        ))
+    return batch, drops
+
+
 def build_db_from_jsonl(
     db_path: Path = DB_PATH,
     meta_path: Path = META_PATH,
@@ -383,6 +444,7 @@ def build_db_from_jsonl(
     conn.commit()
 
     total_inserted = 0
+    drop_counts: dict[str, int] = {"bad_json": 0, "not_list": 0, "no_lcsc": 0}
     shard_files = [fname for fname, info in files_dict.items()
                    if isinstance(info, dict) and info.get("kind") in ("components", None)]
 
@@ -414,47 +476,13 @@ def build_db_from_jsonl(
                            fname, required - col_map.keys())
             continue
 
-        batch: list[tuple] = []
-        for line in lines[1:]:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except Exception:
-                continue
-            if not isinstance(row, list):
-                continue
-
-            def get(col: str) -> Any:
-                idx = col_map.get(col)
-                return row[idx] if idx is not None and idx < len(row) else None
-
-            attr_indices = get("attributes") or []
-            if not isinstance(attr_indices, list):
-                attr_indices = []
-
-            package = _package_from_attributes(attr_indices, lut)
-            manufacturer = _manufacturer_from_attributes(attr_indices, lut)
-            assembly_tier = _tier_from_attributes(attr_indices, lut)
-            price_list = _parse_price(get("price"))
-
-            lcsc_raw = get("lcsc")
-            if lcsc_raw is None:
-                continue
-            lcsc = str(lcsc_raw) if str(lcsc_raw).startswith("C") else f"C{lcsc_raw}"
-
-            batch.append((
-                lcsc,
-                get("mfr") or "",
-                manufacturer,
-                package,
-                get("joints"),
-                assembly_tier,
-                get("description") or "",
-                get("datasheet") or "",
-                get("stock") or 0,
-                json.dumps(price_list),
-            ))
+        batch, shard_drops = _decode_shard_rows(lines[1:], col_map, lut)
+        shard_dropped = sum(shard_drops.values())
+        if shard_dropped:
+            logger.warning("Shard %s: dropped %d malformed row(s): %s",
+                           fname, shard_dropped, shard_drops)
+        for reason, count in shard_drops.items():
+            drop_counts[reason] += count
 
         if batch:
             conn.executemany(
@@ -474,23 +502,31 @@ def build_db_from_jsonl(
     conn.commit()
 
     # Write metadata
+    rows_dropped = sum(drop_counts.values())
+    if rows_dropped:
+        logger.warning("jlcparts ingestion dropped %d malformed row(s) total: %s",
+                       rows_dropped, drop_counts)
     downloaded_at = datetime.now(timezone.utc).isoformat()
     meta = {
         "downloaded_at": downloaded_at,
         "source_url": f"{JLCPARTS_BASE_URL}/manifest.json",
         "snapshot_date": snapshot_date,
         "total_components": total_inserted,
+        "rows_dropped": rows_dropped,
+        "rows_dropped_by_reason": drop_counts,
         "schema_version": SCHEMA_VERSION,
     }
     conn.execute("INSERT OR REPLACE INTO metadata VALUES ('downloaded_at', ?)", (downloaded_at,))
     conn.execute("INSERT OR REPLACE INTO metadata VALUES ('snapshot_date', ?)", (snapshot_date,))
     conn.execute("INSERT OR REPLACE INTO metadata VALUES ('total_components', ?)", (str(total_inserted),))
+    conn.execute("INSERT OR REPLACE INTO metadata VALUES ('rows_dropped', ?)", (str(rows_dropped),))
     conn.execute("INSERT OR REPLACE INTO metadata VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.commit()
     conn.close()
 
     meta_path.write_text(json.dumps(meta, indent=2))
-    logger.info("jlcparts DB built: %d components, snapshot_date=%s", total_inserted, snapshot_date)
+    logger.info("jlcparts DB built: %d components (%d dropped), snapshot_date=%s",
+                total_inserted, rows_dropped, snapshot_date)
     return meta
 
 

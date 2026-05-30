@@ -33,6 +33,7 @@ from kicad_mcp.utils.lcsc_db import (
     _tier_from_attributes,
     _package_from_attributes,
     _manufacturer_from_attributes,
+    _decode_shard_rows,
 )
 
 FIXTURE_DB = Path(__file__).parent / "fixtures" / "jlcparts_synthetic.sqlite3"
@@ -421,6 +422,60 @@ class TestAttributeLutHelpers:
     def test_empty_attributes_list(self):
         assert _package_from_attributes([], self.SAMPLE_LUT) == ""
         assert _tier_from_attributes([], self.SAMPLE_LUT) == "extended"
+
+
+# ---------------------------------------------------------------------------
+# Shard ingestion drop accounting
+# ---------------------------------------------------------------------------
+
+class TestDecodeShardRows:
+    """Every malformed row must be counted by reason, never silently dropped."""
+
+    COL_MAP = {"lcsc": 0, "mfr": 1, "joints": 2, "description": 3,
+               "price": 4, "attributes": 5, "stock": 6, "datasheet": 7}
+    LUT: list[list] = []
+
+    def _row(self, lcsc):
+        return json.dumps([lcsc, "MFR", 2, "desc", "[]", [], 100, "http://x"])
+
+    def test_wellformed_rows_inserted_zero_drops(self):
+        lines = [self._row("C1"), self._row("C2")]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 2
+        assert sum(drops.values()) == 0
+        assert batch[0][0] == "C1"
+
+    def test_bad_json_counted(self):
+        lines = [self._row("C1"), "{not valid json", self._row("C2")]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 2
+        assert drops["bad_json"] == 1
+
+    def test_non_list_row_counted(self):
+        lines = [self._row("C1"), json.dumps({"lcsc": "C9"})]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 1
+        assert drops["not_list"] == 1
+
+    def test_missing_lcsc_counted(self):
+        lines = [self._row("C1"),
+                 json.dumps([None, "MFR", 2, "d", "[]", [], 5, "x"])]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 1
+        assert drops["no_lcsc"] == 1
+
+    def test_blank_lines_not_counted_as_drops(self):
+        lines = [self._row("C1"), "", "   "]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 1
+        assert sum(drops.values()) == 0
+
+    def test_all_reasons_independently_counted(self):
+        lines = [self._row("C1"), "{bad", json.dumps({"x": 1}),
+                 json.dumps([None] + ["y"] * 7)]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 1
+        assert drops == {"bad_json": 1, "not_list": 1, "no_lcsc": 1}
 
 
 # ---------------------------------------------------------------------------
