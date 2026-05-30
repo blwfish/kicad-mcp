@@ -1037,3 +1037,15 @@ class TestMCP6PatternBoundaries:
         components = {"U1": _comp(value="MCP7383")}
         amps = identify_amplifiers(components, {})
         assert not any(a.get("value") == "MCP7383" for a in amps)
+
+
+def test_opamp_family_re_shared_and_matches_4digit_ad_and_ina():
+    """The op-amp family pattern is one constant shared by identify_amplifiers and
+    identify_filters (the filters copy had drifted to AD\\d{3} with no INA, so an
+    AD8221/INA active filter went undetected)."""
+    import re
+    from kicad_mcp.utils.pattern_recognition import _OPAMP_FAMILY_RE
+    for part in ("AD8221", "AD8429", "AD8620", "INA128", "INA826", "MCP6002", "TL072", "LM358"):
+        assert re.search(_OPAMP_FAMILY_RE, part, re.IGNORECASE), part
+    for nonopamp in ("MCP9808", "MCP4725", "MCP3221", "MCP1525"):   # narrowing holds
+        assert not re.search(_OPAMP_FAMILY_RE, nonopamp, re.IGNORECASE), nonopamp
