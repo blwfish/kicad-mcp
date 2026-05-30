@@ -1074,16 +1074,15 @@ for fp in board.GetFootprints():
             "x_max": pb.GetRight(), "y_max": pb.GetBottom(),
         })
 
-def _aabb(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1):
-    return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
-
-# Text over pads
+# Text over pads. Use the canonical non-strict aabb_overlap (touching counts,
+# matching KiCad DRC and check_silkscreen_overlaps); the old local _aabb used
+# strict < so 'all' and check_silkscreen_overlaps disagreed on touching pairs.
 for si in silk_items:
     for pad in all_pads:
         if si["component"] == pad["reference"]:
             continue
-        if _aabb(si["x_min"], si["y_min"], si["x_max"], si["y_max"],
-                 pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"]):
+        if aabb_overlap((si["x_min"], si["y_min"], si["x_max"], si["y_max"]),
+                        (pad["x_min"], pad["y_min"], pad["x_max"], pad["y_max"])):
             silk_overlaps.append({
                 "silk_component": si["component"],
                 "silk_type": si["type"],
@@ -1099,8 +1098,8 @@ for i in range(len(silk_items)):
             continue
         if a["layer"] != b["layer"]:
             continue
-        if _aabb(a["x_min"], a["y_min"], a["x_max"], a["y_max"],
-                 b["x_min"], b["y_min"], b["x_max"], b["y_max"]):
+        if aabb_overlap((a["x_min"], a["y_min"], a["x_max"], a["y_max"]),
+                        (b["x_min"], b["y_min"], b["x_max"], b["y_max"])):
             silk_text_overlaps.append({
                 "text_a_component": a["component"], "text_a_type": a["type"],
                 "text_b_component": b["component"], "text_b_type": b["type"],
