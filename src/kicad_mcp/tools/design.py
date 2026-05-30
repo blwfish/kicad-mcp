@@ -41,6 +41,7 @@ from kicad_mcp.utils.firmware.intent import (
     save_intent,
 )
 from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
+from kicad_mcp.utils.firmware.sidecar import apply_sidecar, find_sidecar, load_sidecar
 from kicad_mcp.utils.firmware.parse import (
     idf_target_defines,
     parse_defines,
@@ -132,6 +133,15 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     parsed = partition(parse_defines(text))
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
 
+    # board.yaml sidecar (Phase 6b): firmware-blind facts (connectors, power
+    # source, board size) supplied as data next to config.h. Applied AFTER
+    # build_intent so the importer core stays untouched.
+    sidecar_path = find_sidecar(str(cfg))
+    sidecar_applied = None
+    if sidecar_path is not None:
+        intent = apply_sidecar(intent, load_sidecar(sidecar_path))
+        sidecar_applied = sidecar_path
+
     dest = Path(out_path) if out_path else cfg.parent / "design_intent.yaml"
     try:
         save_intent(intent, str(dest))
@@ -142,6 +152,7 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     return {
         "status": "ok", "intent_path": str(dest),
         "board": board, "summary": _summary(intent), "gaps": _gaps_list(intent),
+        "sidecar": sidecar_applied,
     }
 
 

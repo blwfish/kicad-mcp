@@ -1,0 +1,10 @@
+# Firmware-blind facts for the sidecar golden test. The external power input
+# connector is not in config.h — it comes from here, with provenance.
+power_source: barrel
+board_size_mm: [70, 55]
+extra_connectors:
+  - ref: J_PWR
+    lib_id: Connector_Generic:Conn_01x02
+    value: PWR_IN
+    footprint: Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical
+    nets: {"1": "+5V", "2": "GND"}

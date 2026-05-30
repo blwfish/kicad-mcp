@@ -19,3 +19,6 @@ CLAUDE.md
 
 # Self-hosted GitHub Actions runner install — runtime artifact, not source
 actions-runner/
+
+# maintainer-time pre-fetch staging output (Phase 8)
+prefetch_cards/
