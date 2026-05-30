@@ -59,5 +59,8 @@
     "tests/test_pcb_zones.py::test_no_zones_to_fill",
     "tests/test_pcb_zones.py::test_returns_fill_results",
     "tests/test_pcb_zones.py::test_returns_zone_info"
+  ],
+  "helperless_subprocess_parsing": [
+    "src/kicad_mcp/tools/drc_impl/cli_drc.py::run_drc_via_cli"
   ]
 }

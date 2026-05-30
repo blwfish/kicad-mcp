@@ -82,6 +82,13 @@ class TautoViolation:
     parse_error: bool = False
 
 
+@dataclass
+class SubprocViolation:
+    func: str
+    lineno: int
+    parse_error: bool = False
+
+
 # --- small AST helpers -------------------------------------------------------
 
 def _string_payload(node: ast.AST) -> tuple[str | None, int]:
@@ -322,6 +329,48 @@ def find_tautological_tests(
     return out
 
 
+# --- detector 3: subprocess output parsed inline (no pure extractor) ---------
+
+#: A child process is spawned (its output then parsed inline).
+_SUBPROCESS_SPAWNS = (
+    "subprocess.run(", "subprocess.Popen(", "subprocess.check_output(",
+    "subprocess.check_call(", "subprocess.call(",
+)
+#: Inline parsing of that external output (the field-capture logic). "json.load("
+#: (file form) is distinct from "json.loads(" — both are listed; the substring
+#: "json.load(" does not match "json.loads(" (the char after "load" is "s").
+_INLINE_PARSE = (
+    "ET.parse(", "ET.fromstring(", "ElementTree.parse(", "ElementTree.fromstring(",
+    "json.loads(", "json.load(", ".findall(", ".iterfind(",
+)
+
+
+def find_helperless_subprocess_parsing(source: str) -> list[SubprocViolation]:
+    """Functions that spawn a subprocess AND parse its output inline with an
+    extraction loop — the field-capture logic has no in-process seam a test can
+    reach (cf. extract_netlist_via_cli before _parse_kicadxml was split out). A
+    function that hands the raw output to a pure ``_parse_*`` helper (so it has no
+    inline parse + loop of its own) is NOT flagged."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return [SubprocViolation(func="<syntax-error>", lineno=e.lineno or 0, parse_error=True)]
+
+    out: list[SubprocViolation] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        fnsrc = _function_span(source, fn)
+        if not any(p in fnsrc for p in _SUBPROCESS_SPAWNS):
+            continue
+        if not any(p in fnsrc for p in _INLINE_PARSE):
+            continue
+        if not any(isinstance(n, (ast.For, ast.AsyncFor)) for n in ast.walk(fn)):
+            continue  # no extraction loop -> nothing to extract
+        out.append(SubprocViolation(func=fn.name, lineno=fn.lineno))
+    return out
+
+
 # --- repository scan ---------------------------------------------------------
 
 @dataclass
@@ -329,6 +378,7 @@ class ScanResult:
     helperless: dict[str, list[BlockViolation]]      # relpath -> blocks
     tautological: dict[str, TautoViolation]          # "relpath::test" -> v
     errors: list[tuple[str, str]]                    # (relpath, reason)
+    subprocess_parsing: dict[str, SubprocViolation] = field(default_factory=dict)  # "relpath::func" -> v
 
 
 def _read(path: Path) -> str | None:
@@ -341,6 +391,7 @@ def _read(path: Path) -> str | None:
 def scan(root: Path) -> ScanResult:
     helperless: dict[str, list[BlockViolation]] = {}
     tautological: dict[str, TautoViolation] = {}
+    subprocess_parsing: dict[str, SubprocViolation] = {}
     errors: list[tuple[str, str]] = []
 
     src_root = root / "src" / "kicad_mcp"
@@ -356,6 +407,9 @@ def scan(root: Path) -> ScanResult:
             errors.append((rel, b.snippet))
         if real:
             helperless[rel] = real
+        for sv in find_helperless_subprocess_parsing(text):
+            if not sv.parse_error:  # parse errors already recorded above
+                subprocess_parsing[f"{rel}::{sv.func}"] = sv
 
     test_root = root / "tests"
     for path in sorted(test_root.rglob("*.py")):
@@ -372,7 +426,7 @@ def scan(root: Path) -> ScanResult:
                 continue
             tautological[f"{rel}::{tv.test}"] = tv
 
-    return ScanResult(helperless, tautological, errors)
+    return ScanResult(helperless, tautological, errors, subprocess_parsing)
 
 
 # --- baseline (ratchet) ------------------------------------------------------
@@ -386,24 +440,29 @@ _BASELINE_NOTE = (
 )
 
 
-def current_ids(result: ScanResult) -> tuple[set[str], set[str]]:
-    return set(result.helperless), set(result.tautological)
+def current_ids(result: ScanResult) -> tuple[set[str], set[str], set[str]]:
+    return set(result.helperless), set(result.tautological), set(result.subprocess_parsing)
 
 
-def load_baseline(path: Path = BASELINE_PATH) -> tuple[set[str], set[str]]:
+def load_baseline(path: Path = BASELINE_PATH) -> tuple[set[str], set[str], set[str]]:
     if not path.exists():
-        return set(), set()
+        return set(), set(), set()
     data = json.loads(path.read_text(encoding="utf-8"))
-    return set(data.get("helperless_boundary_logic", [])), set(data.get("tautological_tests", []))
+    return (
+        set(data.get("helperless_boundary_logic", [])),
+        set(data.get("tautological_tests", [])),
+        set(data.get("helperless_subprocess_parsing", [])),
+    )
 
 
 def write_baseline(result: ScanResult, path: Path = BASELINE_PATH) -> None:
-    helperless, tautological = current_ids(result)
+    helperless, tautological, subproc = current_ids(result)
     payload = {
         "version": 1,
         "note": _BASELINE_NOTE,
         "helperless_boundary_logic": sorted(helperless),
         "tautological_tests": sorted(tautological),
+        "helperless_subprocess_parsing": sorted(subproc),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -425,42 +484,49 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     result = scan(args.root)
-    cur_h, cur_t = current_ids(result)
+    cur_h, cur_t, cur_s = current_ids(result)
 
     if args.update_baseline:
         write_baseline(result)
         print(f"baseline updated: {len(cur_h)} helperless modules, "
-              f"{len(cur_t)} tautological tests -> {BASELINE_PATH.name}")
+              f"{len(cur_t)} tautological tests, {len(cur_s)} inline subprocess "
+              f"parsers -> {BASELINE_PATH.name}")
         return 0
 
-    base_h, base_t = load_baseline()
+    base_h, base_t, base_s = load_baseline()
     new_h, fixed_h = sorted(cur_h - base_h), sorted(base_h - cur_h)
     new_t, fixed_t = sorted(cur_t - base_t), sorted(base_t - cur_t)
+    new_s, fixed_s = sorted(cur_s - base_s), sorted(base_s - cur_s)
 
     if args.json:
         print(json.dumps({
-            "current": {"helperless": sorted(cur_h), "tautological": sorted(cur_t)},
-            "new": {"helperless": new_h, "tautological": new_t},
-            "fixed": {"helperless": fixed_h, "tautological": fixed_t},
+            "current": {"helperless": sorted(cur_h), "tautological": sorted(cur_t),
+                        "subprocess_parsing": sorted(cur_s)},
+            "new": {"helperless": new_h, "tautological": new_t, "subprocess_parsing": new_s},
+            "fixed": {"helperless": fixed_h, "tautological": fixed_t, "subprocess_parsing": fixed_s},
             "errors": result.errors,
         }, indent=2))
     else:
-        _print_report(result, cur_h, cur_t, base_h, base_t, new_h, new_t, fixed_h, fixed_t)
+        _print_report(result, cur_h, cur_t, cur_s, base_h, base_t, base_s,
+                      new_h, new_t, new_s, fixed_h, fixed_t, fixed_s)
 
     if args.check:
-        return 1 if (new_h or new_t) else 0
+        return 1 if (new_h or new_t or new_s) else 0
     return 0  # report-only: never blocks
 
 
-def _print_report(result, cur_h, cur_t, base_h, base_t, new_h, new_t, fixed_h, fixed_t) -> None:
+def _print_report(result, cur_h, cur_t, cur_s, base_h, base_t, base_s,
+                  new_h, new_t, new_s, fixed_h, fixed_t, fixed_s) -> None:
     print("Testability audit (report-only net)")
     print("=" * 52)
-    print(f"  helperless boundary modules : {len(cur_h):3d}  "
+    print(f"  helperless boundary modules  : {len(cur_h):3d}  "
           f"(baseline {len(base_h)}, new {len(new_h)}, fixed {len(fixed_h)})")
-    print(f"  tautological boundary tests : {len(cur_t):3d}  "
+    print(f"  tautological boundary tests  : {len(cur_t):3d}  "
           f"(baseline {len(base_t)}, new {len(new_t)}, fixed {len(fixed_t)})")
+    print(f"  inline subprocess parsers    : {len(cur_s):3d}  "
+          f"(baseline {len(base_s)}, new {len(new_s)}, fixed {len(fixed_s)})")
     if result.errors:
-        print(f"  unparseable / unreadable    : {len(result.errors)} (see below)")
+        print(f"  unparseable / unreadable     : {len(result.errors)} (see below)")
 
     if new_h:
         print("\nNEW helperless boundary logic (extract a *_HELPER, see "
@@ -474,18 +540,26 @@ def _print_report(result, cur_h, cur_t, base_h, base_t, new_h, new_t, fixed_h, f
         for key in new_t:
             tv = result.tautological[key]
             print(f"  {key} (line {tv.lineno}) echoes: {', '.join(tv.keys)}")
-    if fixed_h or fixed_t:
+    if new_s:
+        print("\nNEW inline subprocess parsing (extract a pure _parse_*(text), "
+              "see netlist_parser.py:_parse_kicadxml):")
+        for key in new_s:
+            sv = result.subprocess_parsing[key]
+            print(f"  {key} (line {sv.lineno}): spawns a subprocess and parses its output inline")
+    if fixed_h or fixed_t or fixed_s:
         print("\nFIXED since baseline (run --update-baseline to ratchet down):")
         for rel in fixed_h:
             print(f"  [helperless] {rel}")
         for key in fixed_t:
             print(f"  [tautological] {key}")
+        for key in fixed_s:
+            print(f"  [subprocess] {key}")
     if result.errors:
         print("\nFiles that could not be analyzed (not silently dropped):")
         for rel, reason in result.errors:
             print(f"  {rel}: {reason}")
 
-    if not (new_h or new_t):
+    if not (new_h or new_t or new_s):
         print("\nNo new violations vs baseline. (Net is report-only; exit 0.)")
 
 
