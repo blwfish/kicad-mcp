@@ -28,6 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.firmware.autodraft import draft_card, extract_whoami
@@ -170,6 +171,20 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     }
 
 
+def _load_intent_or_error(intent_path: str) -> tuple[Optional[DesignIntent], Optional[dict]]:
+    """Load an intent doc, returning (intent, None) or (None, error_dict). The
+    doc may be hand-edited, truncated, or from a different schema version, so a
+    parse failure must surface as a structured error rather than a raw traceback
+    to fastmcp (h-design-intent). Mirrors _op_import's care with SidecarError."""
+    try:
+        return load_intent(intent_path), None
+    except (OSError, yaml.YAMLError, KeyError, TypeError, AttributeError, ValueError) as e:
+        return None, {
+            "status": "error", "code": "invalid_intent",
+            "message": f"Could not parse intent doc {intent_path}: {type(e).__name__}: {e}",
+        }
+
+
 def _op_expand(*, intent_path: Optional[str], out_path: Optional[str]) -> dict:
     if not intent_path:
         return {"status": "error", "code": "missing_parameter",
@@ -177,7 +192,10 @@ def _op_expand(*, intent_path: Optional[str], out_path: Optional[str]) -> dict:
     if not Path(intent_path).exists():
         return {"status": "error", "code": "intent_not_found",
                 "message": f"Intent doc not found: {intent_path}"}
-    intent = load_intent(intent_path)
+    intent, err = _load_intent_or_error(intent_path)
+    if intent is None:
+        assert err is not None
+        return err
     n_comp_before = len(intent.peripherals)
     intent = expand_intent(intent)
     dest = out_path or intent_path
@@ -201,7 +219,10 @@ def _op_generate(*, intent_path: Optional[str], schematic_path: Optional[str]) -
     if not Path(intent_path).exists():
         return {"status": "error", "code": "intent_not_found",
                 "message": f"Intent doc not found: {intent_path}"}
-    intent = load_intent(intent_path)
+    intent, err = _load_intent_or_error(intent_path)
+    if intent is None:
+        assert err is not None
+        return err
     return _generate(intent, schematic_path)
 
 
@@ -252,5 +273,8 @@ def _op_show(*, intent_path: Optional[str]) -> dict:
     if not Path(intent_path).exists():
         return {"status": "error", "code": "intent_not_found",
                 "message": f"Intent doc not found: {intent_path}"}
-    intent = load_intent(intent_path)
+    intent, err = _load_intent_or_error(intent_path)
+    if intent is None:
+        assert err is not None
+        return err
     return {"status": "ok", "summary": _summary(intent), "gaps": _gaps_list(intent)}
