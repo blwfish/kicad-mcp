@@ -23,37 +23,90 @@ class McuInfo(TypedDict):
     part: str
     lib_id: str
     value: str
+    footprint: str
+    needs_3v3: bool      # board needs a 3V3 supply (power_tree template fires)
+    supply_pin: str      # pin NAME for the 3V3 supply
+    ground_pin: str      # pin NAME for ground (ESP32: the merged "GND" pin)
+    en_pin: str          # chip-enable pin NAME (needs pull-up)
+    boot_pin: str        # boot/strap pin NAME (needs pull-up)
 
 
 class PeripheralInfo(TypedDict):
     lib_id: str
     value: str
     bus: Optional[str]
+    footprint: str
     # firmware signal-role (upper-cased) -> symbol pin NAME
     roles: dict[str, str]
+    supply_pins: list[str]   # pin NAMES tied to +3V3
+    ground_pins: list[str]   # pin NAMES tied to GND
 
+
+# ESP32-WROOM-32E facts. GND is the symbol's MERGED pin (physical pads
+# 1/15/38/39 collapsed) — resolve it by NAME, never by number.
+_ESP32: McuInfo = {
+    "part": "ESP32-WROOM-32E", "lib_id": "RF_Module:ESP32-WROOM-32E",
+    "value": "ESP32-WROOM-32E", "footprint": "RF_Module:ESP32-WROOM-32E",
+    "needs_3v3": True, "supply_pin": "VDD", "ground_pin": "GND",
+    "en_pin": "EN", "boot_pin": "IO0",
+}
 
 # board-id substrings (from platformio.ini ``board =``) -> MCU.
-_MCUS: dict[str, McuInfo] = {
-    "esp32dev": {"part": "ESP32-WROOM-32E", "lib_id": "RF_Module:ESP32-WROOM-32E",
-                 "value": "ESP32-WROOM-32E"},
-    "esp32": {"part": "ESP32-WROOM-32E", "lib_id": "RF_Module:ESP32-WROOM-32E",
-              "value": "ESP32-WROOM-32E"},
-}
+_MCUS: dict[str, McuInfo] = {"esp32dev": _ESP32, "esp32": _ESP32}
 
 _PERIPHERALS: dict[str, PeripheralInfo] = {
     "MCP23017": {
         "lib_id": "Interface_Expansion:MCP23017x-x-SO",
         "value": "MCP23017", "bus": "I2C",
+        "footprint": "Package_SO:SOIC-28W_7.5x17.9mm_P1.27mm",
         # NB: I2C clock pin is named "SCK" on this symbol, not "SCL".
         "roles": {"SDA": "SDA", "SCL": "SCK", "INT": "INTA", "INTA": "INTA"},
+        "supply_pins": ["V_{DD}"], "ground_pins": ["V_{SS}"],
     },
     "HX711": {
         "lib_id": "Analog_ADC:HX711",
         "value": "HX711", "bus": None,
+        "footprint": "Package_SO:SOIC-16_3.9x9.9mm_P1.27mm",
         "roles": {"DOUT": "DOUT", "SCK": "PD_SCK", "PD_SCK": "PD_SCK"},
+        # HX711 has no separate DGND — analog + digital ground share AGND.
+        "supply_pins": ["VSUP", "AVDD", "DVDD"], "ground_pins": ["AGND"],
     },
 }
+
+# --- verified footprints (speed-cal v5 BOM) for template-placed passives ---
+LIB_C = "Device:C"
+LIB_R = "Device:R"
+FP_C_BULK = "Capacitor_SMD:C_0805_2012Metric"     # 10µF
+FP_C_BYPASS = "Capacitor_SMD:C_0603_1608Metric"   # 100nF
+FP_R_0603 = "Resistor_SMD:R_0603_1608Metric"
+
+# AMS1117-3.3 LDO (instantiated by the power_tree template; firmware never names
+# it). Tab = pin 2 (VO) — a copper-pour note for the PCB step, not a separate net.
+AMS1117 = {
+    "lib_id": "Regulator_Linear:AMS1117-3.3", "value": "AMS1117-3.3",
+    "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+    "vin_pin": "VI", "vout_pin": "VO", "gnd_pin": "GND",
+}
+
+# MCP23017 I2C address strapping. Base 0x20; bits A2 A1 A0 select 0x20..0x27.
+MCP23017_ADDRESS_BASE = 0x20
+MCP23017_ADDRESS_PINS = ("A0", "A1", "A2")   # index = bit position
+MCP23017_RESET_PIN = "~{RESET}"
+
+
+def mcp23017_address_straps(address: int) -> Optional[list[tuple[str, str]]]:
+    """Return [(addr_pin_name, rail)] for an MCP23017 I2C address, or None if the
+    address is outside the strappable range 0x20..0x27. Each address pin ties to
+    "+3V3" (bit set) or "GND" (bit clear). This is the single source of truth for
+    the address→strap mapping (the silent-wrong hotspot — boundary-tested)."""
+    offset = address - MCP23017_ADDRESS_BASE
+    if offset < 0 or offset > 0b111:
+        return None
+    out: list[tuple[str, str]] = []
+    for bit, pin in enumerate(MCP23017_ADDRESS_PINS):
+        rail = "+3V3" if (offset >> bit) & 1 else "GND"
+        out.append((pin, rail))
+    return out
 
 
 def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
@@ -66,6 +119,16 @@ def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
         return _MCUS[key]
     for sub, info in _MCUS.items():
         if sub in key:
+            return info
+    return None
+
+
+def resolve_mcu_by_part(part: Optional[str]) -> Optional[McuInfo]:
+    """Look up MCU facts by part string (templates have ``intent.mcu.part``)."""
+    if not part:
+        return None
+    for info in _MCUS.values():
+        if info["part"] == part:
             return info
     return None
 

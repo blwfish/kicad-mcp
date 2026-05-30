@@ -17,6 +17,12 @@ from kicad_mcp.utils.firmware.mcu_pinmap import gpio_to_pin_number, pin_number_b
 _PITCH_MM = 63.5
 _COLS = 4
 
+# Power-rail name -> KiCad power symbol lib_id (verified to resolve).
+_RAIL_LIB = {
+    "+3V3": "power:+3V3", "+5V": "power:+5V",
+    "GND": "power:GND", "VBUS": "power:VBUS",
+}
+
 
 def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, Any]:
     import kicad_sch_api as ksa
@@ -34,15 +40,17 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     sch = ksa.create_schematic("firmware_gen")
 
     # --- place components (MCU first, then peripherals) ---
-    to_place: list[tuple[str, Optional[str], str]] = [
-        (intent.mcu.ref, intent.mcu.lib_id, intent.mcu.part)
+    to_place: list[tuple[str, Optional[str], str, Optional[str]]] = [
+        (intent.mcu.ref, intent.mcu.lib_id, intent.mcu.part, intent.mcu.footprint)
     ]
-    to_place += [(p.ref, p.lib_id, p.value or p.type) for p in intent.peripherals]
+    to_place += [
+        (p.ref, p.lib_id, p.value or p.type, p.footprint) for p in intent.peripherals
+    ]
 
     placed: dict[str, Any] = {}
     symbols: dict[str, Any] = {}
     component_errors: list[dict[str, Any]] = []
-    for i, (ref, lib_id, value) in enumerate(to_place):
+    for i, (ref, lib_id, value, footprint) in enumerate(to_place):
         if not lib_id:
             component_errors.append({"ref": ref, "error": "no lib_id in intent"})
             continue
@@ -53,7 +61,8 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         col, row = i % _COLS, i // _COLS
         pos = (25.4 + col * _PITCH_MM, 25.4 + row * _PITCH_MM)
         try:
-            comp = sch.components.add(lib_id=lib_id, reference=ref, value=value, position=pos)
+            comp = sch.components.add(lib_id=lib_id, reference=ref, value=value,
+                                      position=pos, footprint=footprint)
         except Exception as e:  # noqa: BLE001 - record + continue, don't abort the build
             component_errors.append({"ref": ref, "error": f"add failed: {e}"})
             continue
@@ -62,10 +71,15 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
 
     type_by_ref = {p.ref: p.type for p in intent.peripherals}
 
-    def resolve_pin(ref: str, gpio: Any, role: Any) -> Any:
+    def resolve_pin(ref: str, gpio: Any, role: Any, pin: Any) -> Any:
         sym = symbols.get(ref)
         if sym is None:
             return None
+        if pin is not None:                        # direct pin NAME or number
+            num = pin_number_by_name(sym, pin)
+            if num is not None:
+                return num
+            return pin if str(pin).isdigit() else None
         if gpio is not None:                       # MCU side
             return gpio_to_pin_number(sym, int(gpio))
         ptype = type_by_ref.get(ref)               # peripheral side
@@ -74,6 +88,17 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         if num is None and role:                   # last resort: role == pin name
             num = pin_number_by_name(sym, role)
         return num
+
+    def wire_pin(comp: Any, pin_num: str, net_name: str) -> bool:
+        """Add a wire stub + net label at a pin (the connectivity primitive)."""
+        pin_pos = _kicad_pin_position(comp, pin_num)
+        if pin_pos is None:
+            return False
+        dx, dy = _pin_wire_offset(comp, pin_num, 2.54)
+        lx, ly = pin_pos.x + dx, pin_pos.y + dy
+        sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(lx, ly))
+        sch.add_label(net_name, (lx, ly))
+        return True
 
     # --- wire nets ---
     nets_by_kind: dict[str, int] = {}
@@ -85,24 +110,46 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
                 unresolved.append({"net": net.name, "ref": ep.ref,
                                    "reason": "component not placed"})
                 continue
-            pin_num = resolve_pin(ep.ref, ep.gpio, ep.role)
+            pin_num = resolve_pin(ep.ref, ep.gpio, ep.role, ep.pin)
             if pin_num is None:
-                unresolved.append({"net": net.name, "ref": ep.ref,
-                                   "gpio": ep.gpio, "role": ep.role,
+                unresolved.append({"net": net.name, "ref": ep.ref, "gpio": ep.gpio,
+                                   "role": ep.role, "pin": ep.pin,
                                    "reason": "pin unresolved"})
                 continue
-            comp = placed[ep.ref]
-            pin_pos = _kicad_pin_position(comp, pin_num)
-            if pin_pos is None:
+            if wire_pin(placed[ep.ref], pin_num, net.name):
+                endpoints_wired += 1
+            else:
                 unresolved.append({"net": net.name, "ref": ep.ref, "pin": pin_num,
                                    "reason": "pin position unavailable"})
-                continue
-            dx, dy = _pin_wire_offset(comp, pin_num, 2.54)
-            lx, ly = pin_pos.x + dx, pin_pos.y + dy
-            sch.add_wire(start=(pin_pos.x, pin_pos.y), end=(lx, ly))
-            sch.add_label(net.name, (lx, ly))
-            endpoints_wired += 1
         nets_by_kind[net.kind] = nets_by_kind.get(net.kind, 0) + 1
+
+    # --- idiomatic power-rail markers (best-effort) ---
+    # Rail connectivity is already established by the rail-named labels above;
+    # these add KiCad's conventional power symbol + PWR_FLAG per rail so the net
+    # is recognized as a power rail (and ERC has a driver). Failure never aborts.
+    # Markers go in a clear band BELOW all placed components. Position is
+    # irrelevant to connectivity (labels join by name), but a marker dropped
+    # onto a component pin would merge that pin's net into the rail — so keep
+    # them well clear of the grid.
+    rows = (len(placed) + _COLS - 1) // _COLS
+    marker_y = 25.4 + rows * _PITCH_MM + _PITCH_MM
+    rail_markers = 0
+    pwr_idx = 0
+    for rail in sorted({n.name for n in intent.nets if n.kind == "power"}):
+        rail_lib = _RAIL_LIB.get(rail)
+        if rail_lib is None:
+            continue
+        for mlib in (rail_lib, "power:PWR_FLAG"):
+            if cache.get_symbol(mlib) is None:
+                continue
+            try:
+                mcomp = sch.components.add(lib_id=mlib, reference=f"#PWR{pwr_idx:02d}",
+                                           value=rail, position=(25.4 + pwr_idx * 20.32, marker_y))
+            except Exception:  # noqa: BLE001 - markers are best-effort
+                continue
+            pwr_idx += 1
+            if wire_pin(mcomp, "1", rail):
+                rail_markers += 1
 
     sch.save(schematic_path)
     return {
@@ -113,6 +160,7 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         "nets_total": len(intent.nets),
         "nets_by_kind": nets_by_kind,
         "endpoints_wired": endpoints_wired,
+        "rail_markers": rail_markers,
         "unresolved_endpoints": unresolved,
         "gaps": len(intent.gaps),
     }
