@@ -1,0 +1,11 @@
+# HX711 24-bit load-cell ADC (chip-down SOIC). Clock pin is named "PD_SCK".
+# No separate DGND — analog + digital ground share AGND.
+type: HX711
+lib_id: Analog_ADC:HX711
+value: HX711
+bus: null
+footprint: Package_SO:SOIC-16_3.9x9.9mm_P1.27mm
+roles: {DOUT: DOUT, SCK: PD_SCK, PD_SCK: PD_SCK}
+supply_pins: ["VSUP", "AVDD", "DVDD"]
+ground_pins: ["AGND"]
+module: false

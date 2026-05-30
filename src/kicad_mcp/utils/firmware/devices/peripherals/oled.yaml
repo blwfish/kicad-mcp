@@ -1,0 +1,11 @@
+# I2C OLED module (SSD1306/SSD1315), modeled as its 4-pin breakout header.
+# Header pin convention: 1=GND 2=VCC 3=SCL 4=SDA. No strappable address pin.
+type: OLED
+lib_id: Connector_Generic:Conn_01x04
+value: OLED (SSD1306)
+bus: I2C
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical
+roles: {SDA: "4", SCL: "3"}
+supply_pins: ["2"]
+ground_pins: ["1"]
+module: true

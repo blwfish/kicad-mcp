@@ -187,6 +187,31 @@ def _build_buses(parsed: ParsedFirmware, known_types: set[str]) -> list[Bus]:
     return buses
 
 
+def candidate_devices(parsed: ParsedFirmware) -> list[tuple[str, Optional[int]]]:
+    """The devices a firmware references, as ``(type, address)`` pairs — the
+    single source of truth for "what's on this board" (consumed by ``build_intent``
+    to place known devices, and by auto-draft to propose cards for unknown ones).
+
+    Address-declared devices: ONE instance per ``*_ADDR`` macro (two MPU6050 at
+    0x68/0x69 are two chips). Pin-hint devices (named only by pin macros, no
+    address, e.g. HX711): one per type. Ordered by ``(type, address)`` so refs
+    are deterministic and stable; hint devices (no address) sort first per type.
+    """
+    addr_devices = [(_peripheral_type_from_addr(a.name), a.address or 0)
+                    for a in parsed.addresses]
+    addr_types = {t for t, _ in addr_devices}
+    hint_types = {
+        m.peripheral_hint for m in parsed.pins
+        if m.peripheral_hint and m.bus is None and m.peripheral_hint not in addr_types
+    }
+    out: list[tuple[str, Optional[int]]] = (
+        [(t, a) for t, a in addr_devices]
+        + [(t, None) for t in hint_types if t]
+    )
+    out.sort(key=lambda ta: (ta[0], -1 if ta[1] is None else ta[1]))
+    return out
+
+
 def build_intent(
     parsed: ParsedFirmware, *, firmware_path: str, board_id: Optional[str],
 ) -> DesignIntent:
@@ -204,27 +229,7 @@ def build_intent(
                                f"Could not resolve MCU from board id {board_id!r}."))
 
     # --- materialize peripherals we have a symbol for ---
-    # Address-declared devices: ONE instance per ``*_ADDR`` macro — two MPU6050
-    # at 0x68/0x69 are two chips on the shared bus, not one collapsed entry.
-    # Pin-hint devices (named only by pin macros, no address, e.g. HX711): one
-    # per type. Deterministic order: address devices by (type, address), then
-    # the remaining hint types.
-    addr_devices = [(_peripheral_type_from_addr(a.name), a.address or 0)
-                    for a in parsed.addresses]
-    addr_types = {t for t, _ in addr_devices}
-    hint_types = {
-        m.peripheral_hint for m in parsed.pins
-        if m.peripheral_hint and m.bus is None and m.peripheral_hint not in addr_types
-    }
-    # Combined, then ordered by (type, address) so refs are deterministic and
-    # stable: alphabetical by type, and within a type ascending by address (the
-    # two MPU6050 at 0x68/0x69 get consecutive refs). Hint devices (no address)
-    # sort first within their type.
-    to_place: list[tuple[str, Optional[int]]] = (
-        [(t, a) for t, a in addr_devices]
-        + [(t, None) for t in hint_types if t]
-    )
-    to_place.sort(key=lambda ta: (ta[0], -1 if ta[1] is None else ta[1]))
+    to_place = candidate_devices(parsed)
 
     peripherals: list[Peripheral] = []
     periph_by_type: dict[str, Peripheral] = {}

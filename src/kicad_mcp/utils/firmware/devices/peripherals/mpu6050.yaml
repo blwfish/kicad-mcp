@@ -1,0 +1,19 @@
+# MPU-6050 6-axis IMU, modeled as its GY-521 breakout-MODULE header (we wire the
+# connection, not the bare QFN whose charge-pump/REGOUT support firmware can't
+# inform). Header pin convention: 1=GND 2=VCC 3=SCL 4=SDA 5=AD0.
+type: MPU6050
+lib_id: Connector_Generic:Conn_01x05
+value: GY-521 (MPU-6050)
+bus: I2C
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical
+roles: {SDA: "4", SCL: "3"}
+supply_pins: ["2"]
+ground_pins: ["1"]
+module: true
+config:
+  # A single AD0 pin selects the address LSB: low -> 0x68, high -> 0x69.
+  address_strap:
+    pin_bits: ["5"]
+    base: 0x68
+    rail_set: "+3V3"
+    rail_clear: GND

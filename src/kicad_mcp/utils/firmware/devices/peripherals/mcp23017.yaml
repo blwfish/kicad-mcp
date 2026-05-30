@@ -1,0 +1,20 @@
+# MCP23017 16-bit I2C GPIO expander (chip-down SOIC).
+# NB: the I2C clock pin is named "SCK" on this symbol, not "SCL".
+type: MCP23017
+lib_id: Interface_Expansion:MCP23017x-x-SO
+value: MCP23017
+bus: I2C
+footprint: Package_SO:SOIC-28W_7.5x17.9mm_P1.27mm
+roles: {SDA: SDA, SCL: SCK, INT: INTA, INTA: INTA}
+supply_pins: ["V_{DD}"]
+ground_pins: ["V_{SS}"]
+module: false
+config:
+  # A2 A1 A0 select 0x20..0x27 (LSB-first); RESET held high (active-low).
+  address_strap:
+    pin_bits: ["A0", "A1", "A2"]
+    base: 0x20
+    rail_set: "+3V3"
+    rail_clear: GND
+  static_ties:
+    - {pin: "~{RESET}", rail: "+3V3"}
