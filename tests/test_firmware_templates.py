@@ -244,9 +244,22 @@ def test_audio_expand_grows_board():
 
 # --- KiCad-gated audio E2E ---------------------------------------------------
 
+def _audio_symbols_available() -> bool:
+    # Older KiCad (e.g. the no-pcbnew CI matrix) may lack the S3/audio symbols;
+    # the full audio E2E is covered by tests/integration on KiCad 9/10.
+    try:
+        from kicad_sch_api.library.cache import get_symbol_cache
+        c = get_symbol_cache()
+        return all(c.get_symbol(l) is not None for l in (
+            "RF_Module:ESP32-S3-WROOM-1", "Audio:MAX98357A",
+            "Sensor_Audio:SPH0645LM4H"))
+    except Exception:
+        return False
+
+
 def test_generate_audio_board(tmp_path):
-    if not _kicad_available():
-        pytest.skip("KiCad symbol libraries not available")
+    if not _audio_symbols_available():
+        pytest.skip("S3/audio KiCad symbols not available")
     from kicad_mcp.utils.firmware.generate import generate_schematic
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 
@@ -256,6 +269,8 @@ def test_generate_audio_board(tmp_path):
     assert res["status"] == "ok" and not res["unresolved_endpoints"]
 
     nl = extract_netlist_via_cli(str(out))
+    if nl is None:
+        pytest.skip("kicad-cli netlist export unavailable")
     def refs_on(net):
         return {x["component"] for x in nl["nets"].get(net, [])}
     from collections import Counter as _C
