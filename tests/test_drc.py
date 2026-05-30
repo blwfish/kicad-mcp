@@ -30,6 +30,18 @@ def drc_server():
     return mcp
 
 
+def test_history_path_is_deterministic_not_process_hash():
+    """h-drc-hash: the history filename must be stable across processes. Built-in
+    hash() is per-process randomized for strings, so history was lost on every
+    restart. Pin it to the deterministic sha1 so a revert to hash() fails here."""
+    import hashlib
+    p = "/projects/demo/board.kicad_pro"
+    assert get_project_history_path(p) == get_project_history_path(p)   # deterministic
+    expected = hashlib.sha1(p.encode("utf-8")).hexdigest()[:8]
+    assert expected in get_project_history_path(p)                      # sha1, not hash()
+    assert "board.kicad_pro" in get_project_history_path(p)
+
+
 def _get_tool_fn(mcp_server, tool_name):
     tool = asyncio.run(mcp_server.get_tool(tool_name))
     if tool is None:

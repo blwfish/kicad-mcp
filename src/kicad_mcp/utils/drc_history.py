@@ -3,6 +3,7 @@ Utilities for tracking DRC history for KiCad projects.
 
 This will allow users to compare DRC results over time.
 """
+import hashlib
 import json
 import os
 import platform
@@ -35,7 +36,10 @@ def get_project_history_path(project_path: str) -> str:
     Returns:
         Path to the project's DRC history file
     """
-    project_hash = hash(project_path) & 0xFFFFFFFF
+    # Stable across processes: built-in hash() is per-process randomized for
+    # strings (PYTHONHASHSEED), so it gave a different filename every run and
+    # lost all history on restart. sha1 of the path is deterministic.
+    project_hash = hashlib.sha1(project_path.encode("utf-8")).hexdigest()[:8]
     basename = os.path.basename(project_path)
     history_filename = f"{basename}_{project_hash}_drc_history.json"
 
