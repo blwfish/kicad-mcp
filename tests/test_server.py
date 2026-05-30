@@ -7,7 +7,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.server import create_server
 
-EXPECTED_TOOL_COUNT = 16  # updated by scripts/sync_tool_count.py
+EXPECTED_TOOL_COUNT = 17  # updated by scripts/sync_tool_count.py
 
 
 class TestCreateServer:

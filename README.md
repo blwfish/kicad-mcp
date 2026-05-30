@@ -4,7 +4,7 @@ This tool enables your AI agent to use [KiCad](https://www.kicad.org/) — the i
 
 ## What This Does
 
-You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with <!-- tool-count -->16<!-- /tool-count --> tools covering the full design workflow.
+You describe what you need — "design a board for this ESP32 circuit" or "here's the schematic, lay out the PCB" — and your AI agent does the rest: drawing the schematic, choosing components, placing them on the board, routing traces, checking for errors, and producing manufacturing-ready files. All using the same KiCad that professional engineers use, with <!-- tool-count -->17<!-- /tool-count --> tools covering the full design workflow.
 
 You don't need to know KiCad. You don't need to know what a PCB layout tool does. You just need an AI agent (like [Claude](https://claude.ai/)).
 
@@ -18,7 +18,7 @@ Your agent will handle the rest — installing prerequisites, cloning the repo, 
 
 **For best results:** Use Claude Opus (not Haiku or Sonnet) with the ability to spawn subagents. For autorouting, use [FreeRouter v2.2.4+](https://github.com/freerouting/freerouting/releases) — v2.2.3+ is 10–30× faster than v2.1.0 and deterministic; see [AGENT-INSTALL.md](AGENT-INSTALL.md) for details. The combination of a capable model and parallel exploration (component research, placement suggestions) dramatically improves PCB design workflows. [Claude Code](https://claude.ai/code) provides automatic prompt caching that speeds up iterative design tasks.
 
-**Client compatibility:** kicad-mcp exposes <!-- tool-count -->16<!-- /tool-count --> tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support.
+**Client compatibility:** kicad-mcp exposes <!-- tool-count -->17<!-- /tool-count --> tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support.
 
 ## What You Can Ask Your Agent To Do
 
@@ -42,7 +42,7 @@ If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/ne
 
 ### What's Under the Hood
 
-The server provides <!-- tool-count -->16<!-- /tool-count --> tools — 11 domain routers and 5 standalones:
+The server provides <!-- tool-count -->17<!-- /tool-count --> tools — 11 domain routers and 5 standalones:
 
 - **`schematic`** — create and edit circuit schematics, place components, wire connections, labels, sheets
 - **`pcb`** — board layout, footprint placement, nets, routing, copper zones, silkscreen management
@@ -73,7 +73,7 @@ pytest
 ruff check src/ tests/
 ```
 
-Tests cover all <!-- tool-count -->16<!-- /tool-count --> tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
+Tests cover all <!-- tool-count -->17<!-- /tool-count --> tools across every module — schematic, PCB board setup, footprints, nets, routing, zones, silkscreen, planning, DRC, BOM, autorouting, netlist/patterns — plus utilities like the pcbnew subprocess bridge, component value parsing, and project file handling. Everything is unit-testable without a KiCad installation because PCB operations go through a single subprocess bridge (`run_pcbnew_script`) that's easy to mock.
 
 See [AGENT-INSTALL.md](AGENT-INSTALL.md) for full technical details, architecture, contributing guidelines, and how to add new tools.
 

@@ -1,6 +1,6 @@
 # Tool Summary
 
-This MCP server exposes <!-- tool-count -->16<!-- /tool-count --> MCP tools for KiCad EDA — 11 domain routers and 5 standalones.
+This MCP server exposes <!-- tool-count -->17<!-- /tool-count --> MCP tools for KiCad EDA — 11 domain routers and 5 standalones.
 
 Each router takes an `operation` parameter that selects the sub-operation.
 Unknown operations return an error listing valid choices.

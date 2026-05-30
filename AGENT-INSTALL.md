@@ -4,7 +4,7 @@ This file is for you, the AI agent. It tells you what needs to be true on this s
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server providing <!-- tool-count -->16<!-- /tool-count --> tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
+kicad-mcp is a Model Context Protocol (MCP) server providing <!-- tool-count -->17<!-- /tool-count --> tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
 **Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
@@ -156,7 +156,7 @@ If you are registered as an MCP server for a project that does KiCad work, the p
 
 ### Client Compatibility
 
-kicad-mcp exposes <!-- tool-count -->16<!-- /tool-count --> tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
+kicad-mcp exposes <!-- tool-count -->17<!-- /tool-count --> tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
 
 Claude Code is the recommended client: it provides automatic prompt caching (critical for iterative KiCad workflows) and subagent support for parallel exploration tasks.
 
