@@ -110,8 +110,10 @@ if not components:
 total_keepout = sum(c["keepout_area_mm2"] for c in components)
 needed_area = total_area * routing_factor + total_keepout
 
-# Ensure board is at least as wide/tall as largest component + padding
-min_dim = max(max_width, max_height) + padding * 2
+# Bare floor: at least as wide/tall as the largest component. Padding is added
+# exactly once in the per-aspect loop below; folding it in here too applied it
+# twice (4x total) when this floor dominated but only 2x when the area dim did.
+min_dim = max(max_width, max_height)
 
 # Suggest three aspect ratios: square, 4:3, 3:2
 suggestions = []
