@@ -30,7 +30,10 @@ CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ki
 DB_PATH = CACHE_DIR / "jlcparts.db"
 META_PATH = CACHE_DIR / "jlcparts_meta.json"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 adds the parametric `attributes` column
+# Only the columns a query strictly requires; `attributes` is intentionally
+# omitted so a v1 snapshot still validates (it just yields {} parametrics until
+# the next refresh) rather than forcing a re-download.
 EXPECTED_COLUMNS = {"lcsc", "mfr", "manufacturer", "package", "joints",
                     "assembly_tier", "description", "datasheet", "stock", "price"}
 
@@ -235,7 +238,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             description TEXT,
             datasheet TEXT,
             stock     INTEGER,
-            price     TEXT
+            price     TEXT,
+            attributes TEXT      -- JSON dict of parametric attributes
         );
         CREATE INDEX IF NOT EXISTS idx_components_package ON components(package);
         CREATE INDEX IF NOT EXISTS idx_components_tier    ON components(assembly_tier);
@@ -255,6 +259,33 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
         raise RuntimeError(
             f"jlcparts_schema_mismatch: columns missing from local DB: {sorted(missing)}"
         )
+
+
+def _decode_attributes(attr_indices: list[int], lut: list[list]) -> dict[str, str]:
+    """Decode a row's LUT attribute indices into a flat name->value dict.
+
+    Single source of truth for the LUT walk. Takes each attribute's primary
+    value's first element (the displayed value). First occurrence wins on a
+    duplicate attribute name, matching the prior short-circuit decoders. This
+    is the full parametric-attribute capture: nothing the LUT resolves is
+    dropped.
+    """
+    out: dict[str, str] = {}
+    for idx in attr_indices:
+        if not isinstance(idx, int) or idx < 0 or idx >= len(lut):
+            continue
+        entry = lut[idx]
+        if not isinstance(entry, list) or len(entry) < 2:
+            continue
+        name, data = entry[0], entry[1]
+        if not isinstance(name, str) or not isinstance(data, dict):
+            continue
+        values = data.get("values", {})
+        primary = data.get("primary", "default")
+        val_entry = values.get(primary)
+        if isinstance(val_entry, list) and val_entry and val_entry[0] is not None:
+            out.setdefault(name, str(val_entry[0]))
+    return out
 
 
 def _tier_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
@@ -286,45 +317,13 @@ def _tier_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
 
 
 def _package_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
-    """Extract package string from LUT attributes."""
-    for idx in attr_indices:
-        if idx >= len(lut):
-            continue
-        entry = lut[idx]
-        if not isinstance(entry, list) or len(entry) < 2:
-            continue
-        if entry[0] != "Package":
-            continue
-        data = entry[1]
-        if not isinstance(data, dict):
-            continue
-        values = data.get("values", {})
-        primary = data.get("primary", "default")
-        val_entry = values.get(primary)
-        if isinstance(val_entry, list) and val_entry:
-            return str(val_entry[0])
-    return ""
+    """Extract package string from LUT attributes (consumes _decode_attributes)."""
+    return _decode_attributes(attr_indices, lut).get("Package", "")
 
 
 def _manufacturer_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
-    """Extract manufacturer name from LUT attributes."""
-    for idx in attr_indices:
-        if idx >= len(lut):
-            continue
-        entry = lut[idx]
-        if not isinstance(entry, list) or len(entry) < 2:
-            continue
-        if entry[0] != "Manufacturer":
-            continue
-        data = entry[1]
-        if not isinstance(data, dict):
-            continue
-        values = data.get("values", {})
-        primary = data.get("primary", "default")
-        val_entry = values.get(primary)
-        if isinstance(val_entry, list) and val_entry:
-            return str(val_entry[0])
-    return ""
+    """Extract manufacturer name from LUT attributes (consumes _decode_attributes)."""
+    return _decode_attributes(attr_indices, lut).get("Manufacturer", "")
 
 
 def _parse_price(price_raw: Any) -> list[dict]:
@@ -377,8 +376,9 @@ def _decode_shard_rows(
         if not isinstance(attr_indices, list):
             attr_indices = []
 
-        package = _package_from_attributes(attr_indices, lut)
-        manufacturer = _manufacturer_from_attributes(attr_indices, lut)
+        attributes = _decode_attributes(attr_indices, lut)
+        package = attributes.get("Package", "")
+        manufacturer = attributes.get("Manufacturer", "")
         assembly_tier = _tier_from_attributes(attr_indices, lut)
         price_list = _parse_price(get("price"))
 
@@ -399,6 +399,7 @@ def _decode_shard_rows(
             get("datasheet") or "",
             get("stock") or 0,
             json.dumps(price_list),
+            json.dumps(attributes),
         ))
     return batch, drops
 
@@ -488,8 +489,8 @@ def build_db_from_jsonl(
             conn.executemany(
                 """INSERT OR REPLACE INTO components
                    (lcsc, mfr, manufacturer, package, joints, assembly_tier,
-                    description, datasheet, stock, price)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    description, datasheet, stock, price, attributes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 batch,
             )
             conn.commit()
@@ -719,4 +720,30 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
         "datasheet": data.get("dataManualUrl") or "",
         "stock": data.get("stockCount") or 0,
         "price": json.dumps(price_list),
+        "attributes": _live_attributes(data),
     }
+
+
+def _live_attributes(data: dict[str, Any]) -> dict[str, str]:
+    """Decode the live JLCPCB API's parametric attributes into a name->value dict.
+
+    The API returns them as a list of {attribute_name_en, attribute_value_name}
+    objects (key casing varies); fall back to a plain dict if already keyed.
+    """
+    raw = data.get("attributes")
+    out: dict[str, str] = {}
+    if isinstance(raw, list):
+        for a in raw:
+            if not isinstance(a, dict):
+                continue
+            name = (a.get("attribute_name_en") or a.get("attributeNameEn")
+                    or a.get("name"))
+            value = (a.get("attribute_value_name") or a.get("attributeValueName")
+                     or a.get("value"))
+            if isinstance(name, str) and value is not None:
+                out.setdefault(name, str(value))
+    elif isinstance(raw, dict):
+        for k, v in raw.items():
+            if v is not None:
+                out[str(k)] = str(v)
+    return out
