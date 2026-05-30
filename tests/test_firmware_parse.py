@@ -103,6 +103,32 @@ def test_address_with_non_int_value_is_other():
     assert m.kind is MacroKind.OTHER and "address" in m.note
 
 
+# --- address_base: the single source of truth for addr-macro names -----------
+# Including the multi-instance qualifier (two chips of the same type on a bus).
+
+@pytest.mark.parametrize("name,base", [
+    ("MPU6050_ADDR", "MPU6050"),
+    ("MPU6050_ADDR_2", "MPU6050"),       # instance qualifier: _<n>
+    ("MPU6050_ADDRESS_2", "MPU6050"),    # long form + instance
+    ("BME280_ADDR0", "BME280"),          # qualifier with no underscore
+    ("OLED_ADDR", "OLED"),
+    ("INA219_ADDRESS", "INA219"),
+    # NOT address macros:
+    ("MPU6050_REG_CONFIG", None),        # the register-table seam trap
+    ("BASE_ADDRESS_OFFSET", None),       # trailing non-digit after ADDRESS
+    ("BUZZER_PIN", None),
+])
+def test_address_base(name, base):
+    from kicad_mcp.utils.firmware.parse import address_base
+    assert address_base(name) == base
+
+def test_second_instance_addr_is_classified_as_address():
+    # The whole reason the dual-MPU was previously lost: a strict endswith("_ADDR")
+    # check skipped MPU6050_ADDR_2 entirely. It must classify as an ADDRESS.
+    m = classify("MPU6050_ADDR_2", "0x69", None)
+    assert m.kind is MacroKind.ADDRESS and m.address == 0x69
+
+
 # --- GPIO range boundaries (at / below / above) ------------------------------
 
 @pytest.mark.parametrize("value,valid", [

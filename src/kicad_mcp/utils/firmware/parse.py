@@ -39,7 +39,21 @@ GPIO_MAX = 48
 BARE_PIN_ALIASES = frozenset({"I2C_SDA", "I2C_SCL"})
 
 _PIN_SUFFIXES = ("_PIN", "_GPIO")
-_ADDR_SUFFIXES = ("_ADDR", "_ADDRESS")
+
+# An I2C device-address macro name: ``<TYPE>_ADDR[ESS][ _<n> | <n> ]``. The
+# optional trailing instance qualifier distinguishes multiple chips of the SAME
+# type on one bus (``MPU6050_ADDR`` 0x68, ``MPU6050_ADDR_2`` 0x69). This is the
+# SINGLE SOURCE OF TRUTH (CLAUDE.md Rule 3) for "is this an address-macro name,
+# and what base type does it name" — both the classifier here and the importer
+# (intent._peripheral_type_from_addr) consume it, so neither re-encodes the rule.
+_ADDR_NAME_RE = re.compile(r"(?P<base>.+?)_(?:ADDRESS|ADDR)(?:_?\d+)?$")
+
+
+def address_base(name: str) -> Optional[str]:
+    """Return the base peripheral type if ``name`` is an address-macro name
+    (``MPU6050_ADDR`` / ``MPU6050_ADDR_2`` -> ``MPU6050``), else None."""
+    m = _ADDR_NAME_RE.match(name)
+    return m.group("base") if m else None
 
 # Bus prefixes recognized in a pin macro's name -> canonical bus id.
 _BUS_PREFIXES = {
@@ -219,7 +233,7 @@ def classify(name: str, value: str, args: Optional[str]) -> Macro:
         return Macro(name=name, raw_value="", line_no=0, kind=MacroKind.EMPTY)
 
     # ADDRESS: name says address AND value is an int.
-    if name.endswith(_ADDR_SUFFIXES):
+    if address_base(name) is not None:
         ival = _as_int(value)
         if ival is not None:
             return Macro(name=name, raw_value=value, line_no=0,

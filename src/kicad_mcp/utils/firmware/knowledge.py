@@ -43,6 +43,11 @@ class PeripheralInfo(TypedDict):
     roles: dict[str, str]
     supply_pins: list[str]   # pin NAMES tied to +3V3
     ground_pins: list[str]   # pin NAMES tied to GND
+    # True if this entry models the device as its breakout-MODULE header
+    # (e.g. a GY-521 / I2C OLED plugged onto a carrier) rather than a chip-down
+    # IC. Firmware names the device; "module vs chip-down" is a design choice we
+    # make explicit (build_intent flags it), same spirit as the AMS1117 default.
+    module: bool
 
 
 # ESP32-WROOM-32E facts. GND is the symbol's MERGED pin (physical pads
@@ -87,6 +92,8 @@ HDR_1X2 = ("Connector_Generic:Conn_01x02",
            "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical")
 HDR_1X4 = ("Connector_Generic:Conn_01x04",
            "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical")
+HDR_1X5 = ("Connector_Generic:Conn_01x05",
+           "Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical")
 
 # board-id substrings (from platformio.ini ``board =``) -> MCU. MORE-SPECIFIC
 # keys FIRST: resolve_mcu does substring matching, so `esp32-s3` must precede the
@@ -103,7 +110,7 @@ _PERIPHERALS: dict[str, PeripheralInfo] = {
         "footprint": "Package_SO:SOIC-28W_7.5x17.9mm_P1.27mm",
         # NB: I2C clock pin is named "SCK" on this symbol, not "SCL".
         "roles": {"SDA": "SDA", "SCL": "SCK", "INT": "INTA", "INTA": "INTA"},
-        "supply_pins": ["V_{DD}"], "ground_pins": ["V_{SS}"],
+        "supply_pins": ["V_{DD}"], "ground_pins": ["V_{SS}"], "module": False,
     },
     "HX711": {
         "lib_id": "Analog_ADC:HX711",
@@ -112,8 +119,44 @@ _PERIPHERALS: dict[str, PeripheralInfo] = {
         "roles": {"DOUT": "DOUT", "SCK": "PD_SCK", "PD_SCK": "PD_SCK"},
         # HX711 has no separate DGND — analog + digital ground share AGND.
         "supply_pins": ["VSUP", "AVDD", "DVDD"], "ground_pins": ["AGND"],
+        "module": False,
+    },
+    # --- I2C breakout modules (carrier-board representation) ------------------
+    # A GY-521 (MPU-6050) module exposes a header; we model the connection, not
+    # the bare QFN (whose charge-pump/REGOUT support firmware can't inform).
+    # Header pin convention (matches i2c_device_header): 1=GND 2=VCC 3=SCL 4=SDA,
+    # plus 5=AD0 for I2C address selection.
+    "MPU6050": {
+        "lib_id": HDR_1X5[0], "value": "GY-521 (MPU-6050)", "bus": "I2C",
+        "footprint": HDR_1X5[1],
+        "roles": {"SDA": "4", "SCL": "3"},
+        "supply_pins": ["2"], "ground_pins": ["1"], "module": True,
+    },
+    # I2C OLED module (SSD1306/SSD1315). 4-pin module: 1=GND 2=VCC 3=SCL 4=SDA.
+    "OLED": {
+        "lib_id": HDR_1X4[0], "value": "OLED (SSD1306)", "bus": "I2C",
+        "footprint": HDR_1X4[1],
+        "roles": {"SDA": "4", "SCL": "3"},
+        "supply_pins": ["2"], "ground_pins": ["1"], "module": True,
     },
 }
+
+# MPU-6050 I2C address strapping: a single AD0 pin selects the LSB of the
+# address — AD0=low -> base 0x68, AD0=high -> 0x69. (GY-521 header pin 5 = AD0.)
+# Single source of truth for the address->AD0-rail map (boundary-tested).
+MPU6050_AD0_PIN = "5"
+MPU6050_ADDR_BASE = 0x68
+
+
+def mpu6050_ad0_strap(address: int) -> Optional[tuple[str, str]]:
+    """Return ``(ad0_pin_name, rail)`` for an MPU-6050 I2C address, or None if
+    the address is outside the strappable pair 0x68/0x69. AD0 ties to "GND"
+    (0x68) or "+3V3" (0x69)."""
+    if address == MPU6050_ADDR_BASE:
+        return (MPU6050_AD0_PIN, "GND")
+    if address == MPU6050_ADDR_BASE + 1:
+        return (MPU6050_AD0_PIN, "+3V3")
+    return None
 
 # --- verified footprints (speed-cal v5 BOM) for template-placed passives ---
 LIB_C = "Device:C"

@@ -202,6 +202,24 @@ def mcp23017_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+def mpu6050_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Strap each MPU-6050's AD0 pin per its I2C address (0x68→GND, 0x69→+3V3).
+    Direct tie (no resistor) — correct for a fixed address. The address→rail map
+    is knowledge.mpu6050_ad0_strap (the boundary-tested single source). An
+    out-of-range address is surfaced as a gap, never silently strapped."""
+    ex = Expansion()
+    for p in intent.peripherals:
+        if p.type.upper() != "MPU6050" or p.address is None:
+            continue
+        strap = K.mpu6050_ad0_strap(p.address)
+        if strap is None:
+            ex.resolved.append("__invalid_mpu_address")  # surfaced as a gap below
+            continue
+        ad0_pin, rail = strap
+        ex.power.append((rail, Endpoint(ref=p.ref, pin=ad0_pin)))
+    return ex
+
+
 def _passive_net(name: str, *endpoints: Endpoint) -> Net:
     return Net(name=name, kind="passive", confidence="high", origin="template",
                endpoints=list(endpoints))
@@ -451,6 +469,7 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
     ("i2c_device_header", i2c_device_header),
     ("uart_device_header", uart_device_header),
     ("mcp23017_config", mcp23017_config),
+    ("mpu6050_config", mpu6050_config),
 ]
 
 
@@ -491,6 +510,10 @@ def expand_intent(intent: DesignIntent) -> DesignIntent:
             if kind == "__invalid_address":
                 intent.gaps.append(Gap("invalid_address",
                                        "MCP23017 I2C address outside 0x20–0x27; not strapped."))
+                continue
+            if kind == "__invalid_mpu_address":
+                intent.gaps.append(Gap("invalid_address",
+                                       "MPU-6050 I2C address is not 0x68/0x69; AD0 not strapped."))
                 continue
             gap = gaps_by_kind.get(kind)
             if gap is not None and not gap.resolved:

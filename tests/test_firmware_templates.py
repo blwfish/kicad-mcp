@@ -26,6 +26,7 @@ from kicad_mcp.utils.firmware.templates import (
     i2s_output_amps,
     mcp23017_config,
     mcu_straps,
+    mpu6050_config,
     power_tree,
     uart_device_header,
     usb_programming,
@@ -71,6 +72,20 @@ def test_address_strap_lsb_only():
 @pytest.mark.parametrize("addr", [0x1F, 0x28, 0x00, 0x50])
 def test_address_strap_out_of_range_is_none(addr):
     assert K.mcp23017_address_straps(addr) is None
+
+
+# --- MPU-6050 AD0 strap: the same silent-wrong hotspot, single-bit version ----
+
+def test_mpu_ad0_low_is_gnd():
+    assert K.mpu6050_ad0_strap(0x68) == ("5", "GND")     # AD0 low -> base addr
+
+def test_mpu_ad0_high_is_3v3():
+    assert K.mpu6050_ad0_strap(0x69) == ("5", "+3V3")    # AD0 high -> base+1
+
+@pytest.mark.parametrize("addr", [0x67, 0x6A, 0x00, 0x70])
+def test_mpu_ad0_out_of_range_is_none(addr):
+    # exactly one below, one above, and far-off addresses are NOT strappable
+    assert K.mpu6050_ad0_strap(addr) is None
 
 
 # --- ref allocation -----------------------------------------------------------
@@ -124,6 +139,54 @@ def test_mcp23017_config_straps_for_0x27():
     # all three address pins on +3V3 (0x27) + RESET high
     plus3_pins = {ep.pin for rail, ep in ex.power if rail == "+3V3"}
     assert {"A0", "A1", "A2", K.MCP23017_RESET_PIN} <= plus3_pins
+
+
+# --- MPU-6050 AD0 strapping (dual same-type devices on the bus) ---------------
+
+_HUB = """\
+#define I2C_SDA_PIN 21
+#define I2C_SCL_PIN 22
+#define MPU6050_ADDR 0x68
+#define MPU6050_ADDR_2 0x69
+#define OLED_ADDR 0x3C
+#define BUZZER_PIN 25
+"""
+
+
+def _hub():
+    return build_intent(partition(parse_defines(_HUB)),
+                        firmware_path="c.h", board_id="esp32dev")
+
+
+def test_mpu6050_config_straps_each_instance_by_address():
+    i = _hub()
+    ex = mpu6050_config(i, RefAllocator(i))
+    assert not ex.components                             # direct ties, no parts
+    # the 0x68 MPU's AD0 -> GND, the 0x69 MPU's AD0 -> +3V3 (per-instance)
+    mpus = {p.ref: p.address for p in i.peripherals if p.type == "MPU6050"}
+    ref_68 = next(r for r, a in mpus.items() if a == 0x68)
+    ref_69 = next(r for r, a in mpus.items() if a == 0x69)
+    straps = {(ep.ref, ep.pin, rail) for rail, ep in ex.power}
+    assert (ref_68, K.MPU6050_AD0_PIN, "GND") in straps
+    assert (ref_69, K.MPU6050_AD0_PIN, "+3V3") in straps
+
+def test_mpu6050_config_invalid_address_flagged_not_strapped():
+    # an MPU at an un-strappable address must be flagged, never silently tied.
+    i = build_intent(partition(parse_defines(
+        "#define I2C_SDA_PIN 21\n#define I2C_SCL_PIN 22\n#define MPU6050_ADDR 0x55\n")),
+        firmware_path="c.h", board_id="esp32dev")
+    expand_intent(i)
+    assert any(g.kind == "invalid_address" and "MPU" in g.detail for g in i.gaps)
+
+def test_hub_expand_routes_bus_and_pullups():
+    # full expand on the hub: power tree resolved, I2C pull-ups joined, AD0 straps
+    # present, board grows well past the bare import.
+    i = _hub()
+    n_before = len(i.peripherals)
+    expand_intent(i)
+    assert len(i.peripherals) > n_before
+    resolved = {g.kind for g in i.gaps if g.resolved}
+    assert {"power_tree", "decoupling", "pullups"} <= resolved
 
 
 # --- CP2102 USB programming block (highest-landmine template) -----------------

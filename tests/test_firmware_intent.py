@@ -189,3 +189,62 @@ def test_find_board_id_real_speedcal():
     if not SPEEDCAL_CONFIG.exists():
         return
     assert find_board_id(str(SPEEDCAL_CONFIG)) == "esp32dev"
+
+
+# --- I2C sensor-hub: multiple address-declared devices, incl. same-type pair --
+# The track-geometry generalization: two MPU-6050 at 0x68/0x69 + an OLED at 0x3C,
+# all on one bare I2C bus (bare I2C_SDA/SCL pins + *_ADDR device declarations).
+
+_HUB = """\
+#define I2C_SDA_PIN 21
+#define I2C_SCL_PIN 22
+#define MPU6050_ADDR 0x68
+#define MPU6050_ADDR_2 0x69
+#define OLED_ADDR 0x3C
+#define BUZZER_PIN 25
+#define MPU6050_REG_PWR_MGMT_1 0x6B
+"""
+
+
+def _hub_intent():
+    return build_intent(partition(parse_defines(_HUB)),
+                        firmware_path="config.h", board_id="esp32dev")
+
+
+def test_hub_two_mpu_instances_plus_oled():
+    peris = _hub_intent().peripherals
+    mpus = [p for p in peris if p.type == "MPU6050"]
+    oled = [p for p in peris if p.type == "OLED"]
+    # two distinct MPU instances at distinct addresses, distinct refs
+    assert len(mpus) == 2 and len(oled) == 1
+    assert {p.address for p in mpus} == {0x68, 0x69}
+    assert len({p.ref for p in mpus}) == 2
+    # deterministic order: lower address gets the lower ref
+    by_ref = sorted(mpus, key=lambda p: p.ref)
+    assert by_ref[0].address == 0x68 and by_ref[1].address == 0x69
+
+
+def test_hub_all_devices_share_one_i2c_bus():
+    i = _hub_intent()
+    sda = _net(i, "I2C_SDA")
+    refs = {e.ref for e in sda.endpoints}
+    # MCU + both MPU + OLED all sit on the shared SDA line
+    dev_refs = {p.ref for p in i.peripherals if p.type in ("MPU6050", "OLED")}
+    assert dev_refs <= refs and i.mcu.ref in refs
+    assert sda.kind == "bus"
+
+
+def test_hub_register_macro_is_not_a_device():
+    # MPU6050_REG_PWR_MGMT_1 (0x6B) must NOT become an address/peripheral.
+    types = {p.type for p in _hub_intent().peripherals}
+    assert "MPU6050_REG_PWR_MGMT_1" not in types and "MPU6050_REG" not in types
+
+
+def test_hub_buzzer_stays_flagged_orphan():
+    i = _hub_intent()
+    assert _net(i, "BUZZER").kind == "orphan"
+    assert any(g.kind == "unknown_peripheral" and "BUZZER" in g.detail for g in i.gaps)
+
+
+def test_hub_module_assumption_flagged():
+    assert any(g.kind == "module_assumption" for g in _hub_intent().gaps)

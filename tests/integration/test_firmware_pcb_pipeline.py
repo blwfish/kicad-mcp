@@ -26,6 +26,7 @@ pytestmark = pytest.mark.skipif(
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "firmware"
 CONFIG_H = FIXTURE / "config.h"
 AUDIO_CONFIG_H = FIXTURE / "audio_s3" / "config.h"
+TRACK_GEOM_CONFIG_H = FIXTURE / "track_geometry" / "config.h"
 
 _MINIMAL_PRO = {
     "board": {"design_settings": {}},
@@ -142,3 +143,56 @@ def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
         return {x["component"] for x in nl["nets"].get(net, [])}
     assert "U1" in refs_on("+3V3")                       # S3 powered
     assert len(refs_on("I2S0_BCLK")) == 3               # MCU + 2 amps share the clock
+
+
+def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
+    """The THIRD board shape: an I2C sensor-hub (track-geometry car). Exercises
+    the generalization that matters here — MULTIPLE address-declared devices,
+    INCLUDING TWO OF THE SAME TYPE (dual MPU-6050 at 0x68/0x69), sharing one I2C
+    bus, plus an OLED. Devices are modeled as breakout-module headers; AD0 is
+    strapped per address. The buzzer GPIO stays a flagged orphan (no driver
+    template yet) — which must NOT break routing."""
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "tg.kicad_sch"
+    pro = tmp_path / "tg.kicad_pro"
+
+    r1 = design(operation="import_firmware", firmware_path=str(TRACK_GEOM_CONFIG_H),
+                out_path=str(intent))
+    assert r1["status"] == "ok"
+    assert r1["board"] == "esp32dev"
+    assert r1["summary"]["mcu"] == "ESP32-WROOM-32E"
+    # Two MPU6050 instances + one OLED, all recognized off their *_ADDR macros.
+    types = [p["type"] for p in r1["summary"]["peripherals"]]
+    assert types.count("MPU6050") == 2 and types.count("OLED") == 1
+
+    r2 = design(operation="expand_templates", intent_path=str(intent))
+    assert r2["status"] == "ok"
+    assert {"power_tree", "decoupling", "pullups"} <= set(r2["gaps_resolved"])
+
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
+               autoroute_passes=2, export_gerbers=False)
+    assert r4["status"] == "ok"
+    assert r4["pads_assigned"] > 0
+    assert r4["incomplete_nets"] == 0                    # buzzer orphan must not break routing
+    assert r4["steps"]["zones"]["zones_added"] >= 1
+
+    from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+    nl = extract_netlist_via_cli(str(sch))
+    assert nl is not None
+    vals = [c.get("value") for c in nl["components"].values()]
+    assert vals.count("GY-521 (MPU-6050)") == 2         # dual same-type I2C device
+    assert vals.count("OLED (SSD1306)") == 1
+
+    def refs_on(net):
+        return {x["component"] for x in nl["nets"].get(net, [])}
+    # The shared I2C bus joins the ESP32 (U1) + both MPU6050 (U2/U3) + OLED (U4).
+    assert {"U1", "U2", "U3", "U4"} <= refs_on("I2C_SDA")
+    assert {"U1", "U2", "U3", "U4"} <= refs_on("I2C_SCL")
+    assert "U1" in refs_on("+3V3")
