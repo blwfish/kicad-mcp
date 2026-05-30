@@ -78,11 +78,20 @@ def _ensure_dir() -> Path:
 
 def _schematic_shard(schematic_path: str) -> str:
     """Stable per-schematic shard name. First 16 hex chars of
-    sha256(schematic_path) — enough entropy that path-collision is
-    vanishingly unlikely within a single cache."""
+    sha256(normalized schematic_path) — enough entropy that path-collision is
+    vanishingly unlikely within a single cache.
+
+    The path is normalized via ``str(Path(...))`` (lexical: collapses ``./``,
+    doubled slashes and trailing slashes) so that ``suggest`` and ``apply``
+    derive the same shard for the same logical path. ``suggest`` already
+    stores ``str(Path(...))``, so normalizing here is idempotent for saved
+    states — it only fixes ``apply``'s lookup when the caller passes a
+    non-normalized but equivalent path. This is the single source of truth
+    for the shard key; no caller normalizes on its own."""
     if not schematic_path:
         return "_unknown"
-    return hashlib.sha256(schematic_path.encode("utf-8")).hexdigest()[:16]
+    normalized = str(Path(schematic_path))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def _shard_dir(schematic_path: str) -> Path:
