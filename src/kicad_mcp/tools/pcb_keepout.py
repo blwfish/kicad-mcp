@@ -289,11 +289,12 @@ for i in range(len(footprints)):
         is_clearance_violation = clearance_violation(a_box, b_box, min_clearance)
 
         if actual_overlap or is_clearance_violation:
-            # Compute gap (negative = overlap, positive = clearance)
-            gap_x = max(a_box["x_min_mm"], b_box["x_min_mm"]) - min(a_box["x_max_mm"], b_box["x_max_mm"])
-            gap_y = max(a_box["y_min_mm"], b_box["y_min_mm"]) - min(a_box["y_max_mm"], b_box["y_max_mm"])
-            # Closest approach: positive = separation, negative = penetration
-            gap_mm = max(gap_x, gap_y)
+            # Binding gap via the canonical helper — MUST match the
+            # clearance_violation gate above (signed_gap_mm = the smaller, binding
+            # gap). The old inline max(gap_x, gap_y) reported the LARGER, non-binding
+            # gap, so a warning could read a value bigger than the clearance it
+            # claims to violate.
+            gap_mm = signed_gap_mm(a_box, b_box)
 
             entry = {
                 "ref_a": a["reference"],
