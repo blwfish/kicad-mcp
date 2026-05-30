@@ -201,6 +201,45 @@ class TestShardIsolation:
         assert root_files == []
 
 
+class TestShardPathNormalization:
+    """suggest stores str(Path(...)); apply may pass a non-normalized but
+    equivalent path. The shard key must normalize both to the same value so
+    apply finds the state suggest saved (m-cache-shard)."""
+
+    @pytest.mark.parametrize("variant", [
+        "/tmp/sub/x.kicad_sch",
+        "/tmp/sub//x.kicad_sch",      # doubled slash
+        "/tmp/./sub/x.kicad_sch",     # ./ segment
+        "/tmp/sub/x.kicad_sch/",      # trailing slash
+        "/tmp/sub/../sub/x.kicad_sch",  # only collapses if Path() does
+    ])
+    def test_equivalent_paths_share_shard(self, variant):
+        canonical = "/tmp/sub/x.kicad_sch"
+        # Mirror exactly what suggest stores; the shard must match for any
+        # variant Path() considers equivalent.
+        from pathlib import Path as _P
+        if str(_P(variant)) != str(_P(canonical)):
+            pytest.skip(f"{variant!r} is not Path-equivalent to canonical")
+        assert (placement_cache._schematic_shard(variant)
+                == placement_cache._schematic_shard(canonical))
+
+    def test_apply_finds_state_saved_under_normalized_path(self, isolated_cache_dir):
+        """End-to-end: save under the path suggest would store, look up via a
+        non-normalized equivalent — must hit, not state_not_found."""
+        placement_cache.save_state(_state("norm", "/tmp/deep/board.kicad_sch"))
+        found = placement_cache.find_latest_for_schematic("/tmp/deep//board.kicad_sch")
+        assert found is not None
+        assert found["state_id"] == _hex_id("norm")
+
+    def test_genuinely_different_paths_do_not_collide(self, isolated_cache_dir):
+        a = placement_cache._schematic_shard("/tmp/a.kicad_sch")
+        b = placement_cache._schematic_shard("/tmp/b.kicad_sch")
+        assert a != b
+
+    def test_empty_path_is_unknown_shard(self):
+        assert placement_cache._schematic_shard("") == "_unknown"
+
+
 class TestStateIdValidation:
     """state_id is used to construct a filesystem path. Without validation,
     a caller-supplied id like '../../etc/passwd' or '/etc/hosts' would let
