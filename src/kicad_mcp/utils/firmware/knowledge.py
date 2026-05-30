@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any, Optional, TypedDict, cast
 
 from kicad_mcp.utils.firmware.cards import compute_address_straps, load_cards
+from kicad_mcp.utils.firmware.parse import canonical_type
 
 __all__ = [
     "McuInfo", "PeripheralInfo", "resolve_mcu", "resolve_mcu_by_part",
@@ -223,7 +224,7 @@ def resolve_peripheral(type_name: Optional[str]) -> Optional[PeripheralInfo]:
     if not type_name:
         return None
     peris, _ = _cards()
-    card = peris.get(type_name.strip().upper())
+    card = peris.get(canonical_type(type_name))
     return cast(PeripheralInfo, card) if card is not None else None
 
 

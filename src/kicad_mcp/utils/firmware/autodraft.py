@@ -20,6 +20,13 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from kicad_mcp.utils.firmware.mcu_pinmap import resolve_pin_token
+from kicad_mcp.utils.firmware.parse import canonical_type
+from kicad_mcp.utils.firmware.power_names import (
+    is_control_pin,
+    is_ground_pin,
+    is_nc_pin,
+    is_supply_pin,
+)
 
 # --- bundled I2C address → canonical device type (curated, offline data) ------
 # The address space is a strong identity signal. A range/list per type; the most
@@ -35,10 +42,7 @@ ADDRESS_IDENTITY: dict[int, str] = {
     0x23: "BH1750",                            # ambient light
 }
 
-# Supply/ground pin-name signatures, so "explain every pin" can classify a
-# symbol's non-signal pins (used by the clean-bus gate).
-_SUPPLY_RE = re.compile(r"^(VDD|VCC|VBAT|VIN|3V3|V_?\{?DD\}?|AVDD|DVDD|VLOGIC)$", re.I)
-_GROUND_RE = re.compile(r"^(GND|VSS|AGND|DGND|V_?\{?SS\}?|EP)$", re.I)
+# Supply/ground/control pin-name classification lives in power_names (Rule 3).
 _WHOAMI_RE = re.compile(r"^(?P<type>[A-Z0-9]+?)_WHO_?AM_?I(_EXPECTED)?$")
 
 
@@ -102,14 +106,16 @@ def score_roles(symbol: Any, roles: dict[str, str]) -> tuple[dict[str, str], lis
 
 
 def _unexplained_pins(symbol: Any, resolved_roles: dict[str, str]) -> list[str]:
-    """Symbol I/O pins that are neither a matched role nor a supply/ground/NC pin
-    — i.e. nothing the draft can account for. A non-empty list weakens confidence
-    (the symbol does more than the firmware bus, so identity is uncertain)."""
+    """Symbol I/O pins that are neither a matched role nor a power/ground/NC pin
+    nor a leave-floating control output (INT/DRDY/ALERT) — i.e. nothing the draft
+    can account for. A non-empty list weakens confidence (the symbol does more
+    than the firmware bus, so identity is uncertain)."""
     out: list[str] = []
     for nm in _symbol_pin_names(symbol):
         if not nm or nm in resolved_roles:
             continue
-        if _SUPPLY_RE.match(nm) or _GROUND_RE.match(nm) or nm.upper() in ("NC", "~"):
+        if (is_supply_pin(nm) or is_ground_pin(nm) or is_nc_pin(nm)
+                or is_control_pin(nm)):
             continue
         out.append(nm)
     return out
@@ -149,7 +155,7 @@ def draft_card(
         resolved, unresolved = score_roles(symbol, roles)
         unexplained = _unexplained_pins(symbol, resolved)
         multiunit = _symbol_unit_count(symbol) > 1
-        corroborated = addr_type is not None and addr_type.upper() == type_name.upper()
+        corroborated = addr_type is not None and canonical_type(addr_type) == canonical_type(type_name)
         if resolved:
             role_map = resolved
         if (not unresolved and corroborated and not multiunit
@@ -175,7 +181,7 @@ def draft_card(
         return None
 
     card: dict[str, Any] = {
-        "type": type_name.upper(),
+        "type": canonical_type(type_name),
         "lib_id": lib_id or "TODO:confirm",
         "value": type_name,
         "bus": bus,

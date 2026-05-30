@@ -28,10 +28,11 @@ from typing import Any, Optional
 
 import yaml
 
+from kicad_mcp.utils.firmware.cards import valid_lib_id
 from kicad_mcp.utils.firmware.intent import DesignIntent, Endpoint, Net, Peripheral
+from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 _POWER_SOURCES = frozenset({"usb_c", "usb", "barrel", "header", "battery", "screw_terminal"})
-_RAILS = frozenset({"+3V3", "+5V", "GND", "VBUS", "VCC"})
 _SIDECAR_NAME = "board.yaml"
 
 # A valid KiCad reference is a letter prefix + number (e.g. J1) — no underscores.
@@ -39,9 +40,10 @@ _VALID_REF = re.compile(r"^[A-Za-z]+\d+$")
 
 
 def _normalize_ref(ref: str, existing: set[str]) -> str:
-    """Return a KiCad-valid, collision-free reference. A friendly ``J_PWR`` is
-    normalized to ``J<next-free>`` (its letter prefix + a fresh number)."""
-    if _VALID_REF.match(ref):
+    """Return a KiCad-valid, collision-free reference. An already-valid ref is
+    kept ONLY if it doesn't collide; a friendly ``J_PWR`` (or a colliding ``J1``)
+    is reallocated to ``<prefix><next-free>``."""
+    if _VALID_REF.match(ref) and ref not in existing:
         return ref
     m = re.match(r"^([A-Za-z]+)", ref)
     prefix = m.group(1) if m else "J"
@@ -76,11 +78,13 @@ def _validate(d: dict[str, Any]) -> list[str]:
         if not isinstance(c, dict):
             errs.append(f"{where}: must be a mapping")
             continue
-        for req in ("ref", "lib_id", "nets"):
+        # footprint is REQUIRED: a placed connector with no footprint silently
+        # produces an unrouteable board (no pads at the PCB step).
+        for req in ("ref", "lib_id", "nets", "footprint"):
             if req not in c:
                 errs.append(f"{where}: missing required field {req!r}")
-        if ":" not in str(c.get("lib_id", ":")):
-            errs.append(f"{where}: lib_id must be 'Library:Symbol'")
+        if "lib_id" in c and not valid_lib_id(c["lib_id"]):
+            errs.append(f"{where}: lib_id {c['lib_id']!r} must be 'Library:Symbol'")
         nets = c.get("nets")
         if not isinstance(nets, dict) or not nets:
             errs.append(f"{where}: nets must be a non-empty {{pin: net_name}} mapping")

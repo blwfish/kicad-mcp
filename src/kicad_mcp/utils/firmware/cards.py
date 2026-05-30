@@ -20,10 +20,14 @@ Two validation tiers (the honesty backstop):
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+
+from kicad_mcp.utils.firmware.parse import canonical_type
+from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 # Packaged seed library shipped with the tool (the KiCad-library model — no
 # runtime network, ever). Override/extend via KICAD_MCP_DEVICE_DIRS or a
@@ -33,7 +37,6 @@ _ENV_DIRS_VAR = "KICAD_MCP_DEVICE_DIRS"
 _PROJECT_DIR = Path("firmware-devices")
 
 _BUSES = frozenset({"I2C", "SPI", "I2S", "UART", None})
-_RAILS = frozenset({"+3V3", "+5V", "GND", "VBUS", "VCC"})
 
 
 class CardError(ValueError):
@@ -77,8 +80,15 @@ _MCU_REQUIRED = ("part", "lib_id", "value", "footprint", "board_match",
                  "uart_rx_pin", "uart_tx_pin", "native_usb")
 
 
+def valid_lib_id(val: Any) -> bool:
+    """A well-formed ``Library:Symbol`` — non-empty on BOTH sides of a single
+    colon (rejects ``":"``, ``"Lib:"``, ``":Sym"``). Shared by every card/sidecar
+    validator (Rule 3)."""
+    return isinstance(val, str) and bool(re.match(r"^[^:]+:[^:]+$", val))
+
+
 def _validate_lib_id(val: Any, where: str, errs: list[str]) -> None:
-    if not isinstance(val, str) or ":" not in val:
+    if not valid_lib_id(val):
         errs.append(f"{where}: lib_id {val!r} must be 'Library:Symbol'")
 
 
@@ -199,7 +209,7 @@ def load_cards(
                 errs = validate_peripheral_card(card)
                 if errs:
                     raise CardError(f"{path}:\n  " + "\n  ".join(errs))
-                peripherals[str(card["type"]).strip().upper()] = card
+                peripherals[canonical_type(str(card["type"]))] = card
             else:
                 raise CardError(
                     f"card {path} is neither a peripheral (needs 'type') nor an "

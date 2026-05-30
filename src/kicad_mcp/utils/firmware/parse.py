@@ -55,6 +55,14 @@ def address_base(name: str) -> Optional[str]:
     m = _ADDR_NAME_RE.match(name)
     return m.group("base") if m else None
 
+
+def canonical_type(name: str) -> str:
+    """Canonical peripheral-type KEY — UPPER, alphanumerics only (``MPU-6050`` ->
+    ``MPU6050``). Single source (Rule 3) so firmware (``MPU6050_ADDR`` →
+    ``address_base`` → ``MPU6050``), card lookup, auto-draft and pre-fetch all
+    agree — a symbol named with a dash must resolve the same as the macro."""
+    return re.sub(r"[^A-Z0-9]", "", name.upper())
+
 # Bus prefixes recognized in a pin macro's name -> canonical bus id.
 _BUS_PREFIXES = {
     "I2C": "I2C",

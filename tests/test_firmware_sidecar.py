@@ -84,18 +84,57 @@ def test_apply_adds_connector_and_resolves_gap():
 
 @pytest.mark.parametrize("ref,existing,expected", [
     ("J1", set(), "J1"),                 # already valid -> unchanged
+    ("J1", {"J1"}, "J2"),                # VALID ref that COLLIDES -> reallocated
+    ("U2", {"U1", "U2"}, "U3"),          # collides with an imported peripheral
     ("J_PWR", set(), "J1"),              # friendly -> prefix + next free
     ("J_PWR", {"J1"}, "J2"),             # avoid collision
-    ("PWR", set(), "J1"),                # no prefix letters resolvable -> J? -> "PWR" has letters
+    ("PWR", set(), "PWR1"),              # letter prefix kept
 ])
 def test_normalize_ref(ref, existing, expected):
     from kicad_mcp.utils.firmware.sidecar import _normalize_ref
-    # "PWR" -> prefix "PWR" -> "PWR1"; adjust expectation
-    out = _normalize_ref(ref, set(existing))
-    if ref == "PWR":
-        assert out == "PWR1"
+    assert _normalize_ref(ref, set(existing)) == expected
+
+
+def test_footprint_required(tmp_path):
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, """\
+            extra_connectors:
+              - ref: J1
+                lib_id: Connector:Conn_01x02
+                nets: {"1": "+5V", "2": "GND"}
+        """))
+    assert "footprint" in str(e.value)
+
+
+@pytest.mark.parametrize("lib_id,ok", [
+    ("Connector:Conn_01x02", True), ("X:Y", True),
+    (":", False), ("Lib:", False), (":Sym", False), ("NoColon", False),
+])
+def test_lib_id_validation(tmp_path, lib_id, ok):
+    body = f"""\
+        extra_connectors:
+          - ref: J1
+            lib_id: "{lib_id}"
+            footprint: FP:X
+            nets: {{"1": "+5V"}}
+    """
+    if ok:
+        load_sidecar(_write(tmp_path, body))     # no raise
     else:
-        assert out == expected
+        with pytest.raises(SidecarError) as e:
+            load_sidecar(_write(tmp_path, body))
+        assert "lib_id" in str(e.value)
+
+
+def test_import_op_catches_malformed_sidecar(tmp_path):
+    from kicad_mcp.tools.design import _op_import
+    inc = tmp_path / "include"
+    inc.mkdir()
+    (inc / "config.h").write_text("#define I2C_SDA_PIN 21\n#define I2C_SCL_PIN 22\n")
+    (tmp_path / "platformio.ini").write_text("[env:esp32dev]\nboard = esp32dev\n")
+    (inc / "board.yaml").write_text("power_source: solar\n")   # invalid
+    r = _op_import(firmware_path=str(inc / "config.h"), out_path=str(tmp_path / "i.yaml"))
+    assert r["status"] == "error" and r["code"] == "invalid_sidecar"
 
 
 def test_apply_joins_existing_rail_else_creates():
