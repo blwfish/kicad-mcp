@@ -311,3 +311,24 @@ class TestParseKicadxml:
         from kicad_mcp.utils.netlist_parser import _parse_kicadxml
         with pytest.raises(ET.ParseError):
             _parse_kicadxml("<export><components></export>")  # unclosed tag
+
+
+# -- is_power_net: signed VOLTAGE rails vs signed SIGNAL nets -----------------
+
+class TestIsPowerNet:
+    def test_signed_voltage_is_power_signal_is_not(self):
+        from kicad_mcp.utils.netlist_parser import is_power_net
+        for power in ("+3V3", "+5V", "-12V", "+3.3V", "VCC", "GND", "VDD_A", "VBUS"):
+            assert is_power_net(power), power
+        # sign-then-LETTER is an active-low / signed signal net, NOT a rail
+        for signal in ("-RESET", "+CS", "-CS", "-SIGNAL", "SDA", "GPIO0"):
+            assert not is_power_net(signal), signal
+
+    def test_helper_matches_python(self):
+        """The embedded POWER_NET_HELPER must agree with the Python is_power_net —
+        the dup was guarded only by a comment otherwise."""
+        from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, is_power_net
+        ns: dict = {}
+        exec(POWER_NET_HELPER, ns)
+        for n in ("+3V3", "-12V", "VCC", "GND", "-RESET", "+CS", "SDA", "VBUS", "+"):
+            assert ns["is_power_net"](n) == is_power_net(n), n
