@@ -34,7 +34,11 @@ from kicad_mcp.utils.lcsc_db import (
     _package_from_attributes,
     _manufacturer_from_attributes,
     _decode_shard_rows,
+    _decode_attributes,
+    _live_attributes,
+    _live_part_to_row,
 )
+from kicad_mcp.tools.lcsc import _parse_attributes, _row_to_resolved
 
 FIXTURE_DB = Path(__file__).parent / "fixtures" / "jlcparts_synthetic.sqlite3"
 
@@ -424,6 +428,97 @@ class TestAttributeLutHelpers:
         assert _tier_from_attributes([], self.SAMPLE_LUT) == "extended"
 
 
+class TestParametricAttributeCapture:
+    """m-resolved-attrs: parametric attributes must be captured end-to-end,
+    not silently dropped to {}."""
+
+    LUT: list[list] = [
+        ["Package", {"primary": "default", "values": {"default": ["SOT-23", "string"]}}],
+        ["Resistance", {"primary": "default", "values": {"default": ["10kΩ", "resistance"]}}],
+        ["Tolerance", {"primary": "default", "values": {"default": ["1%", "string"]}}],
+        ["Manufacturer", {"primary": "default", "values": {"default": ["SGMICRO", "string"]}}],
+    ]
+
+    def test_decode_captures_non_promoted_attributes(self):
+        attrs = _decode_attributes([0, 1, 2, 3], self.LUT)
+        # The parametric attrs that used to be dropped are now present.
+        assert attrs["Resistance"] == "10kΩ"
+        assert attrs["Tolerance"] == "1%"
+        # Promoted ones are still decoded (same single source of truth).
+        assert attrs["Package"] == "SOT-23"
+        assert attrs["Manufacturer"] == "SGMICRO"
+
+    def test_decode_first_wins_on_duplicate_name(self):
+        lut = [
+            ["Package", {"primary": "default", "values": {"default": ["SOT-23", "s"]}}],
+            ["Package", {"primary": "default", "values": {"default": ["SOT-89", "s"]}}],
+        ]
+        assert _decode_attributes([0, 1], lut)["Package"] == "SOT-23"
+
+    def test_decode_ignores_out_of_range_and_malformed(self):
+        assert _decode_attributes([999, -1, 0], [["X", "not-a-dict"]]) == {}
+
+    def test_parse_attributes_json_string(self):
+        assert _parse_attributes('{"Resistance": "10k"}') == {"Resistance": "10k"}
+
+    def test_parse_attributes_dict_passthrough(self):
+        assert _parse_attributes({"Voltage": "3.3V"}) == {"Voltage": "3.3V"}
+
+    def test_parse_attributes_none_is_empty(self):
+        assert _parse_attributes(None) == {}
+
+    def test_parse_attributes_malformed_json_is_empty(self):
+        assert _parse_attributes("{not json") == {}
+
+    def test_parse_attributes_coerces_values_to_str(self):
+        assert _parse_attributes({"Pins": 8}) == {"Pins": "8"}
+
+    def _row(self, **over):
+        row = {"lcsc": "C1", "mfr": "M", "manufacturer": "MAN",
+               "package": "SOT-23", "joints": 3, "description": "d",
+               "datasheet": "", "stock": 5, "price": "[]"}
+        row.update(over)
+        return row
+
+    def test_row_to_resolved_carries_json_attributes(self):
+        rp = _row_to_resolved(
+            self._row(attributes=json.dumps({"Resistance": "10k"})),
+            match_score=None, deviations=[], snapshot_date="",
+            fetched_live=False, kicad_symbol_lib_id=None)
+        assert rp.attributes == {"Resistance": "10k"}
+
+    def test_row_to_resolved_carries_dict_attributes(self):
+        rp = _row_to_resolved(
+            self._row(attributes={"Voltage": "3.3V"}),
+            match_score=None, deviations=[], snapshot_date="",
+            fetched_live=False, kicad_symbol_lib_id=None)
+        assert rp.attributes == {"Voltage": "3.3V"}
+
+    def test_row_to_resolved_missing_attributes_is_empty(self):
+        rp = _row_to_resolved(
+            self._row(),  # v1 snapshot: no attributes column
+            match_score=None, deviations=[], snapshot_date="",
+            fetched_live=False, kicad_symbol_lib_id=None)
+        assert rp.attributes == {}
+
+    def test_live_attributes_list_shape(self):
+        data = {"attributes": [
+            {"attribute_name_en": "Resistance", "attribute_value_name": "10kΩ"},
+            {"attribute_name_en": "Tolerance", "attribute_value_name": "1%"},
+        ]}
+        assert _live_attributes(data) == {"Resistance": "10kΩ", "Tolerance": "1%"}
+
+    def test_live_attributes_absent(self):
+        assert _live_attributes({}) == {}
+
+    def test_live_part_to_row_includes_attributes(self):
+        data = {"componentModelEn": "RT0805", "stockCount": 10,
+                "attributes": [{"attribute_name_en": "Power", "attribute_value_name": "0.125W"}]}
+        row = _live_part_to_row(data, "C1")
+        assert row is not None
+        assert row["attributes"] == {"Power": "0.125W"}
+
+
 # ---------------------------------------------------------------------------
 # Shard ingestion drop accounting
 # ---------------------------------------------------------------------------
@@ -476,6 +571,13 @@ class TestDecodeShardRows:
         batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
         assert len(batch) == 1
         assert drops == {"bad_json": 1, "not_list": 1, "no_lcsc": 1}
+
+    def test_attributes_captured_in_tuple(self):
+        lut = [["Resistance", {"primary": "default",
+                               "values": {"default": ["10kΩ", "r"]}}]]
+        row = json.dumps(["C1", "MFR", 2, "desc", "[]", [0], 100, "http"])
+        batch, _ = _decode_shard_rows([row], self.COL_MAP, lut)
+        assert json.loads(batch[0][-1]) == {"Resistance": "10kΩ"}
 
 
 # ---------------------------------------------------------------------------

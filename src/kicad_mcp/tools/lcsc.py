@@ -100,6 +100,25 @@ class ResolvedPart:
     fetched_live: bool = False
 
 
+def _parse_attributes(raw: Any) -> dict[str, str]:
+    """Normalize a row's parametric attributes to a str->str dict.
+
+    DB rows carry attributes as a JSON string; the live-API path carries them
+    as a dict. A v1 snapshot (no column) carries None -> {}. Malformed JSON
+    degrades to {} rather than raising.
+    """
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    else:
+        parsed = raw
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()}
+
+
 def _row_to_resolved(
     row: dict[str, Any],
     *,
@@ -122,6 +141,8 @@ def _row_to_resolved(
     joints = row.get("joints")
     pin_count = int(joints) if joints is not None else None
 
+    attributes = _parse_attributes(row.get("attributes"))
+
     return ResolvedPart(
         supplier_name="lcsc",
         supplier_part_number=row.get("lcsc") or "",
@@ -130,7 +151,7 @@ def _row_to_resolved(
         description=description,
         package=package,
         pin_count=pin_count,
-        attributes={},
+        attributes=attributes,
         price_tiers=price_tiers,
         stock=row.get("stock") or 0,
         assembly_tier=row.get("assembly_tier") or "extended",
