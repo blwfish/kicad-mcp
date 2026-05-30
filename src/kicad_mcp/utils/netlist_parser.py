@@ -510,8 +510,9 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
             print(f"kicad-cli netlist export failed: {result.stderr.strip()}")
             return None
 
-        tree = ET.parse(netlist_path)
-        root = tree.getroot()
+        with open(netlist_path, encoding="utf-8") as fh:
+            xml_text = fh.read()
+        return _parse_kicadxml(xml_text)
     except (ET.ParseError, subprocess.TimeoutExpired, OSError) as e:
         # ParseError = malformed XML; TimeoutExpired = kicad-cli hung;
         # OSError = kicad-cli vanished or netlist tmpfile missing. Anything
@@ -522,6 +523,18 @@ def extract_netlist_via_cli(schematic_path: str) -> Dict[str, Any] | None:
     finally:
         if os.path.exists(netlist_path):
             os.unlink(netlist_path)
+
+
+def _parse_kicadxml(xml_text: str) -> Dict[str, Any]:
+    """Parse a kicad-cli ``--format kicadxml`` netlist string into the netlist
+    dict. Pure — no subprocess, no file I/O — so every field's survival is
+    unit-testable without KiCad (the field-extraction seam, review finding
+    h-test-netlist). Raises ``xml.etree.ElementTree.ParseError`` on malformed
+    XML; extract_netlist_via_cli catches that and treats it as 'no result'.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
 
     # Extract components from <components>
     component_info: Dict[str, Dict] = {}
