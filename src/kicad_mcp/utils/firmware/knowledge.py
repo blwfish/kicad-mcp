@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any, Optional, TypedDict, cast
 
 from kicad_mcp.utils.firmware.cards import compute_address_straps, load_cards
-from kicad_mcp.utils.firmware.parse import canonical_type
+from kicad_mcp.utils.firmware.parse import canonical_type, idf_target_defines
 
 __all__ = [
     "McuInfo", "PeripheralInfo", "resolve_mcu", "resolve_mcu_by_part",
@@ -204,7 +204,16 @@ def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
                 # deterministic tie-break by part, for stability
                 if str(card["part"]) < str(best["part"]):
                     best = card
-    return cast(McuInfo, best) if best is not None else None
+    if best is None:
+        return None
+    # Guard the FUZZY substring match (an exact board_match/part above is trusted):
+    # the resolved card's IDF target must agree with the board's. Without this a
+    # bare "esp32" substring mis-resolves a C3/C6/S2 board to the classic
+    # WROOM-32E (h-resolve-mcu); stay unknown so the front end emits an
+    # mcu_unknown gap rather than the wrong pinout.
+    if idf_target_defines(board_id) != idf_target_defines(str(best["part"])):
+        return None
+    return cast(McuInfo, best)
 
 
 def resolve_mcu_by_part(part: Optional[str]) -> Optional[McuInfo]:

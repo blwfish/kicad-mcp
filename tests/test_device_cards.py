@@ -170,6 +170,12 @@ def test_backcompat_constants_match_cards():
     ("esp32-s3", "ESP32-S3-WROOM-1"),
     ("esp32s3", "ESP32-S3-WROOM-1"),
     ("esp32-s3-wroom", "ESP32-S3-WROOM-1"),   # substring: longest 'esp32-s3' wins
+    ("esp32doit-devkit-v1", "ESP32-WROOM-32E"),  # fuzzy classic esp32, IDF agrees
+    # h-resolve-mcu: C3/C6/S2 with no dedicated card must NOT fuzzy-match the
+    # classic WROOM-32E via the bare 'esp32' substring — stay unknown.
+    ("esp32-c3-devkitm-1", None),
+    ("esp32-c6-devkitc-1", None),
+    ("esp32-s2-saola-1", None),
     ("nonsense", None),
 ])
 def test_resolve_mcu(board, part):
