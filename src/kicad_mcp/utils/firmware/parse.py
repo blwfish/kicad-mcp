@@ -140,10 +140,22 @@ class Macro:
     note: str = ""
 
 
+_GPIO_NUM_RE = re.compile(r"^GPIO_NUM_(\d+)$")
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
 def _as_int(raw: str) -> Optional[int]:
-    """Parse an integer literal (decimal or ``0x``), tolerating C int suffixes.
-    Returns None for floats, strings, expressions — i.e. "not a plain int"."""
-    s = raw.strip()
+    """Parse an integer literal (decimal or ``0x``), tolerating C int suffixes, a
+    single surrounding ``(...)``, a ``/* */`` block comment, and ESP-IDF
+    ``GPIO_NUM_<n>``. Returns None for floats, strings, expressions — i.e. "not a
+    plain int". (Previously these idioms were silently dropped, downgrading a
+    clearly-pin-named macro to OTHER.)"""
+    s = _BLOCK_COMMENT_RE.sub("", raw).strip()
+    if len(s) >= 2 and s.startswith("(") and s.endswith(")"):   # unwrap (4) -> 4
+        s = s[1:-1].strip()
+    m = _GPIO_NUM_RE.match(s)
+    if m:
+        return int(m.group(1))
     # Reject obvious non-ints fast (strings, floats with a dot, multi-token).
     if not s or '"' in s or "'" in s or "." in s or " " in s:
         return None

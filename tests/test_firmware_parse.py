@@ -43,6 +43,12 @@ SPEEDCAL_CONFIG = Path(
     ("'a'", None),        # char
     ("A | B", None),      # expression (has space)
     ("", None),
+    ("GPIO_NUM_5", 5),    # ESP-IDF idiom -> 5  (was silently dropped before)
+    ("GPIO_NUM_18", 18),
+    ("(4)", 4),           # parenthesized -> 4
+    ("5 /* mic */", 5),   # trailing block comment stripped
+    ("/* lead */ 7", 7),  # leading block comment stripped
+    ("(GPIO_NUM_0)", 0),  # both: unwrap then resolve
 ])
 def test_as_int(raw, expected):
     assert _as_int(raw) == expected
