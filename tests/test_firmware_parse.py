@@ -223,7 +223,6 @@ def test_line_numbers_and_comments():
     ("CMCA_I2S2_DIN", "7", 7, "DIN", "I2S", "CMCA_I2S2"),
     ("CMCA_OLED_SDA", "47", 47, "SDA", "I2C", "CMCA_OLED"),
     ("CMCA_OLED_SCL", "48", 48, "SCL", "I2C", "CMCA_OLED"),
-    ("CMCA_AMP_GAIN_BUS0", "11", 11, "GAIN", None, "CMCA_AMP"),  # qualifier stripped
     ("CMCA_MIC_WS", "9", 9, "WS", "I2S", "CMCA_MIC"),
     ("CMCA_MIC_SD", "10", 10, "SD", None, "CMCA_MIC"),  # ambiguous role -> bus by group
 ])
@@ -240,9 +239,30 @@ def test_role_token_pins(name, value, gpio, role, bus, stem):
     ("CMCA_MAX_CHANNELS", "8"),          # count in GPIO range
     ("CMCA_PANIC_BUTTON_ENABLED", "0"),  # ENABLED != EN (segment match)
     ("CMCA_PRESENCE_HOLD_MS", "10000"),
+    # m-gain-roles: GAIN/ADC/DAC are config, not pins, when bare. The value
+    # gate can't tell a gain-in-dB / channel index from a GPIO, so the bare
+    # token must NOT promote these to pins.
+    ("MAX_GAIN", "12"),
+    ("AUDIO_GAIN", "3"),
+    ("CMCA_AMP_GAIN_BUS0", "11"),        # was previously (wrongly) a pin
+    ("AUDIO_DAC", "5"),
+    ("CODEC_ADC", "7"),
 ])
 def test_role_token_rejects_config(name, value):
     assert classify(name, value, None).kind is MacroKind.OTHER
+
+
+@pytest.mark.parametrize("name,value,role,peri", [
+    # An EXPLICIT _PIN/_GPIO suffix disambiguates: these ARE pins, and the
+    # role is still recovered (via the legacy peripheral/role split).
+    ("AMP_GAIN_PIN", "25", "GAIN", "AMP"),
+    ("PIEZO_ADC_PIN", "35", "ADC", "PIEZO"),
+    ("CODEC_DAC_GPIO", "26", "DAC", "CODEC"),
+])
+def test_suffix_disambiguates_gain_adc_dac(name, value, role, peri):
+    m = classify(name, value, None)
+    assert m.kind is MacroKind.PIN and m.gpio == int(value)
+    assert m.signal_role == role and m.peripheral_hint == peri
 
 
 def test_role_token_speedcal_regression():

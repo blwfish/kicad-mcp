@@ -83,7 +83,15 @@ _BUS_PREFIXES = {
 #   _AMBIGUOUS_ROLES — data/clock/serial that depend on context (DOUT is HX711
 #                      data OR I2S; SD is mic data OR SD-card). Per-pin bus stays
 #                      None; the bus TYPE is decided when pins are grouped.
-#   _GENERIC_ROLES  — control pins with no bus (INT, EN, GAIN, ADC, …)
+#   _GENERIC_ROLES  — control pins with no bus (INT, EN, RST, …)
+#
+# GAIN / ADC / DAC are deliberately NOT role tokens: they name an amplifier/codec
+# CONFIG setting (`MAX_GAIN 12`, `AUDIO_DAC 5`) far more often than a pin, and the
+# 0..48 value gate can't tell a gain-in-dB from a GPIO. A bare token is therefore
+# too weak to be load-bearing alone (CLAUDE.md seam rule). An EXPLICIT `_PIN`/
+# `_GPIO` suffix still classifies them as pins and recovers the role via the
+# legacy peripheral/role split (e.g. `PIEZO_ADC_PIN` -> role ADC); the MAX98357A
+# GAIN pin is template-owned, so nothing real is lost.
 _BUS_ROLES = {
     "SDA": "I2C", "SCL": "I2C",
     "BCLK": "I2S", "LRC": "I2S", "LRCK": "I2S", "WS": "I2S", "MCLK": "I2S",
@@ -92,7 +100,7 @@ _BUS_ROLES = {
 _AMBIGUOUS_ROLES = frozenset({"DIN", "DOUT", "SD", "SCK", "CS", "SS",
                               "RX", "TX", "RXD", "TXD"})
 _GENERIC_ROLES = frozenset({"INT", "INTA", "INTB", "EN", "RST", "RESET",
-                            "GAIN", "ADC", "DAC", "BUSY", "DC", "BL"})
+                            "BUSY", "DC", "BL"})
 _ALL_ROLES = frozenset(_BUS_ROLES) | _AMBIGUOUS_ROLES | _GENERIC_ROLES
 
 # Trailing instance qualifiers stripped before locating the role token, so
