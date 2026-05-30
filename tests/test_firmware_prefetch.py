@@ -63,8 +63,26 @@ def test_multiunit_is_low():
 
 
 def test_nc_pins_dont_block_high():
-    card, conf, _ = _synth(["SDA", "SCL", "VDD", "GND", "NC", "NC"])
+    # NC pins don't block high — but high still needs address corroboration.
+    card, conf, _ = _synth(["SDA", "SCL", "VDD", "GND", "NC", "NC"],
+                           name="BME280", address=0x76)
     assert conf == "high"
+
+
+def test_no_address_corroboration_is_low():
+    """h-prefetch-corroboration: a clean SDA/SCL/VDD/GND symbol is NOT 'high'
+    without I2C-address corroboration — a pin named SCL is not proof of an I2C
+    clock. The bulk CLI always passes address=None, so this common path must
+    downgrade to 'low' for human review (it graded 'high' before the fix)."""
+    card, conf, reasons = _synth(["SDA", "SCL", "VDD", "GND"])   # no address
+    assert conf == "low" and card is not None
+    assert any("corroborat" in r.lower() for r in reasons)
+
+
+def test_non_matching_address_is_low():
+    # 0x68 maps to a different device than BME280 -> no corroboration -> low.
+    _, conf, _ = _synth(["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x68)
+    assert conf == "low"
 
 
 def test_footprint_todo_when_unknown():

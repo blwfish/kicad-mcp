@@ -13,8 +13,11 @@ to the genuinely new-or-weird residual.
 
 Conservative by construction (the cold-review false-confidence hazard): a card is
 ``high`` only when it exposes a clean I2C bus, every other pin is power/ground/NC,
-and it has both supply and ground. Multi-interface parts (extra SPI/CS pins) and
-numbered-header modules do NOT auto-synthesize high.
+it has both supply and ground, AND its I2C address corroborates the symbol
+identity — a pin named ``SCL`` is not proof of an I2C clock. The bulk maintainer
+CLI passes no per-symbol address, so those all downgrade to ``low`` for review.
+Multi-interface parts (extra SPI/CS pins) and numbered-header modules do NOT
+auto-synthesize high.
 """
 from __future__ import annotations
 
@@ -82,9 +85,15 @@ def synthesize_i2c_card(
     elif unexplained:
         reasons.append(f"flagged: unexplained signal pins {unexplained[:8]} "
                        "(multi-interface part — confirm before shipping)")
+    elif not corroborated:
+        # The decisive identity check: pin NAMES alone don't prove an I2C device
+        # (a pin named SCL is not an I2C clock). High requires the I2C address to
+        # match the symbol. The bulk CLI supplies no address, so it never ships high.
+        reasons.append("flagged: no I2C-address corroboration of identity "
+                       "(a pin named SCL is not proof of an I2C clock) — confirm before shipping")
     else:
         confidence = "high"
-        reasons.append("clean I2C bus; non-bus pins are power/ground/NC/control")
+        reasons.append("clean I2C bus, address-corroborated; non-bus pins are power/ground/NC/control")
 
     card: dict[str, Any] = {
         "type": canonical_type(symbol_name),
