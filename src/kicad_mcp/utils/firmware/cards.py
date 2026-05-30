@@ -73,8 +73,10 @@ def compute_address_straps(
 
 # --- structural validation (no KiCad) ----------------------------------------
 
+# "bus" must be PRESENT (it is read below), though its value may be null for a
+# non-bus peripheral — so a card omitting it gets a clean error, not a KeyError.
 _PERIPHERAL_REQUIRED = ("type", "lib_id", "value", "footprint", "roles",
-                        "supply_pins", "ground_pins", "module")
+                        "supply_pins", "ground_pins", "module", "bus")
 _MCU_REQUIRED = ("part", "lib_id", "value", "footprint", "board_match",
                  "needs_3v3", "supply_pin", "ground_pin", "en_pin", "boot_pin",
                  "uart_rx_pin", "uart_tx_pin", "native_usb")
