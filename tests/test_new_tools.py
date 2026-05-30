@@ -838,3 +838,42 @@ class TestBuildPcbFromSchematic:
         assert result["status"] == "ok"
         assert result["gerber_zip"] == "/tmp/test-gerbers.zip"
         mock_gerbers.assert_called_once()
+
+
+class TestFinalizePadAssignment:
+    """h-pad-deadboard: a board with pads requested but ZERO assigned is
+    electrically dead and must fail the pipeline (an 'error' key, which _record
+    halts on), not autoroute a dead board with status:ok."""
+
+    def _f(self, *, assigned, requested, errors=None):
+        from kicad_mcp.tools.pcb_pipeline import _finalize_pad_assignment
+        return _finalize_pad_assignment(
+            {"status": "ok", "pads_assigned": assigned,
+             "assignment_errors": errors or []},
+            requested,
+        )
+
+    def test_all_failed_is_a_hard_error(self):
+        r = self._f(assigned=0, requested=4, errors=["Net X not found"] * 4)
+        assert r["status"] == "error"
+        assert "error" in r                       # the key the pipeline halts on
+        assert r["pads_requested"] == 4
+
+    def test_full_success_stays_ok(self):
+        r = self._f(assigned=4, requested=4)
+        assert r["status"] == "ok" and "error" not in r and "warnings" not in r
+
+    def test_partial_loss_warns_but_stays_ok(self):
+        r = self._f(assigned=3, requested=4, errors=["Pad 5 not found on R1"])
+        assert r["status"] == "ok" and "error" not in r
+        assert r["warnings"] and "1 of 4" in r["warnings"][0]
+
+    def test_zero_requested_is_not_an_error(self):
+        # No pads to assign (e.g. nets with no pins) is not a dead-board failure.
+        r = self._f(assigned=0, requested=0)
+        assert r["status"] == "ok" and "error" not in r
+
+    def test_preexisting_error_is_untouched(self):
+        from kicad_mcp.tools.pcb_pipeline import _finalize_pad_assignment
+        r = _finalize_pad_assignment({"status": "error", "error": "boom"}, 4)
+        assert r["error"] == "boom"

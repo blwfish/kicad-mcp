@@ -282,6 +282,35 @@ print(json.dumps({
     }, timeout=30.0)
 
 
+def _finalize_pad_assignment(result: Dict[str, Any], pads_requested: int) -> Dict[str, Any]:
+    """Guard the pad-assignment step against an electrically-DEAD board.
+
+    Pure (no pcbnew) so the decision is unit-testable. If pads were requested but
+    NONE were assigned, the board has no pad↔net associations — promote to a hard
+    error (an ``error`` key, which the pipeline's _record halts on) instead of
+    autorouting a dead board with status:ok (h-pad-deadboard; the net-injection
+    half already guards its analogous failure). Partial loss is surfaced as a
+    capped warning, not hidden.
+    """
+    result["pads_requested"] = pads_requested
+    if result.get("status") != "ok" or pads_requested == 0:
+        return result
+    assigned = result.get("pads_assigned", 0)
+    errs = result.get("assignment_errors", [])
+    if assigned == 0:
+        result["status"] = "error"
+        result["error"] = (
+            f"0 of {pads_requested} pad assignments succeeded — the board would be "
+            f"electrically dead. First errors: {errs[:5]}"
+        )
+    elif assigned < pads_requested:
+        result.setdefault("warnings", []).append(
+            f"{pads_requested - assigned} of {pads_requested} pad assignments failed: "
+            f"{errs[:5]}" + (" …" if len(errs) > 5 else "")
+        )
+    return result
+
+
 def _step_inject_nets_and_assign_pads(
     pcb_path: str,
     nets: Dict[str, List],
@@ -391,10 +420,11 @@ print(json.dumps({
         "assignments": pad_assignments,
     }, timeout=60.0)
 
-    # Merge
+    # Merge counts, then guard against an electrically-dead board (all pad
+    # assignments failed) — see _finalize_pad_assignment.
     result["nets_created"] = len(nets_created)
     result["total_nets"] = len(net_definitions)
-    return result
+    return _finalize_pad_assignment(result, len(pad_assignments))
 
 
 def _step_smart_placement(
