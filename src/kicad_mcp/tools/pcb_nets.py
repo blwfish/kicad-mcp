@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from kicad_mcp.utils.net_injection import inject_net_definitions
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
 logger = logging.getLogger(__name__)
@@ -40,22 +41,12 @@ def _op_add_net(pcb_path: str, net_name: str) -> Dict[str, Any]:
     net_codes = [int(m.group(1)) for m in _re.finditer(r'\(net\s+(\d+)\s+"', content)]
     next_code = max(net_codes) + 1 if net_codes else 1
 
-    last_net_match = None
-    for m in _re.finditer(r'\(net\s+\d+\s+"(?:[^"\\]|\\.)*"\)', content):
-        last_net_match = m
-
-    if last_net_match:
-        insert_pos = last_net_match.end()
-    else:
-        fp_match = _re.search(r'\n\t\(footprint\b', content)
-        if fp_match:
-            insert_pos = fp_match.start()
-        else:
-            insert_pos = content.rfind('\n)')
-            if insert_pos == -1:
-                return {"error": "Could not find insertion point in PCB file"}
-    new_net_line = f'\n\t(net {next_code} "{net_name}")'
-    content = content[:insert_pos] + new_net_line + content[insert_pos:]
+    # Insertion point + line formatting live in utils/net_injection (single
+    # source of truth, shared with pcb_pipeline's bulk injector).
+    new_content = inject_net_definitions(content, [(next_code, net_name)])
+    if new_content is None:
+        return {"error": "Could not find insertion point in PCB file"}
+    content = new_content
 
     with open(pcb_path, "w") as f:
         f.write(content)

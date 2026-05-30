@@ -12,6 +12,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
+from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
@@ -306,13 +307,15 @@ def _step_inject_nets_and_assign_pads(
         return {"status": "ok", "nets_created": 0, "pads_assigned": 0,
                 "warning": "No nets found in schematic"}
 
-    # Inject nets via direct file editing (pcbnew prunes unused nets)
+    # Inject nets via direct file editing (pcbnew prunes unused nets).
+    # Insertion point + line formatting live in utils/net_injection (single
+    # source of truth, shared with pcb_nets.add_net). This is what carries the
+    # KiCad-10 (net 0 "")-absence fallback — without it, fresh K10 boards got
+    # 0 nets injected and built electrically-dead while returning status:ok.
     with open(pcb_path, "r") as f:
         pcb_content = f.read()
 
-    existing_nets = {}
-    for m in re.finditer(r'\(net\s+(\d+)\s+"([^"]*)"\)', pcb_content):
-        existing_nets[m.group(2)] = int(m.group(1))
+    existing_nets = {name: code for code, name in existing_net_codes(pcb_content)}
 
     max_code = max(existing_nets.values()) if existing_nets else 0
     nets_created = []
@@ -324,21 +327,20 @@ def _step_inject_nets_and_assign_pads(
             nets_created.append(net_name)
 
     if nets_created:
-        last_net_match = None
-        for m in re.finditer(r'\(net\s+\d+\s+"[^"]*"\)', pcb_content):
-            last_net_match = m
-
-        if last_net_match:
-            insert_pos = last_net_match.end()
-            new_lines = ""
-            for net_name in nets_created:
-                code = existing_nets[net_name]
-                new_lines += f'\n\t(net {code} "{net_name}")'
-            pcb_content = (
-                pcb_content[:insert_pos] + new_lines + pcb_content[insert_pos:]
-            )
-            with open(pcb_path, "w") as f:
-                f.write(pcb_content)
+        new_content = inject_net_definitions(
+            pcb_content,
+            [(existing_nets[name], name) for name in nets_created],
+        )
+        if new_content is None:
+            return {
+                "status": "error",
+                "error": "Could not find insertion point in PCB file",
+                "nets_created": 0,
+                "total_nets": len(net_definitions),
+            }
+        pcb_content = new_content
+        with open(pcb_path, "w") as f:
+            f.write(pcb_content)
 
     # Assign pads via pcbnew
     script = """
