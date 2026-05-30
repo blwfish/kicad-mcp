@@ -25,6 +25,7 @@ from kicad_mcp.utils.lcsc_db import (
     resolve_footprint,
     get_component,
     search_components,
+    search_components_with_total,
     db_exists,
     get_snapshot_age_days,
     get_snapshot_date,
@@ -504,6 +505,44 @@ class TestDbQueries:
         r1 = search_components("LDO regulator", assembly_tier="any", max_results=5, db_path=db)
         r2 = search_components("LDO regulator", assembly_tier="any", max_results=5, db_path=db)
         assert [r["lcsc"] for r in r1] == [r["lcsc"] for r in r2]
+
+
+class TestSearchWithTotal:
+    """search_components_with_total must report the pre-slice candidate count so
+    callers can distinguish 'only N matched' from 'top N of many' (no silent cap)."""
+
+    def test_total_exceeds_returned_when_capped(self, tmp_path):
+        db, meta = _mock_db(tmp_path)
+        full = search_components("LDO regulator", assembly_tier="any",
+                                 max_results=100, db_path=db)
+        assert len(full) >= 2, "fixture must have >=2 LDO candidates for this test"
+        rows, total = search_components_with_total(
+            "LDO regulator", assembly_tier="any", max_results=1, db_path=db)
+        assert len(rows) == 1
+        assert total == len(full)
+        assert total > len(rows)  # i.e. truncated
+
+    def test_total_equals_returned_when_not_capped(self, tmp_path):
+        db, meta = _mock_db(tmp_path)
+        rows, total = search_components_with_total(
+            "LDO regulator", assembly_tier="any", max_results=100, db_path=db)
+        assert total == len(rows)  # not truncated
+
+    def test_total_zero_on_no_match(self, tmp_path):
+        db, meta = _mock_db(tmp_path)
+        rows, total = search_components_with_total(
+            "xyz_doesnt_exist_qwerty", assembly_tier="basic", max_results=3, db_path=db)
+        assert rows == [] and total == 0
+
+    def test_sliced_rows_match_plain_search(self, tmp_path):
+        """The truncating wrapper must return exactly what search_components does
+        (single source of truth — no divergent ranking)."""
+        db, meta = _mock_db(tmp_path)
+        plain = search_components("LDO regulator", assembly_tier="any",
+                                  max_results=3, db_path=db)
+        rows, _ = search_components_with_total(
+            "LDO regulator", assembly_tier="any", max_results=3, db_path=db)
+        assert [r["lcsc"] for r in rows] == [r["lcsc"] for r in plain]
 
 
 # ---------------------------------------------------------------------------
