@@ -316,10 +316,22 @@ def _parse_bom_file(
 
             if isinstance(data, list):
                 components = data
-            elif "components" in data:
-                components = data["components"]
-            elif "parts" in data:
-                components = data["parts"]
+            elif isinstance(data, dict) and ("components" in data or "parts" in data):
+                raw = data.get("components", data.get("parts"))
+                if isinstance(raw, dict):
+                    components = list(raw.values())   # {refdes: row} mapping
+                elif isinstance(raw, list):
+                    components = raw
+                else:
+                    format_info["unrecognized_json_keys"] = sorted(map(str, data.keys()))
+                    logger.warning("JSON BOM %s: 'components'/'parts' is not a list or mapping", file_path)
+            elif isinstance(data, dict):
+                # Populated dict with no recognized container — surface the keys
+                # rather than silently returning an empty BOM (otherwise a
+                # populated-but-unrecognized BOM is indistinguishable from empty).
+                format_info["unrecognized_json_keys"] = sorted(map(str, data.keys()))
+                logger.warning("JSON BOM %s: no 'components'/'parts' container; "
+                               "top-level keys=%s", file_path, format_info["unrecognized_json_keys"])
 
         else:
             try:

@@ -127,3 +127,23 @@ class TestExportBomCsv:
         result = asyncio.run(fn(operation="bom_csv", ctx=None))
         assert "error" in result
         assert "project_path" in result["error"]
+
+
+def test_json_bom_unrecognized_container_is_surfaced(tmp_path):
+    """A populated JSON BOM with no components/parts key must not silently look
+    empty — surface the unrecognized top-level keys."""
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.json"
+    p.write_text(json.dumps({"bom": [{"ref": "R1"}], "meta": 1}))
+    comps, info = _parse_bom_file(str(p))
+    assert comps == []
+    assert "bom" in info.get("unrecognized_json_keys", [])
+
+
+def test_json_bom_refdes_mapping_is_accepted(tmp_path):
+    """A {refdes: row} 'components' mapping is read as a component list."""
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.json"
+    p.write_text(json.dumps({"components": {"R1": {"value": "10k"}, "R2": {"value": "1k"}}}))
+    comps, _ = _parse_bom_file(str(p))
+    assert len(comps) == 2 and {c["value"] for c in comps} == {"10k", "1k"}
