@@ -29,6 +29,8 @@ class McuInfo(TypedDict):
     ground_pin: str      # pin NAME for ground (ESP32: the merged "GND" pin)
     en_pin: str          # chip-enable pin NAME (needs pull-up)
     boot_pin: str        # boot/strap pin NAME (needs pull-up)
+    uart_rx_pin: str     # console UART RX pin NAME (<- USB bridge TXD)
+    uart_tx_pin: str     # console UART TX pin NAME (-> USB bridge RXD)
 
 
 class PeripheralInfo(TypedDict):
@@ -49,6 +51,7 @@ _ESP32: McuInfo = {
     "value": "ESP32-WROOM-32E", "footprint": "RF_Module:ESP32-WROOM-32E",
     "needs_3v3": True, "supply_pin": "VDD", "ground_pin": "GND",
     "en_pin": "EN", "boot_pin": "IO0",
+    "uart_rx_pin": "RXD0/IO3", "uart_tx_pin": "TXD0/IO1",
 }
 
 # board-id substrings (from platformio.ini ``board =``) -> MCU.
@@ -87,6 +90,32 @@ AMS1117 = {
     "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
     "vin_pin": "VI", "vout_pin": "VO", "gnd_pin": "GND",
 }
+
+# --- USB-C + CP2102 programming block (verified pins; v5 footprints) ---------
+USB_C_LIB = "Connector:USB_C_Receptacle_USB2.0_16P"
+USB_C_FP = "Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal"
+USB_C_VBUS_PINS = ["A4", "A9", "B4", "B9"]   # all VBUS pins -> +5V
+USB_C_GND_PINS = ["A1", "A12", "B1", "B12"]  # all GND pins
+USB_C_CC1, USB_C_CC2 = "A5", "B5"            # 5.1k pulldown each (sink role)
+USB_C_DP, USB_C_DM = "A6", "A7"              # USB data (A-side)
+
+CP2102_LIB = "Interface_USB:CP2102N-Axx-xQFN28"
+CP2102_FP = "Package_DFN_QFN:QFN-28-1EP_5x5mm_P0.5mm_EP3.35x3.35mm"
+# Pin NAMES (unique) used by the template:
+CP2102_VREGIN, CP2102_VBUS = "VREGIN", "VBUS"  # both <- +5V (USB-powered)
+CP2102_VDD_OUT = "VDD"                          # LDO OUTPUT — bypass only, NOT +3V3!
+CP2102_DP, CP2102_DM = "D+", "D-"
+CP2102_TXD, CP2102_RXD = "TXD", "RXD"           # TXD->MCU RX, RXD<-MCU TX
+CP2102_DTR, CP2102_RST = "~{DTR}", "~{RST}"
+# GND is on TWO pins both named "GND" (pin 3 + EP pad pin 29) — name lookup
+# returns only one, so wire these by NUMBER.
+CP2102_GND_PINS = ["3", "29"]
+
+SW_PUSH_LIB = "Switch:SW_Push"
+SW_PUSH_FP = "Button_Switch_SMD:SW_SPST_B3S-1000"
+
+# 5.1k = USB-C CC sink resistors.
+FP_R_0603_5K1 = FP_R_0603
 
 # MCP23017 I2C address strapping. Base 0x20; bits A2 A1 A0 select 0x20..0x27.
 MCP23017_ADDRESS_BASE = 0x20
