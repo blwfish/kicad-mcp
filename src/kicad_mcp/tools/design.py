@@ -10,6 +10,10 @@ Operations:
   import_firmware(firmware_path, out_path?) -> {status, intent_path, summary, gaps}
       Parse firmware -> design-intent YAML. firmware_path is a config.h file or a
       directory containing one. Auto-detects the MCU from platformio.ini.
+  expand_templates(intent_path, out_path?) -> {status, components_added, gaps_resolved}
+      Expand recognized components into support circuitry (power tree, decoupling,
+      pull-ups, address strapping). Writes the richer intent (in place unless
+      out_path given). Run between import_firmware and generate_schematic.
   generate_schematic(intent_path, schematic_path) -> {status, ...}
       Materialize MCU + recognized peripherals + signal nets into a .kicad_sch.
   show_intent(intent_path) -> {status, summary, gaps}
@@ -31,6 +35,7 @@ from kicad_mcp.utils.firmware.intent import (
     save_intent,
 )
 from kicad_mcp.utils.firmware.parse import parse_defines, partition
+from kicad_mcp.utils.firmware.templates import expand_intent
 
 
 def _find_config_header(firmware_path: str) -> Optional[Path]:
@@ -82,14 +87,16 @@ def register_design_tools(mcp: FastMCP) -> None:
         """
         if operation == "import_firmware":
             return _op_import(firmware_path=firmware_path, out_path=out_path)
+        if operation == "expand_templates":
+            return _op_expand(intent_path=intent_path, out_path=out_path)
         if operation == "generate_schematic":
             return _op_generate(intent_path=intent_path, schematic_path=schematic_path)
         if operation == "show_intent":
             return _op_show(intent_path=intent_path)
         return {
             "status": "error", "code": "unknown_operation",
-            "message": (f"Unknown operation: {operation!r}. "
-                        "Valid: import_firmware, generate_schematic, show_intent."),
+            "message": (f"Unknown operation: {operation!r}. Valid: import_firmware, "
+                        "expand_templates, generate_schematic, show_intent."),
         }
 
 
@@ -116,6 +123,30 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     return {
         "status": "ok", "intent_path": str(dest),
         "board": board, "summary": _summary(intent), "gaps": _gaps_list(intent),
+    }
+
+
+def _op_expand(*, intent_path: Optional[str], out_path: Optional[str]) -> dict:
+    if not intent_path:
+        return {"status": "error", "code": "missing_parameter",
+                "message": "intent_path is required."}
+    if not Path(intent_path).exists():
+        return {"status": "error", "code": "intent_not_found",
+                "message": f"Intent doc not found: {intent_path}"}
+    intent = load_intent(intent_path)
+    n_comp_before = len(intent.peripherals)
+    intent = expand_intent(intent)
+    dest = out_path or intent_path
+    try:
+        save_intent(intent, str(dest))
+    except OSError as e:
+        return {"status": "error", "code": "write_failed",
+                "message": f"Could not write expanded intent: {e}"}
+    return {
+        "status": "ok", "intent_path": str(dest),
+        "components_added": len(intent.peripherals) - n_comp_before,
+        "gaps_resolved": [g.kind for g in intent.gaps if g.resolved],
+        "summary": _summary(intent),
     }
 
 

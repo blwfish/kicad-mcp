@@ -9,6 +9,7 @@ a confidence tier (bus / peripheral / orphan). YAML is the on-disk form.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,10 +17,12 @@ from typing import Any, Optional
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 from kicad_mcp.utils.firmware.knowledge import resolve_mcu, resolve_peripheral
 from kicad_mcp.utils.firmware.parse import ParsedFirmware
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: power/passive nets, footprints, template origin, gap provenance
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -35,18 +38,20 @@ _ALWAYS_GAPS = [
 @dataclass
 class Endpoint:
     ref: str
-    gpio: Optional[int] = None   # set on the MCU side
+    gpio: Optional[int] = None   # set on the MCU side (resolved via IO{n})
     role: Optional[str] = None   # firmware signal-role on the peripheral side
+    pin: Optional[str] = None    # direct pin NAME/number — for passives & power
+                                 # pins that are neither a GPIO nor a known role
 
 
 @dataclass
 class Net:
     name: str
-    kind: str                    # "bus" | "peripheral" | "orphan"
+    kind: str                    # "bus"|"peripheral"|"orphan"|"power"|"passive"
     confidence: str              # "high" | "low"
     endpoints: list[Endpoint] = field(default_factory=list)
     bus: Optional[str] = None
-    origin: str = "imported"     # "imported" | "user" — merge preserves "user"
+    origin: str = "imported"     # "imported"|"template"|"user" (see merge())
 
 
 @dataclass
@@ -55,9 +60,10 @@ class Peripheral:
     type: str
     lib_id: Optional[str] = None
     value: Optional[str] = None
+    footprint: Optional[str] = None
     bus: Optional[str] = None
     address: Optional[int] = None
-    origin: str = "imported"
+    origin: str = "imported"     # "imported"|"template"|"user"
 
 
 @dataclass
@@ -65,6 +71,7 @@ class Mcu:
     ref: str
     part: str
     lib_id: str
+    footprint: Optional[str] = None
 
 
 @dataclass
@@ -72,6 +79,8 @@ class Gap:
     kind: str
     detail: str = ""
     resolved: bool = False
+    resolved_by: Optional[str] = None             # template name or "user"
+    resolved_components: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -134,7 +143,8 @@ def build_intent(
     # --- MCU ---
     mcu_info = resolve_mcu(board_id)
     if mcu_info is not None:
-        intent.mcu = Mcu(ref="U1", part=mcu_info["part"], lib_id=mcu_info["lib_id"])
+        intent.mcu = Mcu(ref="U1", part=mcu_info["part"], lib_id=mcu_info["lib_id"],
+                         footprint=mcu_info["footprint"])
     else:
         intent.gaps.append(Gap("mcu_unknown",
                                f"Could not resolve MCU from board id {board_id!r}."))
@@ -164,7 +174,7 @@ def build_intent(
             continue
         p = Peripheral(
             ref=f"U{next_ref}", type=t, lib_id=info["lib_id"], value=info["value"],
-            bus=info["bus"], address=addr_by_type.get(t),
+            footprint=info["footprint"], bus=info["bus"], address=addr_by_type.get(t),
         )
         next_ref += 1
         peripherals.append(p)
@@ -245,6 +255,14 @@ def to_dict(intent: DesignIntent) -> dict[str, Any]:
 
 
 def from_dict(d: dict[str, Any]) -> DesignIntent:
+    ver = d.get("schema_version", 1)
+    if ver != SCHEMA_VERSION:
+        # Warn, don't raise: optional fields default-fill, so older docs still
+        # load. A newer doc loaded by older code would silently drop fields.
+        logger.warning(
+            "design-intent schema_version %s != current %s; loading anyway "
+            "(fields may default-fill).", ver, SCHEMA_VERSION,
+        )
     mcu_d = d.get("mcu")
     return DesignIntent(
         schema_version=d.get("schema_version", SCHEMA_VERSION),
@@ -275,17 +293,26 @@ def load_intent(path: str) -> DesignIntent:
 
 
 def merge(existing: DesignIntent, fresh: DesignIntent) -> DesignIntent:
-    """Re-import without clobbering hand edits. ``fresh`` (importer output) wins
-    for imported facts; user-authored items (``origin == "user"``) from
-    ``existing`` are preserved, and any gaps the user marked resolved stay
-    resolved."""
+    """Re-import without clobbering hand edits. Three-way by ``origin``:
+
+    * ``imported`` — ``fresh`` (the new firmware parse) wins.
+    * ``user`` — hand-authored items from ``existing`` are always preserved.
+    * ``template`` — NOT carried here; template-added circuitry is *re-runnable*
+      via ``expand_templates`` (re-running it regenerates the items), so merge
+      drops them rather than risk duplicating on the next expand.
+
+    Gaps the user/existing marked resolved keep ``resolved`` + its provenance.
+    """
     out = dataclasses.replace(fresh)
     existing_user_peri = [p for p in existing.peripherals if p.origin == "user"]
     existing_user_nets = [n for n in existing.nets if n.origin == "user"]
     out.peripherals = list(fresh.peripherals) + existing_user_peri
     out.nets = list(fresh.nets) + existing_user_nets
-    resolved = {(g.kind, g.detail) for g in existing.gaps if g.resolved}
+    resolved = {(g.kind, g.detail): g for g in existing.gaps if g.resolved}
     for g in out.gaps:
-        if (g.kind, g.detail) in resolved:
+        src = resolved.get((g.kind, g.detail))
+        if src is not None:
             g.resolved = True
+            g.resolved_by = src.resolved_by
+            g.resolved_components = list(src.resolved_components)
     return out
