@@ -356,11 +356,20 @@ def to_dict(intent: DesignIntent) -> dict[str, Any]:
     return dataclasses.asdict(intent)
 
 
+def _only_fields(cls: type, d: dict[str, Any]) -> dict[str, Any]:
+    """Keep only keys that are fields of dataclass ``cls``, so a newer doc with
+    extra fields loads (silently dropping the unknowns) instead of raising
+    ``TypeError`` on ``cls(**d)`` — matching from_dict's documented forward-compat
+    contract (a v4 schema or a typo'd hand-edited key must not crash load_intent)."""
+    known = {f.name for f in dataclasses.fields(cls)}
+    return {k: v for k, v in d.items() if k in known}
+
+
 def from_dict(d: dict[str, Any]) -> DesignIntent:
     ver = d.get("schema_version", 1)
     if ver != SCHEMA_VERSION:
         # Warn, don't raise: optional fields default-fill, so older docs still
-        # load. A newer doc loaded by older code would silently drop fields.
+        # load. A newer doc loaded by older code silently drops unknown fields.
         logger.warning(
             "design-intent schema_version %s != current %s; loading anyway "
             "(fields may default-fill).", ver, SCHEMA_VERSION,
@@ -369,18 +378,18 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
     return DesignIntent(
         schema_version=d.get("schema_version", SCHEMA_VERSION),
         source=d.get("source", {}),
-        mcu=Mcu(**mcu_d) if mcu_d else None,
-        peripherals=[Peripheral(**p) for p in d.get("peripherals", [])],
-        buses=[Bus(**b) for b in d.get("buses", [])],
+        mcu=Mcu(**_only_fields(Mcu, mcu_d)) if mcu_d else None,
+        peripherals=[Peripheral(**_only_fields(Peripheral, p)) for p in d.get("peripherals", [])],
+        buses=[Bus(**_only_fields(Bus, b)) for b in d.get("buses", [])],
         nets=[
             Net(
                 name=n["name"], kind=n["kind"], confidence=n["confidence"],
-                endpoints=[Endpoint(**e) for e in n.get("endpoints", [])],
+                endpoints=[Endpoint(**_only_fields(Endpoint, e)) for e in n.get("endpoints", [])],
                 bus=n.get("bus"), origin=n.get("origin", "imported"),
             )
             for n in d.get("nets", [])
         ],
-        gaps=[Gap(**g) for g in d.get("gaps", [])],
+        gaps=[Gap(**_only_fields(Gap, g)) for g in d.get("gaps", [])],
         provenance=d.get("provenance", {}),
     )
 
