@@ -15,6 +15,47 @@ from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 logger = logging.getLogger(__name__)
 
 
+def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse a kicad-cli ``pcb drc --format json`` report into DRC result fields.
+
+    Pure — takes the already-loaded JSON dict — so the field extraction is
+    unit-testable without KiCad (the seam pulled out of run_drc_via_cli). Reads
+    ALL THREE violation arrays kicad-cli emits — clearance/rule ``violations``,
+    ``unconnected_items`` and ``schematic_parity`` — so a board with unrouted
+    nets or schematic-parity errors is NOT reported as clean (review finding
+    h-drc-arrays; the old code read only ``violations``). A genuinely unknown
+    future top-level key still yields zero, by design.
+    """
+    violations = report.get("violations", [])
+    unconnected = report.get("unconnected_items", [])
+    parity = report.get("schematic_parity", [])
+
+    # Categorize rule violations by rule_id (stable across versions) with
+    # type/message fallback; the other two arrays are counted as their own kinds.
+    categories: Dict[str, int] = {}
+    for violation in violations:
+        key = (
+            violation.get("rule_id")
+            or violation.get("type")
+            or violation.get("message", "Unknown")
+        )
+        categories[key] = categories.get(key, 0) + 1
+    if unconnected:
+        categories["unconnected"] = len(unconnected)
+    if parity:
+        categories["schematic_parity"] = len(parity)
+
+    return {
+        "total_violations": len(violations) + len(unconnected) + len(parity),
+        "violation_categories": categories,
+        "violations": violations,
+        "unconnected_items": unconnected,
+        "schematic_parity": parity,
+        "unconnected_count": len(unconnected),
+        "parity_count": len(parity),
+    }
+
+
 async def run_drc_via_cli(
     pcb_file: str, ctx: Context | None
 ) -> Dict[str, Any]:
@@ -83,31 +124,18 @@ async def run_drc_via_cli(
                     results["error"] = "Failed to parse DRC report JSON"
                     return results
 
-            violations = drc_report.get("violations", [])
-            violation_count = len(violations)
+            parsed = parse_drc_report(drc_report)
+            violation_count = parsed["total_violations"]
             logger.info("DRC completed with %d violations", violation_count)
             if ctx:
                 await ctx.report_progress(70, 100)
                 await ctx.info(f"DRC completed with {violation_count} violations")
 
-            # Categorize violations by rule_id (stable) with message fallback
-            error_types: dict[str, int] = {}
-            for violation in violations:
-                # rule_id is stable across KiCad versions; message text can change
-                error_type = (
-                    violation.get("rule_id")
-                    or violation.get("type")
-                    or violation.get("message", "Unknown")
-                )
-                error_types[error_type] = error_types.get(error_type, 0) + 1
-
             results = {
                 "success": True,
                 "method": "cli",
                 "pcb_file": pcb_file,
-                "total_violations": violation_count,
-                "violation_categories": error_types,
-                "violations": violations,
+                **parsed,
             }
 
             if ctx:

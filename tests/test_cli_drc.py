@@ -277,6 +277,59 @@ class TestExternalInterfaceDrift:
 
 
 # ---------------------------------------------------------------------------
+# Test: parse_drc_report — pure field extraction (no subprocess / KiCad)
+# ---------------------------------------------------------------------------
+
+class TestParseDrcReport:
+    """The DRC report parse, extracted from run_drc_via_cli so it is testable
+    in-process. Pins the h-drc-arrays fix: ALL THREE kicad-cli arrays are
+    captured (the old code read only 'violations')."""
+
+    def test_captures_all_three_arrays(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        report = {
+            "violations": [{"rule_id": "clearance"}, {"rule_id": "clearance"}],
+            "unconnected_items": [{"code": "x"}, {"code": "y"}, {"code": "z"}],
+            "schematic_parity": [{"code": "p"}],
+        }
+        out = parse_drc_report(report)
+        assert out["total_violations"] == 6            # 2 + 3 + 1, NOT 2 (the old bug)
+        assert out["unconnected_count"] == 3
+        assert out["parity_count"] == 1
+        assert out["unconnected_items"] == report["unconnected_items"]
+        assert out["schematic_parity"] == report["schematic_parity"]
+        assert out["violation_categories"] == {
+            "clearance": 2, "unconnected": 3, "schematic_parity": 1,
+        }
+
+    def test_board_with_only_unconnected_is_not_clean(self):
+        """The exact h-drc-arrays scenario: 0 clearance violations but 12 unrouted
+        nets must NOT report a clean board (it did before the fix)."""
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": [], "unconnected_items": [{"a": 1}] * 12})
+        assert out["total_violations"] == 12
+        assert out["violations"] == []
+
+    def test_clean_board_is_zero(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": []})
+        assert out["total_violations"] == 0
+        assert out["violation_categories"] == {}
+        assert out["unconnected_count"] == 0 and out["parity_count"] == 0
+
+    def test_rule_id_fallback_chain(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": [
+            {"type": "silk_overlap"},          # no rule_id -> type
+            {"message": "Pad too small"},      # no rule_id/type -> message
+            {},                                # nothing -> Unknown
+        ]})
+        assert out["violation_categories"] == {
+            "silk_overlap": 1, "Pad too small": 1, "Unknown": 1,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Test: subprocess exception
 # ---------------------------------------------------------------------------
 
