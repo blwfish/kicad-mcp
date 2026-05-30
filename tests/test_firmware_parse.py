@@ -17,9 +17,11 @@ from kicad_mcp.utils.firmware.parse import (
     MacroKind,
     _as_int,
     classify,
+    idf_target_defines,
     parse_defines,
     parse_pin_name,
     partition,
+    select_active_branches,
 )
 
 SPEEDCAL_CONFIG = Path(
@@ -167,6 +169,78 @@ def test_line_numbers_and_comments():
     assert len(macros) == 1
     assert macros[0].line_no == 2
     assert macros[0].comment == "Data out from HX711"
+
+
+# --- role-token classifier (generalizes beyond _PIN; CMCA_* convention) ------
+
+@pytest.mark.parametrize("name,value,gpio,role,bus,stem", [
+    ("CMCA_I2S_BCLK", "15", 15, "BCLK", "I2S", "CMCA_I2S"),
+    ("CMCA_I2S2_DIN", "7", 7, "DIN", "I2S", "CMCA_I2S2"),
+    ("CMCA_OLED_SDA", "47", 47, "SDA", "I2C", "CMCA_OLED"),
+    ("CMCA_OLED_SCL", "48", 48, "SCL", "I2C", "CMCA_OLED"),
+    ("CMCA_AMP_GAIN_BUS0", "11", 11, "GAIN", None, "CMCA_AMP"),  # qualifier stripped
+    ("CMCA_MIC_WS", "9", 9, "WS", "I2S", "CMCA_MIC"),
+    ("CMCA_MIC_SD", "10", 10, "SD", None, "CMCA_MIC"),  # ambiguous role -> bus by group
+])
+def test_role_token_pins(name, value, gpio, role, bus, stem):
+    m = classify(name, value, None)
+    assert m.kind is MacroKind.PIN and m.gpio == gpio
+    assert m.signal_role == role and m.bus == bus and m.peripheral_hint == stem
+
+
+@pytest.mark.parametrize("name,value", [
+    ("CMCA_I2S_SAMPLE_RATE", "22050"),   # _RATE not a role
+    ("CMCA_I2S_BITS", "16"),             # _BITS not a role, 16 is valid GPIO
+    ("CMCA_DEFAULT_VOLUME", "80"),
+    ("CMCA_MAX_CHANNELS", "8"),          # count in GPIO range
+    ("CMCA_PANIC_BUTTON_ENABLED", "0"),  # ENABLED != EN (segment match)
+    ("CMCA_PRESENCE_HOLD_MS", "10000"),
+])
+def test_role_token_rejects_config(name, value):
+    assert classify(name, value, None).kind is MacroKind.OTHER
+
+
+def test_role_token_speedcal_regression():
+    # The speed-cal _PIN/alias pins still classify identically.
+    for name, value, role in [("I2C_SDA", "21", "SDA"),
+                              ("HX711_DOUT_PIN", "16", "DOUT"),
+                              ("MCP23017_INT_PIN", "13", "INT")]:
+        m = classify(name, value, None)
+        assert m.kind is MacroKind.PIN and m.signal_role == role
+
+
+# --- preprocessor branch selection -------------------------------------------
+
+_PP_TEXT = """\
+#if CONFIG_IDF_TARGET_ESP32S3
+#define I2S_BCLK 15
+#else
+#define I2S_BCLK 26
+#endif
+#define ALWAYS 1
+"""
+
+def test_select_branch_s3():
+    out = select_active_branches(_PP_TEXT, {"CONFIG_IDF_TARGET_ESP32S3"})
+    assert "15" in out and "26" not in out and "ALWAYS" in out
+
+def test_select_branch_else():
+    out = select_active_branches(_PP_TEXT, {"CONFIG_IDF_TARGET_ESP32"})
+    assert "26" in out and "15" not in out
+
+def test_select_nested_and_ifdef():
+    text = "#ifdef A\n#ifndef B\nX\n#endif\nY\n#endif\nZ\n"
+    assert select_active_branches(text, {"A"}) == "X\nY\nZ\n"   # B undefined -> ifndef true
+    assert select_active_branches(text, {"A", "B"}) == "Y\nZ\n" # ifndef B false -> X dropped
+    assert select_active_branches(text, set()) == "Z\n"          # A undefined -> all dropped
+
+def test_unknown_condition_takes_if_branch():
+    text = "#if FOO && BAR\nP\n#else\nQ\n#endif\n"
+    assert select_active_branches(text, set()) == "P\n"          # complex -> take #if
+
+def test_idf_target_defines():
+    assert idf_target_defines("esp32-s3-devkitc-1") == {"CONFIG_IDF_TARGET_ESP32S3"}
+    assert idf_target_defines("esp32dev") == {"CONFIG_IDF_TARGET_ESP32"}
 
 
 # --- integration: the REAL speed-cal config.h --------------------------------
