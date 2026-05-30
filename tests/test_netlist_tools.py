@@ -214,3 +214,100 @@ class TestUnescapeSexpr:
         # Per the implementation: `if c == "\\" and i + 1 < len(s)` — trailing
         # backslash falls into the else branch and is appended literally.
         assert self._fn("abc\\") == "abc\\"
+
+
+# -- _parse_kicadxml: field-survival of the production data-capture path --------
+
+KICADXML_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E">
+  <components>
+    <comp ref="R1" dnp="1">
+      <value>10k</value>
+      <footprint>Resistor_SMD:R_0805</footprint>
+      <datasheet>http://example.com/r.pdf</datasheet>
+      <description>Chip resistor</description>
+      <fields>
+        <field name="MPN">RC0805FR-0710KL</field>
+      </fields>
+      <libsource lib="Device" part="R"/>
+      <property name="Sheetname" value="root"/>
+    </comp>
+    <comp ref="C1" dnp="false">
+      <value>100nF</value>
+      <libsource lib="Device" part="C" description="Unpolarized capacitor"/>
+    </comp>
+    <comp>
+      <value>orphan-no-ref</value>
+    </comp>
+  </components>
+  <nets>
+    <net name="/SDA">
+      <node ref="R1" pin="1" pinfunction="A" pintype="passive"/>
+      <node ref="C1" pin="2"/>
+    </net>
+    <net>
+      <node ref="X1" pin="1"/>
+    </net>
+    <net name="unconnected-(U1-Pad3)">
+      <node ref="U1" pin="3"/>
+    </net>
+  </nets>
+</export>
+"""
+
+
+class TestParseKicadxml:
+    """Field-survival for the kicad-cli kicadxml parser — the authoritative
+    data-capture path. It was extracted into a pure function (review finding
+    h-test-netlist) so every field is assertable here without KiCad; the default
+    no-KiCad suite never reached this logic before (it lived behind ET.parse of a
+    subprocess output)."""
+
+    @pytest.fixture(scope="class")
+    def parsed(self):
+        from kicad_mcp.utils.netlist_parser import _parse_kicadxml
+        return _parse_kicadxml(KICADXML_SAMPLE)
+
+    def test_parser_path_and_skip_counters(self, parsed):
+        assert parsed["parser_path"] == "cli"
+        assert parsed["component_count"] == 2          # R1, C1; the no-ref comp skipped
+        assert parsed["malformed_components_skipped"] == 1
+        assert parsed["net_count"] == 1                # SDA; unconnected + no-name excluded
+        assert parsed["malformed_nets_skipped"] == 1   # the <net> with no name
+
+    def test_all_component_fields_survive(self, parsed):
+        r1 = parsed["components"]["R1"]
+        assert r1["reference"] == "R1"
+        assert r1["dnp"] is True                       # "1" -> True
+        assert r1["value"] == "10k"
+        assert r1["footprint"] == "Resistor_SMD:R_0805"
+        assert r1["datasheet"] == "http://example.com/r.pdf"
+        assert r1["description"] == "Chip resistor"
+        assert r1["lib_id"] == "Device:R"
+        # both <fields><field> and inline <property> land in properties
+        assert r1["properties"]["MPN"] == "RC0805FR-0710KL"
+        assert r1["properties"]["Sheetname"] == "root"
+
+    def test_dnp_coercion_and_libsource_description_fallback(self, parsed):
+        c1 = parsed["components"]["C1"]
+        assert c1["dnp"] is False                      # "false" -> False
+        # no <description> child -> falls back to the libsource attribute
+        assert c1["description"] == "Unpolarized capacitor"
+
+    def test_net_name_stripped_and_node_attrs_captured(self, parsed):
+        assert "SDA" in parsed["nets"] and "/SDA" not in parsed["nets"]
+        nodes = {n["component"]: n for n in parsed["nets"]["SDA"]}
+        assert nodes["R1"]["pin"] == "1"
+        # extra node attributes survive — not dropped to {component, pin}
+        assert nodes["R1"]["pinfunction"] == "A"
+        assert nodes["R1"]["pintype"] == "passive"
+        assert "pinfunction" not in nodes["C1"]        # absent stays absent
+
+    def test_unconnected_nets_excluded(self, parsed):
+        assert not any(k.startswith("unconnected-") for k in parsed["nets"])
+
+    def test_malformed_xml_raises_parse_error(self):
+        import xml.etree.ElementTree as ET
+        from kicad_mcp.utils.netlist_parser import _parse_kicadxml
+        with pytest.raises(ET.ParseError):
+            _parse_kicadxml("<export><components></export>")  # unclosed tag
