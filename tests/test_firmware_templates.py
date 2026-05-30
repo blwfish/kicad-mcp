@@ -418,3 +418,13 @@ def test_generate_expanded_speedcal(tmp_path):
     assert {"U5.3", "U5.29"} <= gnd                      # LANDMINE: both CP2102 GND pins
     assert members("UART_RX") == {"U1.34", "U5.26"}     # CP2102 TXD -> ESP32 RX
     assert members("UART_TX") == {"U1.35", "U5.25"}     # CP2102 RXD <- ESP32 TX
+
+
+def test_first_preserves_gpio_zero():
+    """GPIO 0 is a valid ESP32 pin but falsy: `signals.get(a) or signals.get(b)`
+    used to drop it and fall through to the alternate role, silently skipping a
+    whole bus subcircuit. _first must return the GPIO-0 value."""
+    from kicad_mcp.utils.firmware.templates import _first
+    assert _first({"LRC": 0, "WS": 5}, "LRC", "WS") == 0      # NOT 5
+    assert _first({"WS": 5}, "LRC", "WS") == 5                # falls through to present role
+    assert _first({}, "LRC", "WS") is None                    # neither present
