@@ -1,0 +1,32 @@
+name: Testability audit (report-only)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Stage-1 mechanical net for write-time testability defects (helperless
+# boundary logic + tautological boundary tests). It ratchets against
+# scripts/testability_baseline.json: the ~63 pre-existing violations are
+# grandfathered, and only NEW ones are surfaced.
+#
+# REPORT-ONLY for now: this job prints the summary and never blocks a merge
+# (it is not a required check, and the script exits 0 without --check). After
+# the baseline has burned in, promote it to a gate by changing the run line to
+# `--check` and adding "testability-audit" to branch protection's required
+# checks. The script is stdlib-only — no package install or KiCad needed.
+jobs:
+  testability:
+    name: testability-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run testability audit (report-only)
+        run: python scripts/audit_testability.py
