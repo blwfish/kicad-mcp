@@ -107,9 +107,16 @@ def _score_package(requested: str | None, available: str) -> float:
 
 
 # Assembly tier scoring table  [requested][available]
+#
+# "extended" means "any tier is acceptable, no preference" — the SAME semantics
+# the SQL pre-filter applies (it adds no tier WHERE clause for 'extended'). It
+# must therefore score every tier 1.0, exactly like 'any'. The old row penalized
+# basic parts (0.8) and build_deviations then mislabeled them as "adds JLCPCB
+# assembly fee" — the opposite of reality (basic is the cheaper, fee-free tier),
+# silently demoting the better parts a user requesting 'extended' actually wants.
 _TIER_SCORES: dict[str, dict[str, float]] = {
     "basic":    {"basic": 1.0, "preferred": 0.5, "extended": 0.5},
-    "extended": {"basic": 0.8, "preferred": 1.0, "extended": 1.0},
+    "extended": {"basic": 1.0, "preferred": 1.0, "extended": 1.0},
     "preferred":{"basic": 0.7, "preferred": 1.0, "extended": 0.7},
     "any":      {"basic": 1.0, "preferred": 1.0, "extended": 1.0},
 }
