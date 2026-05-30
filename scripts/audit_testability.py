@@ -134,26 +134,69 @@ def _scalar_literal(node: ast.AST):
     return _NO
 
 
-def _subscript_string_keys(node: ast.AST) -> list[str]:
-    """All string subscript keys reachable inside ``node`` (e.g. ``result["a"]``
-    -> "a"; nested ``result["a"]["b"]`` -> ["a", "b"])."""
+#: Mock attributes that expose what the SUT was CALLED WITH, not its result.
+#: A subscript rooted at one of these (or at a var assigned from one) reads call
+#: arguments — asserting those is legitimate, not a tautological echo.
+_CALLARGS_ATTRS = ("call_args", "call_args_list")
+
+
+def _callargs_derived_names(fn: ast.AST) -> set[str]:
+    """Local names assigned from an expression that touches ``.call_args`` — e.g.
+    ``params = mock_run.call_args[1]["params"]``."""
+    names: set[str] = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign) and any(
+            isinstance(a, ast.Attribute) and a.attr in _CALLARGS_ATTRS
+            for a in ast.walk(n.value)
+        ):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
+    return names
+
+
+def _reads_call_args(sub: ast.Subscript, callargs_names: set[str]) -> bool:
+    """True if the subscript chain roots at a call-args var or contains a
+    ``.call_args`` attribute — i.e. it reads call arguments, not the SUT result."""
+    node: ast.AST = sub
+    while True:
+        if isinstance(node, ast.Subscript):
+            node = node.value
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _CALLARGS_ATTRS:
+                return True
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        elif isinstance(node, ast.Name):
+            return node.id in callargs_names
+        else:
+            return False  # unknown root — treat as a result read (conservative)
+
+
+def _result_subscript_keys(node: ast.AST, callargs_names: set[str]) -> list[str]:
+    """String subscript keys reachable inside ``node`` that read the SUT RESULT
+    (e.g. ``result["a"]`` -> "a"), excluding subscripts that read call arguments
+    (``params["a"]`` / ``mock.call_args[...]["a"]``)."""
     keys: list[str] = []
     for n in ast.walk(node):
         if isinstance(n, ast.Subscript):
             sl = n.slice
             if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
-                keys.append(sl.value)
+                if not _reads_call_args(n, callargs_names):
+                    keys.append(sl.value)
     return keys
 
 
-def _compare_pairs(compare: ast.Compare) -> list[tuple[str, object]]:
-    """(subscript_key, scalar_literal) candidate pairs across the operands of a
-    comparison — one operand supplies the accessed key, the other the literal."""
+def _compare_pairs(compare: ast.Compare, callargs_names: set[str]) -> list[tuple[str, object]]:
+    """(result_subscript_key, scalar_literal) candidate pairs across the operands
+    of a comparison — one operand supplies the accessed key, the other the literal.
+    Call-argument reads are excluded (they are not tautological echoes)."""
     operands = [compare.left, *compare.comparators]
     keys: list[str] = []
     lits: list[object] = []
     for op in operands:
-        keys.extend(_subscript_string_keys(op))
+        keys.extend(_result_subscript_keys(op, callargs_names))
         lit = _scalar_literal(op)
         if lit is not _NO:
             lits.append(lit)
@@ -197,13 +240,15 @@ def _configured_return_values(fn: ast.AST) -> dict[str, _Cfg]:
 
 
 def _assertions_echoing_config(fn: ast.AST, cfg: dict[str, _Cfg]) -> list[str]:
-    """Keys whose configured scalar value an ``assert`` reads straight back."""
+    """Keys whose configured scalar value an ``assert`` reads straight back out of
+    the SUT result (call-argument assertions are excluded)."""
+    callargs_names = _callargs_derived_names(fn)
     hits: list[str] = []
     for a in ast.walk(fn):
         if not isinstance(a, ast.Assert):
             continue
         for cmp in (n for n in ast.walk(a.test) if isinstance(n, ast.Compare)):
-            for key, lit in _compare_pairs(cmp):
+            for key, lit in _compare_pairs(cmp, callargs_names):
                 c = cfg.get(key)
                 if c and c.known and type(c.value) is type(lit) and c.value == lit:
                     hits.append(key)
