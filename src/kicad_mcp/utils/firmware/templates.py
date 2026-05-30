@@ -31,6 +31,16 @@ from kicad_mcp.utils.firmware.intent import (
 )
 
 
+def _first(signals: dict[str, int], *roles: str) -> Optional[int]:
+    """First present role's GPIO, else None — preserving a GPIO of 0.
+    ``signals.get(a) or signals.get(b)`` wrongly falls through when a maps to
+    GPIO 0 (a valid ESP32 pin), silently dropping that subcircuit."""
+    for r in roles:
+        if r in signals:
+            return signals[r]
+    return None
+
+
 @dataclass
 class Expansion:
     components: list[Peripheral] = field(default_factory=list)
@@ -314,7 +324,7 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         if bus.type != "I2S_OUT":
             continue
         bclk_g = bus.signals.get("BCLK")
-        lrc_g = bus.signals.get("LRC") or bus.signals.get("WS")
+        lrc_g = _first(bus.signals, "LRC", "WS")
         din_g = bus.signals.get("DIN")
         if bclk_g is None or lrc_g is None or din_g is None:
             continue
@@ -370,8 +380,8 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         if bus.type != "I2S_IN":
             continue
         bclk_g = bus.signals.get("BCLK")
-        ws_g = bus.signals.get("WS") or bus.signals.get("LRC")
-        sd_g = bus.signals.get("SD") or bus.signals.get("DOUT")
+        ws_g = _first(bus.signals, "WS", "LRC")
+        sd_g = _first(bus.signals, "SD", "DOUT")
         if bclk_g is None or ws_g is None or sd_g is None:
             continue
         mic = Peripheral(ref=alloc.next("MK"), type="SPH0645", lib_id=S["lib_id"],
@@ -435,8 +445,8 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     for bus in intent.buses:
         if bus.type != "UART":
             continue
-        rx_g = bus.signals.get("RX") or bus.signals.get("RXD")
-        tx_g = bus.signals.get("TX") or bus.signals.get("TXD")
+        rx_g = _first(bus.signals, "RX", "RXD")
+        tx_g = _first(bus.signals, "TX", "TXD")
         if rx_g is None or tx_g is None:
             continue
         j = _header(alloc, K.HDR_1X4, f"UART{n}")
