@@ -459,6 +459,26 @@ def _truncate_violations(result: Dict[str, Any], cap: int = _PAD_VIOLATION_CAP) 
     return result
 
 
+#: Pad-pair signed-gap, extracted from the embedded script so it is unit-testable
+#: in-process (review finding h-test-threshold). Injected into the pad-clearance
+#: script by concatenation; exec'd directly in tests.
+#:
+#: pad_signed_gap is INTENTIONALLY not utils.geometry.signed_gap_mm: for separated
+#: pads the two agree, but for a box nested inside another this reports the overlap
+#: EXTENT (the useful number for a pad report) whereas signed_gap_mm reports the
+#: move-to-clear DISTANCE. The divergence is pinned by a test, not silently merged.
+PAD_GAP_HELPER = """
+def pad_signed_gap(a, b):
+    gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
+    gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
+    if gap_x >= 0 and gap_y >= 0:
+        return min(gap_x, gap_y)            # separated; binding clearance
+    if gap_x >= 0 or gap_y >= 0:
+        return max(gap_x, gap_y)            # separated on one axis only
+    return max(gap_x, gap_y)                # overlap; less-negative = easier-to-fix axis
+"""
+
+
 def _op_pad_clearances(
     pcb_path: str,
     min_clearance_mm: float = 0.0,
@@ -469,7 +489,7 @@ def _op_pad_clearances(
 
     script = """
 import pcbnew, json, math, sys
-
+""" + PAD_GAP_HELPER + """
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
@@ -527,16 +547,8 @@ for i in range(n):
         # Fast AABB rejection with clearance expansion
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
-        # Signed gap between pad bounding boxes.
-        # positive = clearance, zero = touching, negative = penetration depth.
-        gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
-        gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
-        if gap_x >= 0 and gap_y >= 0:
-            gap = min(gap_x, gap_y)            # separated; binding clearance
-        elif gap_x >= 0 or gap_y >= 0:
-            gap = max(gap_x, gap_y)            # separated on one axis only
-        else:
-            gap = max(gap_x, gap_y)            # overlap; less-negative = penetration on easier-to-fix axis
+        # Signed gap via the extracted, in-process-tested helper (pad_signed_gap).
+        gap = pad_signed_gap(a, b)
         if gap < min_cl:
             violations.append({
                 "pad_a": f"{a['ref']}:{a['pad']}",

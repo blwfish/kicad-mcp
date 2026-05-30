@@ -126,55 +126,43 @@ class TestPadClearancesScript:
 
 class TestPadClearancesResults:
 
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_no_violations(self, mock_run, audit_server, pcb_file):
-        mock_run.return_value = {
-            "status": "ok",
-            "total_pads": 20,
-            "min_clearance_mm": 0.2,
-            "violation_count": 0,
-            "footprint_pairs_affected": 0,
-            "footprint_pair_summary": [],
-            "violations": [],
-            "violations_truncated": False,
-            "summary": "All inter-footprint pad clearances >= 0.2mm (20 pads checked)",
-        }
-        fn = _get_audit_fn(audit_server)
-        result = fn("pad_clearances", pcb_path=pcb_file)
-        assert result["status"] == "ok"
-        assert result["violation_count"] == 0
-        assert result["total_pads"] == 20
+    def test_pad_gap_and_threshold_boundary(self):
+        """The gap + `< min_cl` decision is extracted into PAD_GAP_HELPER so it is
+        unit-testable in-process (review finding h-test-threshold). a's right edge
+        sits at x=0 so the gap equals b's left edge exactly — no float drift at the
+        boundary (the `1.2 - 1.0` trap the consumer-tolerance rule warns about).
+        Pin the strict side: a gap of exactly 0.2 is NOT a violation."""
+        from kicad_mcp.tools.pcb_keepout import PAD_GAP_HELPER
+        ns: dict = {}
+        exec(PAD_GAP_HELPER, ns)
+        gap = ns["pad_signed_gap"]
 
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_violations_found(self, mock_run, audit_server, pcb_file):
-        mock_run.return_value = {
-            "status": "ok",
-            "total_pads": 50,
-            "min_clearance_mm": 0.2,
-            "violation_count": 3,
-            "footprint_pairs_affected": 2,
-            "footprint_pair_summary": [
-                {"ref_a": "R1", "ref_b": "U1", "pad_violations": 2, "min_gap_mm": 0.05},
-                {"ref_a": "D1", "ref_b": "U1", "pad_violations": 1, "min_gap_mm": 0.1},
-            ],
-            "violations": [
-                {
-                    "pad_a": "R1:1", "pad_b": "U1:4",
-                    "net_a": "SDA", "net_b": "",
-                    "gap_mm": 0.05, "min_clearance_mm": 0.2,
-                    "overlap": False,
-                    "pad_a_center": [32.0, 44.0],
-                    "pad_b_center": [32.5, 44.3],
-                },
-            ],
-            "violations_truncated": False,
-            "summary": "3 pad clearance violation(s) across 2 footprint pair(s)",
-        }
-        fn = _get_audit_fn(audit_server)
-        result = fn("pad_clearances", pcb_path=pcb_file)
-        assert result["violation_count"] == 3
-        assert result["footprint_pairs_affected"] == 2
-        assert result["footprint_pair_summary"][0]["min_gap_mm"] == 0.05
+        def pad(x0, y0, x1, y1):
+            return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+
+        a = pad(-1, 0, 0, 1)                                  # right edge at x=0
+        assert gap(a, pad(0.5, 0, 1.5, 1)) == 0.5            # separated by 0.5mm
+        assert gap(a, pad(0.0, 0, 1.0, 1)) == 0.0            # touching -> 0
+        assert gap(a, pad(-0.5, 0, 0.5, 1)) < 0             # penetrating -> negative
+        assert gap(a, pad(0.1, 0, 1.1, 1)) < 0.2            # below 0.2 -> violation
+        assert not (gap(a, pad(0.2, 0, 1.2, 1)) < 0.2)      # AT 0.2: strict < -> not
+        assert not (gap(a, pad(0.3, 0, 1.3, 1)) < 0.2)      # above -> not
+
+    def test_pad_gap_diverges_from_signed_gap_mm_when_nested(self):
+        """pad_signed_gap deliberately differs from geometry.signed_gap_mm for a
+        box nested inside another: overlap EXTENT vs move-to-clear DISTANCE. Pin
+        the seam with a test rather than silently unifying two look-alike formulas."""
+        from kicad_mcp.tools.pcb_keepout import PAD_GAP_HELPER
+        from kicad_mcp.utils.geometry import GEOMETRY_HELPER
+        ns: dict = {}
+        exec(PAD_GAP_HELPER, ns)
+        exec(GEOMETRY_HELPER, ns)
+        a = {"x0": 0, "y0": 0, "x1": 10, "y1": 10}
+        b = {"x0": 4, "y0": 4, "x1": 6, "y1": 6}
+        a_rect = {"x_min_mm": 0, "y_min_mm": 0, "x_max_mm": 10, "y_max_mm": 10}
+        b_rect = {"x_min_mm": 4, "y_min_mm": 4, "x_max_mm": 6, "y_max_mm": 6}
+        assert ns["pad_signed_gap"](a, b) == -2.0            # overlap extent
+        assert ns["signed_gap_mm"](a_rect, b_rect) == -6.0   # separation distance
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_pad_overlap_detected(self, mock_run, audit_server, pcb_file):
