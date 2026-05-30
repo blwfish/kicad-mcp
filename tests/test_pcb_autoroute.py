@@ -18,6 +18,8 @@ from kicad_mcp.tools.pcb_autoroute import (
     _autoroute_jobs,
     _autoroute_lock,
     _cleanup_stale_jobs,
+    _parse_freerouter_incomplete,
+    _freerouter_pass_key,
     MAX_CONCURRENT_JOBS,
 )
 
@@ -36,6 +38,59 @@ def pcb_file(tmp_path):
     pcb = tmp_path / "test.kicad_pcb"
     pcb.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
     return str(pcb)
+
+
+class TestParseFreerouterIncomplete:
+    """Unparsed output must be distinguishable from a real zero (m-freerouter-count)."""
+
+    def test_zero_connections_not_found(self):
+        assert _parse_freerouter_incomplete("0 connections not found") == 0
+
+    def test_nonzero_connections_not_found(self):
+        assert _parse_freerouter_incomplete("3 connections not found") == 3
+
+    def test_incomplete_pattern(self):
+        assert _parse_freerouter_incomplete("routing done\n5 incomplete") == 5
+
+    def test_no_match_returns_none_not_zero(self):
+        # The whole point: an unrecognized format must NOT look like a perfect 0.
+        assert _parse_freerouter_incomplete("Routing finished successfully!") is None
+
+    def test_empty_returns_none(self):
+        assert _parse_freerouter_incomplete("") is None
+
+    def test_connections_pattern_takes_priority(self):
+        # Both patterns present; the higher-priority one (connections-not-found) wins.
+        out = "9 incomplete\n2 connections not found"
+        assert _parse_freerouter_incomplete(out) == 2
+
+    def test_last_matching_line_wins(self):
+        out = "5 connections not found\n1 connections not found"
+        assert _parse_freerouter_incomplete(out) == 1
+
+
+class TestFreerouterPassKey:
+    """Best-pass ranking: parsed (incl. 0) beats unparsed; fewer incomplete wins."""
+
+    def test_parsed_zero_beats_unparsed(self):
+        assert _freerouter_pass_key(0) < _freerouter_pass_key(None)
+
+    def test_parsed_nonzero_beats_unparsed(self):
+        # A pass with 7 incomplete is still preferable to one we couldn't parse.
+        assert _freerouter_pass_key(7) < _freerouter_pass_key(None)
+
+    def test_fewer_incomplete_wins_among_parsed(self):
+        assert _freerouter_pass_key(0) < _freerouter_pass_key(3)
+
+    def test_two_unparsed_tie(self):
+        assert _freerouter_pass_key(None) == _freerouter_pass_key(None)
+
+    def test_min_selects_genuine_zero_over_unparsed(self):
+        # Simulate best-pass selection across passes: an unparsed pass appearing
+        # first must NOT shadow a later pass that genuinely routed everything.
+        passes = [None, 0]  # pass 1 unparsed, pass 2 fully routed
+        best = min(passes, key=_freerouter_pass_key)
+        assert best == 0
 
 
 @pytest.fixture(autouse=True)
