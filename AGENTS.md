@@ -38,3 +38,25 @@ It flags new helperless boundary logic and new tautological boundary tests.
 Pre-existing violations are grandfathered in `scripts/testability_baseline.json`;
 extracting one ratchets the count down. Refresh after an intentional change with
 `--update-baseline`.
+
+## Report which guarantee you hold — don't let "verified E2E" stand in for "tested"
+
+When you report a change as done, name *which* guarantee you actually have. They
+are different, and a green golden-harness run is only the first:
+
+- **"works on this input"** — an end-to-end / integration run passed on a
+  specific board or fixture (e.g. "`build_pcb_from_schematic` routes
+  0-unconnected on the speed-cal config"). This proves the pipeline works *today,
+  on that input*. It does **not** prove the logic is pinned against regression.
+- **"logic pinned against regression"** — the decision logic has an in-process
+  unit test that fails if the logic changes (a `*_HELPER` exec-tested at its
+  boundaries — see `docs/BOUNDARY_OPS.md`). This is what catches a dropped field
+  or a `<` → `<=` flip that *still routes*.
+
+Say the one you have. If you only ran E2E, write "works on input X", not
+"tested" / "verified" unqualified.
+
+This is checkable, not just etiquette: if `scripts/audit_testability.py` reports
+the logic as helperless boundary logic, or its test as a tautological boundary
+mock, you cannot honestly claim "pinned against regression" for it — there is no
+in-process test that reaches it.
