@@ -115,6 +115,20 @@ def test_from_dict_to_dict_identity():
     i = _intent()
     assert to_dict(from_dict(to_dict(i))) == to_dict(i)
 
+
+def test_from_dict_drops_unknown_fields():
+    """from_dict promises forward-compat: a newer doc with extra fields loads,
+    silently dropping the unknowns, instead of raising TypeError on cls(**d)
+    (a v4 schema or a typo'd hand-edited key must not crash load_intent)."""
+    doc = to_dict(_intent())
+    doc["mcu"]["future_v4_field"] = 123                      # unknown key on the mcu
+    if doc.get("peripherals"):
+        doc["peripherals"][0]["unexpected_key"] = True
+    if doc.get("nets") and doc["nets"][0].get("endpoints"):
+        doc["nets"][0]["endpoints"][0]["alien"] = 9
+    intent = from_dict(doc)                                  # raised TypeError before the fix
+    assert "future_v4_field" not in to_dict(intent)["mcu"]   # unknown was dropped
+
 def test_merge_preserves_user_items_and_resolved_gaps():
     fresh = _intent()
     existing = _intent()
