@@ -4,6 +4,7 @@ The MCP23017 address→strap bit mapping is the highest silent-wrong risk, so it
 gets at/below/above boundary coverage (CLAUDE.md threshold rule)."""
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,14 @@ from kicad_mcp.utils.firmware.templates import (
     RefAllocator,
     decoupling,
     expand_intent,
+    i2c_device_header,
     i2c_pullups,
+    i2s_mic,
+    i2s_output_amps,
     mcp23017_config,
     mcu_straps,
     power_tree,
+    uart_device_header,
     usb_programming,
 )
 
@@ -164,6 +169,101 @@ def test_usb_uart_crossover():
 def test_usb_joins_en_and_boot():
     ex = usb_programming(_intent(), RefAllocator(_intent()))
     assert {name for name, _ in ex.joins} == {"MCU_EN", "MCU_BOOT"}
+
+
+# --- bus-driven audio templates (axis 5) -------------------------------------
+
+_AUDIO = """\
+#define CMCA_I2S_BCLK 15
+#define CMCA_I2S_LRC 16
+#define CMCA_I2S_DIN 17
+#define CMCA_I2S2_BCLK 35
+#define CMCA_I2S2_LRC 36
+#define CMCA_I2S2_DIN 37
+#define CMCA_OLED_SDA 47
+#define CMCA_OLED_SCL 48
+#define CMCA_OLED_ADDR 0x3C
+#define CMCA_PRESENCE_RX_PIN 18
+#define CMCA_PRESENCE_TX_PIN 21
+#define CMCA_MIC_BCLK 8
+#define CMCA_MIC_WS 9
+#define CMCA_MIC_SD 10
+"""
+
+def _audio():
+    return build_intent(partition(parse_defines(_AUDIO)),
+                        firmware_path="a.h", board_id="esp32-s3-devkitc-1")
+
+
+def test_i2s_output_amps_stereo_pairs():
+    i = _audio()
+    ex = i2s_output_amps(i, RefAllocator(i))
+    amps = [c for c in ex.components if c.type == "MAX98357A"]
+    assert len(amps) == 4                       # 2 I2S-out buses x L/R
+    spk = [c for c in ex.components if c.value.startswith("SPK")]
+    assert len(spk) == 4                        # one speaker header per channel
+    # shared BCLK net joins the MCU + both amps of bus 0
+    assert len([ep for name, ep in ex.joins if name == "I2S0_BCLK"]) == 3
+
+def test_i2s_amp_sd_mode_straps():
+    i = _audio()
+    ex = i2s_output_amps(i, RefAllocator(i))
+    sd = K.MAX98357A["sd_mode"]
+    rails = {rail for rail, ep in ex.power if ep.pin == sd}
+    assert rails == {"GND", "+3V3"}             # L->GND, R->+3V3
+
+def test_i2s_mic_instantiated():
+    i = _audio()
+    ex = i2s_mic(i, RefAllocator(i))
+    assert [c.type for c in ex.components].count("SPH0645") == 1
+    nets = {n.name for n in ex.new_nets}
+    assert {"MIC_BCLK", "MIC_WS", "MIC_SD"} <= nets
+
+def test_i2c_device_header_with_pullups():
+    i = _audio()
+    ex = i2c_device_header(i, RefAllocator(i))
+    assert any(c.value.startswith("I2C") for c in ex.components)   # the header
+    assert len([c for c in ex.components if c.value == "4.7k"]) == 2
+
+def test_uart_device_header():
+    i = _audio()
+    ex = uart_device_header(i, RefAllocator(i))
+    assert any(c.value.startswith("UART") for c in ex.components)
+    assert {n.name for n in ex.new_nets} == {"UART0_RX", "UART0_TX"}
+
+def test_usb_programming_skipped_for_native_usb():
+    # ESP32-S3 has native USB -> no CP2102 bridge.
+    assert usb_programming(_audio(), RefAllocator(_audio())).components == []
+
+def test_audio_expand_grows_board():
+    i = expand_intent(_audio())
+    types = Counter(p.type for p in i.peripherals)
+    assert types["MAX98357A"] == 4 and types["SPH0645"] == 1
+    assert i.mcu.part == "ESP32-S3-WROOM-1"
+
+
+# --- KiCad-gated audio E2E ---------------------------------------------------
+
+def test_generate_audio_board(tmp_path):
+    if not _kicad_available():
+        pytest.skip("KiCad symbol libraries not available")
+    from kicad_mcp.utils.firmware.generate import generate_schematic
+    from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+
+    intent = expand_intent(_audio())
+    out = tmp_path / "audio.kicad_sch"
+    res = generate_schematic(intent, str(out))
+    assert res["status"] == "ok" and not res["unresolved_endpoints"]
+
+    nl = extract_netlist_via_cli(str(out))
+    def refs_on(net):
+        return {x["component"] for x in nl["nets"].get(net, [])}
+    from collections import Counter as _C
+    vals = _C(c.get("value") for c in nl["components"].values())
+    assert vals["MAX98357A"] == 4 and vals["ESP32-S3-WROOM-1"] == 1
+    # I2S bus 0 joins the MCU (U1) and two amps; +3V3 powers the MCU
+    assert "U1" in refs_on("I2S0_BCLK") and len(refs_on("I2S0_BCLK")) == 3
+    assert "U1" in refs_on("+3V3")
 
 
 # --- expansion pass -----------------------------------------------------------

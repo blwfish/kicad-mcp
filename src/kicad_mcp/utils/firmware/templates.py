@@ -220,8 +220,8 @@ def usb_programming(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     if intent.mcu is None:
         return ex
     mi = K.resolve_mcu_by_part(intent.mcu.part)
-    if mi is None:
-        return ex
+    if mi is None or mi["native_usb"]:
+        return ex  # native-USB MCUs (ESP32-S3/C3) need no CP2102 bridge
     mcu = intent.mcu.ref
 
     cp = Peripheral(ref=alloc.next("U"), type="CP2102", lib_id=K.CP2102_LIB,
@@ -280,12 +280,176 @@ def usb_programming(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+def _header(alloc: RefAllocator, hdr: tuple[str, str], value: str) -> Peripheral:
+    return Peripheral(ref=alloc.next("J"), type="HDR", lib_id=hdr[0], value=value,
+                      footprint=hdr[1], origin="template")
+
+
+def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Each I2S-output bus -> a stereo MAX98357A pair (L/R) with shared BCLK/LRC,
+    per-channel DIN via 1kΩ isolators, SD_MODE channel straps (L→GND, R→+3V3),
+    decoupling, and a 2-pin speaker header per channel. GAIN is left at the 9 dB
+    Hi-Z default (the GAIN GPIO stays a flagged orphan)."""
+    ex = Expansion()
+    if intent.mcu is None:
+        return ex
+    mcu = intent.mcu.ref
+    M = K.MAX98357A
+    idx = 0
+    for bus in intent.buses:
+        if bus.type != "I2S_OUT":
+            continue
+        bclk_g = bus.signals.get("BCLK")
+        lrc_g = bus.signals.get("LRC") or bus.signals.get("WS")
+        din_g = bus.signals.get("DIN")
+        if bclk_g is None or lrc_g is None or din_g is None:
+            continue
+        b_net, l_net, d_net = f"I2S{idx}_BCLK", f"I2S{idx}_LRC", f"I2S{idx}_DIN"
+        # MCU drives the shared clocks + data bus.
+        ex.joins += [(b_net, Endpoint(ref=mcu, gpio=bclk_g)),
+                     (l_net, Endpoint(ref=mcu, gpio=lrc_g)),
+                     (d_net, Endpoint(ref=mcu, gpio=din_g))]
+        for side, sd_rail in (("L", "GND"), ("R", "+3V3")):
+            amp = Peripheral(ref=alloc.next("U"), type="MAX98357A", lib_id=M["lib_id"],
+                             value="MAX98357A", footprint=M["footprint"], origin="template")
+            ex.components.append(amp)
+            for p in K.MAX98357A_VDD_PINS:
+                ex.power.append(("+3V3", Endpoint(ref=amp.ref, pin=p)))
+            for p in K.MAX98357A_GND_PINS:
+                ex.power.append(("GND", Endpoint(ref=amp.ref, pin=p)))
+            ex.power.append((sd_rail, Endpoint(ref=amp.ref, pin=M["sd_mode"])))
+            ex.joins += [(b_net, Endpoint(ref=amp.ref, pin=M["bclk"])),
+                         (l_net, Endpoint(ref=amp.ref, pin=M["lrclk"]))]
+            # DIN via a 1k series isolator (MCU DIN bus -> R -> this amp's DIN).
+            r = _res(alloc, "1k", K.FP_R_0603)
+            ex.components.append(r)
+            ex.joins.append((d_net, Endpoint(ref=r.ref, pin="1")))
+            ex.new_nets.append(_passive_net(f"I2S{idx}{side}_DIN",
+                Endpoint(ref=r.ref, pin="2"), Endpoint(ref=amp.ref, pin=M["din"])))
+            # speaker header
+            spk = _header(alloc, K.HDR_1X2, f"SPK{idx}{side}")
+            ex.components.append(spk)
+            ex.new_nets += [
+                _passive_net(f"SPK{idx}{side}_P", Endpoint(ref=amp.ref, pin=M["outp"]),
+                             Endpoint(ref=spk.ref, pin="1")),
+                _passive_net(f"SPK{idx}{side}_N", Endpoint(ref=amp.ref, pin=M["outn"]),
+                             Endpoint(ref=spk.ref, pin="2")),
+            ]
+        # decoupling for the amp-pair supply
+        cb, cbu = _cap(alloc, "100nF", K.FP_C_BYPASS), _cap(alloc, "10uF", K.FP_C_BULK)
+        ex.components += [cb, cbu]
+        for c in (cb, cbu):
+            ex.power += [("+3V3", Endpoint(ref=c.ref, pin="1")),
+                         ("GND", Endpoint(ref=c.ref, pin="2"))]
+        idx += 1
+    return ex
+
+
+def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Each I2S-input bus -> an SPH0645 MEMS mic (SEL→GND, VDD bypass)."""
+    ex = Expansion()
+    if intent.mcu is None:
+        return ex
+    mcu = intent.mcu.ref
+    S = K.SPH0645
+    for bus in intent.buses:
+        if bus.type != "I2S_IN":
+            continue
+        bclk_g = bus.signals.get("BCLK")
+        ws_g = bus.signals.get("WS") or bus.signals.get("LRC")
+        sd_g = bus.signals.get("SD") or bus.signals.get("DOUT")
+        if bclk_g is None or ws_g is None or sd_g is None:
+            continue
+        mic = Peripheral(ref=alloc.next("MK"), type="SPH0645", lib_id=S["lib_id"],
+                         value="SPH0645LM4H", footprint=S["footprint"], origin="template")
+        c = _cap(alloc, "100nF", K.FP_C_BYPASS)
+        ex.components += [mic, c]
+        ex.power += [("+3V3", Endpoint(ref=mic.ref, pin=S["vdd"])),
+                     ("GND", Endpoint(ref=mic.ref, pin=S["gnd"])),
+                     ("GND", Endpoint(ref=mic.ref, pin=S["sel"])),  # SEL low = left
+                     ("+3V3", Endpoint(ref=c.ref, pin="1")),
+                     ("GND", Endpoint(ref=c.ref, pin="2"))]
+        ex.new_nets += [
+            _passive_net("MIC_BCLK", Endpoint(ref=mcu, gpio=bclk_g), Endpoint(ref=mic.ref, pin=S["bclk"])),
+            _passive_net("MIC_WS", Endpoint(ref=mcu, gpio=ws_g), Endpoint(ref=mic.ref, pin=S["ws"])),
+            _passive_net("MIC_SD", Endpoint(ref=mcu, gpio=sd_g), Endpoint(ref=mic.ref, pin=S["data"])),
+        ]
+    return ex
+
+
+def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Each I2C bus with no recognized IC -> a 4-pin module header
+    (GND/VCC/SCL/SDA) + 4.7k pull-ups. Covers the OLED and any unknown I2C
+    module."""
+    ex = Expansion()
+    if intent.mcu is None:
+        return ex
+    mcu = intent.mcu.ref
+    n = 0
+    for bus in intent.buses:
+        if bus.type != "I2C":
+            continue
+        sda_g, scl_g = bus.signals.get("SDA"), bus.signals.get("SCL")
+        if sda_g is None or scl_g is None:
+            continue
+        j = _header(alloc, K.HDR_1X4, f"I2C{n}")
+        r_sda, r_scl = _res(alloc, "4.7k", K.FP_R_0603), _res(alloc, "4.7k", K.FP_R_0603)
+        ex.components += [j, r_sda, r_scl]
+        ex.power += [("GND", Endpoint(ref=j.ref, pin="1")),
+                     ("+3V3", Endpoint(ref=j.ref, pin="2")),
+                     ("+3V3", Endpoint(ref=r_sda.ref, pin="2")),
+                     ("+3V3", Endpoint(ref=r_scl.ref, pin="2"))]
+        scl_net, sda_net = f"I2C{n}_SCL", f"I2C{n}_SDA"
+        ex.new_nets += [
+            _passive_net(scl_net, Endpoint(ref=mcu, gpio=scl_g),
+                         Endpoint(ref=j.ref, pin="3"), Endpoint(ref=r_scl.ref, pin="1")),
+            _passive_net(sda_net, Endpoint(ref=mcu, gpio=sda_g),
+                         Endpoint(ref=j.ref, pin="4"), Endpoint(ref=r_sda.ref, pin="1")),
+        ]
+        n += 1
+    return ex
+
+
+def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Each UART bus -> a 4-pin module header (GND/VCC/TX/RX) + bypass.
+    Header TX -> MCU RX, header RX <- MCU TX (crossover)."""
+    ex = Expansion()
+    if intent.mcu is None:
+        return ex
+    mcu = intent.mcu.ref
+    n = 0
+    for bus in intent.buses:
+        if bus.type != "UART":
+            continue
+        rx_g = bus.signals.get("RX") or bus.signals.get("RXD")
+        tx_g = bus.signals.get("TX") or bus.signals.get("TXD")
+        if rx_g is None or tx_g is None:
+            continue
+        j = _header(alloc, K.HDR_1X4, f"UART{n}")
+        c = _cap(alloc, "100nF", K.FP_C_BYPASS)
+        ex.components += [j, c]
+        ex.power += [("GND", Endpoint(ref=j.ref, pin="1")),
+                     ("+3V3", Endpoint(ref=j.ref, pin="2")),
+                     ("+3V3", Endpoint(ref=c.ref, pin="1")),
+                     ("GND", Endpoint(ref=c.ref, pin="2"))]
+        ex.new_nets += [
+            _passive_net(f"UART{n}_RX", Endpoint(ref=mcu, gpio=rx_g), Endpoint(ref=j.ref, pin="3")),
+            _passive_net(f"UART{n}_TX", Endpoint(ref=mcu, gpio=tx_g), Endpoint(ref=j.ref, pin="4")),
+        ]
+        n += 1
+    return ex
+
+
 _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] = [
     ("power_tree", power_tree),
     ("decoupling", decoupling),
     ("i2c_pullups", i2c_pullups),
     ("mcu_straps", mcu_straps),
     ("usb_programming", usb_programming),
+    ("i2s_output_amps", i2s_output_amps),
+    ("i2s_mic", i2s_mic),
+    ("i2c_device_header", i2c_device_header),
+    ("uart_device_header", uart_device_header),
     ("mcp23017_config", mcp23017_config),
 ]
 

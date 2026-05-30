@@ -25,6 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "firmware"
 CONFIG_H = FIXTURE / "config.h"
+AUDIO_CONFIG_H = FIXTURE / "audio_s3" / "config.h"
 
 _MINIMAL_PRO = {
     "board": {"design_settings": {}},
@@ -98,3 +99,46 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     assert "U1" in refs_on("GND")
     # I2C bus joins the ESP32 (U1) and the MCP23017 (U3).
     assert {"U1", "U3"} <= refs_on("I2C_SDA")
+
+
+def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
+    """The SECOND board shape: an ESP32-S3 audio node (CMCA_* naming, I2S amp
+    buses, #if target block). Exercises the generalized recognition +
+    bus-driven templates end to end."""
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "audio.kicad_sch"
+    pro = tmp_path / "audio.kicad_pro"
+
+    r1 = design(operation="import_firmware", firmware_path=str(AUDIO_CONFIG_H),
+                out_path=str(intent))
+    assert r1["status"] == "ok"
+    assert r1["board"] == "esp32-s3-devkitc-1"          # multi-board= prefers S3
+    assert r1["summary"]["mcu"] == "ESP32-S3-WROOM-1"
+
+    r2 = design(operation="expand_templates", intent_path=str(intent))
+    assert r2["status"] == "ok"
+
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    r4 = build(project_path=str(pro), board_width_mm=110, board_height_mm=90,
+               autoroute_passes=2, export_gerbers=False)
+    assert r4["status"] == "ok"
+    assert r4["pads_assigned"] > 0
+    assert r4["incomplete_nets"] == 0                    # conflict-free fixture routes fully
+    assert r4["steps"]["zones"]["zones_added"] >= 1
+
+    from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+    nl = extract_netlist_via_cli(str(sch))
+    vals = [c.get("value") for c in nl["components"].values()]
+    assert vals.count("MAX98357A") == 4                 # two stereo amp pairs
+    assert vals.count("SPH0645LM4H") == 1
+
+    def refs_on(net):
+        return {x["component"] for x in nl["nets"].get(net, [])}
+    assert "U1" in refs_on("+3V3")                       # S3 powered
+    assert len(refs_on("I2S0_BCLK")) == 3               # MCU + 2 amps share the clock
