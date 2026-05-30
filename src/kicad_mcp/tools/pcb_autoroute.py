@@ -27,6 +27,7 @@ from kicad_mcp.utils.keepout_helpers import (
     KEEPOUT_HELPER,
     COURTYARD_BBOX_HELPER,
     COURTYARD_BBOX_TUPLE_HELPER,
+    NUDGE_PLACEMENT_HELPER,
 )
 
 logger = logging.getLogger(__name__)
@@ -612,75 +613,16 @@ params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
 
-""" + COURTYARD_BBOX_TUPLE_HELPER + """
+""" + COURTYARD_BBOX_TUPLE_HELPER + NUDGE_PLACEMENT_HELPER + """
 
-outline = None
-for dwg in board.GetDrawings():
-    layer_name = board.GetLayerName(dwg.GetLayer())
-    if layer_name == _EDGE_CUTS_LAYER:
-        bbox = dwg.GetBoundingBox()
-        if outline is None:
-            outline = [pcbnew.ToMM(bbox.GetX()), pcbnew.ToMM(bbox.GetY()),
-                       pcbnew.ToMM(bbox.GetRight()), pcbnew.ToMM(bbox.GetBottom())]
-        else:
-            outline[0] = min(outline[0], pcbnew.ToMM(bbox.GetX()))
-            outline[1] = min(outline[1], pcbnew.ToMM(bbox.GetY()))
-            outline[2] = max(outline[2], pcbnew.ToMM(bbox.GetRight()))
-            outline[3] = max(outline[3], pcbnew.ToMM(bbox.GetBottom()))
-
-moved = []
-unfixable = []
-for _pass in range(3):
-    fp_list = list(board.GetFootprints())
-    moved_this_pass = 0
-    for i in range(len(fp_list)):
-        a = fp_list[i]; a_box = get_courtyard_bbox(a)
-        if not a_box: continue
-        for j in range(i + 1, len(fp_list)):
-            b = fp_list[j]; b_box = get_courtyard_bbox(b)
-            if not b_box: continue
-            # Check overlap
-            if a_box[0] >= b_box[2] or a_box[2] <= b_box[0] or a_box[1] >= b_box[3] or a_box[3] <= b_box[1]:
-                continue
-            # Overlap found — nudge the less-connected one
-            a_ref = a.GetReference(); b_ref = b.GetReference()
-            if signal_net_count(a) < signal_net_count(b):
-                mover, mover_box, static_box = a, a_box, b_box
-                mover_ref = a_ref
-            else:
-                mover, mover_box, static_box = b, b_box, a_box
-                mover_ref = b_ref
-            # Calculate minimum nudge
-            dx_right = static_box[2] - mover_box[0] + spacing
-            dx_left = mover_box[2] - static_box[0] + spacing
-            dy_down = static_box[3] - mover_box[1] + spacing
-            dy_up = mover_box[3] - static_box[1] + spacing
-            nudge = min(dx_right, dx_left, dy_down, dy_up)
-            if nudge == dx_right:
-                dx, dy = nudge, 0
-            elif nudge == dx_left:
-                dx, dy = -nudge, 0
-            elif nudge == dy_down:
-                dx, dy = 0, nudge
-            else:
-                dx, dy = 0, -nudge
-            pos = mover.GetPosition()
-            new_x = pcbnew.ToMM(pos.x) + dx
-            new_y = pcbnew.ToMM(pos.y) + dy
-            mover.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(new_x), pcbnew.FromMM(new_y)))
-            moved.append(mover_ref)
-            moved_this_pass += 1
-    if moved_this_pass == 0:
-        break
-
+move_count, moved = nudge_overlapping_footprints(board, spacing, 3)
 if moved:
     board.Save(params["pcb_path"])
 
 print(json.dumps({
     "status": "ok",
     "components_moved": len(set(moved)),
-    "moved": list(set(moved)),
-    "unfixable": unfixable,
+    "moved": sorted(set(moved)),
 }))
 """
     return run_pcbnew_script(script, params={
