@@ -823,10 +823,15 @@ def register_schematic_router(mcp: FastMCP) -> None:
                 if len(position) != 2:
                     return {"error": "position must be [x, y]"}
                 label.position = tuple(position)
-            # rotation and size use 0.0/1.27 defaults — only apply if caller passes them explicitly
-            # We rely on the source tool's pattern: caller passes non-default to update
-            label.rotation = rotation
-            label.size = size
+            # rotation/size carry 0.0/1.27 defaults; apply ONLY when the caller
+            # passed a non-default — matching the modification check above. Without
+            # this guard a text-only edit silently reset rotation to 0 and size to
+            # 1.27 (h-edit-label). Setting them to *exactly* the defaults is not
+            # expressible — a known sentinel limitation (l-edit-label).
+            if rotation != 0.0:
+                label.rotation = rotation
+            if size != 1.27:
+                label.size = size
             return {
                 "status": "ok",
                 "label_uuid": label_uuid,
