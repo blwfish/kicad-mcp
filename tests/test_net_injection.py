@@ -8,11 +8,15 @@ byte-identical test proves the two call paths agree.
 """
 
 from kicad_mcp.tools.pcb_nets import _op_add_net
+import pytest
+
 from kicad_mcp.utils.net_injection import (
+    escape_net_name,
     existing_net_codes,
     find_net_insert_pos,
     format_net_line,
     inject_net_definitions,
+    unescape_net_name,
 )
 
 # A board with the conventional (net 0 "") sentinel + two named nets.
@@ -156,3 +160,48 @@ def test_both_paths_agree_on_fresh_k10_fallback():
     assert seq == bulk
     assert '(net 1 "GND")' in bulk
     assert '(net 2 "VCC")' in bulk
+
+
+# -- S-expression escaping (m-pipeline-escape) -------------------------------
+
+class TestNetNameEscaping:
+    """Externally-authored net labels (kicad-cli netlists) may contain `"` or
+    `\\`. The injector must write them safely by construction, not corrupt the
+    .kicad_pcb. format_net_line escapes; existing_net_codes decodes; the two
+    must round-trip."""
+
+    @pytest.mark.parametrize("name", [
+        "GND", "+3V3", "BUS_A",            # clean names: escaping is a no-op
+        'BUS"A',                            # embedded quote
+        "PATH\\X",                          # embedded backslash
+        'A"B\\C',                           # both
+        '\\"',                              # adjacent escapes (backslash + quote)
+        '""',                               # two quotes
+    ])
+    def test_escape_unescape_round_trip(self, name):
+        assert unescape_net_name(escape_net_name(name)) == name
+
+    def test_clean_name_unchanged(self):
+        assert escape_net_name("SDA") == "SDA"
+        assert format_net_line(3, "SDA") == '\n\t(net 3 "SDA")'
+
+    def test_embedded_quote_is_escaped_in_line(self):
+        line = format_net_line(7, 'BUS"A')
+        assert line == '\n\t(net 7 "BUS\\"A")'
+        # The quotes in the written line must be balanced (no corruption).
+        assert line.count('"') - line.count('\\"') == 2
+
+    def test_injection_with_quote_round_trips_via_existing_codes(self):
+        """Inject a malicious name, then read it back: the in-memory name must
+        equal the original raw label, proving file<->memory is a matched pair."""
+        out = inject_net_definitions(PCB_WITH_NETS, [(3, 'BUS"A')])
+        assert out is not None
+        codes = existing_net_codes(out)
+        assert (3, 'BUS"A') in codes
+        # And the pre-existing clean nets are still intact.
+        assert (1, "GND") in codes and (2, "VCC") in codes
+
+    def test_backslash_name_round_trips(self):
+        out = inject_net_definitions(PCB_FRESH_K10, [(1, "NET\\1")])
+        assert out is not None
+        assert (1, "NET\\1") in existing_net_codes(out)

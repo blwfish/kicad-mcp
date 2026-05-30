@@ -56,14 +56,35 @@ def find_net_insert_pos(pcb_content: str) -> Optional[int]:
     return pos
 
 
+def escape_net_name(net_name: str) -> str:
+    """Encode a net name for an S-expression quoted string.
+
+    Backslash first (so it doesn't double-escape the quote's introducer), then
+    the double-quote. Inverse of :func:`unescape_net_name`. This is what makes
+    every injector safe by construction: an externally-authored label like
+    ``BUS"A`` (from a kicad-cli netlist) is written as ``BUS\\"A`` instead of
+    corrupting the ``.kicad_pcb`` with an unbalanced quote.
+    """
+    return net_name.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def unescape_net_name(raw: str) -> str:
+    """Decode the body of an S-expression quoted string back to a raw name.
+
+    Single left-to-right pass (``\\X`` -> ``X``) so adjacent escapes like
+    ``\\\\\\"`` decode correctly; the exact inverse of :func:`escape_net_name`.
+    """
+    return re.sub(r"\\(.)", r"\1", raw)
+
+
 def format_net_line(net_code: int, net_name: str) -> str:
     """Format one net definition exactly as it is written into a ``.kicad_pcb``.
 
     The leading ``\\n\\t`` makes the inserted line stand on its own, indented to
-    match the top-level net block. Callers are responsible for ensuring
-    ``net_name`` needs no further S-expression escaping.
+    match the top-level net block. ``net_name`` is S-expression-escaped here so
+    callers never have to — a name needing no escaping is written unchanged.
     """
-    return f'\n\t(net {net_code} "{net_name}")'
+    return f'\n\t(net {net_code} "{escape_net_name(net_name)}")'
 
 
 def inject_net_definitions(
@@ -96,5 +117,7 @@ def existing_net_codes(pcb_content: str) -> List[Tuple[int, str]]:
     """
     out: List[Tuple[int, str]] = []
     for m in re.finditer(r'\(net\s+(\d+)\s+"((?:[^"\\]|\\.)*)"\)', pcb_content):
-        out.append((int(m.group(1)), m.group(2)))
+        # Decode S-expression escapes so the in-memory name round-trips with
+        # what format_net_line wrote (raw representation everywhere in memory).
+        out.append((int(m.group(1)), unescape_net_name(m.group(2))))
     return out
