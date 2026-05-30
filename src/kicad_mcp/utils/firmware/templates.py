@@ -202,11 +202,90 @@ def mcp23017_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+def _passive_net(name: str, *endpoints: Endpoint) -> Net:
+    return Net(name=name, kind="passive", confidence="high", origin="template",
+               endpoints=list(endpoints))
+
+
+def usb_programming(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """USB-C + CP2102 programming block — makes the board flashable. Powers it
+    from USB (VBUS→+5V, giving the +5V rail its source), and gives the MCU a
+    UART console + auto-reset + boot/reset buttons. Fires for an ESP32.
+
+    Landmines (verified): CP2102 VDD (pin 6) is the chip's LDO OUTPUT — it gets a
+    bypass cap on its OWN net, never tied to +3V3. GND is on TWO pins (3 + EP 29)
+    — wired by number. Auto-reset is the v5 scheme: a 100nF couples DTR→EN, with
+    manual RESET/BOOT buttons (no transistors)."""
+    ex = Expansion()
+    if intent.mcu is None:
+        return ex
+    mi = K.resolve_mcu_by_part(intent.mcu.part)
+    if mi is None:
+        return ex
+    mcu = intent.mcu.ref
+
+    cp = Peripheral(ref=alloc.next("U"), type="CP2102", lib_id=K.CP2102_LIB,
+                    value="CP2102N", footprint=K.CP2102_FP, origin="template")
+    usb = Peripheral(ref=alloc.next("J"), type="USB_C", lib_id=K.USB_C_LIB,
+                     value="USB-C", footprint=K.USB_C_FP, origin="template")
+    r_cc1 = _res(alloc, "5.1k", K.FP_R_0603_5K1)
+    r_cc2 = _res(alloc, "5.1k", K.FP_R_0603_5K1)
+    sw_rst = Peripheral(ref=alloc.next("SW"), type="SW", lib_id=K.SW_PUSH_LIB,
+                        value="RESET", footprint=K.SW_PUSH_FP, origin="template")
+    sw_boot = Peripheral(ref=alloc.next("SW"), type="SW", lib_id=K.SW_PUSH_LIB,
+                         value="BOOT", footprint=K.SW_PUSH_FP, origin="template")
+    c_vreg = _cap(alloc, "10uF", K.FP_C_BULK)
+    c_vdd = _cap(alloc, "100nF", K.FP_C_BYPASS)
+    c_dtr = _cap(alloc, "100nF", K.FP_C_BYPASS)
+    ex.components += [cp, usb, r_cc1, r_cc2, sw_rst, sw_boot, c_vreg, c_vdd, c_dtr]
+
+    # Power: USB VBUS -> +5V (the rail's source); CP2102 VREGIN/VBUS <- +5V.
+    for vb in K.USB_C_VBUS_PINS:
+        ex.power.append(("+5V", Endpoint(ref=usb.ref, pin=vb)))
+    ex.power += [("+5V", Endpoint(ref=cp.ref, pin=K.CP2102_VREGIN)),
+                 ("+5V", Endpoint(ref=cp.ref, pin=K.CP2102_VBUS)),
+                 ("+5V", Endpoint(ref=c_vreg.ref, pin="1"))]
+    # Ground: USB GND, CP2102 GND (pin 3 + EP 29 by NUMBER), cap returns,
+    # CC resistor returns, switch returns.
+    for g in K.USB_C_GND_PINS:
+        ex.power.append(("GND", Endpoint(ref=usb.ref, pin=g)))
+    for g in K.CP2102_GND_PINS:
+        ex.power.append(("GND", Endpoint(ref=cp.ref, pin=g)))
+    ex.power += [("GND", Endpoint(ref=c_vreg.ref, pin="2")),
+                 ("GND", Endpoint(ref=c_vdd.ref, pin="2")),
+                 ("GND", Endpoint(ref=r_cc1.ref, pin="2")),
+                 ("GND", Endpoint(ref=r_cc2.ref, pin="2")),
+                 ("GND", Endpoint(ref=sw_rst.ref, pin="2")),
+                 ("GND", Endpoint(ref=sw_boot.ref, pin="2"))]
+
+    ex.new_nets += [
+        _passive_net("CC1", Endpoint(ref=usb.ref, pin=K.USB_C_CC1), Endpoint(ref=r_cc1.ref, pin="1")),
+        _passive_net("CC2", Endpoint(ref=usb.ref, pin=K.USB_C_CC2), Endpoint(ref=r_cc2.ref, pin="1")),
+        _passive_net("USB_DP", Endpoint(ref=usb.ref, pin=K.USB_C_DP), Endpoint(ref=cp.ref, pin=K.CP2102_DP)),
+        _passive_net("USB_DM", Endpoint(ref=usb.ref, pin=K.USB_C_DM), Endpoint(ref=cp.ref, pin=K.CP2102_DM)),
+        # CP2102 VDD is its LDO OUTPUT — bypass only, on its own net.
+        _passive_net("CP2102_VDD", Endpoint(ref=cp.ref, pin=K.CP2102_VDD_OUT), Endpoint(ref=c_vdd.ref, pin="1")),
+        # UART console crossover: CP2102 TXD -> MCU RX, CP2102 RXD <- MCU TX.
+        _passive_net("UART_RX", Endpoint(ref=cp.ref, pin=K.CP2102_TXD), Endpoint(ref=mcu, pin=mi["uart_rx_pin"])),
+        _passive_net("UART_TX", Endpoint(ref=cp.ref, pin=K.CP2102_RXD), Endpoint(ref=mcu, pin=mi["uart_tx_pin"])),
+        # Auto-reset coupling: DTR --100nF--> EN.
+        _passive_net("DTR", Endpoint(ref=cp.ref, pin=K.CP2102_DTR), Endpoint(ref=c_dtr.ref, pin="1")),
+    ]
+    # Join the EN / BOOT nets that mcu_straps created (pull-up resistors).
+    ex.joins += [
+        ("MCU_EN", Endpoint(ref=c_dtr.ref, pin="2")),     # DTR coupling cap
+        ("MCU_EN", Endpoint(ref=sw_rst.ref, pin="1")),    # RESET button
+        ("MCU_BOOT", Endpoint(ref=sw_boot.ref, pin="1")),  # BOOT button
+    ]
+    return ex
+
+
 _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] = [
     ("power_tree", power_tree),
     ("decoupling", decoupling),
     ("i2c_pullups", i2c_pullups),
     ("mcu_straps", mcu_straps),
+    ("usb_programming", usb_programming),
     ("mcp23017_config", mcp23017_config),
 ]
 

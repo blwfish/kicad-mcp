@@ -23,6 +23,7 @@ from kicad_mcp.utils.firmware.templates import (
     mcp23017_config,
     mcu_straps,
     power_tree,
+    usb_programming,
 )
 
 SPEEDCAL_CONFIG = Path(
@@ -120,6 +121,51 @@ def test_mcp23017_config_straps_for_0x27():
     assert {"A0", "A1", "A2", K.MCP23017_RESET_PIN} <= plus3_pins
 
 
+# --- CP2102 USB programming block (highest-landmine template) -----------------
+
+def test_usb_programming_parts():
+    ex = usb_programming(_intent(), RefAllocator(_intent()))
+    types = [c.type for c in ex.components]
+    assert types.count("CP2102") == 1 and types.count("USB_C") == 1
+    assert types.count("SW") == 2 and types.count("R") == 2 and types.count("C") == 3
+    assert all(c.footprint for c in ex.components)       # PCB-ready
+
+def test_usb_cp2102_vdd_isolated_not_3v3():
+    # LANDMINE: CP2102 VDD is the chip's LDO OUTPUT — must NOT join +3V3.
+    ex = usb_programming(_intent(), RefAllocator(_intent()))
+    cp = next(c for c in ex.components if c.type == "CP2102")
+    assert not any(ep.ref == cp.ref for rail, ep in ex.power if rail == "+3V3")
+    vdd = next(n for n in ex.new_nets if n.name == "CP2102_VDD")
+    assert any(e.ref == cp.ref and e.pin == "VDD" for e in vdd.endpoints)
+
+def test_usb_cp2102_dual_ground_pins():
+    # LANDMINE: GND is on pin 3 AND the EP pad pin 29 (both named "GND").
+    ex = usb_programming(_intent(), RefAllocator(_intent()))
+    cp = next(c for c in ex.components if c.type == "CP2102")
+    gnd = {(ep.ref, ep.pin) for rail, ep in ex.power if rail == "GND"}
+    assert (cp.ref, "3") in gnd and (cp.ref, "29") in gnd
+
+def test_usb_vbus_sources_5v():
+    ex = usb_programming(_intent(), RefAllocator(_intent()))
+    usb = next(c for c in ex.components if c.type == "USB_C")
+    p5 = {(ep.ref, ep.pin) for rail, ep in ex.power if rail == "+5V"}
+    assert all((usb.ref, vb) in p5 for vb in ("A4", "A9", "B4", "B9"))
+
+def test_usb_uart_crossover():
+    ex = usb_programming(_intent(), RefAllocator(_intent()))
+    cp = next(c for c in ex.components if c.type == "CP2102")
+    rx = next(n for n in ex.new_nets if n.name == "UART_RX")
+    tx = next(n for n in ex.new_nets if n.name == "UART_TX")
+    assert any(e.ref == cp.ref and e.pin == "TXD" for e in rx.endpoints)
+    assert any(e.ref == "U1" and e.pin == "RXD0/IO3" for e in rx.endpoints)
+    assert any(e.ref == cp.ref and e.pin == "RXD" for e in tx.endpoints)
+    assert any(e.ref == "U1" and e.pin == "TXD0/IO1" for e in tx.endpoints)
+
+def test_usb_joins_en_and_boot():
+    ex = usb_programming(_intent(), RefAllocator(_intent()))
+    assert {name for name, _ in ex.joins} == {"MCU_EN", "MCU_BOOT"}
+
+
 # --- expansion pass -----------------------------------------------------------
 
 def test_expand_grows_intent_and_resolves_gaps():
@@ -174,7 +220,7 @@ def test_generate_expanded_speedcal(tmp_path):
     out = tmp_path / "expanded.kicad_sch"
     res = generate_schematic(intent, str(out))
     assert res["status"] == "ok" and not res["unresolved_endpoints"]
-    assert res["components_placed"] >= 13               # 3 ICs + LDO + caps + R
+    assert res["components_placed"] >= 20               # 3 ICs + power + USB block
 
     nl = extract_netlist_via_cli(str(out))
     def members(name):
@@ -183,8 +229,15 @@ def test_generate_expanded_speedcal(tmp_path):
     p3, gnd, p5 = members("+3V3"), members("GND"), members("+5V")
     assert "U1.2" in p3                                  # ESP32 VDD on +3V3
     assert {"U1.1", "U1.15", "U1.38", "U1.39"} <= gnd   # all ESP32 GND pads
-    assert p5 == {"C1.1", "U4.3"}                        # +5V clean (LDO in + cap)
     # MCP 0x27 address straps + reset on +3V3 (pins 15/16/17/18)
     assert {"U3.15", "U3.16", "U3.17", "U3.18", "U3.9"} <= p3
     # the MCP_INT signal net is NOT polluted into a rail
     assert members("MCP23017_INT") == {"U1.16", "U3.20"}
+
+    # --- CP2102 programming block (U5=CP2102, J1=USB-C — deterministic refs) ---
+    assert {"J1.A4", "J1.A9", "J1.B4", "J1.B9", "U4.3"} <= p5  # +5V USB-sourced
+    assert "U5.6" not in p3                              # LANDMINE: CP2102 VDD not +3V3
+    assert "U5.6" in members("CP2102_VDD")              # ...it's on its own net
+    assert {"U5.3", "U5.29"} <= gnd                      # LANDMINE: both CP2102 GND pins
+    assert members("UART_RX") == {"U1.34", "U5.26"}     # CP2102 TXD -> ESP32 RX
+    assert members("UART_TX") == {"U1.35", "U5.25"}     # CP2102 RXD <- ESP32 TX

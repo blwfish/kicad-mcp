@@ -79,7 +79,11 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
             num = pin_number_by_name(sym, pin)
             if num is not None:
                 return num
-            return pin if str(pin).isdigit() else None
+            # else: pin may already be a literal pin NUMBER (e.g. "3", "A4").
+            # Validate against the symbol's real numbers — USB-C/QFN numbers are
+            # alphanumeric, so a digit check is not enough.
+            valid = {str(p.number) for p in (getattr(sym, "pins", None) or ())}
+            return str(pin) if str(pin) in valid else None
         if gpio is not None:                       # MCU side
             return gpio_to_pin_number(sym, int(gpio))
         ptype = type_by_ref.get(ref)               # peripheral side
