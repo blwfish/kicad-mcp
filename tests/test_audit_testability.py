@@ -211,6 +211,65 @@ def test_call_arg_assertions_are_not_tautological(src):
     assert at.find_tautological_tests(src) == []
 
 
+# --- detector 3: subprocess output parsed inline -----------------------------
+
+# Spawns a subprocess AND parses its output inline with an extraction loop.
+WELDED_SUBPROC = '''
+import subprocess, json
+def extract(path):
+    out = subprocess.run(["tool"], capture_output=True, text=True)
+    data = json.loads(out.stdout)
+    rows = []
+    for item in data["items"]:
+        rows.append({"id": item["id"]})
+    return rows
+'''
+
+# Spawns, but hands the raw text to a pure _parse(); neither function both
+# spawns AND parses-with-a-loop, so neither is flagged.
+DELEGATING_SUBPROC = '''
+import subprocess
+def extract(path):
+    out = subprocess.run(["tool"], capture_output=True, text=True)
+    return _parse(out.stdout)
+
+def _parse(text):
+    import json
+    data = json.loads(text)
+    return [{"id": item["id"]} for item in data["items"]]
+'''
+
+# Pure parser with a loop but no subprocess — the GOOD shape (testable in-process).
+PURE_PARSER_ONLY = '''
+def _parse(text):
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(text)
+    out = []
+    for comp in root.findall("comp"):
+        out.append(comp.get("ref"))
+    return out
+'''
+
+
+def test_subprocess_welded_parsing_is_flagged():
+    v = at.find_helperless_subprocess_parsing(WELDED_SUBPROC)
+    assert [s.func for s in v] == ["extract"]
+
+
+def test_subprocess_delegating_to_pure_parser_is_not_flagged():
+    # extract() spawns + delegates; _parse() parses but never spawns.
+    assert at.find_helperless_subprocess_parsing(DELEGATING_SUBPROC) == []
+
+
+def test_pure_parser_without_subprocess_is_not_flagged():
+    assert at.find_helperless_subprocess_parsing(PURE_PARSER_ONLY) == []
+
+
+def test_subprocess_parsing_syntax_error_is_surfaced():
+    v = at.find_helperless_subprocess_parsing("def broken(:\n    pass")
+    assert len(v) == 1 and v[0].parse_error
+
+
 def test_tautological_syntax_error_is_surfaced():
     v = at.find_tautological_tests("def test_x(:\n pass")
     assert len(v) == 1 and v[0].parse_error
@@ -218,29 +277,30 @@ def test_tautological_syntax_error_is_surfaced():
 
 # --- ratchet / baseline behavior ---------------------------------------------
 
-def _result(helperless_keys, tauto_keys):
+def _result(helperless_keys, tauto_keys, subproc_keys=()):
     return at.ScanResult(
         helperless={k: [at.BlockViolation(1, "x")] for k in helperless_keys},
         tautological={k: at.TautoViolation(k.split("::")[-1], 1, ["k"]) for k in tauto_keys},
         errors=[],
+        subprocess_parsing={k: at.SubprocViolation(k.split("::")[-1], 1) for k in subproc_keys},
     )
 
 
 def test_baseline_roundtrip_and_new_fixed(tmp_path):
     path = tmp_path / "baseline.json"
-    at.write_baseline(_result({"a.py"}, {"t.py::test_a"}), path)
+    at.write_baseline(_result({"a.py"}, {"t.py::test_a"}, {"m.py::extract"}), path)
 
-    base_h, base_t = at.load_baseline(path)
-    assert base_h == {"a.py"} and base_t == {"t.py::test_a"}
+    base_h, base_t, base_s = at.load_baseline(path)
+    assert base_h == {"a.py"} and base_t == {"t.py::test_a"} and base_s == {"m.py::extract"}
 
     # b.py is new; a.py was fixed (no longer present).
-    cur_h, _ = at.current_ids(_result({"b.py"}, {"t.py::test_a"}))
+    cur_h, _, _ = at.current_ids(_result({"b.py"}, {"t.py::test_a"}))
     assert sorted(cur_h - base_h) == ["b.py"]      # new
     assert sorted(base_h - cur_h) == ["a.py"]      # fixed
 
 
 def test_missing_baseline_is_empty(tmp_path):
-    assert at.load_baseline(tmp_path / "nope.json") == (set(), set())
+    assert at.load_baseline(tmp_path / "nope.json") == (set(), set(), set())
 
 
 # --- integration: the detectors fire on the real tree ------------------------
