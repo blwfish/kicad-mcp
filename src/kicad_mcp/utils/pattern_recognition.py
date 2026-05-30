@@ -98,6 +98,14 @@ def identify_power_supplies(
     return power_supplies
 
 
+# Op-amp / instrumentation-amp family pattern — SINGLE source of truth for both
+# identify_amplifiers and identify_filters (the filters copy had drifted: it kept
+# AD\d{3} and lacked INA\d+, so an AD8221/INA-based active filter went undetected).
+# MCP6\d{2,3} (not MCP\d{3}) avoids MCP9808/1525/4725/3221; AD\d{3,} catches 4-digit
+# AD parts; INA\d+ keeps the instrumentation branch reachable.
+_OPAMP_FAMILY_RE = r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP6\d{2,3}|AD\d{3,}|LT\d{4}|OPA\d{3}|INA\d+"
+
+
 def identify_amplifiers(
     components: Dict[str, Any], nets: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
@@ -121,10 +129,8 @@ def identify_amplifiers(
     opamp_patterns = [
         # MCP6\d{2,3} matches MCP602/604/6001/6002/etc — the actual MCP op-amp
         # families. Previously MCP\d{3} also matched MCP9808 (temp), MCP1525
-        # (vref), MCP4725 (DAC), MCP3221 (ADC). AD\d{3,} stays widened to
-        # catch 4-digit AD parts; INA\d+ keeps the instrumentation branch
-        # reachable. Mirror change in identify_filters opamp detection below.
-        r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP6\d{2,3}|AD\d{3,}|LT\d{4}|OPA\d{3}|INA\d+",
+        # (vref), MCP4725 (DAC), MCP3221 (ADC). See _OPAMP_FAMILY_RE.
+        _OPAMP_FAMILY_RE,
         r"Opamp|Op-Amp|OpAmp|Operational Amplifier",
     ]
 
@@ -318,9 +324,7 @@ def identify_filters(
         component_lib = component.get("lib_id", "").upper()
 
         if re.search(
-            # Same MCP6\d{2,3} narrowing as identify_amplifiers above — keeps
-            # MCP-op-amp detection in the active-filter path consistent.
-            r"LM\d{3}|TL\d{3}|NE\d{3}|LF\d{3}|OP\d{2}|MCP6\d{2,3}|AD\d{3}|LT\d{4}|OPA\d{3}",
+            _OPAMP_FAMILY_RE,   # shared with identify_amplifiers (was a drifted copy)
             component_value,
             re.IGNORECASE,
         ) or "OP_AMP" in component_lib:
