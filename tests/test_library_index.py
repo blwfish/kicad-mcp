@@ -305,6 +305,21 @@ class TestLibraryIndex:
         # Symbol index should still be fresh
         assert index.symbols_stale() is False
 
+    def test_stale_after_user_lib_symbol_edit(self, index, tmp_path):
+        """h-library-stale: editing a symbol in a USER library (an extra dir, not
+        the system path) must mark the index stale. The staleness check used to
+        scan only the system path, so user-library edits were never detected."""
+        import time
+        user_dir = tmp_path / "userlib"
+        user_dir.mkdir()
+        user_sym = user_dir / "MyParts.kicad_sym"
+        user_sym.write_text(SAMPLE_DEVICE_SYM)
+        index.extra_symbol_dirs = [str(user_dir)]
+        index.rebuild_symbols()                      # now indexes system + user dir
+        assert index.symbols_stale() is False        # fresh after rebuild
+        os.utime(str(user_sym), (time.time() + 10000, time.time() + 10000))
+        assert index.symbols_stale() is True         # edit detected via the extra dir
+
     def test_stale_after_sym_change(self, index, mock_sym_lib):
         new_sym = os.path.join(mock_sym_lib, "NewLib.kicad_sym")
         with open(new_sym, "w") as f:
