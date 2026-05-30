@@ -1,6 +1,6 @@
 # SPEC — Firmware Front End: Data-Driven Device Cards (Phase 6)
 
-**Status:** Phase 6 (refactor) + Phase 7 (offline auto-draft) IMPLEMENTED; 6b (board.yaml sidecar) and Phase 8 (multi-user / pre-fetch) remain planned. Cold-reviewed pre-implementation (findings folded in below).
+**Status:** Phase 6 (refactor), Phase 7 (offline auto-draft), **6b (board.yaml sidecar)**, and the **Phase 8 maintainer pre-fetch** are IMPLEMENTED. Remaining Phase-8 frontier: pluggable firmware *readers* for non-`config.h` ecosystems (STM32 `.ioc`, Zephyr devicetree, …) and MCU pin-naming-scheme as card data. Cold-reviewed pre-implementation (findings folded in below).
 **Author context:** written in the Phase-5 session (track-geometry I2C sensor-hub, PR #50), with full context on `kicad_mcp/utils/firmware/`.
 **Review note:** per the CLAUDE.md spec-review rule, the highest-risk item is the *card → symbol-pin* external-system assumption. It is verified in-session (§9) rather than deferred. If this spec is picked up in a later session, re-verify §9 against the then-current KiCad before implementing.
 
