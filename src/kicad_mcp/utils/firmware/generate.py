@@ -71,27 +71,37 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
 
     type_by_ref = {p.ref: p.type for p in intent.peripherals}
 
+    def _name_or_number(sym: Any, token: Any) -> Any:
+        """Resolve a pin token to its NUMBER. A token is either a pin NAME
+        (MCP23017 ``SDA``) or already a literal pin NUMBER (a header pin ``4``,
+        a USB-C/QFN pad ``A4``/``29``). Name lookup first; else validate the
+        token against the symbol's real numbers (alphanumeric, so not a digit
+        check)."""
+        num = pin_number_by_name(sym, token)
+        if num is not None:
+            return num
+        valid = {str(p.number) for p in (getattr(sym, "pins", None) or ())}
+        return str(token) if str(token) in valid else None
+
     def resolve_pin(ref: str, gpio: Any, role: Any, pin: Any) -> Any:
         sym = symbols.get(ref)
         if sym is None:
             return None
         if pin is not None:                        # direct pin NAME or number
-            num = pin_number_by_name(sym, pin)
-            if num is not None:
-                return num
-            # else: pin may already be a literal pin NUMBER (e.g. "3", "A4").
-            # Validate against the symbol's real numbers — USB-C/QFN numbers are
-            # alphanumeric, so a digit check is not enough.
-            valid = {str(p.number) for p in (getattr(sym, "pins", None) or ())}
-            return str(pin) if str(pin) in valid else None
+            return _name_or_number(sym, pin)
         if gpio is not None:                       # MCU side
             return gpio_to_pin_number(sym, int(gpio))
         ptype = type_by_ref.get(ref)               # peripheral side
+        # The roles map may point at a pin NAME (MCP23017 ``SDA``) or a pin
+        # NUMBER (a module-header device, ``SDA`` -> ``4``) — handle both.
         pin_name = role_to_pin_name(ptype, role) if ptype else None
-        num = pin_number_by_name(sym, pin_name) if pin_name else None
-        if num is None and role:                   # last resort: role == pin name
-            num = pin_number_by_name(sym, role)
-        return num
+        if pin_name is not None:
+            num = _name_or_number(sym, pin_name)
+            if num is not None:
+                return num
+        if role:                                   # last resort: role == pin name
+            return _name_or_number(sym, role)
+        return None
 
     def wire_pin(comp: Any, pin_num: str, net_name: str) -> bool:
         """Add a wire stub + net label at a pin (the connectivity primitive)."""

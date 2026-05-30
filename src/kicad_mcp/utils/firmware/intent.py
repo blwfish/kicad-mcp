@@ -20,7 +20,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 from kicad_mcp.utils.firmware.knowledge import resolve_mcu, resolve_peripheral
-from kicad_mcp.utils.firmware.parse import ParsedFirmware
+from kicad_mcp.utils.firmware.parse import ParsedFirmware, address_base
 
 SCHEMA_VERSION = 3  # v3: typed buses (I2S/I2C/UART) for bus-driven templates
 
@@ -143,10 +143,9 @@ def _strip_pin_suffix(name: str) -> str:
 
 
 def _peripheral_type_from_addr(name: str) -> str:
-    for suf in ("_ADDRESS", "_ADDR"):
-        if name.endswith(suf):
-            return name[: -len(suf)]
-    return name
+    # Delegates to parse.address_base — the single source of truth for the
+    # addr-macro name shape (incl. the multi-instance ``_2`` qualifier).
+    return address_base(name) or name
 
 
 def _bus_type(roles: set[str]) -> Optional[str]:
@@ -204,37 +203,62 @@ def build_intent(
         intent.gaps.append(Gap("mcu_unknown",
                                f"Could not resolve MCU from board id {board_id!r}."))
 
-    # --- collect candidate peripheral types (addresses + pin hints) ---
-    addr_by_type: dict[str, int] = {}
-    for a in parsed.addresses:
-        addr_by_type.setdefault(_peripheral_type_from_addr(a.name), a.address or 0)
+    # --- materialize peripherals we have a symbol for ---
+    # Address-declared devices: ONE instance per ``*_ADDR`` macro — two MPU6050
+    # at 0x68/0x69 are two chips on the shared bus, not one collapsed entry.
+    # Pin-hint devices (named only by pin macros, no address, e.g. HX711): one
+    # per type. Deterministic order: address devices by (type, address), then
+    # the remaining hint types.
+    addr_devices = [(_peripheral_type_from_addr(a.name), a.address or 0)
+                    for a in parsed.addresses]
+    addr_types = {t for t, _ in addr_devices}
     hint_types = {
         m.peripheral_hint for m in parsed.pins
-        if m.peripheral_hint and m.bus is None
+        if m.peripheral_hint and m.bus is None and m.peripheral_hint not in addr_types
     }
-    candidate_types = sorted(set(addr_by_type) | {h for h in hint_types if h})
+    # Combined, then ordered by (type, address) so refs are deterministic and
+    # stable: alphabetical by type, and within a type ascending by address (the
+    # two MPU6050 at 0x68/0x69 get consecutive refs). Hint devices (no address)
+    # sort first within their type.
+    to_place: list[tuple[str, Optional[int]]] = (
+        [(t, a) for t, a in addr_devices]
+        + [(t, None) for t in hint_types if t]
+    )
+    to_place.sort(key=lambda ta: (ta[0], -1 if ta[1] is None else ta[1]))
 
-    # --- materialize peripherals we have a symbol for ---
     peripherals: list[Peripheral] = []
     periph_by_type: dict[str, Peripheral] = {}
+    unknown_types: set[str] = set()
+    placed_module = False
     next_ref = 2
-    for t in candidate_types:
+    for t, address in to_place:
         info = resolve_peripheral(t)
         if info is None:
-            intent.gaps.append(Gap(
-                "unknown_peripheral",
-                f"Peripheral {t!r} is referenced by firmware but has no known "
-                f"symbol; not placed.",
-            ))
+            if t not in unknown_types:   # one gap per unknown type, not per instance
+                unknown_types.add(t)
+                intent.gaps.append(Gap(
+                    "unknown_peripheral",
+                    f"Peripheral {t!r} is referenced by firmware but has no known "
+                    f"symbol; not placed.",
+                ))
             continue
+        placed_module = placed_module or info["module"]
         p = Peripheral(
             ref=f"U{next_ref}", type=t, lib_id=info["lib_id"], value=info["value"],
-            footprint=info["footprint"], bus=info["bus"], address=addr_by_type.get(t),
+            footprint=info["footprint"], bus=info["bus"], address=address,
         )
         next_ref += 1
         peripherals.append(p)
-        periph_by_type[t] = p
+        periph_by_type.setdefault(t, p)   # first instance anchors the non-bus net path
     intent.peripherals = peripherals
+
+    if placed_module:
+        intent.gaps.append(Gap(
+            "module_assumption",
+            "One or more I2C devices are modeled as breakout-module headers "
+            "(carrier-board assumption); for chip-down placement supply the bare "
+            "IC symbol + its support passives.",
+        ))
 
     by_bus: dict[str, list[Peripheral]] = {}
     for p in peripherals:
