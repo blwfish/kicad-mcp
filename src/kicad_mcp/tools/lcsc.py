@@ -34,6 +34,7 @@ from kicad_mcp.utils.lcsc_db import (
     get_snapshot_date,
     resolve_footprint,
     search_components,
+    search_components_with_total,
     validate_schema,
     _fetch_live_part,
     _live_part_to_row,
@@ -404,7 +405,7 @@ def _op_search(
         return {"status": "error", "code": "invalid_parameter",
                 "message": f"assembly_tier must be one of {sorted(valid_tiers)}"}
 
-    rows = search_components(
+    rows, total_candidates = search_components_with_total(
         description=description,
         package=package,
         assembly_tier=assembly_tier,
@@ -416,7 +417,8 @@ def _op_search(
         emit_event("warn", "lcsc_no_results",
                    "No components matched the search criteria.",
                    {"description": description, "package": package, "tier": assembly_tier})
-        return {"status": "ok", "results": [], "events": []}
+        return {"status": "ok", "results": [], "total_candidates": 0,
+                "truncated": False, "events": []}
 
     top_score = rows[0].get("_score", 0.0) if rows else 0.0
     if top_score < 1.0:
@@ -447,7 +449,15 @@ def _op_search(
         "low_score_count": sum(1 for r in resolved if (r.get("match_score") or 0) < 0.5),
     }, int((time.monotonic() - t_start) * 1000))
 
-    return {"status": "ok", "results": resolved}
+    truncated = total_candidates > len(resolved)
+    if truncated:
+        emit_event("info", "lcsc_results_truncated",
+                   f"Showing top {len(resolved)} of {total_candidates} matching candidates. "
+                   "Raise max_results to see more.",
+                   {"returned": len(resolved), "total_candidates": total_candidates})
+
+    return {"status": "ok", "results": resolved,
+            "total_candidates": total_candidates, "truncated": truncated}
 
 
 def _op_resolve(

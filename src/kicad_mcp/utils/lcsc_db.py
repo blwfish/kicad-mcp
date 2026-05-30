@@ -537,15 +537,19 @@ def validate_schema(db_path: Path = DB_PATH) -> None:
         conn.close()
 
 
-def search_components(
+def _ranked_candidates(
     description: str,
-    package: str | None = None,
-    assembly_tier: str = "basic",
-    max_results: int = 3,
-    include_unresolvable: bool = False,
-    db_path: Path = DB_PATH,
+    package: str | None,
+    assembly_tier: str,
+    include_unresolvable: bool,
+    db_path: Path,
 ) -> list[dict[str, Any]]:
-    """Search the local jlcparts DB and return scored, ranked candidates."""
+    """Full scored+ranked candidate list (no truncation).
+
+    Single source of truth for both ``search_components`` (sliced) and
+    ``search_components_with_total`` (sliced + pre-slice count). Neither
+    re-encodes the SQL filter / scoring / ranking.
+    """
     conn = _db_connect(db_path)
     try:
         # SQL pre-filter (indexed columns)
@@ -587,7 +591,40 @@ def search_components(
         results.append((score, {**row, "_score": score, "_deviations": deviations, "_footprint": fp}))
 
     results.sort(key=lambda x: x[0], reverse=True)
-    return [r[1] for r in results[:max_results]]
+    return [r[1] for r in results]
+
+
+def search_components(
+    description: str,
+    package: str | None = None,
+    assembly_tier: str = "basic",
+    max_results: int = 3,
+    include_unresolvable: bool = False,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Search the local jlcparts DB and return scored, ranked candidates."""
+    return _ranked_candidates(
+        description, package, assembly_tier, include_unresolvable, db_path
+    )[:max_results]
+
+
+def search_components_with_total(
+    description: str,
+    package: str | None = None,
+    assembly_tier: str = "basic",
+    max_results: int = 3,
+    include_unresolvable: bool = False,
+    db_path: Path = DB_PATH,
+) -> tuple[list[dict[str, Any]], int]:
+    """Like ``search_components`` but also return the pre-slice candidate count.
+
+    The count lets callers distinguish "only N matched" from "top N of many"
+    so they can emit a truncation flag instead of silently capping.
+    """
+    ranked = _ranked_candidates(
+        description, package, assembly_tier, include_unresolvable, db_path
+    )
+    return ranked[:max_results], len(ranked)
 
 
 def get_component(lcsc: str, db_path: Path = DB_PATH) -> dict[str, Any] | None:
