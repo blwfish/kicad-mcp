@@ -206,21 +206,28 @@ class TestPadClearancesResults:
         assert result["violations"][0]["overlap"] is True
         assert result["violations"][0]["gap_mm"] == 0.0
 
-    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_truncation(self, mock_run, audit_server, pcb_file):
-        """More than 50 violations should be truncated."""
-        mock_run.return_value = {
-            "status": "ok",
-            "total_pads": 200,
-            "min_clearance_mm": 0.2,
-            "violation_count": 75,
-            "footprint_pairs_affected": 10,
-            "footprint_pair_summary": [],
-            "violations": [{"pad_a": f"R{i}:1", "pad_b": "U1:1"} for i in range(50)],
-            "violations_truncated": True,
-            "summary": "75 violations",
-        }
-        fn = _get_audit_fn(audit_server)
-        result = fn("pad_clearances", pcb_path=pcb_file)
-        assert result["violations_truncated"] is True
-        assert len(result["violations"]) == 50
+    def test_truncate_violations_boundary(self):
+        """The 50-cap and the strict ``> 50`` flag are a pure in-process
+        post-processor now (extracted from the embedded script per the review's
+        h-test-truncation finding), so the boundary is unit-testable without a
+        mocked subprocess. Pin the strict side: exactly 50 is NOT truncated."""
+        from kicad_mcp.tools.pcb_keepout import _truncate_violations
+
+        def result(n):
+            return {
+                "violation_count": n,
+                "violations": [{"pad_a": f"R{i}:1", "pad_b": "U1:1"} for i in range(n)],
+            }
+
+        r49 = _truncate_violations(result(49))
+        assert r49["violations_truncated"] is False and len(r49["violations"]) == 49
+        r50 = _truncate_violations(result(50))  # at the cap: `>` is strict -> not truncated
+        assert r50["violations_truncated"] is False and len(r50["violations"]) == 50
+        r51 = _truncate_violations(result(51))
+        assert r51["violations_truncated"] is True and len(r51["violations"]) == 50
+
+    def test_truncate_violations_passes_through_errors(self):
+        """An error / short-circuit result (no 'violations' key) is returned
+        untouched — no violations or violations_truncated keys injected."""
+        from kicad_mcp.tools.pcb_keepout import _truncate_violations
+        assert _truncate_violations({"error": "boom"}) == {"error": "boom"}

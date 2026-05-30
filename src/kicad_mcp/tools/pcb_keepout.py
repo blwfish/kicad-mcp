@@ -438,6 +438,27 @@ print(json.dumps({
     return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
 
+#: User-facing cap on the pad-clearance violations list — single source of truth
+#: for the cap and the strict truncation boundary, extracted from the embedded
+#: script so it is testable in-process (see docs/BOUNDARY_OPS.md).
+_PAD_VIOLATION_CAP = 50
+
+
+def _truncate_violations(result: Dict[str, Any], cap: int = _PAD_VIOLATION_CAP) -> Dict[str, Any]:
+    """Cap the user-facing ``violations`` list and flag truncation by the TRUE
+    count. Pure in-process post-processor: the embedded script returns the full
+    list plus ``violation_count``, so the cap and the strict ``count > cap``
+    boundary are unit-testable without KiCad. Error/short-circuit results (no
+    ``violations`` key) pass through untouched.
+    """
+    if "violations" not in result:
+        return result
+    count = result.get("violation_count", len(result["violations"]))
+    result["violations"] = result["violations"][:cap]
+    result["violations_truncated"] = count > cap
+    return result
+
+
 def _op_pad_clearances(
     pcb_path: str,
     min_clearance_mm: float = 0.0,
@@ -562,15 +583,15 @@ print(json.dumps({
     "violation_count": len(violations),
     "footprint_pairs_affected": len(fp_summaries),
     "footprint_pair_summary": fp_summaries,
-    "violations": violations[:50],  # Cap at 50 to avoid huge output
-    "violations_truncated": len(violations) > 50,
+    "violations": violations,  # full list; capped in-process by _truncate_violations
     "summary": summary,
 }))
 """
-    return run_pcbnew_script(script, params={
+    result = run_pcbnew_script(script, params={
         "pcb_path": pcb_path,
         "min_clearance_mm": min_clearance_mm,
     })
+    return _truncate_violations(result)
 
 
 def _op_pre_route_check(
