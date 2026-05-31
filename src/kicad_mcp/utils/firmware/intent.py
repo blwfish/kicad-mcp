@@ -88,6 +88,22 @@ class ConnectorLegend:
 
 
 @dataclass
+class Placement:
+    """A board.yaml placement directive — where a device physically lives relative
+    to the board. The SINGLE source for the locus decision (CLAUDE.md Rule 3),
+    keyed in ``DesignIntent.placements`` by the handle that exists in the intent:
+    a **bus stem** (``CMCA_MIC``) for a bus-template device, or a **peripheral
+    ref** (``U2``) for a carded device. ``device`` is the human-supplied identity
+    — firmware names these only in comments, so it cannot be recovered, only
+    declared (honest-by-construction)."""
+    locus: str = "on_board"          # on_board | remote | on_board_with_remote_io
+    device: Optional[str] = None     # field-wired device identity (legend + BOM)
+    connector: str = "screw_terminal"   # screw_terminal | pin_header | pluggable
+    footprint: Optional[str] = None  # series-default override for the terminal
+    external_io: list[str] = field(default_factory=list)  # roles crossing (remote_io)
+
+
+@dataclass
 class Mcu:
     ref: str
     part: str
@@ -125,7 +141,25 @@ class DesignIntent:
     nets: list[Net] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)
     connector_legends: list[ConnectorLegend] = field(default_factory=list)
+    # board.yaml placement directives, keyed by bus stem or peripheral ref.
+    placements: dict[str, "Placement"] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
+
+
+# --- locus helpers (single source for the remote check) ----------------------
+
+VALID_LOCI = ("on_board", "remote", "on_board_with_remote_io")
+
+
+def placement_for(intent: "DesignIntent", key: str) -> Optional[Placement]:
+    """The placement directive for a bus stem or peripheral ref, or None."""
+    return intent.placements.get(key)
+
+
+def is_remote(intent: "DesignIntent", key: str) -> bool:
+    """True if ``key`` (bus stem or peripheral ref) is declared fully remote."""
+    pl = intent.placements.get(key)
+    return pl is not None and pl.locus == "remote"
 
 
 # --- platformio board detection ----------------------------------------------
@@ -412,6 +446,10 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             ConnectorLegend(**_only_fields(ConnectorLegend, c))
             for c in d.get("connector_legends", [])
         ],
+        placements={
+            k: Placement(**_only_fields(Placement, v))
+            for k, v in (d.get("placements", {}) or {}).items()
+        },
         provenance=d.get("provenance", {}),
     )
 

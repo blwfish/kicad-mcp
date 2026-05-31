@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from kicad_mcp.utils.firmware.intent import DesignIntent
+from kicad_mcp.utils.firmware.intent import DesignIntent, is_remote
 from kicad_mcp.utils.firmware.knowledge import role_to_pin_name
 from kicad_mcp.utils.firmware.mcu_pinmap import (
     gpio_to_pin_number,
@@ -46,8 +46,13 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     to_place: list[tuple[str, Optional[str], str, Optional[str]]] = [
         (intent.mcu.ref, intent.mcu.lib_id, intent.mcu.part, intent.mcu.footprint)
     ]
+    # Remote peripherals are field-wired (a terminal carries their nets), so they
+    # are documented in the BOM but never placed as a symbol — their original pin
+    # endpoints then drop out of the wiring loop (ref not in ``placed``), leaving
+    # only the synthesized terminal wired. (See remote_peripherals template.)
     to_place += [
-        (p.ref, p.lib_id, p.value or p.type, p.footprint) for p in intent.peripherals
+        (p.ref, p.lib_id, p.value or p.type, p.footprint)
+        for p in intent.peripherals if not is_remote(intent, p.ref)
     ]
 
     placed: dict[str, Any] = {}
