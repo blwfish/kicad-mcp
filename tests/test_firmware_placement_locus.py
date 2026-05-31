@@ -8,7 +8,6 @@ routing are gated in tests/integration/test_firmware_pcb_pipeline.py.
 from pathlib import Path
 
 import pytest
-import yaml
 
 from kicad_mcp.utils.firmware.intent import build_intent, find_board_id
 from kicad_mcp.utils.firmware.parse import (
