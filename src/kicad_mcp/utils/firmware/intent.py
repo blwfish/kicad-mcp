@@ -26,7 +26,7 @@ from kicad_mcp.utils.firmware.parse import (
     address_base,
 )
 
-SCHEMA_VERSION = 3  # v3: typed buses (I2S/I2C/UART) for bus-driven templates
+SCHEMA_VERSION = 4  # v4: placement locus + connector legends (placement-locus phase)
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -68,6 +68,23 @@ class Peripheral:
     bus: Optional[str] = None
     address: Optional[int] = None
     origin: str = "imported"     # "imported"|"template"|"user"
+    # Placement locus — where the device physically lives relative to the board.
+    # A board-level decision (firmware cannot know if a mic is reflowed or hung on
+    # 18" of wire), so it is set from board.yaml, never firmware-derived.
+    #   on_board                 -> place the symbol/footprint (default)
+    #   remote                   -> not placed; its nets cross to a terminal
+    #   on_board_with_remote_io  -> placed, but external-load nets cross to a terminal
+    locus: str = "on_board"
+
+
+@dataclass
+class ConnectorLegend:
+    """Per-connector silk-legend metadata, populated by ``synthesize_connector``,
+    consumed by ``pcb_pipeline`` (``_step_silkscreen_legends``). The silk legend
+    IS the field-wiring documentation for a terminal — not cosmetic."""
+    ref: str                 # e.g. "J3" — identifies the footprint in the placed PCB
+    positions: list[str]     # positions[i] = short label for pad number (i+1)
+    device: str              # e.g. "INMP441" — set as the footprint value/description
 
 
 @dataclass
@@ -107,6 +124,7 @@ class DesignIntent:
     buses: list[Bus] = field(default_factory=list)
     nets: list[Net] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)
+    connector_legends: list[ConnectorLegend] = field(default_factory=list)
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -390,6 +408,10 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             for n in d.get("nets", [])
         ],
         gaps=[Gap(**_only_fields(Gap, g)) for g in d.get("gaps", [])],
+        connector_legends=[
+            ConnectorLegend(**_only_fields(ConnectorLegend, c))
+            for c in d.get("connector_legends", [])
+        ],
         provenance=d.get("provenance", {}),
     )
 
