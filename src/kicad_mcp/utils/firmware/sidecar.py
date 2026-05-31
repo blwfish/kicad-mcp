@@ -114,9 +114,11 @@ def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
         if eio is not None and not (isinstance(eio, list)
                                     and all(isinstance(r, str) for r in eio)):
             errs.append(f"{where}: external_io must be a list of role strings")
-        if locus == "on_board_with_remote_io" and not eio:
-            errs.append(f"{where}: on_board_with_remote_io requires a non-empty "
-                        "external_io list (the roles that cross to a terminal)")
+        # external_io is OPTIONAL, documentary metadata: the realized
+        # on_board_with_remote_io path (an I2S_OUT amp bus) crosses its speaker
+        # outputs intrinsically. It is NOT required — requiring a field no
+        # template consumes would be a footgun (see _REALIZED_LOCI for what is
+        # actually realized; an unrealized locus is flagged at apply time).
 
 
 def _validate(d: dict[str, Any]) -> list[str]:
@@ -274,14 +276,31 @@ def advise_unspecified_placement(intent: DesignIntent) -> None:
         ))
 
 
+# (target-kind, bus-type, locus) combinations a template ACTUALLY realizes. A
+# directive outside this set passes structural validation but no template
+# consumes it, so the device would be placed/crossed the WRONG way silently —
+# we flag it instead (honest-by-construction). bus-type is None for a ref target.
+#   bus  I2S_IN  remote                  -> i2s_mic terminal
+#   bus  UART    remote                  -> uart_device_header terminal
+#   bus  I2S_OUT on_board_with_remote_io -> i2s_output_amps speaker terminals
+#   ref  *       remote                  -> remote_peripherals terminal
+_REALIZED_LOCI: frozenset[tuple[str, Optional[str], str]] = frozenset({
+    ("bus", "I2S_IN", "remote"),
+    ("bus", "UART", "remote"),
+    ("bus", "I2S_OUT", "on_board_with_remote_io"),
+    ("ref", None, "remote"),
+})
+
+
 def _apply_placement(intent: DesignIntent, placement: dict[str, dict[str, Any]]) -> None:
     """Record placement directives into ``intent.placements`` (the single source
     consulted by the locus-aware templates + generator) and project the realized
-    locus onto each addressed peripheral. A key that binds to neither a bus stem
-    nor a peripheral ref is surfaced as a gap — never silently ignored."""
+    locus onto each addressed peripheral. A key that binds to no target — or a
+    target/locus combination no template realizes — is surfaced as a gap, never
+    silently ignored."""
     if not placement:
         return
-    bus_names = {b.name for b in intent.buses}
+    bus_by_name = {b.name: b for b in intent.buses}
     periph_by_ref = {p.ref: p for p in intent.peripherals}
     for key, spec in placement.items():
         pl = Placement(
@@ -294,10 +313,24 @@ def _apply_placement(intent: DesignIntent, placement: dict[str, dict[str, Any]])
         intent.placements[key] = pl
         if key in periph_by_ref:
             periph_by_ref[key].locus = pl.locus
-        elif key not in bus_names:
+            kind, bus_type = "ref", None
+        elif key in bus_by_name:
+            kind, bus_type = "bus", bus_by_name[key].type
+        else:
             intent.gaps.append(Gap(
                 "placement_unknown_target",
                 f"board.yaml placement key {key!r} matches no bus stem "
-                f"{sorted(bus_names)} or peripheral ref "
+                f"{sorted(bus_by_name)} or peripheral ref "
                 f"{sorted(periph_by_ref)}; directive ignored.",
+            ))
+            continue
+        # on_board is the default no-op; any other locus must have a realization.
+        if pl.locus != "on_board" and (kind, bus_type, pl.locus) not in _REALIZED_LOCI:
+            tgt = f"{bus_type} bus" if kind == "bus" else "peripheral"
+            intent.gaps.append(Gap(
+                "placement_unsupported",
+                f"board.yaml placement {key!r}: locus {pl.locus!r} on a {tgt} is "
+                "not realized by any template (the device would be placed "
+                "on-board unchanged); supported: I2S_IN/UART bus + remote, "
+                "I2S_OUT bus + on_board_with_remote_io, peripheral ref + remote.",
             ))

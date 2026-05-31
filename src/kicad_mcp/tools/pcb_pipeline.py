@@ -1273,6 +1273,10 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         # Step 7.5: Silk legends for synthesized terminals (firmware front end).
         # Field-wired terminals carry their wiring documentation on the silk.
+        # Strictly NON-FATAL: silk is documentation, never blocks fabrication —
+        # so a bad intent OR a pcbnew failure inside the step (run_pcbnew_script
+        # RAISES on subprocess error/timeout) is recorded, never propagated, so it
+        # cannot abort an already-routed board.
         if intent_path and os.path.exists(intent_path):
             try:
                 _intent = load_intent(intent_path)
@@ -1280,13 +1284,11 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     {"ref": L.ref, "positions": L.positions, "device": L.device}
                     for L in _intent.connector_legends
                 ]
-            except Exception as e:  # noqa: BLE001 — a bad intent must not abort the build
-                _record("silkscreen_legends",
-                        {"error": f"could not read intent {intent_path}: {e}"})
-            else:
                 step = _step_silkscreen_legends(pcb_path, _legends)
                 _record("silkscreen_legends", step)
-                # Non-fatal — silk is documentation, never blocks fabrication.
+            except Exception as e:  # noqa: BLE001 — documentation step, never fatal
+                _record("silkscreen_legends",
+                        {"error": f"silk legend step failed (non-fatal): {e}"})
 
         # Step 8: Export gerbers (optional)
         if export_gerbers:
