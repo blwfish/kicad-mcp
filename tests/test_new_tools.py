@@ -877,3 +877,32 @@ class TestFinalizePadAssignment:
         from kicad_mcp.tools.pcb_pipeline import _finalize_pad_assignment
         r = _finalize_pad_assignment({"status": "error", "error": "boom"}, 4)
         assert r["error"] == "boom"
+
+
+class TestRoutedIncompleteCount:
+    """incomplete_nets must come from the SES-import-MEASURED unconnected count,
+    not the stdout-parsed best_incomplete (which is None on a fully-routed pass
+    that prints no incomplete line, and which the old code defaulted to 0)."""
+
+    def _c(self, **step):
+        from kicad_mcp.tools.pcb_pipeline import _routed_incomplete_count
+        return _routed_incomplete_count(step)
+
+    def test_measured_zero_wins_over_unparsed_best(self):
+        # The exact case that broke CI: fully routed (measured 0) but the
+        # stdout parse found no incomplete line (best_incomplete None).
+        assert self._c(unconnected_after_routing=0, best_incomplete=None) == 0
+
+    def test_measured_count_is_source_of_truth(self):
+        # Measured disagrees with the stdout parse → trust the board.
+        assert self._c(unconnected_after_routing=3, best_incomplete=0) == 3
+
+    def test_falls_back_to_best_incomplete_when_unmeasured(self):
+        assert self._c(best_incomplete=5) == 5
+
+    def test_none_when_neither_available(self):
+        assert self._c() is None
+
+    def test_measured_zero_is_not_treated_as_falsy(self):
+        # 0 is a real value, not "absent" — must not fall through to best.
+        assert self._c(unconnected_after_routing=0, best_incomplete=7) == 0
