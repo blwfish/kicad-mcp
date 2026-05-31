@@ -422,12 +422,16 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                 Endpoint(ref=r.ref, pin="2"), Endpoint(ref=amp.ref, pin=M["din"])))
             # speaker connector (unified §4 helper -> carries a silk legend).
             p_net, n_net = f"SPK{idx}{side}_P", f"SPK{idx}{side}_N"
+            # Honor a board.yaml connector/footprint override only on the realized
+            # remote_io path (passing placement when locus is on_board would let
+            # its default connector="screw_terminal" override the pin-header default).
+            spk_pl = pl if pl is not None and pl.locus == "on_board_with_remote_io" else None
             _spk, te = _emit_connector(
                 ex, alloc,
                 [ConnectorPosition(p_net, f"{side}+"),
                  ConnectorPosition(n_net, f"{side}-")],
                 device=(pl.device if pl and pl.device else "Speaker"),
-                connector_type=spk_type, value=f"SPK{idx}{side}",
+                placement=spk_pl, connector_type=spk_type, value=f"SPK{idx}{side}",
             )
             ex.new_nets += [
                 _passive_net(p_net, Endpoint(ref=amp.ref, pin=M["outp"]), te[p_net]),

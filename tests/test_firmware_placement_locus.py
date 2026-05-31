@@ -73,9 +73,10 @@ def test_validate_rejects_unknown_connector():
     assert any("connector" in e for e in errs)
 
 
-def test_validate_remote_io_requires_external_io():
-    errs = _validate({"placement": {"X": {"locus": "on_board_with_remote_io"}}})
-    assert any("external_io" in e for e in errs)
+def test_validate_external_io_is_optional():
+    # external_io is documentary, not required (the realized I2S amp path crosses
+    # speaker outputs intrinsically) — omitting it is NOT a structural error.
+    assert _validate({"placement": {"X": {"locus": "on_board_with_remote_io"}}}) == []
 
 
 def test_validate_rejects_non_list_external_io():
@@ -106,6 +107,56 @@ def test_apply_flags_unknown_placement_key():
     intent = _intent(AUDIO)
     apply_sidecar(intent, BoardSidecar(placement={"NOPE": {"locus": "remote"}}))
     assert any(g.kind == "placement_unknown_target" for g in intent.gaps)
+
+
+# --- support matrix: a directive no template realizes must be flagged (H1) ----
+
+def test_apply_flags_unrealized_locus_on_i2c_bus():
+    """A `remote` directive on an I2C bus has no template handler — it must be
+    flagged, not silently placed on-board."""
+    intent = _intent(AUDIO)        # CMCA_OLED is an I2C bus
+    apply_sidecar(intent, BoardSidecar(placement={
+        "CMCA_OLED": {"locus": "remote", "device": "OLED"}}))
+    assert any(g.kind == "placement_unsupported" for g in intent.gaps)
+
+
+def test_apply_flags_remote_io_on_non_i2s_bus():
+    intent = _intent(AUDIO)        # CMCA_PRESENCE is a UART bus
+    apply_sidecar(intent, BoardSidecar(placement={
+        "CMCA_PRESENCE": {"locus": "on_board_with_remote_io",
+                          "external_io": ["rx"]}}))
+    assert any(g.kind == "placement_unsupported" for g in intent.gaps)
+
+
+def test_apply_flags_remote_io_on_peripheral_ref():
+    """on_board_with_remote_io is not realized for a ref target (only `remote` is)."""
+    intent = _intent(TRACK_GEOM)
+    ref = intent.peripherals[0].ref
+    apply_sidecar(intent, BoardSidecar(placement={
+        ref: {"locus": "on_board_with_remote_io", "external_io": ["sda"]}}))
+    assert any(g.kind == "placement_unsupported" for g in intent.gaps)
+
+
+def test_apply_does_not_flag_realized_bus_combinations():
+    """The three realized BUS combos must NOT be flagged unsupported."""
+    intent = _intent(AUDIO)
+    apply_sidecar(intent, BoardSidecar(placement={
+        "CMCA_MIC": {"locus": "remote", "device": "INMP441"},          # I2S_IN
+        "CMCA_PRESENCE": {"locus": "remote", "device": "LD2410"},       # UART
+        "CMCA_I2S": {"locus": "on_board_with_remote_io",                # I2S_OUT
+                     "device": "MAX98357A", "external_io": ["outp", "outn"]},
+    }))
+    assert not any(g.kind == "placement_unsupported" for g in intent.gaps)
+
+
+def test_apply_does_not_flag_realized_ref_remote():
+    """The 4th realized combo (ref + remote) must NOT be flagged unsupported —
+    pins ('ref', None, 'remote') in _REALIZED_LOCI so dropping it is caught."""
+    intent = _intent(TRACK_GEOM)
+    ref = intent.peripherals[0].ref
+    apply_sidecar(intent, BoardSidecar(placement={
+        ref: {"locus": "remote", "device": "MPU6050"}}))
+    assert not any(g.kind == "placement_unsupported" for g in intent.gaps)
 
 
 # --- locus-aware bus templates (L4) ------------------------------------------
