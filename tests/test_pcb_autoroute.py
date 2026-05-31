@@ -19,6 +19,7 @@ from kicad_mcp.tools.pcb_autoroute import (
     _autoroute_lock,
     _cleanup_stale_jobs,
     _select_best_pass,
+    _freerouter_cmd,
     MAX_CONCURRENT_JOBS,
 )
 
@@ -37,6 +38,34 @@ def pcb_file(tmp_path):
     pcb = tmp_path / "test.kicad_pcb"
     pcb.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
     return str(pcb)
+
+
+class TestFreerouterCmd:
+    """The FreeRouter invocation must disable analytics — Freerouting v2 phones
+    home to api.freerouting.app on every run, which an air-gapped design forbids."""
+
+    def _cmd(self):
+        return _freerouter_cmd("/usr/bin/java", "/x/fr.jar", "/x/b.dsn", "/x/b.ses")
+
+    def test_disables_analytics(self):
+        assert "--usage_and_diagnostic_data.disable_analytics=true" in self._cmd()
+
+    def test_headless_gui(self):
+        assert "--gui.enabled=false" in self._cmd()
+
+    def test_headless_awt(self):
+        # Keeps the JVM from stealing window focus on macOS every run.
+        assert "-Djava.awt.headless=true" in self._cmd()
+
+    def test_passes_dsn_and_ses_paths(self):
+        cmd = self._cmd()
+        assert cmd[cmd.index("-de") + 1] == "/x/b.dsn"
+        assert cmd[cmd.index("-do") + 1] == "/x/b.ses"
+
+    def test_runs_the_jar(self):
+        cmd = self._cmd()
+        assert cmd[0] == "/usr/bin/java"
+        assert cmd[cmd.index("-jar") + 1] == "/x/fr.jar"
 
 
 class TestSelectBestPass:
