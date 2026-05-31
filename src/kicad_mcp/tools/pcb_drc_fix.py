@@ -200,10 +200,10 @@ print(json.dumps({"status": "ok", "removed": removed}))
                 passes=autoroute_passes,
                 remove_zones=True,
             )
-            incomplete = route_result.get("best_incomplete", "?")
+            incomplete = route_result.get("unconnected_after_routing", "?")
             actions_taken.append(
                 f"routing: cleared {tracks_cleared} tracks/vias, "
-                f"re-autorouted ({autoroute_passes} passes, {incomplete} incomplete)"
+                f"re-autorouted ({autoroute_passes} passes, {incomplete} unconnected)"
             )
         else:
             actions_taken.append(

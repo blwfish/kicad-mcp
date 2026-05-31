@@ -314,17 +314,12 @@ def _finalize_pad_assignment(result: Dict[str, Any], pads_requested: int) -> Dic
 def _routed_incomplete_count(step: Dict[str, Any]) -> int | None:
     """Reported unconnected-net count after autoroute (pure; unit-testable).
 
-    Prefer the SES-import-MEASURED ``unconnected_after_routing`` — the source of
-    truth, read back from the actual routed board and immune to FreeRouter
-    stdout wording. ``best_incomplete`` is the per-pass stdout parse used only
-    to rank passes and is ``None`` when a fully-routed pass prints no
-    incomplete-count line; fall back to it only when the measured count is
-    absent. Returns ``None`` only when neither is available.
+    The SES-import-MEASURED ``unconnected_after_routing`` is the source of
+    truth — read back from the actual routed board by KiCad's connectivity
+    engine, immune to FreeRouter stdout wording. ``None`` if the autoroute step
+    didn't report it (e.g. it errored before import).
     """
-    measured = step.get("unconnected_after_routing")
-    if measured is not None:
-        return measured  # type: ignore[no-any-return]
-    return step.get("best_incomplete")  # type: ignore[no-any-return]
+    return step.get("unconnected_after_routing")  # type: ignore[no-any-return]
 
 
 def _step_inject_nets_and_assign_pads(
