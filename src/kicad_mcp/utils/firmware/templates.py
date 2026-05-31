@@ -34,6 +34,7 @@ from kicad_mcp.utils.firmware.intent import (
     Net,
     Peripheral,
     Placement,
+    is_remote,
 )
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
@@ -125,9 +126,15 @@ def _emit_connector(
 def _peripheral_is_remote(intent: DesignIntent, p: Peripheral) -> bool:
     """A carded peripheral declared fully ``remote`` in board.yaml is not placed,
     so it gets no on-board support glue (its bypass/straps live at the device).
-    Power is still delivered over the wire — via the terminal's +3V3/GND taps."""
-    pl = intent.placements.get(p.ref)
-    return (pl is not None and pl.locus == "remote") or p.locus == "remote"
+    Power is still delivered over the wire — via the terminal's +3V3/GND taps.
+
+    Delegates to ``intent.is_remote`` (placements = the SINGLE source) so this
+    glue-suppression check can never disagree with ``generate``'s placement-
+    exclusion check (which also reads placements). ``Peripheral.locus`` is only a
+    serialized display projection — never an independent behavioral source — so a
+    hand-edited doc cannot land in the split state where a remote device is placed
+    yet has its glue suppressed."""
+    return is_remote(intent, p.ref)
 
 
 def _ic_power_pins(intent: DesignIntent) -> list[tuple[str, list[str], list[str]]]:

@@ -169,6 +169,17 @@ def test_different_nets_same_label_suffixed():
     assert legend.positions == ["GND", "GND_2"]  # different nets -> disambiguate
 
 
+def test_three_different_nets_same_label_get_distinct_suffixes():
+    # The suffix counter must advance — three colliding nets must NOT collapse to
+    # a duplicate "SIG_2"/"SIG_2" (which would be ambiguous on the silk).
+    _c, _j, legend = synthesize_connector(
+        _pos(("SIG_A", "SIG"), ("SIG_B", "SIG"), ("SIG_C", "SIG")),
+        alloc=_Alloc(), device="X",
+    )
+    assert legend.positions == ["SIG", "SIG_2", "SIG_3"]
+    assert len(set(legend.positions)) == 3   # all distinct
+
+
 # --- error paths -------------------------------------------------------------
 
 def test_empty_positions_raises():

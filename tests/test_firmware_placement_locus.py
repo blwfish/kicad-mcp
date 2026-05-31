@@ -217,3 +217,131 @@ def test_advisory_idempotent_and_skips_placed():
     adv = [g for g in intent.gaps if g.kind == "placement_unspecified"]
     assert len(adv) == 1
     assert "CMCA_MIC" not in adv[0].detail   # placed bus excluded from the nudge
+
+
+def test_advisory_lists_every_field_wired_bus_type():
+    """I2S_OUT must be in the nudge too (not just I2S_IN/UART) — pins the full
+    _COMMONLY_REMOTE_BUS_TYPES set so dropping a type is caught."""
+    intent = _intent(AUDIO)
+    advise_unspecified_placement(intent)
+    detail = next(g.detail for g in intent.gaps if g.kind == "placement_unspecified")
+    for stem in ("CMCA_MIC", "CMCA_PRESENCE", "CMCA_I2S", "CMCA_I2S2"):
+        assert stem in detail
+
+
+# --- net wiring of synthesized terminals (Rule 2: survives the router) --------
+
+def test_remote_peripheral_terminal_joins_its_signal_net():
+    """A carded remote device's terminal must actually join the device's signal
+    net (else the terminal is a routing island with no net)."""
+    intent = _intent(TRACK_GEOM)
+    ref = intent.peripherals[0].ref          # an MPU6050 on the shared I2C bus
+    apply_sidecar(intent, BoardSidecar(placement={ref: {"locus": "remote",
+                                                        "device": "MPU6050"}}))
+    intent = expand_intent(intent)
+    term = next(p for p in intent.peripherals if p.type == "TERM" and p.value == "MPU6050")
+    sda = next(n for n in intent.nets if n.name == "I2C_SDA")
+    assert term.ref in {ep.ref for ep in sda.endpoints}   # terminal is on the bus
+
+
+def test_remote_mic_terminal_signals_reach_mcu_and_terminal():
+    intent = _audio_with_placement({"CMCA_MIC": {"locus": "remote", "device": "INMP441"}})
+    term = next(p for p in intent.peripherals if p.value == "INMP441")
+    bclk = next(n for n in intent.nets if n.name == "MIC_BCLK")
+    refs = {ep.ref for ep in bclk.endpoints}
+    assert intent.mcu.ref in refs and term.ref in refs   # MCU drives -> terminal
+
+
+def test_on_board_with_remote_io_speaker_net_joins_amp_and_terminal():
+    intent = _audio_with_placement({
+        "CMCA_I2S": {"locus": "on_board_with_remote_io", "device": "MAX98357A",
+                     "external_io": ["outp", "outn"]},
+    })
+    spk_p = next(n for n in intent.nets if n.name == "SPK0L_P")
+    refs = {ep.ref for ep in spk_p.endpoints}
+    term = next(p for p in intent.peripherals
+                if p.type == "TERM" and p.value == "SPK0L")
+    amps = {p.ref for p in intent.peripherals if p.type == "MAX98357A"}
+    assert term.ref in refs                    # terminal on the speaker net
+    assert refs & amps                         # an amp output on the speaker net
+
+
+# --- external_io is currently DECLARATIVE (H1: pin the invariant) -------------
+
+def test_external_io_listing_does_not_drop_a_speaker_side():
+    """external_io is validated + required for on_board_with_remote_io but the amp
+    template intrinsically crosses BOTH outp and outn. Declaring only [outp] must
+    NOT drop the outn side — pin this invariant so the dead-param state is locked
+    and documented (a future ref-keyed path may consume external_io; until then
+    this asserts no silent surprise)."""
+    intent = _audio_with_placement({
+        "CMCA_I2S": {"locus": "on_board_with_remote_io", "device": "MAX98357A",
+                     "external_io": ["outp"]},     # only one role listed
+    })
+    term = next(p for p in intent.peripherals if p.type == "TERM" and p.value == "SPK0L")
+    leg = next(L for L in intent.connector_legends if L.ref == term.ref)
+    assert leg.positions == ["L+", "L-"]          # BOTH sides still cross
+
+
+# --- v4 schema serialization round-trip (M7) ---------------------------------
+
+def test_v4_fields_survive_save_load(tmp_path):
+    from kicad_mcp.utils.firmware.intent import load_intent, save_intent
+    intent = _audio_with_placement({"CMCA_MIC": {"locus": "remote", "device": "INMP441"}})
+    assert intent.connector_legends and intent.placements    # populated pre-save
+    p = tmp_path / "intent.yaml"
+    save_intent(intent, str(p))
+    back = load_intent(str(p))
+    assert back.placements["CMCA_MIC"].locus == "remote"
+    assert back.placements["CMCA_MIC"].device == "INMP441"
+    mic_leg = next(L for L in back.connector_legends if L.device == "INMP441")
+    assert mic_leg.positions == ["BCLK", "WS", "SD", "+3V3", "GND"]
+
+
+def test_round_trip_remote_peripheral_stays_consistent(tmp_path):
+    """H2 regression: after save/load, the glue-suppression check (templates) and
+    the placement-exclusion check (generate) must agree — both read placements,
+    never the Peripheral.locus projection independently."""
+    from kicad_mcp.utils.firmware.intent import is_remote, load_intent, save_intent
+    from kicad_mcp.utils.firmware.templates import _peripheral_is_remote
+    intent = _intent(TRACK_GEOM)
+    ref = intent.peripherals[0].ref
+    apply_sidecar(intent, BoardSidecar(placement={ref: {"locus": "remote",
+                                                        "device": "MPU6050"}}))
+    p = tmp_path / "i.yaml"
+    save_intent(intent, str(p))
+    back = load_intent(str(p))
+    per = next(x for x in back.peripherals if x.ref == ref)
+    assert is_remote(back, ref) == _peripheral_is_remote(back, per)   # never split
+
+
+def test_locus_only_projection_without_placement_is_not_behaviorally_remote():
+    """A hand-edited Peripheral.locus='remote' with NO placements entry must not
+    silently land in the split state (placed but glue-suppressed). placements is
+    the single behavioral source: both checks agree it is NOT remote."""
+    from kicad_mcp.utils.firmware.intent import Peripheral, is_remote
+    from kicad_mcp.utils.firmware.templates import _peripheral_is_remote
+    intent = _intent(TRACK_GEOM)
+    p = intent.peripherals[0]
+    p.locus = "remote"                           # projection set, placements empty
+    assert intent.placements == {}
+    assert is_remote(intent, p.ref) is False
+    assert _peripheral_is_remote(intent, p) is False
+
+
+# --- bus-stem apply path (L3) ------------------------------------------------
+
+def test_apply_bus_stem_key_records_placement_without_unknown_gap():
+    intent = _intent(AUDIO)                      # buses, no carded peripherals
+    apply_sidecar(intent, BoardSidecar(placement={
+        "CMCA_MIC": {"locus": "remote", "device": "INMP441"}}))
+    assert intent.placements["CMCA_MIC"].locus == "remote"
+    assert not any(g.kind == "placement_unknown_target" for g in intent.gaps)
+
+
+# --- silk-legend pipeline step: no-legends fast path (M5, no KiCad) -----------
+
+def test_silkscreen_legends_step_noop_without_legends():
+    from kicad_mcp.tools.pcb_pipeline import _step_silkscreen_legends
+    res = _step_silkscreen_legends("/nonexistent.kicad_pcb", [])
+    assert res["status"] == "ok" and res["labels_added"] == 0
