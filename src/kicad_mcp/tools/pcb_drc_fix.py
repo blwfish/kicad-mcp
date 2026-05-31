@@ -286,7 +286,7 @@ params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
-
+""" + GEOMETRY_HELPER + """
 all_pads = []
 for fp in board.GetFootprints():
     for pad in fp.Pads():
