@@ -311,6 +311,22 @@ def _finalize_pad_assignment(result: Dict[str, Any], pads_requested: int) -> Dic
     return result
 
 
+def _routed_incomplete_count(step: Dict[str, Any]) -> int | None:
+    """Reported unconnected-net count after autoroute (pure; unit-testable).
+
+    Prefer the SES-import-MEASURED ``unconnected_after_routing`` — the source of
+    truth, read back from the actual routed board and immune to FreeRouter
+    stdout wording. ``best_incomplete`` is the per-pass stdout parse used only
+    to rank passes and is ``None`` when a fully-routed pass prints no
+    incomplete-count line; fall back to it only when the measured count is
+    absent. Returns ``None`` only when neither is available.
+    """
+    measured = step.get("unconnected_after_routing")
+    if measured is not None:
+        return measured  # type: ignore[no-any-return]
+    return step.get("best_incomplete")  # type: ignore[no-any-return]
+
+
 def _step_inject_nets_and_assign_pads(
     pcb_path: str,
     nets: Dict[str, List],
@@ -1161,7 +1177,8 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # autoroute step ever changes its return shape.
         pipeline_result["tracks"] = step.get("tracks_after")
         pipeline_result["vias"] = step.get("vias_after")
-        pipeline_result["incomplete_nets"] = step.get("best_incomplete")
+        # Report the SES-import-MEASURED unconnected count (see helper).
+        pipeline_result["incomplete_nets"] = _routed_incomplete_count(step)
         if any(v is None for v in (pipeline_result["tracks"],
                                     pipeline_result["vias"],
                                     pipeline_result["incomplete_nets"])):
