@@ -54,6 +54,8 @@ _CONNECTOR_TYPES: dict[str, tuple[str, str, bool]] = {
     "pluggable":      (_HEADER_SYM, "J", False),
 }
 
+VALID_CONNECTOR_TYPES = frozenset(_CONNECTOR_TYPES)
+
 # Type tag stored on the synthesized Peripheral (informational; not a symbol).
 _TYPE_TAG = {
     "screw_terminal": "TERM",

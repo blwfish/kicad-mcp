@@ -22,13 +22,20 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from kicad_mcp.utils.firmware import knowledge as K
+from kicad_mcp.utils.firmware.connectors import (
+    ConnectorPosition,
+    synthesize_connector,
+)
 from kicad_mcp.utils.firmware.intent import (
+    ConnectorLegend,
     DesignIntent,
     Endpoint,
     Gap,
     Net,
     Peripheral,
+    Placement,
 )
+from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 
 def _first(signals: dict[str, int], *roles: str) -> Optional[int]:
@@ -49,6 +56,7 @@ class Expansion:
     new_nets: list[Net] = field(default_factory=list)
     resolved: list[str] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)   # new gaps a template surfaces
+    legends: list[ConnectorLegend] = field(default_factory=list)  # connector silk legends
 
 
 class RefAllocator:
@@ -79,14 +87,60 @@ def _res(alloc: RefAllocator, value: str, footprint: str) -> Peripheral:
                       footprint=footprint, origin="template")
 
 
+def _emit_connector(
+    ex: Expansion,
+    alloc: RefAllocator,
+    positions: list[ConnectorPosition],
+    *,
+    device: str,
+    placement: Optional[Placement] = None,
+    connector_type: str = "pin_header",
+    value: Optional[str] = None,
+) -> tuple[Peripheral, dict[str, Endpoint]]:
+    """Synthesize a connector for ``positions`` (via the ONE §4 helper) and fold
+    the common parts into ``ex``: the Peripheral into ``components``, every
+    power-rail position onto ``power`` (so the rail-merge dedups it), and the silk
+    legend into ``legends``. Returns ``(connector, {net_name: terminal_endpoint})``
+    for the SIGNAL positions, so the caller wires each into a fresh net together
+    with its near-side (MCU/amp) endpoint — avoiding the join-before-new_nets
+    ordering hazard in ``expand_intent``. ``placement`` overrides the connector
+    type/footprint from board.yaml."""
+    ctype = placement.connector if placement and placement.connector else connector_type
+    footprint = placement.footprint if placement else None
+    conn, joins, legend = synthesize_connector(
+        positions, alloc=alloc.next, device=device, connector_type=ctype,
+        footprint=footprint, value=value,
+    )
+    ex.components.append(conn)
+    ex.legends.append(legend)
+    signal_eps: dict[str, Endpoint] = {}
+    for net_name, ep in joins:
+        if net_name in _RAILS:
+            ex.power.append((net_name, ep))   # rail tap (power delivered over wire)
+        else:
+            signal_eps[net_name] = ep
+    return conn, signal_eps
+
+
+def _peripheral_is_remote(intent: DesignIntent, p: Peripheral) -> bool:
+    """A carded peripheral declared fully ``remote`` in board.yaml is not placed,
+    so it gets no on-board support glue (its bypass/straps live at the device).
+    Power is still delivered over the wire — via the terminal's +3V3/GND taps."""
+    pl = intent.placements.get(p.ref)
+    return (pl is not None and pl.locus == "remote") or p.locus == "remote"
+
+
 def _ic_power_pins(intent: DesignIntent) -> list[tuple[str, list[str], list[str]]]:
-    """(ref, supply_pin_names, ground_pin_names) for every placed IC."""
+    """(ref, supply_pin_names, ground_pin_names) for every placed IC. Remote
+    peripherals are excluded — they are not on the board (glue suppression)."""
     out: list[tuple[str, list[str], list[str]]] = []
     if intent.mcu is not None:
         mi = K.resolve_mcu_by_part(intent.mcu.part)
         if mi is not None:
             out.append((intent.mcu.ref, [mi["supply_pin"]], [mi["ground_pin"]]))
     for p in intent.peripherals:
+        if _peripheral_is_remote(intent, p):
+            continue
         info = K.resolve_peripheral(p.type)
         if info is not None:
             out.append((p.ref, list(info["supply_pins"]), list(info["ground_pins"])))
@@ -204,6 +258,8 @@ def device_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     An out-of-range address is flagged as a gap, never silently strapped."""
     ex = Expansion()
     for p in intent.peripherals:
+        if _peripheral_is_remote(intent, p):
+            continue   # remote device configures itself off-board (glue suppression)
         info = K.resolve_peripheral(p.type)
         if info is None or "config" not in info:
             continue
@@ -312,8 +368,11 @@ def _header(alloc: RefAllocator, hdr: tuple[str, str], value: str) -> Peripheral
 def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     """Each I2S-output bus -> a stereo MAX98357A pair (L/R) with shared BCLK/LRC,
     per-channel DIN via 1kΩ isolators, SD_MODE channel straps (L→GND, R→+3V3),
-    decoupling, and a 2-pin speaker header per channel. GAIN is left at the 9 dB
-    Hi-Z default (the GAIN GPIO stays a flagged orphan)."""
+    decoupling, and a 2-pin speaker connector per channel (the unified §4 helper,
+    so it carries a silk legend). The amps stay on-board; the speaker leads always
+    cross out to a connector — a pin header by default, or a screw terminal when
+    the bus is declared ``on_board_with_remote_io`` in board.yaml. GAIN is left at
+    the 9 dB Hi-Z default (the GAIN GPIO stays a flagged orphan)."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
@@ -328,6 +387,10 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         din_g = bus.signals.get("DIN")
         if bclk_g is None or lrc_g is None or din_g is None:
             continue
+        pl = intent.placements.get(bus.name)
+        spk_type = ("screw_terminal"
+                    if pl is not None and pl.locus == "on_board_with_remote_io"
+                    else "pin_header")
         b_net, l_net, d_net = f"I2S{idx}_BCLK", f"I2S{idx}_LRC", f"I2S{idx}_DIN"
         # MCU drives the shared clocks + data bus.
         ex.joins += [(b_net, Endpoint(ref=mcu, gpio=bclk_g)),
@@ -350,14 +413,18 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
             ex.joins.append((d_net, Endpoint(ref=r.ref, pin="1")))
             ex.new_nets.append(_passive_net(f"I2S{idx}{side}_DIN",
                 Endpoint(ref=r.ref, pin="2"), Endpoint(ref=amp.ref, pin=M["din"])))
-            # speaker header
-            spk = _header(alloc, K.HDR_1X2, f"SPK{idx}{side}")
-            ex.components.append(spk)
+            # speaker connector (unified §4 helper -> carries a silk legend).
+            p_net, n_net = f"SPK{idx}{side}_P", f"SPK{idx}{side}_N"
+            _spk, te = _emit_connector(
+                ex, alloc,
+                [ConnectorPosition(p_net, f"{side}+"),
+                 ConnectorPosition(n_net, f"{side}-")],
+                device=(pl.device if pl and pl.device else "Speaker"),
+                connector_type=spk_type, value=f"SPK{idx}{side}",
+            )
             ex.new_nets += [
-                _passive_net(f"SPK{idx}{side}_P", Endpoint(ref=amp.ref, pin=M["outp"]),
-                             Endpoint(ref=spk.ref, pin="1")),
-                _passive_net(f"SPK{idx}{side}_N", Endpoint(ref=amp.ref, pin=M["outn"]),
-                             Endpoint(ref=spk.ref, pin="2")),
+                _passive_net(p_net, Endpoint(ref=amp.ref, pin=M["outp"]), te[p_net]),
+                _passive_net(n_net, Endpoint(ref=amp.ref, pin=M["outn"]), te[n_net]),
             ]
         # decoupling for the amp-pair supply
         cb, cbu = _cap(alloc, "100nF", K.FP_C_BYPASS), _cap(alloc, "10uF", K.FP_C_BULK)
@@ -370,7 +437,10 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
 
 
 def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """Each I2S-input bus -> an SPH0645 MEMS mic (SEL→GND, VDD bypass)."""
+    """Each I2S-input bus -> an SPH0645 MEMS mic (SEL→GND, VDD bypass), UNLESS the
+    bus is declared ``remote`` in board.yaml — then the mic is field-wired and the
+    bus crosses to a screw terminal instead of an on-board chip (no chip, no
+    bypass: the device's support glue lives at the device)."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
@@ -383,6 +453,10 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         ws_g = _first(bus.signals, "WS", "LRC")
         sd_g = _first(bus.signals, "SD", "DOUT")
         if bclk_g is None or ws_g is None or sd_g is None:
+            continue
+        pl = intent.placements.get(bus.name)
+        if pl is not None and pl.locus == "remote":
+            _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl)
             continue
         mic = Peripheral(ref=alloc.next("MK"), type="SPH0645", lib_id=S["lib_id"],
                          value="SPH0645LM4H", footprint=S["footprint"], origin="template")
@@ -399,6 +473,35 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
             _passive_net("MIC_SD", Endpoint(ref=mcu, gpio=sd_g), Endpoint(ref=mic.ref, pin=S["data"])),
         ]
     return ex
+
+
+def _emit_remote_mic(
+    ex: Expansion, alloc: RefAllocator, mcu: str,
+    bclk_g: int, ws_g: int, sd_g: int, pl: Placement,
+) -> None:
+    """Field-wired I2S mic: a screw terminal carries the three I2S signals plus a
+    +3V3/GND tap (power delivered over the wire)."""
+    device = pl.device or "I2S mic"
+    positions = [
+        ConnectorPosition("MIC_BCLK", "BCLK"),
+        ConnectorPosition("MIC_WS", "WS"),
+        ConnectorPosition("MIC_SD", "SD"),
+        ConnectorPosition("+3V3", "+3V3"),
+        ConnectorPosition("GND", "GND"),
+    ]
+    conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
+                               connector_type="screw_terminal")
+    ex.new_nets += [
+        _passive_net("MIC_BCLK", Endpoint(ref=mcu, gpio=bclk_g), te["MIC_BCLK"]),
+        _passive_net("MIC_WS", Endpoint(ref=mcu, gpio=ws_g), te["MIC_WS"]),
+        _passive_net("MIC_SD", Endpoint(ref=mcu, gpio=sd_g), te["MIC_SD"]),
+    ]
+    ex.gaps.append(Gap(
+        "remote_device",
+        f"{device} (I2S mic): remote — field-wired to {conn.ref} "
+        f"(5-pos screw terminal); sourced off-board.",
+        resolved=True, resolved_by="placement", resolved_components=[conn.ref],
+    ))
 
 
 def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
@@ -436,7 +539,9 @@ def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
 
 def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     """Each UART bus -> a 4-pin module header (GND/VCC/TX/RX) + bypass.
-    Header TX -> MCU RX, header RX <- MCU TX (crossover)."""
+    Header TX -> MCU RX, header RX <- MCU TX (crossover). A bus declared
+    ``remote`` in board.yaml crosses to a screw terminal instead (field-wired
+    sensor, e.g. an LD2410 on flying leads)."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
@@ -448,6 +553,11 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         rx_g = _first(bus.signals, "RX", "RXD")
         tx_g = _first(bus.signals, "TX", "TXD")
         if rx_g is None or tx_g is None:
+            continue
+        pl = intent.placements.get(bus.name)
+        if pl is not None and pl.locus == "remote":
+            _emit_remote_uart(ex, alloc, mcu, n, rx_g, tx_g, pl)
+            n += 1
             continue
         j = _header(alloc, K.HDR_1X4, f"UART{n}")
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
@@ -464,6 +574,81 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+def _emit_remote_uart(
+    ex: Expansion, alloc: RefAllocator, mcu: str, n: int,
+    rx_g: int, tx_g: int, pl: Placement,
+) -> None:
+    """Field-wired UART sensor: a screw terminal carries RX/TX + a +3V3/GND tap."""
+    device = pl.device or "UART device"
+    rx_net, tx_net = f"UART{n}_RX", f"UART{n}_TX"
+    positions = [
+        ConnectorPosition(rx_net, "RX"),
+        ConnectorPosition(tx_net, "TX"),
+        ConnectorPosition("+3V3", "+3V3"),
+        ConnectorPosition("GND", "GND"),
+    ]
+    conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
+                               connector_type="screw_terminal")
+    ex.new_nets += [
+        _passive_net(rx_net, Endpoint(ref=mcu, gpio=rx_g), te[rx_net]),
+        _passive_net(tx_net, Endpoint(ref=mcu, gpio=tx_g), te[tx_net]),
+    ]
+    ex.gaps.append(Gap(
+        "remote_device",
+        f"{device} (UART): remote — field-wired to {conn.ref} "
+        f"(4-pos screw terminal); sourced off-board.",
+        resolved=True, resolved_by="placement", resolved_components=[conn.ref],
+    ))
+
+
+def _short_label(net_name: str, role: Optional[str]) -> str:
+    """Silk label for a crossing signal: its firmware role if known, else the net
+    name with a leading bus prefix trimmed (``I2C0_SDA`` -> ``SDA``)."""
+    if role:
+        return role
+    if "_" in net_name:
+        return net_name.rsplit("_", 1)[-1]
+    return net_name
+
+
+def remote_peripherals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """A CARDED peripheral declared ``remote`` in board.yaml (keyed by its ref) is
+    field-wired: every signal net it touches crosses to a screw terminal, plus a
+    +3V3/GND tap. The peripheral stays in the intent (for the BOM) but is excluded
+    from placement by the generator, so its own pin endpoints drop out and only
+    the terminal is wired. Its support glue is already suppressed (``_ic_power_pins``
+    / ``device_config`` skip it)."""
+    ex = Expansion()
+    for p in intent.peripherals:
+        pl = intent.placements.get(p.ref)
+        if pl is None or pl.locus != "remote":
+            continue
+        # Signal nets this peripheral touches (rails excluded — power crosses as a
+        # tap, not a retarget). One position per net, first-seen label wins.
+        seen: dict[str, str] = {}
+        for net in intent.nets:
+            if net.name in _RAILS:
+                continue
+            role = next((ep.role for ep in net.endpoints if ep.ref == p.ref), None)
+            if any(ep.ref == p.ref for ep in net.endpoints) and net.name not in seen:
+                seen[net.name] = _short_label(net.name, role)
+        device = pl.device or p.value or p.type
+        positions = [ConnectorPosition(nn, lbl) for nn, lbl in seen.items()]
+        positions += [ConnectorPosition("+3V3", "+3V3"), ConnectorPosition("GND", "GND")]
+        conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
+                                   connector_type="screw_terminal")
+        # Signal nets already exist (from import) — join the terminal onto them.
+        for net_name, ep in te.items():
+            ex.joins.append((net_name, ep))
+        ex.gaps.append(Gap(
+            "remote_device",
+            f"{device} ({p.type}): remote — field-wired to {conn.ref} "
+            f"({len(positions)}-pos screw terminal); sourced off-board.",
+            resolved=True, resolved_by="placement", resolved_components=[conn.ref],
+        ))
+    return ex
+
+
 _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] = [
     ("power_tree", power_tree),
     ("decoupling", decoupling),
@@ -475,6 +660,7 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
     ("i2c_device_header", i2c_device_header),
     ("uart_device_header", uart_device_header),
     ("device_config", device_config),
+    ("remote_peripherals", remote_peripherals),
 ]
 
 
@@ -513,6 +699,8 @@ def expand_intent(intent: DesignIntent) -> DesignIntent:
 
         for g in ex.gaps:               # new gaps a template surfaces directly
             intent.gaps.append(g)
+
+        intent.connector_legends.extend(ex.legends)   # synthesized-terminal silk
 
         for kind in ex.resolved:
             gap = gaps_by_kind.get(kind)

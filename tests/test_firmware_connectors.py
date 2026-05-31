@@ -27,7 +27,7 @@ class _Alloc:
 
 
 def _pos(*pairs):
-    return [ConnectorPosition(net_name=n, label=l) for n, l in pairs]
+    return [ConnectorPosition(net_name=n, label=lbl) for n, lbl in pairs]
 
 
 # --- symbol sizing -----------------------------------------------------------

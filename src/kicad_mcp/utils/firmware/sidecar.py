@@ -17,6 +17,14 @@ extra_connectors:
     lib_id: Connector:Barrel_Jack
     footprint: "Connector_BarrelJack:BarrelJack_Horizontal"
     nets: {"1": "+5V", "2": "GND"}
+placement:                     # WHERE each device lives (board-level, firmware-blind)
+  CMCA_MIC:                    # keyed by bus stem (or a peripheral ref like U2)
+    locus: remote              # not placed; its signals cross to a screw terminal
+    device: INMP441            # human-supplied identity (firmware names it only in a comment)
+  CMCA_I2S:
+    locus: on_board_with_remote_io   # amp stays on board; speaker leads cross out
+    device: MAX98357A
+    external_io: [outp, outn]
 ```
 """
 from __future__ import annotations
@@ -29,10 +37,20 @@ from typing import Any, Optional
 import yaml
 
 from kicad_mcp.utils.firmware.cards import valid_lib_id
-from kicad_mcp.utils.firmware.intent import DesignIntent, Endpoint, Net, Peripheral
+from kicad_mcp.utils.firmware.connectors import VALID_CONNECTOR_TYPES
+from kicad_mcp.utils.firmware.intent import (
+    DesignIntent,
+    Endpoint,
+    Gap,
+    Net,
+    Placement,
+    Peripheral,
+    VALID_LOCI,
+)
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 _POWER_SOURCES = frozenset({"usb_c", "usb", "barrel", "header", "battery", "screw_terminal"})
+_CONNECTOR_KINDS = VALID_CONNECTOR_TYPES
 _SIDECAR_NAME = "board.yaml"
 
 # A valid KiCad reference is a letter prefix + number (e.g. J1) — no underscores.
@@ -62,6 +80,41 @@ class BoardSidecar:
     power_source: Optional[str] = None
     board_size_mm: Optional[list[float]] = None
     extra_connectors: list[dict[str, Any]] = field(default_factory=list)
+    # placement directives, keyed by bus stem (CMCA_MIC) or peripheral ref (U2).
+    placement: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
+    """Structural validation of the ``placement`` section (no intent yet — the
+    key-exists-in-intent check happens in ``apply_sidecar``)."""
+    placement = d.get("placement")
+    if placement is None:
+        return
+    if not isinstance(placement, dict):
+        errs.append("placement must be a mapping of device-key -> directive")
+        return
+    for key, spec in placement.items():
+        where = f"placement[{key!r}]"
+        if not isinstance(spec, dict):
+            errs.append(f"{where}: must be a mapping")
+            continue
+        locus = spec.get("locus")
+        if locus not in VALID_LOCI:
+            errs.append(f"{where}: locus {locus!r} not in {list(VALID_LOCI)}")
+        conn = spec.get("connector")
+        if conn is not None and conn not in _CONNECTOR_KINDS:
+            errs.append(f"{where}: connector {conn!r} not in {sorted(_CONNECTOR_KINDS)}")
+        if "device" in spec and not isinstance(spec["device"], str):
+            errs.append(f"{where}: device must be a string")
+        if "footprint" in spec and not isinstance(spec["footprint"], str):
+            errs.append(f"{where}: footprint must be a string")
+        eio = spec.get("external_io")
+        if eio is not None and not (isinstance(eio, list)
+                                    and all(isinstance(r, str) for r in eio)):
+            errs.append(f"{where}: external_io must be a list of role strings")
+        if locus == "on_board_with_remote_io" and not eio:
+            errs.append(f"{where}: on_board_with_remote_io requires a non-empty "
+                        "external_io list (the roles that cross to a terminal)")
 
 
 def _validate(d: dict[str, Any]) -> list[str]:
@@ -92,6 +145,7 @@ def _validate(d: dict[str, Any]) -> list[str]:
             for pin, net in nets.items():
                 if not isinstance(pin, str) or not isinstance(net, str):
                     errs.append(f"{where}: nets entries must be pin_str -> net_str")
+    _validate_placement(d, errs)
     return errs
 
 
@@ -112,6 +166,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         power_source=data.get("power_source"),
         board_size_mm=data.get("board_size_mm"),
         extra_connectors=list(data.get("extra_connectors", []) or []),
+        placement=dict(data.get("placement", {}) or {}),
     )
 
 
@@ -175,4 +230,35 @@ def apply_sidecar(
 
     if added_refs:
         _resolve_gap(intent, "connectors", source_name, added_refs)
+
+    _apply_placement(intent, sidecar.placement)
     return intent
+
+
+def _apply_placement(intent: DesignIntent, placement: dict[str, dict[str, Any]]) -> None:
+    """Record placement directives into ``intent.placements`` (the single source
+    consulted by the locus-aware templates + generator) and project the realized
+    locus onto each addressed peripheral. A key that binds to neither a bus stem
+    nor a peripheral ref is surfaced as a gap — never silently ignored."""
+    if not placement:
+        return
+    bus_names = {b.name for b in intent.buses}
+    periph_by_ref = {p.ref: p for p in intent.peripherals}
+    for key, spec in placement.items():
+        pl = Placement(
+            locus=spec.get("locus", "on_board"),
+            device=spec.get("device"),
+            connector=spec.get("connector", "screw_terminal"),
+            footprint=spec.get("footprint"),
+            external_io=list(spec.get("external_io", []) or []),
+        )
+        intent.placements[key] = pl
+        if key in periph_by_ref:
+            periph_by_ref[key].locus = pl.locus
+        elif key not in bus_names:
+            intent.gaps.append(Gap(
+                "placement_unknown_target",
+                f"board.yaml placement key {key!r} matches no bus stem "
+                f"{sorted(bus_names)} or peripheral ref "
+                f"{sorted(periph_by_ref)}; directive ignored.",
+            ))
