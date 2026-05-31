@@ -37,14 +37,16 @@ from typing import Any, Optional
 import yaml
 
 from kicad_mcp.utils.firmware.cards import valid_lib_id
-from kicad_mcp.utils.firmware.connectors import VALID_CONNECTOR_TYPES
+from kicad_mcp.utils.firmware.connectors import (
+    ConnectorPosition,
+    VALID_CONNECTOR_TYPES,
+    synthesize_connector,
+)
 from kicad_mcp.utils.firmware.intent import (
     DesignIntent,
-    Endpoint,
     Gap,
     Net,
     Placement,
-    Peripheral,
     VALID_LOCI,
 )
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
@@ -209,15 +211,26 @@ def apply_sidecar(
         friendly = str(c["ref"])
         ref = _normalize_ref(friendly, existing_refs)   # KiCad-valid (J1, …)
         existing_refs.add(ref)
-        p = Peripheral(
-            ref=ref, type="CONN", lib_id=c["lib_id"],
-            value=c.get("value", friendly),              # keep the friendly name
-            footprint=c.get("footprint"), origin="user",
+        # Route through the unified §4 helper for ref/pin-count validation + a silk
+        # legend (the two mechanics this fragment lacked). The user supplies the
+        # symbol + explicit pin→net map, so lib_id/pins are passed verbatim and the
+        # pre-normalized ref is handed back by a fixed allocator.
+        positions = [ConnectorPosition(net_name=str(net), label=str(net), pin=str(pin))
+                     for pin, net in c["nets"].items()]
+
+        def _fixed_alloc(_prefix: str, _r: str = ref) -> str:
+            return _r   # ref was already normalized above; honor it verbatim
+
+        conn, joins, legend = synthesize_connector(
+            positions, alloc=_fixed_alloc, connector_type="pluggable",
+            device=str(c.get("value", friendly)), lib_id=c["lib_id"],
+            footprint=c.get("footprint"), value=c.get("value", friendly),
+            origin="user",
         )
-        intent.peripherals.append(p)
+        intent.peripherals.append(conn)
+        intent.connector_legends.append(legend)
         added_refs.append(ref)
-        for pin, net_name in c["nets"].items():
-            ep = Endpoint(ref=ref, pin=str(pin))
+        for net_name, ep in joins:
             tgt = nets_by_name.get(net_name)
             if tgt is not None:
                 tgt.endpoints.append(ep)
@@ -233,6 +246,32 @@ def apply_sidecar(
 
     _apply_placement(intent, sidecar.placement)
     return intent
+
+
+# Bus types that are USUALLY field-wired transducers/sensors. Open Decision 1:
+# locus defaults to on_board (never a silent remote), but the importer NUDGES the
+# user to declare a locus for these so a remote device isn't forgotten.
+_COMMONLY_REMOTE_BUS_TYPES = frozenset({"I2S_IN", "I2S_OUT", "UART"})
+
+
+def advise_unspecified_placement(intent: DesignIntent) -> None:
+    """Append one advisory gap listing commonly-field-wired buses that have no
+    ``placement:`` directive — a prompt to set their locus, NOT an assumption.
+    Idempotent: does nothing if such an advisory is already present (so a
+    re-import doesn't stack duplicates)."""
+    if any(g.kind == "placement_unspecified" for g in intent.gaps):
+        return
+    unset = sorted(b.name for b in intent.buses
+                   if b.type in _COMMONLY_REMOTE_BUS_TYPES
+                   and b.name not in intent.placements)
+    if unset:
+        intent.gaps.append(Gap(
+            "placement_unspecified",
+            f"Buses {unset} are commonly field-wired (mic / speaker / sensor) but "
+            "have no board.yaml `placement:` directive — defaulting to on_board. "
+            "Set locus: remote (or on_board_with_remote_io) for any wired in from "
+            "off-board.",
+        ))
 
 
 def _apply_placement(intent: DesignIntent, placement: dict[str, dict[str, Any]]) -> None:

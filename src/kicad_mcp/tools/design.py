@@ -44,6 +44,7 @@ from kicad_mcp.utils.firmware.intent import (
 from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
 from kicad_mcp.utils.firmware.sidecar import (
     SidecarError,
+    advise_unspecified_placement,
     apply_sidecar,
     find_sidecar,
     load_sidecar,
@@ -71,18 +72,45 @@ def _find_config_header(firmware_path: str) -> Optional[Path]:
     return None
 
 
+def _peripheral_entry(intent: DesignIntent, p: Any) -> dict[str, Any]:
+    """One manifest row. ``locus`` is carried only when a peripheral is NOT a
+    plain on-board part, so the BOM distinguishes placed parts, documented
+    off-board devices, and the terminals they land on (§8)."""
+    pl = intent.placements.get(p.ref)
+    locus = pl.locus if pl is not None else p.locus
+    entry: dict[str, Any] = {"ref": p.ref, "type": p.type}
+    if locus != "on_board":
+        entry["locus"] = locus
+    return entry
+
+
 def _summary(intent: DesignIntent) -> dict[str, Any]:
     by_kind: dict[str, int] = {}
     for n in intent.nets:
         by_kind[n.kind] = by_kind.get(n.kind, 0) + 1
-    return {
+    # Field-wired devices: documented off-board, with the terminal they land on
+    # (from the remote_device gaps the templates emit) — honest BOM (§8).
+    remote_devices = [
+        {"detail": g.detail,
+         "terminal": g.resolved_components[0] if g.resolved_components else None}
+        for g in intent.gaps if g.kind == "remote_device"
+    ]
+    out: dict[str, Any] = {
         "mcu": intent.mcu.part if intent.mcu else None,
-        "peripherals": [{"ref": p.ref, "type": p.type} for p in intent.peripherals],
+        "peripherals": [_peripheral_entry(intent, p) for p in intent.peripherals],
         "net_count": len(intent.nets),
         "nets_by_kind": by_kind,
         "gap_count": len(intent.gaps),
         "unmodeled_macros": intent.provenance.get("unparsed_count", 0),
     }
+    if remote_devices:
+        out["remote_devices"] = remote_devices
+    if intent.connector_legends:
+        out["terminals"] = [
+            {"ref": L.ref, "device": L.device, "positions": L.positions}
+            for L in intent.connector_legends
+        ]
+    return out
 
 
 def _gaps_list(intent: DesignIntent) -> list[dict[str, str]]:
@@ -151,6 +179,9 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
             return {"status": "error", "code": "invalid_sidecar",
                     "message": f"Malformed {sidecar_path}: {e}"}
         sidecar_applied = sidecar_path
+
+    # Nudge (don't assume): list commonly-field-wired buses with no locus set.
+    advise_unspecified_placement(intent)
 
     dest = Path(out_path) if out_path else cfg.parent / "design_intent.yaml"
     try:
