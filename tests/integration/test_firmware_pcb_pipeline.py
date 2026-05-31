@@ -172,6 +172,89 @@ def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
     assert len(refs_on("I2S0_BCLK")) == 3               # MCU + 2 amps share the clock
 
 
+def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
+    """Placement locus on the audio node: a board.yaml declares the mic + presence
+    sensor REMOTE (field-wired) and the amps on_board_with_remote_io. The board
+    builds with screw terminals instead of the SPH0645/LD2410, routes ~complete,
+    and the synthesized terminals carry a silk legend (the field-wiring doc).
+
+    The on-board audio path is still gated by test_audio_s3_to_routed_pcb above —
+    this adds the remote shape without losing that coverage."""
+    import shutil
+
+    from kicad_mcp.tools.pcb_silkscreen import _op_check_silkscreen_overlaps
+
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+
+    # Stage the audio firmware + a board.yaml in tmp (board.yaml is auto-detected
+    # next to config.h; the canonical fixture stays pristine / on-board).
+    fw = tmp_path / "fw"
+    fw.mkdir()
+    shutil.copy(AUDIO_CONFIG_H, fw / "config.h")
+    shutil.copy(AUDIO_CONFIG_H.parent / "platformio.ini", fw / "platformio.ini")
+    (fw / "board.yaml").write_text(
+        "placement:\n"
+        "  CMCA_MIC: {locus: remote, device: INMP441}\n"
+        "  CMCA_PRESENCE: {locus: remote, device: LD2410}\n"
+        "  CMCA_I2S: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+        "  CMCA_I2S2: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+    )
+
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "ar.kicad_sch"
+    pro = tmp_path / "ar.kicad_pro"
+
+    r1 = design(operation="import_firmware", firmware_path=str(fw / "config.h"),
+                out_path=str(intent))
+    assert r1["status"] == "ok"
+    assert r1["sidecar"] is not None
+
+    r2 = design(operation="expand_templates", intent_path=str(intent))
+    assert r2["status"] == "ok"
+    # After expansion the manifest reports the field-wired devices off-board, with
+    # their terminals (the terminals are synthesized during template expansion).
+    assert r2["summary"].get("remote_devices")
+
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    r4 = build(project_path=str(pro), board_width_mm=110, board_height_mm=90,
+               autoroute_passes=4, export_gerbers=False, intent_path=str(intent))
+    assert r4["status"] == "ok"
+    assert r4["pads_assigned"] > 0
+    _assert_mostly_routed(r4, max_unrouted=4)
+    assert r4["steps"]["zones"]["zones_added"] >= 1
+
+    # The silk-legend step ran and labelled the synthesized terminals.
+    silk = r4["steps"]["silkscreen_legends"]
+    assert silk.get("labels_added", 0) > 0
+    assert not silk.get("missing_refs")
+
+    from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+    nl = extract_netlist_via_cli(str(sch))
+    vals = [c.get("value") for c in nl["components"].values()]
+    # NO on-board mic substitute / presence header — they are field-wired terminals.
+    assert "SPH0645LM4H" not in vals
+    assert vals.count("INMP441") == 1 and vals.count("LD2410") == 1
+    # Amps stay on board (two stereo pairs).
+    assert vals.count("MAX98357A") == 4
+
+    def refs_on(net):
+        return {x["component"] for x in nl["nets"].get(net, [])}
+    # The mic terminal sits on the I2S mic clock the MCU drives.
+    assert len(refs_on("MIC_BCLK")) >= 2     # MCU + terminal
+    assert "U1" in refs_on("+3V3")
+
+    # No legend label overlaps a pad (the field-wiring silk must stay readable).
+    ov = _op_check_silkscreen_overlaps(str(pro).replace(".kicad_pro", ".kicad_pcb"))
+    pad_hits = {o.get("silk_text") for o in ov.get("overlaps", [])}
+    assert not (pad_hits & {"BCLK", "WS", "SD", "RX", "TX"}), (
+        f"legend label overlaps a pad: {pad_hits}")
+
+
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     """The THIRD board shape: an I2C sensor-hub (track-geometry car). Exercises
     the generalization that matters here — MULTIPLE address-declared devices,

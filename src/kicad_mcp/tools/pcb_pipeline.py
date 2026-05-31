@@ -973,17 +973,19 @@ print(json.dumps({
 
 
 def _step_silkscreen_legends(
-    pcb_path: str, legends: List[Dict[str, Any]], offset_mm: float = 2.0,
+    pcb_path: str, legends: List[Dict[str, Any]], margin_mm: float = 0.5,
 ) -> Dict[str, Any]:
     """Add a per-position silk legend to each synthesized connector/terminal.
 
     For a field-wired terminal the silk legend IS the wiring documentation, so a
     connector is not complete without it (placement-locus §7.1). For each
-    ``ConnectorLegend`` (``{ref, positions, device}``): label every pad
-    ``i`` (1-indexed) with ``positions[i-1]`` placed ``offset_mm`` above the pad
-    centre, and set the footprint value to the device identity. After labelling,
-    the existing silk overlap auto-fixer nudges any silk-over-pad clear (shared
-    single source — same machinery the audit router uses)."""
+    ``ConnectorLegend`` (``{ref, positions, device}``): label every pad ``i``
+    (1-indexed) with ``positions[i-1]`` placed ``margin_mm`` above that pad's TOP
+    EDGE (adaptive — terminal-block pads are large, so a fixed centre-offset would
+    sit on the pad), and set the footprint value to the device identity. After
+    labelling, the existing silk overlap auto-fixer tidies footprint fields the
+    new text may crowd (shared single source — same machinery the audit router
+    uses)."""
     if not legends:
         return {"status": "ok", "labels_added": 0, "skipped": "no connector legends"}
 
@@ -992,8 +994,8 @@ import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
-offset = pcbnew.FromMM(params["offset_mm"])
-size = pcbnew.FromMM(1.0)
+margin = pcbnew.FromMM(params["margin_mm"])
+size = pcbnew.FromMM(0.8)
 thick = pcbnew.FromMM(0.15)
 silk = board.GetLayerID("F.SilkS")
 
@@ -1015,9 +1017,13 @@ for leg in params["legends"]:
         if idx < 0 or idx >= len(positions) or not positions[idx]:
             continue
         p = pad.GetPosition()
+        bb = pad.GetBoundingBox()
+        # Place the text CENTRE above the pad's top edge so its bbox is y-disjoint
+        # from the pad (touching counts as overlap, so include half the glyph).
+        ty = bb.GetTop() - margin - size // 2
         txt = pcbnew.PCB_TEXT(board)
         txt.SetText(positions[idx])
-        txt.SetPosition(pcbnew.VECTOR2I(p.x, p.y - offset))
+        txt.SetPosition(pcbnew.VECTOR2I(p.x, ty))
         txt.SetLayer(silk)
         txt.SetTextSize(pcbnew.VECTOR2I(size, size))
         txt.SetTextThickness(thick)
@@ -1029,7 +1035,7 @@ print(json.dumps({"status": "ok", "labels_added": labels_added,
                   "missing_refs": missing}))
 """
     res = run_pcbnew_script(script, params={
-        "pcb_path": pcb_path, "legends": legends, "offset_mm": offset_mm,
+        "pcb_path": pcb_path, "legends": legends, "margin_mm": margin_mm,
     }, timeout=60.0)
     # Tidy footprint refdes/value silk the new labels may crowd (best-effort).
     # NOTE: the auto-fixer relocates footprint FIELDS, not the free-text legend
