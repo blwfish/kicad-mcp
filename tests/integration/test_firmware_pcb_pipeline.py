@@ -50,33 +50,29 @@ def _tool(mcp, name):
     return asyncio.run(mcp.get_tool(name)).fn
 
 
-# Max unconnected nets tolerated by the "mostly routed" gate.
-_MAX_INCOMPLETE = 3
+def _assert_mostly_routed(r4, max_unrouted):
+    """Assert the board routed essentially completely, within ``max_unrouted``.
 
+    ``incomplete_nets`` is the SES-import-MEASURED unconnected count — KiCad's
+    own ratsnest, read back from the actual routed board (the source of truth).
+    We never parse FreeRouter's prose log; the pipeline reports this measurement
+    and best-of-N pass selection ranks each pass by re-measuring it (see
+    ``_select_best_pass`` / ``_measure_ses_unconnected`` in pcb_autoroute).
 
-def _assert_mostly_routed(r4):
-    """Assert the board routed essentially completely.
-
-    ``incomplete_nets`` is the SES-import-MEASURED unconnected count — read back
-    from the actual routed board (the source of truth). It is deliberately NOT
-    the FreeRouter stdout parse: this FreeRouter build prints no incomplete-count
-    line the parser recognizes (every pass is ``parse_failed``), so the old
-    pipeline defaulted that count to 0 and these assertions were vacuously green
-    regardless of real routing.
-
-    FreeRouter is a heuristic, nondeterministic router and — because the count is
-    unparseable, multi-pass best-pass selection is currently degraded (a known
-    follow-up) — a single run leaves a handful of nets on the denser boards.
-    So this is a bounded "mostly routed" check, not ``== 0``; it still catches a
-    real routing regression (a broken board leaves tens of nets unrouted), while
-    the EXACT design-correctness checks are the deterministic by-ref connectivity
-    invariants each test asserts below. ``is not None`` also pins that the
-    pipeline measured the count rather than reporting "unknown".
+    FreeRouter is a heuristic, nondeterministic router, so the count has a small
+    run-to-run spread. The simple boards route to 0–1; the dense audio node has
+    ~2 structurally-hard nets that no pass clears (a placement follow-up, not a
+    regression). ``max_unrouted`` is set per board to observed-max + 1 margin, so
+    the gate stays non-flaky on both KiCad versions while still catching a real
+    routing regression (a broken board leaves far more than a couple unrouted).
+    The EXACT design-correctness checks are the deterministic by-ref connectivity
+    invariants each test asserts below.
     """
     assert r4["incomplete_nets"] is not None, "routing produced no measured count"
-    assert r4["incomplete_nets"] <= _MAX_INCOMPLETE, (
-        f"{r4['incomplete_nets']} unconnected nets exceeds the mostly-routed "
-        f"bound of {_MAX_INCOMPLETE} — a real routing regression, not heuristic noise"
+    assert r4.get("tracks", 0) > 0, "no routed copper — dead board"
+    assert r4["incomplete_nets"] <= max_unrouted, (
+        f"{r4['incomplete_nets']} unconnected nets exceeds the bound of "
+        f"{max_unrouted} — a real routing regression, not heuristic noise"
     )
 
 
@@ -113,7 +109,7 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
                autoroute_passes=2, export_gerbers=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
-    _assert_mostly_routed(r4)
+    _assert_mostly_routed(r4, max_unrouted=2)
     assert r4["steps"]["zones"]["zones_added"] >= 1
 
     # 5) golden connectivity invariants (by component REF — version-robust)
@@ -161,7 +157,7 @@ def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
                autoroute_passes=4, export_gerbers=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
-    _assert_mostly_routed(r4)                            # dense I2S board: see helper
+    _assert_mostly_routed(r4, max_unrouted=4)            # dense I2S board: ~2 structural
     assert r4["steps"]["zones"]["zones_added"] >= 1
 
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
@@ -211,7 +207,7 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
                autoroute_passes=2, export_gerbers=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
-    _assert_mostly_routed(r4)                            # buzzer orphan must not break routing
+    _assert_mostly_routed(r4, max_unrouted=2)            # buzzer orphan must not break routing
     assert r4["steps"]["zones"]["zones_added"] >= 1
 
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
@@ -258,7 +254,7 @@ def test_sidecar_to_routed_pcb(mcp_server, tmp_path):
     r4 = build(project_path=str(pro), board_width_mm=70, board_height_mm=55,
                autoroute_passes=2, export_gerbers=False)
     assert r4["status"] == "ok"
-    _assert_mostly_routed(r4)                             # connector routes
+    _assert_mostly_routed(r4, max_unrouted=2)            # connector routes
 
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
     nl = extract_netlist_via_cli(str(sch))

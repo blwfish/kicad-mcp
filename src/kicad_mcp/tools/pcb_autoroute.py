@@ -137,45 +137,26 @@ def _find_java() -> Optional[str]:
     return None
 
 
-_FREEROUTER_INCOMPLETE_PATTERNS = [
-    re.compile(r"(\d+)\s+connections?\s+not\s+found", re.IGNORECASE),
-    re.compile(r"(\d+)\s+incomplete", re.IGNORECASE),
-]
+def _select_best_pass(
+    pass_meas: list[tuple[str, Optional[int]]],
+) -> tuple[Optional[str], Optional[int]]:
+    """Pick the SES with the fewest KiCad-MEASURED unconnected nets (pure).
 
+    ``pass_meas`` is ``(ses_path, measured_unconnected)`` per ok pass, where the
+    count comes from KiCad's ratsnest after importing that pass (the source of
+    truth — we measure the artifact we'd ship, not FreeRouter's prose log).
 
-def _parse_freerouter_incomplete(stdout: str) -> int | None:
-    """Parse FreeRouter stdout to find the number of incomplete connections.
-
-    Patterns are tried in priority order; the first match across all lines wins.
-    FreeRouter prints lines like:
-        "0 connections not found"
-        "3 connections not found"
-
-    Returns ``None`` when no pattern matches — "unparsed" is distinct from
-    "parsed zero". The old behavior (return 0 = "assume success") let a pass
-    whose output format FreeRouter changed score as perfectly routed and win
-    best-pass selection over a pass that genuinely routed everything.
+    Among passes we could measure, fewest unconnected wins. If NONE could be
+    measured (the measurement subprocess failed) but passes produced output, we
+    still import the first SES so a transient measurement failure doesn't throw
+    away a routed board. Returns ``(ses_path | None, best_measured | None)``.
     """
-    lines = stdout.split("\n")
-    for pattern in _FREEROUTER_INCOMPLETE_PATTERNS:
-        for line in reversed(lines):
-            m = pattern.search(line)
-            if m:
-                return int(m.group(1))
-    return None  # unparsed — caller must distinguish from a real 0
-
-
-def _freerouter_pass_key(incomplete: int | None) -> tuple[int, float]:
-    """Best-pass ranking key (lower wins).
-
-    A pass whose incomplete count parsed cleanly — including a genuine 0 —
-    always ranks before an unparsed pass (None). Among parsed passes, fewer
-    incomplete connections is better. This stops an unrecognized-output pass
-    from being mistaken for a perfect route and winning selection.
-    """
-    if incomplete is None:
-        return (1, float("inf"))
-    return (0, float(incomplete))
+    measured = [(s, m) for s, m in pass_meas if m is not None]
+    if measured:
+        return min(measured, key=lambda sm: sm[1])
+    if pass_meas:
+        return pass_meas[0][0], None
+    return None, None
 
 
 def _export_dsn(
@@ -228,6 +209,28 @@ print(json.dumps({
     }, timeout=30.0)
 
 
+# Ground-truth unconnected check — independent of FreeRouter's output. FreeRouter
+# can report "0 unrouted" while leaving pads unreachable (e.g. a pad on the board
+# edge), and its prose log format drifts between versions. Rebuild the ratsnest
+# from actual copper and ask KiCad's own connectivity engine for an integer.
+# Single source of truth shared by _import_ses (final) and _measure_ses_unconnected
+# (per-pass selection). Requires `board` in scope; leaves `unconnected` set.
+# RecalcNet() was removed in KiCad 10; BuildConnectivity() is the replacement.
+# KiCad 10 also added a required aVisibleOnly argument; KiCad 9 takes none.
+_RATSNEST_COUNT_SNIPPET = """
+connectivity = board.GetConnectivity()
+if hasattr(connectivity, 'RecalcNet'):
+    connectivity.RecalcNet()
+else:
+    board.BuildConnectivity()
+    connectivity = board.GetConnectivity()
+try:
+    unconnected = connectivity.GetUnconnectedCount(False)
+except TypeError:
+    unconnected = connectivity.GetUnconnectedCount()
+"""
+
+
 def _import_ses(pcb_path: str, ses_path: str) -> Dict[str, Any]:
     """Import a Specctra SES file back into the PCB (step 3 of the pipeline)."""
     import_script = """
@@ -248,23 +251,7 @@ vias = sum(1 for t in board.GetTracks() if t.GetClass() == params["via_class"])
 # Count nets
 netinfo = board.GetNetInfo()
 net_count = netinfo.GetNetCount()
-
-# Ground-truth unconnected check — independent of FreeRouter's output parsing.
-# FreeRouter can report "0 incomplete" while leaving pads unreachable (e.g. a
-# pad sitting on the board edge).  Rebuild the ratsnest from actual copper.
-# RecalcNet() was removed in KiCad 10; BuildConnectivity() is the replacement.
-connectivity = board.GetConnectivity()
-if hasattr(connectivity, 'RecalcNet'):
-    connectivity.RecalcNet()
-else:
-    board.BuildConnectivity()
-    connectivity = board.GetConnectivity()
-# KiCad 10 added a required aVisibleOnly argument; KiCad 9 takes none.
-try:
-    unconnected = connectivity.GetUnconnectedCount(False)
-except TypeError:
-    unconnected = connectivity.GetUnconnectedCount()
-
+""" + _RATSNEST_COUNT_SNIPPET + """
 print(json.dumps({
     "status": "ok",
     "ses_imported": True,
@@ -280,6 +267,36 @@ print(json.dumps({
         "track_class": _PCB_TRACK_CLASS,
         "via_class": _PCB_VIA_CLASS,
     }, timeout=30.0)
+
+
+def _measure_ses_unconnected(pcb_path: str, ses_path: str) -> Optional[int]:
+    """Measure how many nets a pass's SES leaves unconnected — WITHOUT saving.
+
+    Imports ``ses_path`` into the pristine pre-route board in memory and asks
+    KiCad's ratsnest for the unconnected count. Because it never calls
+    ``board.Save``, ``pcb_path`` on disk is untouched, so each pass is measured
+    against the same starting board and the real final import still happens once,
+    later, via :func:`_import_ses`. Returns the count, or ``None`` if the
+    measuring subprocess failed (caller treats that as "unranked").
+    """
+    measure_script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
+pcbnew.ImportSpecctraSES(board, params["ses_path"])
+# Deliberately NO board.Save — measure only.
+""" + _RATSNEST_COUNT_SNIPPET + """
+print(json.dumps({"status": "ok", "unconnected": unconnected}))
+"""
+    result = run_pcbnew_script(measure_script, params={
+        "pcb_path": pcb_path,
+        "ses_path": ses_path,
+    }, timeout=30.0)
+    val = result.get("unconnected")
+    if result.get("status") == "ok" and isinstance(val, int):
+        return val
+    return None
 
 
 def _run_freerouter_pass(
@@ -339,9 +356,11 @@ def _run_freerouter_pass(
     if not os.path.exists(ses_path):
         return {"status": "no_output"}
 
-    incomplete = _parse_freerouter_incomplete(stdout)
-    return {"status": "ok", "incomplete": incomplete,
-            "parse_failed": incomplete is None, "stdout": stdout}
+    # Routing succeeded and produced a SES. We do NOT parse FreeRouter's stdout
+    # for the unconnected count — that prose format drifts between versions and
+    # is a second encoding of a number KiCad can measure directly. The caller
+    # ranks this pass by importing the SES and measuring the real ratsnest.
+    return {"status": "ok"}
 
 
 def _run_full_autoroute(
@@ -393,14 +412,11 @@ def _run_full_autoroute(
                 if job:
                     job["phase"] = "routing"
 
-        # Step 2: Run FreeRouter passes
-        best_ses = None
-        best_incomplete: int | None = None
-        # Ranking key: (parse_failed, incomplete). A pass whose incomplete
-        # count parsed cleanly always beats an unparsed one; among parsed
-        # passes, fewer incomplete wins. This keeps an unrecognized-output
-        # pass from winning over a pass that genuinely routed everything.
-        best_key: tuple[int, float] | None = None
+        # Step 2: Run FreeRouter passes, ranking each by KiCad's MEASURED
+        # ratsnest (not FreeRouter's prose log). Each ok pass's SES is imported
+        # into a throwaway copy of the pristine board and the unconnected count
+        # read from KiCad's own connectivity engine; we keep the lowest.
+        pass_meas: list[tuple[str, Optional[int]]] = []
         pass_results: list[dict] = []
 
         for pass_num in range(1, passes + 1):
@@ -433,20 +449,14 @@ def _run_full_autoroute(
             pass_result = {"pass": pass_num, "status": result["status"]}
             if "error" in result:
                 pass_result["error"] = result["error"]
-            if "incomplete" in result:
-                pass_result["incomplete"] = result["incomplete"]
-            if result.get("parse_failed"):
-                pass_result["parse_failed"] = True
+            if result["status"] == "ok":
+                # Measure this pass against the pristine board (no save).
+                measured = _measure_ses_unconnected(pcb_path, pass_ses)
+                pass_result["unconnected"] = measured
+                pass_meas.append((pass_ses, measured))
             pass_results.append(pass_result)
 
-            if result["status"] == "ok":
-                incomplete = result["incomplete"]  # int or None (unparsed)
-                key = _freerouter_pass_key(incomplete)
-                if best_key is None or key < best_key:
-                    best_key = key
-                    best_incomplete = incomplete
-                    best_ses = pass_ses
-
+        best_ses, best_unconnected = _select_best_pass(pass_meas)
         if best_ses is None:
             return {
                 "error": "All FreeRouter passes failed",
@@ -496,10 +506,10 @@ def _run_full_autoroute(
             "net_count": import_result.get("net_count", 0),
             "unconnected_after_routing": unconnected,
             "passes_run": len(pass_results),
-            # int when the winning pass parsed a count; None when the only
-            # ok passes had unrecognized output (incomplete count unknown).
-            "best_incomplete": best_incomplete,
-            "best_incomplete_parsed": best_key is not None and best_key[0] == 0,
+            # Fewest measured unconnected nets across the passes we kept — the
+            # selection metric, equal to unconnected_after_routing for the
+            # winning pass. None only if no pass could be measured.
+            "best_unconnected": best_unconnected,
             "pass_results": pass_results,
             "note": note,
         }
@@ -1010,10 +1020,10 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
           run(pcb_path, freerouter_jar="", passes=1, remove_zones=True,
               net_classes=None)
               -> {status, pcb_path, tracks_after, vias_after, unconnected_after_routing,
-                  passes_run, best_incomplete, note, net_classes_applied?, preflight?}
+                  passes_run, best_unconnected, note, net_classes_applied?, preflight?}
               Synchronous autoroute — waits for completion. Use for short
               routes. FreeRouter is non-deterministic; set passes > 1 to
-              run multiple times and keep the best result.
+              run multiple times and keep the best (fewest unconnected) result.
 
           start(pcb_path, freerouter_jar="", passes=1, remove_zones=True)
               -> {job_id, status, pcb_path, passes, note}

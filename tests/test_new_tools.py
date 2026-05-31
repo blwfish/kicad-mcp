@@ -680,7 +680,7 @@ class TestBuildPcbFromSchematic:
         mock_nets.return_value = {"status": "ok", "pads_assigned": 4, "assignment_errors": [],
                                   "nets_created": 2, "total_nets": 2}
         mock_optimize.return_value = {"status": "ok", "components_placed": 2}
-        mock_route.return_value = {"status": "ok", "tracks_after": 20, "vias_after": 2, "best_incomplete": 0}
+        mock_route.return_value = {"status": "ok", "tracks_after": 20, "vias_after": 2, "unconnected_after_routing": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
@@ -723,7 +723,7 @@ class TestBuildPcbFromSchematic:
         mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": []}
         mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
         mock_optimize.return_value = {"status": "ok", "components_placed": 1}
-        mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "best_incomplete": 0}
+        mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "unconnected_after_routing": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
@@ -828,7 +828,7 @@ class TestBuildPcbFromSchematic:
         mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": []}
         mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
         mock_optimize.return_value = {"status": "ok", "components_placed": 1}
-        mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "best_incomplete": 0}
+        mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "unconnected_after_routing": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
         mock_gerbers.return_value = {"status": "ok", "zip_path": "/tmp/test-gerbers.zip", "total_files": 12}
 
@@ -880,29 +880,20 @@ class TestFinalizePadAssignment:
 
 
 class TestRoutedIncompleteCount:
-    """incomplete_nets must come from the SES-import-MEASURED unconnected count,
-    not the stdout-parsed best_incomplete (which is None on a fully-routed pass
-    that prints no incomplete line, and which the old code defaulted to 0)."""
+    """incomplete_nets comes from the SES-import-MEASURED unconnected count
+    (KiCad's ratsnest), the single source of truth — never a parsed stdout line."""
 
     def _c(self, **step):
         from kicad_mcp.tools.pcb_pipeline import _routed_incomplete_count
         return _routed_incomplete_count(step)
 
-    def test_measured_zero_wins_over_unparsed_best(self):
-        # The exact case that broke CI: fully routed (measured 0) but the
-        # stdout parse found no incomplete line (best_incomplete None).
-        assert self._c(unconnected_after_routing=0, best_incomplete=None) == 0
+    def test_reports_measured_count(self):
+        assert self._c(unconnected_after_routing=3) == 3
 
-    def test_measured_count_is_source_of_truth(self):
-        # Measured disagrees with the stdout parse → trust the board.
-        assert self._c(unconnected_after_routing=3, best_incomplete=0) == 3
+    def test_measured_zero_is_a_real_value(self):
+        # 0 is "fully routed", not "absent" — must report 0, not None.
+        assert self._c(unconnected_after_routing=0) == 0
 
-    def test_falls_back_to_best_incomplete_when_unmeasured(self):
-        assert self._c(best_incomplete=5) == 5
-
-    def test_none_when_neither_available(self):
+    def test_none_when_unreported(self):
+        # autoroute errored before the import/measure step.
         assert self._c() is None
-
-    def test_measured_zero_is_not_treated_as_falsy(self):
-        # 0 is a real value, not "absent" — must not fall through to best.
-        assert self._c(unconnected_after_routing=0, best_incomplete=7) == 0

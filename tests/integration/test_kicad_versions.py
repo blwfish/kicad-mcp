@@ -332,7 +332,7 @@ def test_autoroute_smoke(mcp_server, workspace):
     # FreeRouter pipeline reports per-net progress; assert structural keys
     # only (counts vary with FreeRouter version + board geometry).
     assert "net_count" in result
-    assert "best_incomplete" in result
+    assert "best_unconnected" in result
     assert isinstance(result["net_count"], int) and result["net_count"] >= 0
 
 
