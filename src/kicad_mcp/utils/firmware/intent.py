@@ -26,7 +26,7 @@ from kicad_mcp.utils.firmware.parse import (
     address_base,
 )
 
-SCHEMA_VERSION = 4  # v4: placement locus + connector legends (placement-locus phase)
+SCHEMA_VERSION = 5  # v5: per-ref PCB placement_hints (edge/rotation/fixed override channel)
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -143,6 +143,10 @@ class DesignIntent:
     connector_legends: list[ConnectorLegend] = field(default_factory=list)
     # board.yaml placement directives, keyed by bus stem or peripheral ref.
     placements: dict[str, "Placement"] = field(default_factory=dict)
+    # Per-ref PCB placement overrides keyed by KiCad ref → {edge, rotation, fixed}.
+    # PCB-layer concern, distinct from `placements` (the firmware-semantic locus
+    # channel).  Validated by edge_terminal.normalize_hint before use.
+    placement_hints: dict[str, dict[str, Any]] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -450,6 +454,7 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             k: Placement(**_only_fields(Placement, v))
             for k, v in (d.get("placements", {}) or {}).items()
         },
+        placement_hints=d.get("placement_hints", {}) or {},
         provenance=d.get("provenance", {}),
     )
 

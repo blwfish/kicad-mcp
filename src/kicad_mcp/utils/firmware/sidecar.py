@@ -25,6 +25,11 @@ placement:                     # WHERE each device lives (board-level, firmware-
     locus: on_board_with_remote_io   # amp stays on board; speaker leads cross out
     device: MAX98357A
     external_io: [outp, outn]
+placement_hints:               # per-ref PCB placement overrides (keyed by KiCad ref)
+  J6:                          # the ref as it appears in the generated schematic
+    edge: none                 # top|bottom|left|right|none ("none" = keep interior)
+    rotation: 90               # 0|90|180|270 (omit to use the auto heuristic)
+    fixed: [40, 12]            # absolute [x, y] mm (wins over edge/rotation)
 ```
 """
 from __future__ import annotations
@@ -84,6 +89,8 @@ class BoardSidecar:
     extra_connectors: list[dict[str, Any]] = field(default_factory=list)
     # placement directives, keyed by bus stem (CMCA_MIC) or peripheral ref (U2).
     placement: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # PCB placement-hint overrides {edge, rotation, fixed}, keyed by KiCad ref.
+    placement_hints: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
@@ -121,6 +128,23 @@ def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
         # actually realized; an unrealized locus is flagged at apply time).
 
 
+def _validate_hints(d: dict[str, Any], errs: list[str]) -> None:
+    """Structural validation of ``placement_hints``: keyed by KiCad ref, each
+    entry a mapping.  Per-directive value validation (edge/rotation/fixed) is
+    deferred to ``edge_terminal.normalize_hint`` at build time (drop-with-warning,
+    so a misspelled value doesn't abort the whole build); here only the
+    ref→mapping shape is enforced."""
+    hints = d.get("placement_hints")
+    if hints is None:
+        return
+    if not isinstance(hints, dict):
+        errs.append("placement_hints must be a mapping of ref -> directive")
+        return
+    for key, spec in hints.items():
+        if not isinstance(spec, dict):
+            errs.append(f"placement_hints[{key!r}]: must be a mapping")
+
+
 def _validate(d: dict[str, Any]) -> list[str]:
     errs: list[str] = []
     ps = d.get("power_source")
@@ -150,6 +174,7 @@ def _validate(d: dict[str, Any]) -> list[str]:
                 if not isinstance(pin, str) or not isinstance(net, str):
                     errs.append(f"{where}: nets entries must be pin_str -> net_str")
     _validate_placement(d, errs)
+    _validate_hints(d, errs)
     return errs
 
 
@@ -171,6 +196,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         board_size_mm=data.get("board_size_mm"),
         extra_connectors=list(data.get("extra_connectors", []) or []),
         placement=dict(data.get("placement", {}) or {}),
+        placement_hints=dict(data.get("placement_hints", {}) or {}),
     )
 
 
@@ -247,6 +273,12 @@ def apply_sidecar(
         _resolve_gap(intent, "connectors", source_name, added_refs)
 
     _apply_placement(intent, sidecar.placement)
+
+    # PCB placement-hint overrides (edge/rotation/fixed), keyed by KiCad ref.
+    # Stored raw; normalized + warned-on at build time (build_pcb_from_schematic).
+    for ref, hint in sidecar.placement_hints.items():
+        intent.placement_hints[ref] = dict(hint)
+
     return intent
 
 

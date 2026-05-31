@@ -58,6 +58,10 @@ class Expansion:
     resolved: list[str] = field(default_factory=list)
     gaps: list[Gap] = field(default_factory=list)   # new gaps a template surfaces
     legends: list[ConnectorLegend] = field(default_factory=list)  # connector silk legends
+    # Auto-emitted PCB placement hints keyed by connector ref. On-board module
+    # headers get {"edge": "none"} so the autoplacer keeps them interior (vs.
+    # field-wiring screw terminals, which get no hint -> the edge heuristic).
+    placement_hints: dict[str, dict] = field(default_factory=dict)
 
 
 class RefAllocator:
@@ -114,6 +118,11 @@ def _emit_connector(
     )
     ex.components.append(conn)
     ex.legends.append(legend)
+    # On-board module headers (pin_header) belong interior, near their IC — not
+    # at a board edge. Field-wiring terminals (screw_terminal / pluggable) get
+    # NO hint, so the autoplacer's edge heuristic places them.
+    if ctype == "pin_header":
+        ex.placement_hints[conn.ref] = {"edge": "none"}
     signal_eps: dict[str, Endpoint] = {}
     for net_name, ep in joins:
         if net_name in _RAILS:
@@ -533,6 +542,9 @@ def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         j = _header(alloc, K.HDR_1X4, f"I2C{n}")
         r_sda, r_scl = _res(alloc, "4.7k", K.FP_R_0603), _res(alloc, "4.7k", K.FP_R_0603)
         ex.components += [j, r_sda, r_scl]
+        # OLED / I2C breakout module header → keep interior near its bus, not
+        # forced to a board edge by the connector heuristic.
+        ex.placement_hints[j.ref] = {"edge": "none"}
         ex.power += [("GND", Endpoint(ref=j.ref, pin="1")),
                      ("+3V3", Endpoint(ref=j.ref, pin="2")),
                      ("+3V3", Endpoint(ref=r_sda.ref, pin="2")),
@@ -712,6 +724,10 @@ def expand_intent(intent: DesignIntent) -> DesignIntent:
             intent.gaps.append(g)
 
         intent.connector_legends.extend(ex.legends)   # synthesized-terminal silk
+        # Auto-emitted PCB placement hints; never clobber a user/sidecar hint for
+        # the same ref (precedence: board.yaml/param > auto-emit).
+        for ref, hint in ex.placement_hints.items():
+            intent.placement_hints.setdefault(ref, dict(hint))
 
         for kind in ex.resolved:
             gap = gaps_by_kind.get(kind)
