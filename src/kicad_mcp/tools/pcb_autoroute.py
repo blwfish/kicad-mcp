@@ -314,7 +314,7 @@ def _run_freerouter_pass(
     ``_autoroute_jobs[job_id]["pid"]`` so cancel_autoroute can kill it.
     """
     cmd = [
-        java_path, "-jar", jar_path,
+        java_path, "-Djava.awt.headless=true", "-jar", jar_path,
         "-de", dsn_path,
         "-do", ses_path,
         "--gui.enabled=false",
