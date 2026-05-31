@@ -304,9 +304,13 @@ def _freerouter_cmd(
 ) -> list[str]:
     """Build the headless FreeRouter (Freerouting v2) invocation.
 
-    ``-Djava.awt.headless=true`` keeps the JVM from initializing AWT on macOS
-    (which otherwise creates a dock icon and steals window focus every run);
-    ``--gui.enabled=false`` suppresses FreeRouter's own UI.
+    Three layers keep it from grabbing the screen, because ``--gui.enabled=false``
+    alone (FreeRouter's own UI switch) is not enough — the JVM still inits AWT:
+      * ``-Djava.awt.headless=true`` — no AWT windows.
+      * ``-Dapple.awt.UIElement=true`` — macOS LSUIElement: run as a background
+        accessory with NO Dock icon and NO focus steal. ``headless=true`` alone
+        does not stop the Cocoa app delegate from claiming a Dock slot + focus
+        on every run; this does. (A no-op on non-macOS.)
 
     ``--usage_and_diagnostic_data.disable_analytics=true`` is mandatory for an
     air-gapped/offline design: Freerouting v2 otherwise POSTs usage analytics to
@@ -314,7 +318,10 @@ def _freerouter_cmd(
     the analytics call entirely (it also quiets the version-check phone-home).
     """
     return [
-        java_path, "-Djava.awt.headless=true", "-jar", jar_path,
+        java_path,
+        "-Djava.awt.headless=true",
+        "-Dapple.awt.UIElement=true",
+        "-jar", jar_path,
         "-de", dsn_path,
         "-do", ses_path,
         "--gui.enabled=false",

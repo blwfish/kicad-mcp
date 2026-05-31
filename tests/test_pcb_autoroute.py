@@ -54,8 +54,13 @@ class TestFreerouterCmd:
         assert "--gui.enabled=false" in self._cmd()
 
     def test_headless_awt(self):
-        # Keeps the JVM from stealing window focus on macOS every run.
+        # Keeps the JVM from initializing AWT windows.
         assert "-Djava.awt.headless=true" in self._cmd()
+
+    def test_macos_background_accessory(self):
+        # LSUIElement: no Dock icon / no focus steal on macOS (headless alone
+        # doesn't stop the Cocoa delegate claiming a Dock slot every run).
+        assert "-Dapple.awt.UIElement=true" in self._cmd()
 
     def test_passes_dsn_and_ses_paths(self):
         cmd = self._cmd()
