@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 
 from fastmcp import FastMCP
 
+from kicad_mcp.tools.pcb_silkscreen import _op_auto_fix_silkscreen
+from kicad_mcp.utils.firmware.intent import load_intent
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
@@ -970,6 +972,77 @@ print(json.dumps({
     }, timeout=60.0)
 
 
+def _step_silkscreen_legends(
+    pcb_path: str, legends: List[Dict[str, Any]], offset_mm: float = 2.0,
+) -> Dict[str, Any]:
+    """Add a per-position silk legend to each synthesized connector/terminal.
+
+    For a field-wired terminal the silk legend IS the wiring documentation, so a
+    connector is not complete without it (placement-locus §7.1). For each
+    ``ConnectorLegend`` (``{ref, positions, device}``): label every pad
+    ``i`` (1-indexed) with ``positions[i-1]`` placed ``offset_mm`` above the pad
+    centre, and set the footprint value to the device identity. After labelling,
+    the existing silk overlap auto-fixer nudges any silk-over-pad clear (shared
+    single source — same machinery the audit router uses)."""
+    if not legends:
+        return {"status": "ok", "labels_added": 0, "skipped": "no connector legends"}
+
+    script = r"""
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
+offset = pcbnew.FromMM(params["offset_mm"])
+size = pcbnew.FromMM(1.0)
+thick = pcbnew.FromMM(0.15)
+silk = board.GetLayerID("F.SilkS")
+
+by_ref = {fp.GetReference(): fp for fp in board.GetFootprints()}
+labels_added = 0
+missing = []
+for leg in params["legends"]:
+    fp = by_ref.get(leg["ref"])
+    if fp is None:
+        missing.append(leg["ref"])
+        continue
+    fp.SetValue(leg["device"])
+    positions = leg["positions"]
+    for pad in fp.Pads():
+        num = pad.GetNumber()
+        if not num.isdigit():
+            continue
+        idx = int(num) - 1
+        if idx < 0 or idx >= len(positions) or not positions[idx]:
+            continue
+        p = pad.GetPosition()
+        txt = pcbnew.PCB_TEXT(board)
+        txt.SetText(positions[idx])
+        txt.SetPosition(pcbnew.VECTOR2I(p.x, p.y - offset))
+        txt.SetLayer(silk)
+        txt.SetTextSize(pcbnew.VECTOR2I(size, size))
+        txt.SetTextThickness(thick)
+        board.Add(txt)
+        labels_added += 1
+
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok", "labels_added": labels_added,
+                  "missing_refs": missing}))
+"""
+    res = run_pcbnew_script(script, params={
+        "pcb_path": pcb_path, "legends": legends, "offset_mm": offset_mm,
+    }, timeout=60.0)
+    # Tidy footprint refdes/value silk the new labels may crowd (best-effort).
+    # NOTE: the auto-fixer relocates footprint FIELDS, not the free-text legend
+    # labels themselves — those are placed clear of the pad by construction.
+    if res.get("status") == "ok" and res.get("labels_added", 0) > 0:
+        fix = _op_auto_fix_silkscreen(pcb_path)
+        res["overlap_autofix"] = {
+            "moved": fix.get("moved"), "hidden": fix.get("hidden"),
+            "error": fix.get("error"),
+        }
+    return res
+
+
 def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
     """Step 8 (optional): Export Gerber + drill files and create ZIP."""
     try:
@@ -1060,12 +1133,14 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         ground_net: str = "GND",
         autoroute_passes: int = 1,
         export_gerbers: bool = False,
+        intent_path: str = "",
     ) -> Dict[str, Any]:
         """Build a complete routed PCB from a KiCad schematic in one step.
 
         Runs the full pipeline: extract netlist → create PCB → load
         footprints → assign nets → smart placement → autoroute →
-        add ground planes → fill zones → (optionally) export Gerbers.
+        add ground planes → fill zones → silk legends → (optionally)
+        export Gerbers.
 
         Requires a KiCad project with a schematic (.kicad_sch) that has
         footprints assigned to all components.  Creates the PCB file
@@ -1083,6 +1158,10 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 non-deterministic; best result is kept.
             export_gerbers: Generate Gerber/drill files and ZIP for
                 fabrication upload (default False).
+            intent_path: Optional path to the design-intent YAML. When given,
+                its connector legends drive a silk-legend pass that labels each
+                synthesized terminal's positions (the field-wiring documentation)
+                — the firmware front end passes the same intent it generated from.
         """
         if not os.path.exists(project_path):
             return {"error": f"Project file not found: {project_path}"}
@@ -1185,6 +1264,23 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         step = _step_add_zones_and_fill(pcb_path, ground_net)
         _record("zones", step)
         # Non-fatal
+
+        # Step 7.5: Silk legends for synthesized terminals (firmware front end).
+        # Field-wired terminals carry their wiring documentation on the silk.
+        if intent_path and os.path.exists(intent_path):
+            try:
+                _intent = load_intent(intent_path)
+                _legends = [
+                    {"ref": L.ref, "positions": L.positions, "device": L.device}
+                    for L in _intent.connector_legends
+                ]
+            except Exception as e:  # noqa: BLE001 — a bad intent must not abort the build
+                _record("silkscreen_legends",
+                        {"error": f"could not read intent {intent_path}: {e}"})
+            else:
+                step = _step_silkscreen_legends(pcb_path, _legends)
+                _record("silkscreen_legends", step)
+                # Non-fatal — silk is documentation, never blocks fabrication.
 
         # Step 8: Export gerbers (optional)
         if export_gerbers:
