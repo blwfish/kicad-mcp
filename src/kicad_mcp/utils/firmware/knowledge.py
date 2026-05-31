@@ -105,8 +105,7 @@ SPH0645 = {
     "vdd": "VDD", "gnd": "GND",
 }
 # Generic module headers (lib_id, footprint). Pin numbers are "1".."N".
-HDR_1X2 = ("Connector_Generic:Conn_01x02",
-           "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical")
+# (1x02 speaker headers are now synthesized via connectors.synthesize_connector.)
 HDR_1X4 = ("Connector_Generic:Conn_01x04",
            "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical")
 HDR_1X5 = ("Connector_Generic:Conn_01x05",
