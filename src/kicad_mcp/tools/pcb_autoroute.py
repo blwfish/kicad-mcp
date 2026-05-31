@@ -299,6 +299,29 @@ print(json.dumps({"status": "ok", "unconnected": unconnected}))
     return None
 
 
+def _freerouter_cmd(
+    java_path: str, jar_path: str, dsn_path: str, ses_path: str,
+) -> list[str]:
+    """Build the headless FreeRouter (Freerouting v2) invocation.
+
+    ``-Djava.awt.headless=true`` keeps the JVM from initializing AWT on macOS
+    (which otherwise creates a dock icon and steals window focus every run);
+    ``--gui.enabled=false`` suppresses FreeRouter's own UI.
+
+    ``--usage_and_diagnostic_data.disable_analytics=true`` is mandatory for an
+    air-gapped/offline design: Freerouting v2 otherwise POSTs usage analytics to
+    ``api.freerouting.app`` on every run. Verified on v2.2.3 — the flag silences
+    the analytics call entirely (it also quiets the version-check phone-home).
+    """
+    return [
+        java_path, "-Djava.awt.headless=true", "-jar", jar_path,
+        "-de", dsn_path,
+        "-do", ses_path,
+        "--gui.enabled=false",
+        "--usage_and_diagnostic_data.disable_analytics=true",
+    ]
+
+
 def _run_freerouter_pass(
     java_path: str,
     jar_path: str,
@@ -313,12 +336,7 @@ def _run_freerouter_pass(
     If *job_id* is given, the subprocess PID is stored in
     ``_autoroute_jobs[job_id]["pid"]`` so cancel_autoroute can kill it.
     """
-    cmd = [
-        java_path, "-Djava.awt.headless=true", "-jar", jar_path,
-        "-de", dsn_path,
-        "-do", ses_path,
-        "--gui.enabled=false",
-    ]
+    cmd = _freerouter_cmd(java_path, jar_path, dsn_path, ses_path)
 
     proc = subprocess.Popen(
         cmd,
