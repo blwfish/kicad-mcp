@@ -248,11 +248,18 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert len(refs_on("MIC_BCLK")) >= 2     # MCU + terminal
     assert "U1" in refs_on("+3V3")
 
-    # No legend label overlaps a pad (the field-wiring silk must stay readable).
+    # NO legend label overlaps a pad (the field-wiring silk must stay readable).
+    # Scope the check to the legend labels (every position on every synthesized
+    # terminal), NOT all board silk — a dense board may have pre-existing refdes
+    # overlaps unrelated to this feature.
+    from kicad_mcp.utils.firmware.intent import load_intent
+    legend_labels = {pos for L in load_intent(str(intent)).connector_legends
+                     for pos in L.positions if pos}
+    assert legend_labels, "expected synthesized-terminal legends"
     ov = _op_check_silkscreen_overlaps(str(pro).replace(".kicad_pro", ".kicad_pcb"))
     pad_hits = {o.get("silk_text") for o in ov.get("overlaps", [])}
-    assert not (pad_hits & {"BCLK", "WS", "SD", "RX", "TX"}), (
-        f"legend label overlaps a pad: {pad_hits}")
+    assert not (pad_hits & legend_labels), (
+        f"legend label(s) overlap a pad: {sorted(pad_hits & legend_labels)}")
 
 
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
