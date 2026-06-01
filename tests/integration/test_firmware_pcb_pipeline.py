@@ -76,6 +76,37 @@ def _assert_mostly_routed(r4, max_unrouted):
     )
 
 
+def _refs_with_pads_off_board(pcb_path):
+    """Refs whose copper PADS extend outside the Edge.Cuts outline (run on real
+    KiCad). The board body may overhang the edge, but pads carry copper and must
+    stay on-board. This is the assertion that pins the terminal-rotation SIGN: a
+    flipped 90/270 rotation drives terminal pads OFF the edge, and FreeRouter
+    routes to off-board pads anyway — so routing-completeness alone does NOT
+    catch it (it masked exactly this bug once)."""
+    from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+    script = '''
+import pcbnew, json, sys
+params = json.loads(open(sys.argv[1]).read())
+b = pcbnew.LoadBoard(params["pcb_path"])
+e = b.GetBoardEdgesBoundingBox()
+X0, Y0 = pcbnew.ToMM(e.GetX()), pcbnew.ToMM(e.GetY())
+X1, Y1 = pcbnew.ToMM(e.GetRight()), pcbnew.ToMM(e.GetBottom())
+tol = 0.05
+bad = []
+for fp in b.GetFootprints():
+    for p in fp.Pads():
+        bb = p.GetBoundingBox()
+        if (pcbnew.ToMM(bb.GetX()) < X0 - tol or pcbnew.ToMM(bb.GetY()) < Y0 - tol
+                or pcbnew.ToMM(bb.GetRight()) > X1 + tol
+                or pcbnew.ToMM(bb.GetBottom()) > Y1 + tol):
+            bad.append(fp.GetReference())
+            break
+print(json.dumps({"off_board": sorted(set(bad))}))
+'''
+    res = run_pcbnew_script(script, params={"pcb_path": pcb_path}, timeout=30.0)
+    return res.get("off_board", [])
+
+
 def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     design = _tool(mcp_server, "design")
     build = _tool(mcp_server, "build_pcb_from_schematic")
@@ -253,6 +284,10 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     # Decisions surface as an mcp-events envelope on the build response.
     assert "events" in r4, "placement events not surfaced on the response"
     assert any(e["code"] == "rotation_chosen" for e in r4["events"])
+
+    # NO copper pad may sit off the board outline (pins the rotation sign).
+    off = _refs_with_pads_off_board(r4["pcb_path"])
+    assert not off, f"footprints with pads off the board outline: {off}"
 
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
     nl = extract_netlist_via_cli(str(sch))
