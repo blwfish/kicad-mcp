@@ -149,6 +149,25 @@ overhang allowance, computed **after** edges are chosen.
 
 ---
 
+## RFE — board-area optimization (multi-edge terminal distribution)
+The eyeball-driven terminal rework (`24d3c04`) puts ALL field-wiring terminals on the single edge
+opposite the antenna — cleanest wire access (all wiring exits one face, good for panel-mount
+enclosures), but the board becomes as wide as the terminal ROW even when the circuit is much
+narrower, leaving the upper corners empty. Brian flagged that fab cost is ≈ board AREA, so the
+blank space is wasted money (audio-remote: 115×58 = 66.7 cm², circuit+terminals use ~40 cm²).
+
+**RFE:** distribute terminals across the antenna-opposite edge **+ the side edges** (never the
+antenna edge), sizing the board toward the circuit's own footprint (~square) instead of the
+terminal-row length — ~30–45% less area. Trade-off: wires enter from 2–3 sides instead of one
+(an L/U of connectors). The hard part is the **side-terminal silk**: a terminal spilled onto a
+side edge sits between the board edge and the interior cluster with little room, so its inboard
+legend labels crowd neighbouring pads (the exact overlap that drove the one-edge decision). The
+fix needs the sizing to reserve an inboard silk gap on terminal-carrying side edges, and/or to
+prefer putting the BIG terminals (more labels) on the roomy antenna-opposite edge and only small
+ones on the sides. Capacity-aware multi-edge assignment already exists in the placer (it was the
+pre-Step-3 behaviour); this RFE is mainly the sizing + side-silk work. **Decision deferred (Brian:
+note as future RFE).** Effort: M.
+
 ## Deferred to v1.1
 - **Phase 5 — mounting holes as corner fixtures (§3):** four-place sidecar coupling (`sidecar.py`
   dataclass + `_validate` + `load_sidecar` + `apply_sidecar`) + **reject/warn on unknown top-level
