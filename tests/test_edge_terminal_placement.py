@@ -150,6 +150,14 @@ class TestRotationToFace:
         # pad +x facing inward of right edge (-x) needs 180
         assert rotation_to_face((0.42, 0.0), (-1.0, 0.0), eps=0.3) == 180
 
+    def test_at_eps_is_not_degenerate(self):
+        # Boundary contract: the degenerate guard is strict `<`, so a vector of
+        # magnitude EXACTLY eps does NOT short-circuit to 0 — it goes through the
+        # dot-product snap. A pad pointing up (0,-0.3, |v|=0.3) aimed at the
+        # inward-down normal (0,1) must rotate 180 to face inward, not stay at 0.
+        assert math.isclose(math.hypot(0.0, -0.3), 0.3)
+        assert rotation_to_face((0.0, -0.3), (0.0, 1.0), eps=0.3) == 180
+
     def test_tie_resolves_to_lowest_angle(self):
         # vec along +x equidistant (in dot) between 90 and 270 targets? Construct
         # a target perpendicular so 90 and 270 give opposite signs — instead test

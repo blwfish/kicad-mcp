@@ -278,8 +278,10 @@ for spec in fp_specs:
     total_area += w * h
     max_dim = max(max_dim, w, h)
     # Embedded keepout zones (e.g. ESP32 antenna) consume board area but aren't
-    # in the body bbox — add them so antenna boards aren't under-sized. Mirrors
-    # the public estimate_board_size (pcb_planning.py) so the two agree.
+    # in the body bbox — add them so antenna boards aren't under-sized. This
+    # keepout term matches the public estimate_board_size (pcb_planning.py); the
+    # two estimators still differ in their min_dim padding floor (a pre-existing
+    # divergence, out of scope here).
     if hasattr(fp, 'Zones'):
         for zone in fp.Zones():
             if zone.GetIsRuleArea():
@@ -871,11 +873,11 @@ for ref in tier1:
 # natural ref key so J1..J10 march along the edge, not scatter by proximity.
 board_box = (board_xmin, board_ymin, board_xmax, board_ymax)
 
-def clear_of(boxes, cx, cy, el, er, et, eb):
-    # Spacing-buffered overlap against an explicit box list. Edge layout checks
-    # only boxes placed BEFORE the current edge (tier-1 + prior edges); the
-    # current edge's members are already spaced by layout_along_edge, so running
-    # the buffered check between adjacent terminals would false-positive.
+def overlaps_prior(boxes, cx, cy, el, er, et, eb):
+    # True if this footprint (spacing-buffered) overlaps any box in `boxes`.
+    # Edge layout checks only boxes placed BEFORE the current edge (tier-1 +
+    # prior edges); the current edge's members are already spaced by
+    # layout_along_edge, so buffering them against each other would false-positive.
     box = (cx - el - spacing, cy - et - spacing, cx + er + spacing, cy + eb + spacing)
     for pb in boxes:
         if aabb_overlap(box, pb):
@@ -896,15 +898,24 @@ for ref in tier2:
     else:
         edge_groups[nearest_edge(find_partner_pos(ref), board_box)].append(ref)
 
-# Fixed-coordinate connectors (explicit override): place as given, warn if off.
+# Fixed-coordinate connectors (explicit override): place as given. A rotation
+# hint is honored (extents/keepout rotate with it); off-board / collision /
+# keepout violations are flagged but still placed — the user's explicit coords
+# win (they may know something the heuristic doesn't).
 for ref in t2_fixed:
-    fx, fy = placement_hints[ref]["fixed"]
-    el, er, et, eb = get_extents(ref)
+    hint = placement_hints[ref]
+    fx, fy = hint["fixed"]
+    ang = hint.get("rotation", 0)
+    rext = rotate_extents(get_extents(ref), ang)
+    el, er, et, eb = rext
+    rkeep = rotate_keepout(fp_info[ref]["keepout_rel"], ang)
     placement_decisions.append({"event": "placement_hint_applied", "ref": ref,
-                                "directive": {"fixed": [fx, fy]}})
-    if not fits_on_board(fx, fy, el, er, et, eb) or collides(fx, fy, el, er, et, eb):
+                                "directive": dict(hint)})
+    if (not fits_on_board(fx, fy, el, er, et, eb)
+            or collides(fx, fy, el, er, et, eb)
+            or hits_keepout(fx, fy, el, er, et, eb)):
         placement_decisions.append({"event": "placement_hint_offboard", "ref": ref})
-    place_at(ref, fx, fy)
+    place_at(ref, fx, fy, ang, rext, rkeep)
 
 # Edge groups: order by ref, choose rotation, lay out along the edge.
 for edge in ("top", "bottom", "left", "right"):
@@ -942,7 +953,7 @@ for edge in ("top", "bottom", "left", "right"):
         el, er, et, eb = rext
         info = fp_info[ref]
         rkeep = rotate_keepout(info["keepout_rel"], ang)
-        if fits and not clear_of(prior_boxes, x, y, el, er, et, eb) and not hits_keepout(x, y, el, er, et, eb):
+        if fits and not overlaps_prior(prior_boxes, x, y, el, er, et, eb) and not hits_keepout(x, y, el, er, et, eb):
             place_at(ref, x, y, ang, rext, rkeep)
             # Record the rotation decision for terminals (the ones we actually
             # orient); SW/H/USB edge-place at 0° and aren't noteworthy.
@@ -1520,6 +1531,11 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # Surface placement decisions + hint diagnostics as an events envelope
         # (mcp-events). Info-level rotation/hint records included so the response
         # documents what the autoplacer chose; warnings for bad/unmatched hints.
+        # NOTE: this relies on NO outer event_context being active — event_context
+        # nests by sharing the accumulator, so an outer one would make
+        # to_envelope("info") return foreign events too. build_pcb_from_schematic
+        # has no @with_events wrapper today; if one is ever added, accumulate the
+        # decisions into a list and emit them outside this nested context instead.
         with event_context() as _ev:
             for _d in step.get("placement_decisions", []) or []:
                 _emit_placement_decision(_d)
