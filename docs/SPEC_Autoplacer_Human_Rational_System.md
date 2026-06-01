@@ -104,10 +104,56 @@ keepout; board sized within tolerance of the content-aware estimate; no second-r
 - **Wire-entry metadata source**: measure per MKDS footprint family and store as data, vs a
   general "longest courtyard axis faces along the edge" rule. Measurement is safer; verify.
 - **Un-merging the antenna keepout** from fit-extents (§2) touches the tier-1 path that
-  affects every board's routing — needs careful golden-harness verification.
+  affects every board's routing — needs careful golden-harness verification. **Now
+  empirically confirmed (see Verification log): the keepout rule area is present not just on
+  `ESP32-S3-WROOM-1` but also on plain `ESP32-WROOM-32`, so the un-merge changes sizing/
+  placement on ALL FOUR golden shapes (speed-cal + track-geometry included), not just audio.**
 - **Approval gate UX**: render+table is the MVP; how the human's NL adjustments map back to
   board.yaml deterministically.
 - **board.yaml schema growth**: mounting_holes, per-terminal edge/order — keep the sidecar
   validator the single source of truth.
 - **Does the antenna-opposite-edge rule ever conflict** with a partner-proximity preference?
   RFI wins per Brian, but document the tradeoff.
+
+## Verification log (cold review, 2026-06-01)
+Fresh-session cold review per the CLAUDE.md Spec Review Rule. The engine claims (pad-centroid
+orientation, `estimate_board_size` = area×2.5 + keepout, keepout-merged-into-fit-extents, the
+`board.yaml` sidecar channel) were all checked against the code on this branch and found
+**accurate**. Two of the spec's external-system assumptions were tested empirically:
+
+- **H1 — antenna keepout exists and overhang is DRC-safe: CONFIRMED on KiCad 9 AND 10.**
+  The shipped `RF_Module:ESP32-S3-WROOM-1` footprint carries one rule-area keepout over the
+  antenna end — `(keepout (tracks/vias/pads/copperpour/footprints not_allowed))`, polygon
+  `(-24,-6.75)…(24,-27.75)` mm — **byte-identical on the 9.0 and 10.0 trees the CI matrix
+  uses** (`/Volumes/Files/claude/kicad-versions/{9.0,10.0}/`). `zone.GetIsRuleArea()` returns
+  True (the §2 detection path). A minimal board with that keepout hung 7.75 mm **outside**
+  `Edge.Cuts` produced **zero** DRC violations about keepout/footprint-outside-board
+  (`kicad-cli pcb drc`, KiCad 10). So §2's overhang mechanism is viable. **Still untested:**
+  DRC on the 9.0 tree (low-risk, geometry identical) and **FreeRouter tolerance of the
+  overhang** (DRC-clean ≠ router-happy) — verify in the routing step.
+
+- **H2 — wire-entry metadata has no carrier channel (UNRESOLVED, design decision).**
+  `synthesize_connector` emits only a footprint *name string*; the firmware→schematic→PCB
+  roundtrip discards all geometry, and the placement decision runs **inside an embedded
+  pcbnew script assembled from source strings** (`EDGE_TERMINAL_HELPER`), which cannot import
+  project modules. So "store it as footprint metadata" (§1, Open-Question #1) cannot mean
+  metadata attached at synthesis or a normal importable table. It must be: a single
+  `WIRE_ENTRY` table **keyed by normalized footprint-family** (parsed from the footprint name
+  — the only stable id reaching the PCB; the `_Horizontal`/`_Vertical` suffix + family encode
+  the 0° wire-entry direction), **interpolated into the helper source string** so the one
+  table literal is the single source of truth across the bridge (avoids a second drift copy,
+  per the Syntactic-Semantic Seam rule). Pad-centroid demotes to an explicit, event-emitting
+  fallback for unknown families (no silent mis-orientation). Build the table values from the
+  `.kicad_mod` geometry via a maintainer-time script (prefetch-style), not hand-tuning.
+
+- **M1 — generality-gate assert (§Generality) contradicts the core lesson.** "wire-entry
+  orientation correct (pad/body geometry on the outward side)" both re-introduces pad geometry
+  as the oracle (the very proxy the core lesson rejects, and degenerate for symmetric parts)
+  and conflicts with "pads on-board". Oracle must be the `WIRE_ENTRY` family table + expected
+  outward normal: assert **body/wire-entry outboard, pads inboard**.
+
+- **Scope note — mounting holes are not greenfield.** `H` is already in `EDGE_CLASSES` →
+  tier-2 edge placement today; §3's corner-fixtures path is a *change* from that, not a new
+  capability. And new `board.yaml` keys (mounting_holes, per-terminal order) **silently no-op**
+  unless added to the dataclass + `_validate` + `load_sidecar` + `apply_sidecar` together —
+  the validator currently ignores unknown keys (worth fixing: reject/warn on unknown keys).
