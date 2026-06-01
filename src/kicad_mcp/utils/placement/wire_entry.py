@@ -44,9 +44,12 @@ MIN_ROW_AXIS_SPAN_MM = 0.5
 # --- Family key ---------------------------------------------------------------
 # Two regexes collapse the pin-count dimension so every size variant of one
 # connector family shares a key (they share wire-entry geometry). Order matters:
-# the Phoenix mid-name count is normalized before the generic ``NxN`` token.
+# the Phoenix mid-name count is normalized before the generic ``1xN``/``2xN`` token.
 _PHX_COUNT_RE = re.compile(r"(MKDS-\d+,\d+)-\d+-(\d+\.\d+)")  # MKDS-1,5-3-5.08 -> -1,5-N-5.08
-_ARRAY_RE = re.compile(r"\d+x\d+")                            # 1x03 / 2x05 -> NxN
+# Collapse only the pins-per-row count, KEEPING the row count, so 1x and 2x stay
+# distinct families (different wire-entry geometry). The trailing (?!\d*mm) avoids
+# eating physical-size tokens like "5x8mm".
+_ARRAY_RE = re.compile(r"(\d+)x\d+(?!\d*mm)")                 # 1x03 -> 1xN ; 2x05 -> 2xN
 
 
 def normalize_family(footprint: str) -> str:
@@ -59,7 +62,7 @@ def normalize_family(footprint: str) -> str:
     and the placer key off it, so neither re-encodes the rule."""
     name = footprint.split(":")[-1]
     name = _PHX_COUNT_RE.sub(r"\1-N-\2", name)
-    name = _ARRAY_RE.sub("NxN", name)
+    name = _ARRAY_RE.sub(r"\1xN", name)
     return name
 
 
@@ -92,6 +95,10 @@ def derive_wire_entry(
     Note: the silk pin-1 arrow is deliberately NOT used — on the MKDS family it
     points toward the PCB foot, i.e. AWAY from the wire-entry face."""
     if not pad_bboxes or courtyard_bbox is None:
+        return (None, 0.0, "skip")
+    # A single pad has no row -> no inferable wire-entry direction (the row-axis
+    # guard below keys off pad SHAPE, which an anisotropic lone pad would pass).
+    if len(pad_bboxes) < 2:
         return (None, 0.0, "skip")
     pxmin = min(b[0] for b in pad_bboxes)
     pymin = min(b[1] for b in pad_bboxes)
@@ -130,7 +137,7 @@ def derive_wire_entry(
 # 0.61 mm more on −Y; F.Fab confirms; bit-identical KiCad 9 & 10). Asymmetry is
 # thin but consistent across 1x02..1x16.
 WIRE_ENTRY: Dict[str, Tuple[float, float]] = {
-    "TerminalBlock_Phoenix_MKDS-1,5-N-5.08_NxN_P5.08mm_Horizontal": (0.0, -1.0),
+    "TerminalBlock_Phoenix_MKDS-1,5-N-5.08_1xN_P5.08mm_Horizontal": (0.0, -1.0),
 }
 
 
@@ -150,10 +157,10 @@ def lookup(footprint: str) -> Optional[Tuple[float, float]]:
 WIRE_ENTRY_HELPER = r'''
 import re as _we_re
 _WE_PHX = _we_re.compile(r"(MKDS-\d+,\d+)-\d+-(\d+\.\d+)")
-_WE_ARR = _we_re.compile(r"\d+x\d+")
+_WE_ARR = _we_re.compile(r"(\d+)x\d+(?!\d*mm)")
 def normalize_family(footprint):
     name = footprint.split(":")[-1]
     name = _WE_PHX.sub(r"\1-N-\2", name)
-    name = _WE_ARR.sub("NxN", name)
+    name = _WE_ARR.sub(r"\1xN", name)
     return name
 '''

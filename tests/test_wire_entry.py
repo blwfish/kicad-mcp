@@ -19,7 +19,7 @@ EPS = 1e-6
 # --- normalize_family ---------------------------------------------------------
 
 def test_normalize_strips_library_prefix():
-    assert normalize_family("TerminalBlock_Phoenix:Foo_1x03_Horizontal") == "Foo_NxN_Horizontal"
+    assert normalize_family("TerminalBlock_Phoenix:Foo_1x03_Horizontal") == "Foo_1xN_Horizontal"
 
 
 def test_normalize_collapses_pin_count_variants_to_one_key():
@@ -30,7 +30,7 @@ def test_normalize_collapses_pin_count_variants_to_one_key():
         )
         for n in (2, 3, 8, 16)
     }
-    assert keys == {"TerminalBlock_Phoenix_MKDS-1,5-N-5.08_NxN_P5.08mm_Horizontal"}
+    assert keys == {"TerminalBlock_Phoenix_MKDS-1,5-N-5.08_1xN_P5.08mm_Horizontal"}
 
 
 def test_normalize_preserves_orientation_suffix():
@@ -38,12 +38,27 @@ def test_normalize_preserves_orientation_suffix():
     h = normalize_family("PinHeader_1x03_P2.54mm_Horizontal")
     v = normalize_family("PinHeader_1x03_P2.54mm_Vertical")
     assert h != v
-    assert h == "PinHeader_NxN_P2.54mm_Horizontal"
-    assert v == "PinHeader_NxN_P2.54mm_Vertical"
+    assert h == "PinHeader_1xN_P2.54mm_Horizontal"
+    assert v == "PinHeader_1xN_P2.54mm_Vertical"
 
 
 def test_normalize_no_pincount_token_unchanged():
     assert normalize_family("SomeBlock_P5.08mm_Horizontal") == "SomeBlock_P5.08mm_Horizontal"
+
+
+def test_normalize_keeps_row_count_distinct():
+    # 1-row and 2-row are physically different connectors (different wire-entry
+    # geometry) — they must NOT collapse to one family.
+    one = normalize_family("PinHeader_1x04_P2.54mm_Vertical")
+    two = normalize_family("PinHeader_2x04_P2.54mm_Vertical")
+    assert one == "PinHeader_1xN_P2.54mm_Vertical"
+    assert two == "PinHeader_2xN_P2.54mm_Vertical"
+    assert one != two
+
+
+def test_normalize_does_not_eat_physical_dimension_token():
+    # "5x8mm" is a size, not a pin array — must be left intact.
+    assert normalize_family("Lug_5x8mm_Horizontal") == "Lug_5x8mm_Horizontal"
 
 
 # --- classify_confidence (threshold boundaries) -------------------------------
@@ -108,13 +123,22 @@ def test_derive_threshold_boundaries(asym_target, expected_conf, expect_vec):
     assert (vec is not None) == expect_vec
 
 
-def test_square_cluster_has_no_row_axis():
-    # |span_x - span_y| < MIN_ROW_AXIS_SPAN_MM -> ambiguous -> skip.
-    pads = [(-1.0, -1.0, 1.0, 1.0)]  # single square pad
+def test_square_two_pad_cluster_has_no_row_axis():
+    # Two pads but a ~square cluster: |span_x - span_y| < threshold -> skip.
+    pads = [(-1.0, -1.0, 1.0, 1.0), (-1.0, -1.0, 1.0, 1.0)]
     cy = (-3.0, -3.0, 3.0, 3.0)
-    assert abs((1.0 - -1.0) - (1.0 - -1.0)) < MIN_ROW_AXIS_SPAN_MM
     _, _, conf = derive_wire_entry(pads, cy)
     assert conf == "skip"
+
+
+def test_single_anisotropic_pad_skips():
+    # A LONE oval pad has an anisotropic shape that passes the row-axis span
+    # guard — but a single pad has no ROW, so it must skip (else a lug/clip could
+    # synthesize a confident-but-wrong vector from pad shape).
+    pads = [(-0.85, -1.7, 0.85, 1.7)]      # 1.7 x 3.4 oval -> span diff 1.7 > guard
+    cy = (-1.5, -5.0, 3.5, 4.0)            # asymmetric courtyard
+    vec, _, conf = derive_wire_entry(pads, cy)
+    assert conf == "skip" and vec is None
 
 
 def test_missing_geometry_skips():
@@ -125,7 +149,7 @@ def test_missing_geometry_skips():
 # --- shipped table ------------------------------------------------------------
 
 def test_mkds_family_shipped_negative_y():
-    key = "TerminalBlock_Phoenix_MKDS-1,5-N-5.08_NxN_P5.08mm_Horizontal"
+    key = "TerminalBlock_Phoenix_MKDS-1,5-N-5.08_1xN_P5.08mm_Horizontal"
     assert WIRE_ENTRY[key] == (0.0, -1.0)
 
 

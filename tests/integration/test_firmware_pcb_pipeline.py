@@ -410,7 +410,7 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     from kicad_mcp.utils.placement.wire_entry import WIRE_ENTRY
     we_rot = [d for d in rot if d.get("source") == "wire_entry"]
     assert we_rot, "no terminal oriented from WIRE_ENTRY — did they fall back to pad-centroid?"
-    mkds_vec = WIRE_ENTRY["TerminalBlock_Phoenix_MKDS-1,5-N-5.08_NxN_P5.08mm_Horizontal"]
+    mkds_vec = WIRE_ENTRY["TerminalBlock_Phoenix_MKDS-1,5-N-5.08_1xN_P5.08mm_Horizontal"]
     for d in we_rot:
         expect = rotation_to_face(mkds_vec, outward_normal(d["edge"]))
         assert d["angle"] == expect, (

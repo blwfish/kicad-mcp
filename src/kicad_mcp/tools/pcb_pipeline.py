@@ -36,8 +36,10 @@ def _emit_placement_decision(d: Dict[str, Any]) -> None:
     ref = d.get("ref")
     if ev == "rotation_chosen":
         emit_event("info", "rotation_chosen",
-                   f"{ref} rotated {d.get('angle')}° on the {d.get('edge')} edge",
-                   {"ref": ref, "edge": d.get("edge"), "angle": d.get("angle")})
+                   f"{ref} rotated {d.get('angle')}° on the {d.get('edge')} edge "
+                   f"(via {d.get('source')})",
+                   {"ref": ref, "edge": d.get("edge"), "angle": d.get("angle"),
+                    "source": d.get("source")})
     elif ev == "rotation_ambiguous":
         emit_event("warn", "rotation_ambiguous",
                    f"{ref} has symmetric pads; rotation left at 0°", {"ref": ref})
@@ -51,6 +53,10 @@ def _emit_placement_decision(d: Dict[str, Any]) -> None:
                    f"{ref} placed with its keepout overhanging the {d.get('edge')} edge "
                    f"(rotated {d.get('angle')}°)",
                    {"ref": ref, "edge": d.get("edge"), "angle": d.get("angle")})
+    elif ev == "keepout_fallback_interior":
+        emit_event("warn", "keepout_fallback_interior",
+                   f"{ref} could not be seated at any edge; placed interior with its "
+                   f"keepout NOT overhanging", {"ref": ref})
     elif ev == "placement_hint_applied":
         emit_event("info", "placement_hint_applied",
                    f"Applied placement hint to {ref}: {d.get('directive')}",
@@ -254,6 +260,12 @@ print(json.dumps({"status": "ok"}))
     }
 
 
+# Designator classes that get EDGE placement (so they reserve perimeter, not
+# interior area). SINGLE SOURCE — passed into both embedded scripts (the size
+# estimator and the smart-placement loop) as a param so the two can't drift.
+_EDGE_DESIGNATOR_CLASSES = ("J", "SW", "H", "USB")
+
+
 def _content_aware_size(
     components: List[Dict[str, Any]],
     routing_factor: float = 2.5,
@@ -287,10 +299,14 @@ def _content_aware_size(
         ch = max(ch, max_interior_dim)
         w = cw + 2 * term_depth + 2 * padding
         h = ch + 2 * term_depth + 2 * padding
-        # Ensure the interior perimeter can seat all terminals end-to-end.
-        perimeter = 2 * (cw + ch)
-        if perimeter > 0 and term_len_sum > perimeter:
-            grow = (term_len_sum - perimeter) / 2.0
+        # Ensure the BOARD perimeter can seat all terminals end-to-end. Growing w
+        # and h each by `grow` adds 4*grow to the perimeter 2*(w+h), so solve
+        # 4*grow = term_len_sum - board_perimeter. (Using the board perimeter, not
+        # the cluster's, and /4 — else an all-terminal board with no interior,
+        # where the cluster perimeter is 0, never grows and stays under-sized.)
+        board_perim = 2 * (w + h)
+        if term_len_sum > board_perim:
+            grow = (term_len_sum - board_perim) / 4.0
             w += grow
             h += grow
         out.append({"label": label, "width_mm": math.ceil(w), "height_mm": math.ceil(h)})
@@ -310,14 +326,17 @@ fp_specs = params["fp_specs"]
 
 """ + LIB_SEARCH_HELPER + BODY_EXTENT_HELPER + """
 
-# Edge designator classes (mirror EDGE_CLASSES / _ref_class in smart placement):
-# these get edge placement, so they reserve perimeter, not interior area.
-_EDGE_CLASSES = ("J", "SW", "H", "USB")
+# Edge designator classes come from params (single source) and the prefix is
+# extracted EXACTLY as _ref_class does in smart placement (up to the first
+# digit), so the two stay consistent — a ref like "SW_A1" classifies identically.
+_EDGE_CLASSES = set(params["edge_classes"])
+def _ref_class(ref):
+    for i, c in enumerate(ref):
+        if c.isdigit():
+            return ref[:i]
+    return ref
 def _is_terminal(ref):
-    i = 0
-    while i < len(ref) and ref[i].isalpha():
-        i += 1
-    return ref[:i] in _EDGE_CLASSES
+    return _ref_class(ref) in _EDGE_CLASSES
 
 components = []
 errors = []
@@ -344,7 +363,8 @@ for spec in fp_specs:
 
 print(json.dumps({"components": components, "errors": errors}))
 """
-    result = run_pcbnew_script(script, params={"fp_specs": fp_specs})
+    result = run_pcbnew_script(script, params={
+        "fp_specs": fp_specs, "edge_classes": list(_EDGE_DESIGNATOR_CLASSES)})
     if "error" in result:
         return result
     comps = result.get("components", [])
@@ -691,7 +711,10 @@ for fp in board.GetFootprints():
     # proxy for known families; see WIRE_ENTRY_HELPER / the rotation branch).
     try:
         fpname = fp.GetFPID().GetLibItemName()
-    except Exception:
+    except (AttributeError, RuntimeError):
+        # Narrow: only a missing/!older pcbnew API or a malformed FPID. Anything
+        # else propagates rather than silently mis-keying the wire-entry lookup.
+        # An empty name -> table miss -> a flagged rotation_fallback at use-time.
         fpname = ""
 
     w = ext_left + ext_right
@@ -741,7 +764,7 @@ for net_name, members in net_members.items():
 # Tier classification by KiCad designator class — the letter prefix before
 # the first digit. `startswith("H")` would match "HV1" (HV regulator) etc.;
 # the designator class for "HV1" is "HV", not "H".
-EDGE_CLASSES = {"J", "SW", "H", "USB"}
+EDGE_CLASSES = set(params["edge_classes"])  # single source (see _EDGE_DESIGNATOR_CLASSES)
 
 def _ref_class(ref):
     for i, c in enumerate(ref):
@@ -915,6 +938,9 @@ for ref in tier1:
             placed_t1 = True
             break
     if not placed_t1:
+        # No edge could seat the body — place interior at 0° (keepout still
+        # tracked via place_at) and FLAG it: the antenna does NOT overhang here.
+        placement_decisions.append({"event": "keepout_fallback_interior", "ref": ref})
         fb = fallback_grid(el0, er0, et0, eb0)
         if fb:
             place_at(ref, fb[0], fb[1])
@@ -1161,6 +1187,7 @@ print(json.dumps({
         "spacing_mm": spacing_mm,
         "net_members": dict(net_members),
         "placement_hints": dict(placement_hints or {}),
+        "edge_classes": list(_EDGE_DESIGNATOR_CLASSES),
         # Wire-entry table as plain data (lists, JSON-safe); the embedded script
         # keys it via normalize_family (WIRE_ENTRY_HELPER). Single source = WIRE_ENTRY.
         "wire_entry": {k: list(v) for k, v in WIRE_ENTRY.items()},
