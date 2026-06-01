@@ -57,6 +57,11 @@ def _emit_placement_decision(d: Dict[str, Any]) -> None:
         emit_event("warn", "keepout_fallback_interior",
                    f"{ref} could not be seated at any edge; placed interior with its "
                    f"keepout NOT overhanging", {"ref": ref})
+    elif ev == "terminal_edge_crowded":
+        emit_event("warn", "terminal_edge_crowded",
+                   f"{ref} packed onto a crowded {d.get('edge')} edge (kept at the "
+                   f"edge for wire access; board may be undersized)",
+                   {"ref": ref, "edge": d.get("edge")})
     elif ev == "placement_hint_applied":
         emit_event("info", "placement_hint_applied",
                    f"Applied placement hint to {ref}: {d.get('directive')}",
@@ -186,9 +191,7 @@ def _step_create_pcb_and_outline(
         if "error" in size_result:
             return size_result
 
-        # Use the 4:3 suggestion (good balance of space)
-        suggestions = size_result.get("suggested_sizes", [])
-        chosen = next((s for s in suggestions if s["label"] == "4:3"), suggestions[0])
+        chosen = size_result["size"]   # content-aware (layout fixes the aspect)
         width_mm = chosen["width_mm"]
         height_mm = chosen["height_mm"]
         auto_sized = True
@@ -268,49 +271,39 @@ _EDGE_DESIGNATOR_CLASSES = ("J", "SW", "H", "USB")
 
 def _content_aware_size(
     components: List[Dict[str, Any]],
+    terminal_edge_horizontal: bool = True,
     routing_factor: float = 2.5,
     padding: float = 2.0,
-) -> List[Dict[str, Any]]:
-    """Content-aware board-size suggestions (spec §4) — pure, so it is unit-tested
-    independently of KiCad.
+    spacing: float = 1.0,
+) -> Dict[str, Any]:
+    """Content-aware board size (spec §4) — pure, unit-tested without KiCad.
 
-    ``components``: per-footprint ``{"w", "h", "is_terminal"}`` (mm). Interior
-    parts (MCU + actives + passives + interior headers) pack into a routed
-    cluster (``area × routing_factor``); EDGE terminals don't inflate that
-    interior — instead they reserve a PERIMETER band (their depth on each side)
-    around it, and the perimeter is grown if it can't seat them end-to-end.
-    Antenna keepouts are deliberately NOT counted: they overhang the edge
-    (spec §2), so they consume no board area — the old estimator's keepout term
-    over-sized antenna boards. Returns square / 4:3 / 3:2 suggestions."""
+    Models the human-rational layout: the interior parts (MCU + actives +
+    passives + interior headers) pack into a routed square cluster
+    (``area × routing_factor``); ALL field-wiring terminals march along ONE edge
+    — the one opposite the antenna (§1) — so the board's dimension ALONG that edge
+    must be long enough to seat them end-to-end, and the perpendicular dimension
+    gains a single terminal-DEPTH band. Antenna keepouts are NOT counted (they
+    overhang, §2). ``terminal_edge_horizontal`` = the terminal edge is the
+    top/bottom (so terminals fit along WIDTH); else left/right (along HEIGHT).
+    Returns one ``{width_mm, height_mm}`` (no aspect choices — the layout fixes
+    the aspect)."""
     interior = [c for c in components if not c.get("is_terminal")]
     terminals = [c for c in components if c.get("is_terminal")]
     interior_area = sum(c["w"] * c["h"] for c in interior)
     max_interior_dim = max((max(c["w"], c["h"]) for c in interior), default=0.0)
-    # Terminal perimeter band: short axis = depth reserved on each side; long axis
-    # lines up along the edge.
+    cluster = math.sqrt(interior_area * routing_factor) if interior_area > 0 else 0.0
+    cluster = max(cluster, max_interior_dim)
+    # Terminals: total span ALONG their shared edge, and their inward DEPTH.
+    term_along = sum(max(c["w"], c["h"]) + spacing for c in terminals)
     term_depth = max((min(c["w"], c["h"]) for c in terminals), default=0.0)
-    term_len_sum = sum(max(c["w"], c["h"]) for c in terminals)
-    needed = interior_area * routing_factor
-    out: List[Dict[str, Any]] = []
-    for label, ratio in (("square", 1.0), ("4:3", 4 / 3), ("3:2", 3 / 2)):
-        ch = math.sqrt(needed / ratio) if needed > 0 else 0.0
-        cw = ch * ratio
-        cw = max(cw, max_interior_dim)
-        ch = max(ch, max_interior_dim)
-        w = cw + 2 * term_depth + 2 * padding
-        h = ch + 2 * term_depth + 2 * padding
-        # Ensure the BOARD perimeter can seat all terminals end-to-end. Growing w
-        # and h each by `grow` adds 4*grow to the perimeter 2*(w+h), so solve
-        # 4*grow = term_len_sum - board_perimeter. (Using the board perimeter, not
-        # the cluster's, and /4 — else an all-terminal board with no interior,
-        # where the cluster perimeter is 0, never grows and stays under-sized.)
-        board_perim = 2 * (w + h)
-        if term_len_sum > board_perim:
-            grow = (term_len_sum - board_perim) / 4.0
-            w += grow
-            h += grow
-        out.append({"label": label, "width_mm": math.ceil(w), "height_mm": math.ceil(h)})
-    return out
+    along = max(cluster, term_along) + 2 * padding      # edge must seat all terminals
+    depth = cluster + term_depth + 2 * padding          # cluster + one terminal band
+    if terminal_edge_horizontal:
+        w, h = along, depth
+    else:
+        w, h = depth, along
+    return {"width_mm": math.ceil(w), "height_mm": math.ceil(h)}
 
 
 def _estimate_board_size(fp_specs: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -358,8 +351,20 @@ for spec in fp_specs:
     bx0, by0, bx1, by1 = body_bbox(fp, has_keepout)
     w = round(bx1 - bx0, 2)
     h = round(by1 - by0, 2)
+    # Antenna side in the footprint's 0° frame (the tier-1 placer overhangs it on
+    # that board edge): which side the rule-area keepout extends toward. Used to
+    # decide the terminal edge (terminals go OPPOSITE — same axis as the antenna).
+    keepout_side = None
+    if has_keepout:
+        z = next(z for z in fp.Zones() if z.GetIsRuleArea())
+        zb = z.GetBoundingBox()
+        dxn = pcbnew.ToMM(zb.GetX()); dyn = pcbnew.ToMM(zb.GetY())
+        dxp = pcbnew.ToMM(zb.GetRight()); dyp = pcbnew.ToMM(zb.GetBottom())
+        em = {"left": abs(dxn), "right": abs(dxp), "top": abs(dyn), "bottom": abs(dyp)}
+        keepout_side = max(em, key=em.get)
     components.append({"footprint": fp_name, "w": w, "h": h,
-                       "is_terminal": _is_terminal(spec.get("ref", ""))})
+                       "is_terminal": _is_terminal(spec.get("ref", "")),
+                       "keepout_side": keepout_side})
 
 print(json.dumps({"components": components, "errors": errors}))
 """
@@ -370,9 +375,14 @@ print(json.dumps({"components": components, "errors": errors}))
     comps = result.get("components", [])
     if not comps:
         return {"error": "No valid footprints found", "details": result.get("errors", [])}
+    # Terminal edge = opposite the antenna, on the SAME axis. Antenna top/bottom
+    # -> terminals on a horizontal (top/bottom) edge -> they fit along WIDTH.
+    antenna_side = next((c["keepout_side"] for c in comps if c.get("keepout_side")), None)
+    terminal_edge_horizontal = antenna_side in ("top", "bottom") if antenna_side else True
     return {
         "status": "ok",
-        "suggested_sizes": _content_aware_size(comps),
+        "size": _content_aware_size(comps, terminal_edge_horizontal),
+        "antenna_side": antenna_side,
         "errors": result.get("errors", []),
         "error_count": len(result.get("errors", [])),
     }
@@ -966,9 +976,19 @@ def overlaps_prior(boxes, cx, cy, el, er, et, eb):
             return True
     return False
 
+def is_field_terminal(ref):
+    # A FIELD-WIRING terminal = a J connector whose footprint is a known
+    # wire-entry family (e.g. an MKDS screw terminal). ONLY these get the
+    # human-rational treatment (antenna-opposite edge, seat-on-board, force-edge);
+    # plug-in module headers / USB / switches keep their original placement, so
+    # boards without field wiring are byte-for-byte unchanged by this feature.
+    return (is_screw_terminal_class(_ref_class(ref))
+            and normalize_family(fp_info[ref].get("footprint", "")) in wire_entry_table)
+
 edge_groups = {"top": [], "bottom": [], "left": [], "right": []}
 t2_interior = []
 t2_fixed = []
+t2_terminals = []   # field-wiring terminals: edge-assigned by rule (below)
 for ref in tier2:
     hint = placement_hints.get(ref, {})
     if "fixed" in hint:
@@ -977,8 +997,42 @@ for ref in tier2:
         t2_interior.append(ref)
     elif hint.get("edge") in ("top", "bottom", "left", "right"):
         edge_groups[hint["edge"]].append(ref)
+    elif is_field_terminal(ref):
+        # FIELD-WIRING terminal (a known wire-entry family, e.g. MKDS screw
+        # terminal) → antenna-opposite rule below. The RFI rule is about external
+        # field wires; plug-in MODULE headers (vertical pin headers, no wire-entry
+        # family) are NOT field-wiring, so they keep partner-proximity placement.
+        t2_terminals.append(ref)
     else:
         edge_groups[nearest_edge(find_partner_pos(ref), board_box)].append(ref)
+
+# --- Rule-based terminal edge assignment (spec §1) ---
+# Field-wiring terminals go on the edge OPPOSITE the MCU antenna (RFI — keep field
+# wires away from the radio), spilling to the SIDE edges by CAPACITY, NEVER the
+# antenna edge and NEVER the interior. This replaces nearest_edge(partner), which
+# piled every terminal on whichever edge the (top-heavy) components clustered near
+# and overflowed the rest into the interior (J5/J7 buried mid-board).
+antenna_edge = next((d["edge"] for d in placement_decisions
+                     if d.get("event") == "keepout_overhang"), None)
+_OPP = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}
+if antenna_edge:
+    _perp = ["left", "right"] if antenna_edge in ("top", "bottom") else ["top", "bottom"]
+    pref_edges = [_OPP[antenna_edge]] + _perp     # antenna edge excluded entirely
+else:
+    pref_edges = ["bottom", "left", "right", "top"]
+_elen = {"top": board_xmax - board_xmin, "bottom": board_xmax - board_xmin,
+         "left": board_ymax - board_ymin, "right": board_ymax - board_ymin}
+_eused = {e: 2 * margin for e in _elen}           # both ends start margin-inset
+for ref in sorted(t2_terminals, key=natural_ref_key):
+    _info = fp_info[ref]
+    _along = max(_info["width"], _info["height"]) + spacing   # span along the edge
+    _chosen = next((e for e in pref_edges if _eused[e] + _along <= _elen[e]), None)
+    if _chosen is None:                           # no edge has room → least-full one
+        _chosen = min(pref_edges, key=lambda e: _eused[e])
+        placement_decisions.append({"event": "terminal_edge_crowded",
+                                    "ref": ref, "edge": _chosen})
+    edge_groups[_chosen].append(ref)
+    _eused[_chosen] += _along
 
 # Fixed-coordinate connectors (explicit override): place as given. A rotation
 # hint is honored (extents/keepout rotate with it); off-board / collision /
@@ -1039,7 +1093,11 @@ for edge in ("top", "bottom", "left", "right"):
         rext = rotate_extents(ext0, ang)
         rpad = rotate_extents(pad0, ang)
         rot_by_ref[ref] = (ang, rext, rpad)
-        items.append((ref, rext, rpad, is_term))
+        # Field-wiring terminals SEAT on-board (overhang=False) so the block isn't
+        # cantilevered off the edge with its silk "supported by air"; other edge
+        # connectors keep their original overhang behavior (boards without field
+        # wiring are unchanged). Only the antenna keepout (tier 1) ever overhangs.
+        items.append((ref, rext, rpad, is_term and not is_field_terminal(ref)))
         if hint:
             placement_decisions.append({"event": "placement_hint_applied",
                                         "ref": ref, "directive": hint})
@@ -1049,16 +1107,23 @@ for edge in ("top", "bottom", "left", "right"):
         el, er, et, eb = rext
         info = fp_info[ref]
         rkeep = rotate_keepout(info["keepout_rel"], ang)
-        if fits and not overlaps_prior(prior_boxes, x, y, el, er, et, eb) and not hits_keepout(x, y, el, er, et, eb):
+        is_term = is_screw_terminal_class(_ref_class(ref))
+        clear = (fits and not overlaps_prior(prior_boxes, x, y, el, er, et, eb)
+                 and not hits_keepout(x, y, el, er, et, eb))
+        if clear or is_field_terminal(ref):
+            # FIELD-WIRING terminals ALWAYS stay at their edge (a crowded edge
+            # beats burying one in the interior, inaccessible). Other connectors
+            # (module headers / SW / H / USB) fall back interior if the slot is
+            # taken — their original behavior.
+            if not clear:
+                placement_decisions.append({"event": "terminal_edge_crowded",
+                                            "ref": ref, "edge": edge})
             place_at(ref, x, y, ang, rext, rkeep)
-            # Record the rotation decision for terminals (the ones we actually
-            # orient); SW/H/USB edge-place at 0° and aren't noteworthy.
-            if is_screw_terminal_class(_ref_class(ref)):
+            if is_term:
                 placement_decisions.append({"event": "rotation_chosen", "ref": ref,
                                             "edge": edge, "angle": ang,
                                             "source": rot_source.get(ref, "pad_centroid")})
         else:
-            # Couldn't seat on the edge slot → interior fallback (no rotation).
             fb = fallback_grid(*get_extents(ref))
             if fb:
                 place_at(ref, fb[0], fb[1])

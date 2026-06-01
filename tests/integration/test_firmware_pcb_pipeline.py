@@ -356,10 +356,11 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
 
     pro.write_text(json.dumps(_MINIMAL_PRO))
-    # §4 content-aware auto-size (board dims 0,0 = estimate). This shape is the
-    # spec's worked example: interior ~45x40 -> board ~70x60, vs the 110x90 a
-    # fixed size would hardcode. The estimator excludes the antenna keepout
-    # (overhangs, §2) and reserves terminal-edge perimeter.
+    # §4 content-aware auto-size (board dims 0,0 = estimate). The human-rational
+    # layout puts ALL field-wiring terminals along ONE edge (opposite the antenna,
+    # §1), so the board is wide+short (a letterbox: ~115x58) — the width seats the
+    # 6 terminals end-to-end, the height is cluster + one terminal band. Smaller in
+    # AREA than the 110x90 a fixed build hardcoded, with no dead middle band.
     r4 = build(project_path=str(pro), board_width_mm=0, board_height_mm=0,
                autoroute_passes=4, export_gerbers=False, intent_path=str(intent))
     assert r4["status"] == "ok"
@@ -367,15 +368,24 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     _assert_mostly_routed(r4, max_unrouted=4)
     assert r4["steps"]["zones"]["zones_added"] >= 1
 
-    # The board auto-sized to content, well under the 110x90 a fixed build used.
+    # Auto-sized, content-aware (a wide letterbox), and beats 110x90 on area.
     assert r4["steps"]["create_pcb"]["auto_sized"] is True
     bw, bh = r4["board_width_mm"], r4["board_height_mm"]
-    assert 58 <= bw <= 88 and 48 <= bh <= 76, \
-        f"content-aware size {bw}x{bh} outside the expected ~70x60 window"
-    assert bw * bh < 110 * 90, "auto-size did not beat the hardcoded 110x90"
+    assert 95 <= bw <= 140 and 45 <= bh <= 75, \
+        f"content-aware size {bw}x{bh} outside the expected wide-letterbox window"
+    assert bw > bh, "terminals share one edge -> board should be wider than tall"
+    assert bw * bh < 110 * 90, "auto-size did not beat the hardcoded 110x90 on area"
     # Everything still seated — an under-estimate would leave unplaced parts.
     assert not r4["steps"]["smart_placement"].get("failed_placements"), \
         "content-aware size left parts unplaced (under-estimate)"
+
+    # §1 RFI: ALL field-wiring terminals share the SINGLE edge opposite the antenna
+    # (the MCU antenna overhangs the top, so terminals are on the bottom) — none
+    # buried interior, none on the antenna edge.
+    _term_edges = {d["edge"] for d in r4["steps"]["smart_placement"]["placement_decisions"]
+                   if d["event"] == "rotation_chosen"}
+    assert _term_edges == {"bottom"}, \
+        f"field-wiring terminals not all on the antenna-opposite edge: {_term_edges}"
 
     # The silk-legend step ran and labelled the synthesized terminals.
     silk = r4["steps"]["silkscreen_legends"]
