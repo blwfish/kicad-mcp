@@ -593,47 +593,8 @@ for fp in board.GetFootprints():
     fp_x = pcbnew.ToMM(fp_pos.x)
     fp_y = pcbnew.ToMM(fp_pos.y)
 
-    bbox = fp.GetBoundingBox(False, False)
-    # Extent from origin in each direction (positive values)
-    ext_left  = fp_x - pcbnew.ToMM(bbox.GetX())
-    ext_right = pcbnew.ToMM(bbox.GetRight()) - fp_x
-    ext_top   = fp_y - pcbnew.ToMM(bbox.GetY())
-    ext_bot   = pcbnew.ToMM(bbox.GetBottom()) - fp_y
-
-    # Courtyard bounds (preferred over body bbox)
-    cy_found = False
-    cy_xmin_abs = float("inf"); cy_ymin_abs = float("inf")
-    cy_xmax_abs = float("-inf"); cy_ymax_abs = float("-inf")
-    for item in fp.GraphicalItems():
-        ln = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in ln:
-            cy_found = True
-            ib = item.GetBoundingBox()
-            cy_xmin_abs = min(cy_xmin_abs, pcbnew.ToMM(ib.GetX()))
-            cy_ymin_abs = min(cy_ymin_abs, pcbnew.ToMM(ib.GetY()))
-            cy_xmax_abs = max(cy_xmax_abs, pcbnew.ToMM(ib.GetRight()))
-            cy_ymax_abs = max(cy_ymax_abs, pcbnew.ToMM(ib.GetBottom()))
-    if cy_found:
-        ext_left  = fp_x - cy_xmin_abs
-        ext_right = cy_xmax_abs - fp_x
-        ext_top   = fp_y - cy_ymin_abs
-        ext_bot   = cy_ymax_abs - fp_y
-
-    # Pad bounding boxes (absolute mm) → pad-centroid offset + pad extent from
-    # the footprint origin. The edge-terminal heuristic rotates a connector so
-    # its pad side faces INWARD (wire/screw side overhangs the edge); the pad
-    # extent lets terminals overhang with their copper still on-board.
-    pad_boxes = []
-    for pad in fp.Pads():
-        pbb = pad.GetBoundingBox()
-        pad_boxes.append((
-            pcbnew.ToMM(pbb.GetX()), pcbnew.ToMM(pbb.GetY()),
-            pcbnew.ToMM(pbb.GetRight()), pcbnew.ToMM(pbb.GetBottom()),
-        ))
-    pad_cx, pad_cy = pad_centroid_offset(pad_boxes, (fp_x, fp_y))
-    pad_el, pad_er, pad_et, pad_eb = pad_extent(pad_boxes, (fp_x, fp_y))
-
-    # Keepout zones
+    # --- Keepout (rule-area) zones — detected FIRST because it conditions the
+    # body extent below (an antenna keepout must be free to overhang the edge). ---
     has_keepout = False
     keepout_side = None
     keepout_rel = None  # relative bbox (dx_min, dy_min, dx_max, dy_max)
@@ -653,11 +614,59 @@ for fp in board.GetFootprints():
                 extents_map = {"left": abs(dx_min), "right": abs(dx_max),
                                "top": abs(dy_min), "bottom": abs(dy_max)}
                 keepout_side = max(extents_map, key=extents_map.get)
-                # Merge keepout into envelope
-                ext_left  = max(ext_left, -dx_min)
-                ext_right = max(ext_right, dx_max)
-                ext_top   = max(ext_top, -dy_min)
-                ext_bot   = max(ext_bot, dy_max)
+
+    # Body extent for board containment. Built from pads + the body OUTLINE
+    # graphics, NEVER Zones() — so an antenna keepout is free to overhang the edge
+    # (the tier-1 placer seats the body flush; keepout_rel is tracked separately
+    # via place_at -> keepout_boxes). Layer names differ across KiCad versions
+    # (KiCad 9 "F.CrtYd"/"F.SilkS" -> KiCad 10 "F.Courtyard"/"F.Silkscreen"), so
+    # match BOTH spellings. The courtyard is the true outer bound for ordinary
+    # parts (matching the old GetBoundingBox envelope) and so is INCLUDED — but it
+    # is EXCLUDED for keepout parts: on RF modules the courtyard wraps the antenna
+    # keepout (ESP32 F.Courtyard top == keepout top), which would defeat the
+    # overhang. Text (reference/value) is skipped — it bloats the box ~2x.
+    use_courtyard = not has_keepout
+    bx0 = by0 = float("inf")
+    bx1 = by1 = float("-inf")
+    for pad in fp.Pads():
+        pb = pad.GetBoundingBox()
+        bx0 = min(bx0, pcbnew.ToMM(pb.GetX())); by0 = min(by0, pcbnew.ToMM(pb.GetY()))
+        bx1 = max(bx1, pcbnew.ToMM(pb.GetRight())); by1 = max(by1, pcbnew.ToMM(pb.GetBottom()))
+    for it in fp.GraphicalItems():
+        try:
+            ln = board.GetLayerName(it.GetLayer())
+        except Exception:
+            ln = ""
+        is_body = ("Fab" in ln or "SilkS" in ln or "Silkscreen" in ln)
+        if use_courtyard:
+            is_body = is_body or ("CrtYd" in ln or "Courtyard" in ln)
+        if is_body and not hasattr(it, "GetText"):
+            ib = it.GetBoundingBox()
+            bx0 = min(bx0, pcbnew.ToMM(ib.GetX())); by0 = min(by0, pcbnew.ToMM(ib.GetY()))
+            bx1 = max(bx1, pcbnew.ToMM(ib.GetRight())); by1 = max(by1, pcbnew.ToMM(ib.GetBottom()))
+    if bx0 == float("inf"):
+        bbox = fp.GetBoundingBox(False, False)
+        bx0, by0 = pcbnew.ToMM(bbox.GetX()), pcbnew.ToMM(bbox.GetY())
+        bx1, by1 = pcbnew.ToMM(bbox.GetRight()), pcbnew.ToMM(bbox.GetBottom())
+    # Extent from origin in each direction (positive values)
+    ext_left  = fp_x - bx0
+    ext_right = bx1 - fp_x
+    ext_top   = fp_y - by0
+    ext_bot   = by1 - fp_y
+
+    # Pad bounding boxes (absolute mm) → pad-centroid offset + pad extent from
+    # the footprint origin. The edge-terminal heuristic rotates a connector so
+    # its pad side faces INWARD (wire/screw side overhangs the edge); the pad
+    # extent lets terminals overhang with their copper still on-board.
+    pad_boxes = []
+    for pad in fp.Pads():
+        pbb = pad.GetBoundingBox()
+        pad_boxes.append((
+            pcbnew.ToMM(pbb.GetX()), pcbnew.ToMM(pbb.GetY()),
+            pcbnew.ToMM(pbb.GetRight()), pcbnew.ToMM(pbb.GetBottom()),
+        ))
+    pad_cx, pad_cy = pad_centroid_offset(pad_boxes, (fp_x, fp_y))
+    pad_el, pad_er, pad_et, pad_eb = pad_extent(pad_boxes, (fp_x, fp_y))
 
     w = ext_left + ext_right
     h = ext_top + ext_bot
@@ -823,18 +832,31 @@ def fallback_grid(el, er, et, eb, step=1.0):
         y += step
     return None
 
-# --- Tier 1: Keepout components → edge placement ---
+# --- Tier 1: Keepout components → edge placement, ANTENNA OVERHANGING ---
+# The MCU is rotated so its keepout (antenna) faces OFF the chosen edge and the
+# body sits flush inside; the keepout polygon then overhangs Edge.Cuts (the
+# antenna radiates into free space — DRC-clean, verified on KiCad 9 & 10). We
+# prefer the keepout's natural side (keepout_side); the first edge that seats the
+# body wins, so the antenna doesn't get dragged inboard by partner proximity.
 for ref in tier1:
-    el, er, et, eb = get_extents(ref)
-    ks = fp_info[ref]["keepout_side"] or "top"
-
-    best = None
-    best_dist = float("inf")
+    el0, er0, et0, eb0 = get_extents(ref)
+    info = fp_info[ref]
+    ks = info["keepout_side"] or "top"
+    krel = info["keepout_rel"]
+    # Antenna direction in the footprint's 0° frame: origin → keepout centre.
+    if krel:
+        kdir = ((krel[0] + krel[2]) / 2.0, (krel[1] + krel[3]) / 2.0)
+    else:
+        kdir = (0.0, 0.0)
     target = find_partner_pos(ref)
-
-    # Try preferred edge first, then others
-    edges_order = [ks] + [e for e in ["top", "bottom", "left", "right"] if e != ks]
-    for edge in edges_order:
+    placed_t1 = False
+    for edge in [ks] + [e for e in ("top", "bottom", "left", "right") if e != ks]:
+        # Rotate so the keepout faces this edge's OUTWARD normal (overhang).
+        ang = rotation_to_face(kdir, outward_normal(edge))
+        el, er, et, eb = rotate_extents((el0, er0, et0, eb0), ang)
+        rkeep = rotate_keepout(krel, ang)
+        best = None
+        best_dist = float("inf")
         if edge in ("top", "bottom"):
             fixed_y = board_ymin + et + margin if edge == "top" else board_ymax - eb - margin
             x = board_xmin + el + margin
@@ -855,11 +877,14 @@ for ref in tier1:
                         best_dist = d
                         best = (fixed_x, y)
                 y += 2.0
-
-    if best:
-        place_at(ref, best[0], best[1])
-    else:
-        fb = fallback_grid(el, er, et, eb)
+        if best:
+            place_at(ref, best[0], best[1], ang, (el, er, et, eb), rkeep)
+            placement_decisions.append({"event": "keepout_overhang", "ref": ref,
+                                        "edge": edge, "angle": ang})
+            placed_t1 = True
+            break
+    if not placed_t1:
+        fb = fallback_grid(el0, er0, et0, eb0)
         if fb:
             place_at(ref, fb[0], fb[1])
 
