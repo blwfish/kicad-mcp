@@ -157,6 +157,26 @@ def test_apply_records_power_and_size():
     assert i.source["power_source"] == "usb_c" and i.source["board_size_mm"] == [80, 60]
 
 
+def test_load_placement_hints(tmp_path):
+    """A top-level placement_hints: block parses into the sidecar (stored raw;
+    per-directive validation is deferred to build time / normalize_hint)."""
+    sc = load_sidecar(_write(tmp_path, """\
+        placement_hints:
+          J6: {edge: none}
+          J1: {edge: left, rotation: 90}
+        """))
+    assert sc.placement_hints == {
+        "J6": {"edge": "none"},
+        "J1": {"edge": "left", "rotation": 90},
+    }
+
+
+def test_apply_writes_placement_hints_into_intent():
+    i = _intent()
+    apply_sidecar(i, BoardSidecar(placement_hints={"J6": {"edge": "none"}}))
+    assert i.placement_hints["J6"] == {"edge": "none"}
+
+
 # --- auto-detection -----------------------------------------------------------
 
 def test_find_sidecar_next_to_config(tmp_path):
