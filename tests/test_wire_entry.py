@@ -9,7 +9,8 @@ import pytest
 
 from kicad_mcp.utils.placement.wire_entry import (
     HIGH_MIN_ASYMMETRY_MM, LOW_MIN_ASYMMETRY_MM, MIN_ROW_AXIS_SPAN_MM,
-    WIRE_ENTRY, classify_confidence, derive_wire_entry, lookup, normalize_family,
+    WIRE_ENTRY, WIRE_ENTRY_HELPER, classify_confidence, derive_wire_entry, lookup,
+    normalize_family,
 )
 
 EPS = 1e-6
@@ -136,3 +137,24 @@ def test_lookup_resolves_real_synthesized_footprint_name():
 
 def test_lookup_unknown_family_returns_none():
     assert lookup("Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical") is None
+
+
+# --- bridge helper drift (the injected normalize_family must not diverge) ------
+
+def test_helper_normalize_family_matches_import():
+    """WIRE_ENTRY_HELPER is exec'd inside pcbnew's interpreter; its copy of
+    normalize_family must stay behaviourally identical to the imported one
+    (CLAUDE.md Syntactic-Semantic Seam Rule — single source of truth)."""
+    ns: dict = {}
+    exec(WIRE_ENTRY_HELPER, ns)
+    helper_fn = ns["normalize_family"]
+    samples = [
+        "TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-3-5.08_1x03_P5.08mm_Horizontal",
+        "TerminalBlock_Phoenix_MKDS-1,5-16-5.08_1x16_P5.08mm_Horizontal",
+        "PinHeader_1x04_P2.54mm_Vertical",
+        "Conn_02x05_Odd_Even",
+        "SomeBlock_P5.08mm_Horizontal",
+        "",
+    ]
+    for s in samples:
+        assert helper_fn(s) == normalize_family(s), s
