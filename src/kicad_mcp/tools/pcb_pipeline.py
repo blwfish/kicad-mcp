@@ -1,6 +1,7 @@
 """PCB pipeline tool: build a routed PCB from a schematic in one step."""
 
 import logging
+import math
 import os
 import re
 import subprocess
@@ -13,7 +14,7 @@ from mcp_events import emit_event, event_context
 
 from kicad_mcp.tools.pcb_silkscreen import _op_auto_fix_silkscreen
 from kicad_mcp.utils.firmware.intent import load_intent
-from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
+from kicad_mcp.utils.keepout_helpers import BODY_EXTENT_HELPER, KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
@@ -170,7 +171,7 @@ def _step_create_pcb_and_outline(
         for ref, info in components.items():
             fp_str = info["footprint"]
             lib, name = fp_str.split(":", 1)
-            fp_specs.append({"library": lib, "footprint_name": name})
+            fp_specs.append({"library": lib, "footprint_name": name, "ref": ref})
 
         if not fp_specs:
             return {"error": "No footprints to estimate board size from"}
@@ -253,25 +254,73 @@ print(json.dumps({"status": "ok"}))
     }
 
 
+def _content_aware_size(
+    components: List[Dict[str, Any]],
+    routing_factor: float = 2.5,
+    padding: float = 2.0,
+) -> List[Dict[str, Any]]:
+    """Content-aware board-size suggestions (spec §4) — pure, so it is unit-tested
+    independently of KiCad.
+
+    ``components``: per-footprint ``{"w", "h", "is_terminal"}`` (mm). Interior
+    parts (MCU + actives + passives + interior headers) pack into a routed
+    cluster (``area × routing_factor``); EDGE terminals don't inflate that
+    interior — instead they reserve a PERIMETER band (their depth on each side)
+    around it, and the perimeter is grown if it can't seat them end-to-end.
+    Antenna keepouts are deliberately NOT counted: they overhang the edge
+    (spec §2), so they consume no board area — the old estimator's keepout term
+    over-sized antenna boards. Returns square / 4:3 / 3:2 suggestions."""
+    interior = [c for c in components if not c.get("is_terminal")]
+    terminals = [c for c in components if c.get("is_terminal")]
+    interior_area = sum(c["w"] * c["h"] for c in interior)
+    max_interior_dim = max((max(c["w"], c["h"]) for c in interior), default=0.0)
+    # Terminal perimeter band: short axis = depth reserved on each side; long axis
+    # lines up along the edge.
+    term_depth = max((min(c["w"], c["h"]) for c in terminals), default=0.0)
+    term_len_sum = sum(max(c["w"], c["h"]) for c in terminals)
+    needed = interior_area * routing_factor
+    out: List[Dict[str, Any]] = []
+    for label, ratio in (("square", 1.0), ("4:3", 4 / 3), ("3:2", 3 / 2)):
+        ch = math.sqrt(needed / ratio) if needed > 0 else 0.0
+        cw = ch * ratio
+        cw = max(cw, max_interior_dim)
+        ch = max(ch, max_interior_dim)
+        w = cw + 2 * term_depth + 2 * padding
+        h = ch + 2 * term_depth + 2 * padding
+        # Ensure the interior perimeter can seat all terminals end-to-end.
+        perimeter = 2 * (cw + ch)
+        if perimeter > 0 and term_len_sum > perimeter:
+            grow = (term_len_sum - perimeter) / 2.0
+            w += grow
+            h += grow
+        out.append({"label": label, "width_mm": math.ceil(w), "height_mm": math.ceil(h)})
+    return out
+
+
 def _estimate_board_size(fp_specs: List[Dict[str, str]]) -> Dict[str, Any]:
-    """Estimate board dimensions from footprint specs (same logic as estimate_board_size tool)."""
+    """Estimate board dimensions from footprint specs. The bridge script only
+    MEASURES (body w/h + whether the ref is an edge terminal); the content-aware
+    math lives in the pure :func:`_content_aware_size` so it is testable and
+    shared. ``fp_specs`` entries carry ``ref`` for the terminal classification."""
     script = """
-import pcbnew, json, os, math, sys
+import pcbnew, json, os, sys
 
 params = json.loads(open(sys.argv[1]).read())
-
 fp_specs = params["fp_specs"]
-padding = 2.0
-routing_factor = 2.5
 
-""" + LIB_SEARCH_HELPER + """
+""" + LIB_SEARCH_HELPER + BODY_EXTENT_HELPER + """
+
+# Edge designator classes (mirror EDGE_CLASSES / _ref_class in smart placement):
+# these get edge placement, so they reserve perimeter, not interior area.
+_EDGE_CLASSES = ("J", "SW", "H", "USB")
+def _is_terminal(ref):
+    i = 0
+    while i < len(ref) and ref[i].isalpha():
+        i += 1
+    return ref[:i] in _EDGE_CLASSES
 
 components = []
 errors = []
-total_area = 0.0
-max_dim = 0.0
-total_keepout = 0.0
-
 for spec in fp_specs:
     lib_name = spec["library"]
     fp_name = spec["footprint_name"]
@@ -283,43 +332,30 @@ for spec in fp_specs:
     if fp is None:
         errors.append(f"Footprint '{fp_name}' not found in '{lib_name}'")
         continue
-    bbox = fp.GetBoundingBox(False, False)
-    w = round(pcbnew.ToMM(bbox.GetWidth()), 2)
-    h = round(pcbnew.ToMM(bbox.GetHeight()), 2)
-    total_area += w * h
-    max_dim = max(max_dim, w, h)
-    # Embedded keepout zones (e.g. ESP32 antenna) consume board area but aren't
-    # in the body bbox — add them so antenna boards aren't under-sized. This
-    # keepout term matches the public estimate_board_size (pcb_planning.py); the
-    # two estimators still differ in their min_dim padding floor (a pre-existing
-    # divergence, out of scope here).
-    if hasattr(fp, 'Zones'):
-        for zone in fp.Zones():
-            if zone.GetIsRuleArea():
-                zbb = zone.GetBoundingBox()
-                total_keepout += pcbnew.ToMM(zbb.GetWidth()) * pcbnew.ToMM(zbb.GetHeight())
-    components.append({"library": lib_name, "footprint": fp_name, "width_mm": w, "height_mm": h})
+    # Body size EXCLUDING the antenna keepout (it overhangs off-board, spec §2,
+    # so it must not inflate the estimate — the old GetBoundingBox term over-sized
+    # antenna boards). Same shared measurement as the placement collection loop.
+    has_keepout = any(z.GetIsRuleArea() for z in fp.Zones()) if hasattr(fp, 'Zones') else False
+    bx0, by0, bx1, by1 = body_bbox(fp, has_keepout)
+    w = round(bx1 - bx0, 2)
+    h = round(by1 - by0, 2)
+    components.append({"footprint": fp_name, "w": w, "h": h,
+                       "is_terminal": _is_terminal(spec.get("ref", ""))})
 
-if not components:
-    print(json.dumps({"error": "No valid footprints found", "details": errors}))
-    raise SystemExit(0)
-
-needed_area = total_area * routing_factor + total_keepout
-min_dim = max_dim + padding * 2
-
-suggestions = []
-for label, ratio in [("square", 1.0), ("4:3", 4/3), ("3:2", 3/2)]:
-    h = math.sqrt(needed_area / ratio)
-    w = h * ratio
-    w = max(w, min_dim) + padding * 2
-    h = max(h, min_dim) + padding * 2
-    w = math.ceil(w)
-    h = math.ceil(h)
-    suggestions.append({"label": label, "width_mm": w, "height_mm": h})
-
-print(json.dumps({"status": "ok", "suggested_sizes": suggestions, "errors": errors, "error_count": len(errors)}))
+print(json.dumps({"components": components, "errors": errors}))
 """
-    return run_pcbnew_script(script, params={"fp_specs": fp_specs})
+    result = run_pcbnew_script(script, params={"fp_specs": fp_specs})
+    if "error" in result:
+        return result
+    comps = result.get("components", [])
+    if not comps:
+        return {"error": "No valid footprints found", "details": result.get("errors", [])}
+    return {
+        "status": "ok",
+        "suggested_sizes": _content_aware_size(comps),
+        "errors": result.get("errors", []),
+        "error_count": len(result.get("errors", [])),
+    }
 
 
 def _step_load_footprints(
@@ -575,7 +611,7 @@ def _step_smart_placement(
 import pcbnew, json, math, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + KEEPOUT_HELPER + POWER_NET_HELPER + EDGE_TERMINAL_HELPER + WIRE_ENTRY_HELPER + """
+""" + KEEPOUT_HELPER + POWER_NET_HELPER + EDGE_TERMINAL_HELPER + WIRE_ENTRY_HELPER + BODY_EXTENT_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
@@ -626,40 +662,11 @@ for fp in board.GetFootprints():
                                "top": abs(dy_min), "bottom": abs(dy_max)}
                 keepout_side = max(extents_map, key=extents_map.get)
 
-    # Body extent for board containment. Built from pads + the body OUTLINE
-    # graphics, NEVER Zones() — so an antenna keepout is free to overhang the edge
-    # (the tier-1 placer seats the body flush; keepout_rel is tracked separately
-    # via place_at -> keepout_boxes). Layer names differ across KiCad versions
-    # (KiCad 9 "F.CrtYd"/"F.SilkS" -> KiCad 10 "F.Courtyard"/"F.Silkscreen"), so
-    # match BOTH spellings. The courtyard is the true outer bound for ordinary
-    # parts (matching the old GetBoundingBox envelope) and so is INCLUDED — but it
-    # is EXCLUDED for keepout parts: on RF modules the courtyard wraps the antenna
-    # keepout (ESP32 F.Courtyard top == keepout top), which would defeat the
-    # overhang. Text (reference/value) is skipped — it bloats the box ~2x.
-    use_courtyard = not has_keepout
-    bx0 = by0 = float("inf")
-    bx1 = by1 = float("-inf")
-    for pad in fp.Pads():
-        pb = pad.GetBoundingBox()
-        bx0 = min(bx0, pcbnew.ToMM(pb.GetX())); by0 = min(by0, pcbnew.ToMM(pb.GetY()))
-        bx1 = max(bx1, pcbnew.ToMM(pb.GetRight())); by1 = max(by1, pcbnew.ToMM(pb.GetBottom()))
-    for it in fp.GraphicalItems():
-        try:
-            ln = board.GetLayerName(it.GetLayer())
-        except Exception:
-            ln = ""
-        is_body = ("Fab" in ln or "SilkS" in ln or "Silkscreen" in ln)
-        if use_courtyard:
-            is_body = is_body or ("CrtYd" in ln or "Courtyard" in ln)
-        if is_body and not hasattr(it, "GetText"):
-            ib = it.GetBoundingBox()
-            bx0 = min(bx0, pcbnew.ToMM(ib.GetX())); by0 = min(by0, pcbnew.ToMM(ib.GetY()))
-            bx1 = max(bx1, pcbnew.ToMM(ib.GetRight())); by1 = max(by1, pcbnew.ToMM(ib.GetBottom()))
-    if bx0 == float("inf"):
-        bbox = fp.GetBoundingBox(False, False)
-        bx0, by0 = pcbnew.ToMM(bbox.GetX()), pcbnew.ToMM(bbox.GetY())
-        bx1, by1 = pcbnew.ToMM(bbox.GetRight()), pcbnew.ToMM(bbox.GetBottom())
-    # Extent from origin in each direction (positive values)
+    # Body extent for board containment — pads + body outline, NEVER Zones(), so
+    # an antenna keepout is free to overhang the edge (tier-1 seats the body
+    # flush; keepout_rel is tracked separately via place_at -> keepout_boxes).
+    # Shared single-source measurement (body_bbox / BODY_EXTENT_HELPER).
+    bx0, by0, bx1, by1 = body_bbox(fp, has_keepout)
     ext_left  = fp_x - bx0
     ext_right = bx1 - fp_x
     ext_top   = fp_y - by0

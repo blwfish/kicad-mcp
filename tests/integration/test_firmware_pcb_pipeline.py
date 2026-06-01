@@ -304,12 +304,26 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
 
     pro.write_text(json.dumps(_MINIMAL_PRO))
-    r4 = build(project_path=str(pro), board_width_mm=110, board_height_mm=90,
+    # §4 content-aware auto-size (board dims 0,0 = estimate). This shape is the
+    # spec's worked example: interior ~45x40 -> board ~70x60, vs the 110x90 a
+    # fixed size would hardcode. The estimator excludes the antenna keepout
+    # (overhangs, §2) and reserves terminal-edge perimeter.
+    r4 = build(project_path=str(pro), board_width_mm=0, board_height_mm=0,
                autoroute_passes=4, export_gerbers=False, intent_path=str(intent))
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=4)
     assert r4["steps"]["zones"]["zones_added"] >= 1
+
+    # The board auto-sized to content, well under the 110x90 a fixed build used.
+    assert r4["steps"]["create_pcb"]["auto_sized"] is True
+    bw, bh = r4["board_width_mm"], r4["board_height_mm"]
+    assert 58 <= bw <= 88 and 48 <= bh <= 76, \
+        f"content-aware size {bw}x{bh} outside the expected ~70x60 window"
+    assert bw * bh < 110 * 90, "auto-size did not beat the hardcoded 110x90"
+    # Everything still seated — an under-estimate would leave unplaced parts.
+    assert not r4["steps"]["smart_placement"].get("failed_placements"), \
+        "content-aware size left parts unplaced (under-estimate)"
 
     # The silk-legend step ran and labelled the synthesized terminals.
     silk = r4["steps"]["silkscreen_legends"]
