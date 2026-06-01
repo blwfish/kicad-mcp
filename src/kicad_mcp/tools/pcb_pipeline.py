@@ -1387,10 +1387,11 @@ def _step_silkscreen_legends(
     For a field-wired terminal the silk legend IS the wiring documentation, so a
     connector is not complete without it (placement-locus §7.1). For each
     ``ConnectorLegend`` (``{ref, positions, device}``): label every pad ``i``
-    (1-indexed) with ``positions[i-1]`` placed ``margin_mm`` past that pad's edge
-    on the INBOARD side (toward board centre — clear of the terminal body, which
-    extends outboard toward the wire-entry face; spec §6), and set the footprint
-    value to the device identity. After
+    (1-indexed) with ``positions[i-1]`` placed on exposed board just past the whole
+    BLOCK (the footprint body envelope) on the INBOARD side — readable beside the
+    terminal, never UNDER its plastic (the body extends ~3mm past the pads on the
+    inboard foot side, so a pad-relative offset would hide the label; spec §6) —
+    and set the footprint value to the device identity. After
     labelling, the existing silk overlap auto-fixer tidies footprint fields the
     new text may crowd (shared single source — same machinery the audit router
     uses)."""
@@ -1427,6 +1428,11 @@ for leg in params["legends"]:
     fp.SetValue(leg["device"])
     positions = leg["positions"]
     ix, iy = _INBOARD.get(terminal_edges.get(leg["ref"]), (0, 0))
+    # Clear the whole BLOCK (the footprint body envelope), not just the pad — the
+    # plastic body extends ~3mm past the pads on the inboard (foot) side, so a
+    # label merely past the pad edge sits UNDER the block. Offset past the body
+    # edge so the label lands on exposed board, beyond the block, in the open gap.
+    fbb = fp.GetBoundingBox(False, False)
     for pad in fp.Pads():
         num = pad.GetNumber()
         if not num.isdigit():
@@ -1436,16 +1442,17 @@ for leg in params["legends"]:
             continue
         p = pad.GetPosition()
         bb = pad.GetBoundingBox()
-        # Offset the text CENTRE past the pad edge in the INBOARD direction so its
-        # bbox is disjoint from the pad (touching counts as overlap, so include
-        # half the glyph). Inboard keeps it clear of the terminal body.
-        if ix > 0:
-            tx, ty = bb.GetRight() + margin + size // 2, p.y
-        elif ix < 0:
-            tx, ty = bb.GetLeft() - margin - size // 2, p.y
-        elif iy > 0:
-            tx, ty = p.x, bb.GetBottom() + margin + size // 2
-        else:
+        # Cross-axis = the pad's own position (label stays over its pad); the
+        # inboard axis clears the BODY envelope (fbb) + half the glyph.
+        if ix > 0:        # inboard right (terminal on the left edge)
+            tx, ty = fbb.GetRight() + margin + size // 2, p.y
+        elif ix < 0:      # inboard left (right edge)
+            tx, ty = fbb.GetLeft() - margin - size // 2, p.y
+        elif iy > 0:      # inboard down (top edge)
+            tx, ty = p.x, fbb.GetBottom() + margin + size // 2
+        elif iy < 0:      # inboard up (bottom edge)
+            tx, ty = p.x, fbb.GetTop() - margin - size // 2
+        else:             # interior module header: keep the simple above-pad offset
             tx, ty = p.x, bb.GetTop() - margin - size // 2
         txt = pcbnew.PCB_TEXT(board)
         txt.SetText(positions[idx])

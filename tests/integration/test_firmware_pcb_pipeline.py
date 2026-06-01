@@ -156,7 +156,8 @@ edge_refs = set(p["edge_refs"])
 e = b.GetBoardEdgesBoundingBox()
 cx = (e.GetX() + e.GetRight()) / 2.0
 cy = (e.GetY() + e.GetBottom()) / 2.0
-pads = []  # (pad_x, pad_y, term_x, term_y)
+pads = []      # (pad_x, pad_y, term_x, term_y)
+bodies = []    # (x0, y0, x1, y1) body envelopes of the edge terminals (the BLOCKS)
 for fp in b.GetFootprints():
     if fp.GetReference() not in edge_refs:
         continue
@@ -164,8 +165,11 @@ for fp in b.GetFootprints():
     for pad in fp.Pads():
         pp = pad.GetPosition()
         pads.append((pp.x, pp.y, fpos.x, fpos.y))
+    bb = fp.GetBoundingBox(False, False)
+    bodies.append((bb.GetX(), bb.GetY(), bb.GetRight(), bb.GetBottom()))
 checked = 0
 outboard = 0
+under_block = 0
 for d in b.GetDrawings():
     if not isinstance(d, pcbnew.PCB_TEXT) or d.GetText() not in texts:
         continue
@@ -184,7 +188,11 @@ for d in b.GetDrawings():
     checked += 1
     if dot <= 0:
         outboard += 1
-print(json.dumps({"checked": checked, "outboard": outboard}))
+    # A label whose CENTRE lands inside any terminal's body envelope is hidden
+    # UNDER the plastic block (the §6 failure the inboard-of-pad check missed).
+    if any(x0 <= lp.x <= x1 and y0 <= lp.y <= y1 for (x0, y0, x1, y1) in bodies):
+        under_block += 1
+print(json.dumps({"checked": checked, "outboard": outboard, "under_block": under_block}))
 '''
     return run_pcbnew_script(script, params={"pcb_path": pcb_path,
                                              "legend_texts": list(legend_texts),
@@ -471,6 +479,12 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert place["outboard"] == 0, (
         f"{place['outboard']}/{place['checked']} edge-terminal legend labels placed "
         f"outboard (under the body) — §6 wants them inboard, clear of the block")
+    # …and clear of the BLOCK body, not just the pad: a label inside the terminal's
+    # body envelope is hidden UNDER the plastic (the plastic foot extends ~3mm past
+    # the pads inboard). This pins the fix for a bug the inboard-of-pad check missed.
+    assert place["under_block"] == 0, (
+        f"{place['under_block']}/{place['checked']} legend labels sit UNDER a terminal "
+        f"block (hidden under the plastic) — §6 wants them on exposed board")
 
 
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
