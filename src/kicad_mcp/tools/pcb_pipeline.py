@@ -1463,6 +1463,26 @@ for leg in params["legends"]:
         board.Add(txt)
         labels_added += 1
 
+    # Reference designator ("J5") as a clean callout: centred on the block, one row
+    # BEYOND the legend labels on the inboard side. This pins what the generic silk
+    # auto-fixer does inconsistently for WIDE terminals — it shoves their refdes to
+    # the SIDE at pad level instead of above-centre like the narrow ones.
+    if (ix, iy) != (0, 0):
+        cxb = (fbb.GetLeft() + fbb.GetRight()) // 2
+        cyb = (fbb.GetTop() + fbb.GetBottom()) // 2
+        roff = margin + 2 * size      # clear the label row + a gap
+        if iy < 0:
+            rx, ry = cxb, fbb.GetTop() - roff
+        elif iy > 0:
+            rx, ry = cxb, fbb.GetBottom() + roff
+        elif ix > 0:
+            rx, ry = fbb.GetRight() + roff, cyb
+        else:
+            rx, ry = fbb.GetLeft() - roff, cyb
+        ref = fp.Reference()
+        ref.SetPosition(pcbnew.VECTOR2I(int(rx), int(ry)))
+        ref.SetTextSize(pcbnew.VECTOR2I(size, size))
+
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "labels_added": labels_added,
                   "missing_refs": missing}))
