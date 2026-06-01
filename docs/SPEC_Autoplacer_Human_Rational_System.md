@@ -101,8 +101,10 @@ correct (pad/​body geometry on the outward side); mounting holes present at co
 keepout; board sized within tolerance of the content-aware estimate; no second-row stacking.
 
 ## Open questions / risks
-- **Wire-entry metadata source**: measure per MKDS footprint family and store as data, vs a
-  general "longest courtyard axis faces along the edge" rule. Measurement is safer; verify.
+- **Wire-entry metadata source**: ~~measure per MKDS family vs a general courtyard-axis rule~~
+  **SETTLED (see Verification log H2-value): a geometry rule auto-derives it from the
+  `.kicad_mod` — but auto-generate-then-human-audit, don't auto-trust (the signal is a thin
+  ~0.6 mm asymmetry; the silk pin-1 arrow points the WRONG way).**
 - **Un-merging the antenna keepout** from fit-extents (§2) touches the tier-1 path that
   affects every board's routing — needs careful golden-harness verification. **Now
   empirically confirmed (see Verification log): the keepout rule area is present not just on
@@ -145,6 +147,21 @@ orientation, `estimate_board_size` = area×2.5 + keepout, keepout-merged-into-fi
   per the Syntactic-Semantic Seam rule). Pad-centroid demotes to an explicit, event-emitting
   fallback for unknown families (no silent mis-orientation). Build the table values from the
   `.kicad_mod` geometry via a maintainer-time script (prefetch-style), not hand-tuning.
+
+- **H2-value — wire-entry IS derivable from geometry: CONFIRMED, but thin signal.** Measured
+  `MKDS-1,5-{2,3}-5.08_..._Horizontal` on both KiCad trees (bit-identical 9↔10). Rule: *the
+  wire-entry face is the side where the courtyard/fab overhangs the pad row more; the entry
+  vector points from that face toward the pads.* MKDS horizontal → **wire enters along −Y at
+  0°** (opening face Y=−5.2, pins/foot on +Y). The asymmetry is only **~0.6 mm** (courtyard
+  0.61, fab 0.60) on a ~9 mm body — real and stable, but with little headroom over a ~0.4 mm
+  threshold. The silk **pin-1 arrow points +Y (toward the foot, AWAY from the wire face)** —
+  any marker-based heuristic gets it backwards; the courtyard/fab-overhang rule does not. On a
+  vertical pin header the asymmetry is 0.000 mm → rule correctly degenerates ("not a
+  horizontal-clamp family"). **Implication:** the maintainer script can auto-generate the
+  `WIRE_ENTRY` table by pure S-expr parsing (no KiCad launch), but must emit the asymmetry
+  magnitude as a confidence and route low-margin/ambiguous families to a human-audited
+  disposition report (the `prefetch_cards` high/low/skip pattern) — auto-generate, not
+  auto-trust.
 
 - **M1 — generality-gate assert (§Generality) contradicts the core lesson.** "wire-entry
   orientation correct (pad/body geometry on the outward side)" both re-introduces pad geometry
