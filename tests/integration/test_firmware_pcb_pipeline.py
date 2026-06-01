@@ -139,25 +139,28 @@ print(json.dumps({"overhang": sorted(set(over))}))
     return res.get("overhang", [])
 
 
-def _legend_label_placement(pcb_path, legend_texts, edge_refs):
-    """Count how many EDGE-terminal legend labels sit INBOARD vs OUTBOARD of their
-    nearest pad. Spec §6: the label must be readable beside the block (inboard,
-    toward board centre), NEVER under the body (outboard, the wire-entry side).
-    Scoped to ``edge_refs`` (the terminals actually edge-placed) — interior module
-    headers keep the default offset and are not under a one-sided body.
-    Returns ``{"checked", "outboard"}``."""
+def _legend_label_placement(pcb_path, legend_texts, edge_of):
+    """Check the silk legends + refdes of EDGE terminals. ``edge_of`` maps each
+    edge-terminal ref -> its edge (top/bottom/left/right). Spec §6: per-position
+    labels must be readable beside the block (inboard), NEVER under the body; and
+    the refdes must be a clean callout beyond the block on the inboard side.
+    Returns counts of {checked, outboard, under_block, refdes_misplaced}."""
     from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
     script = '''
 import pcbnew, json, sys
 p = json.loads(open(sys.argv[1]).read())
 b = pcbnew.LoadBoard(p["pcb_path"])
 texts = set(p["legend_texts"])
-edge_refs = set(p["edge_refs"])
+edge_of = p["edge_of"]
+edge_refs = set(edge_of)
+# Inboard (inward-normal) unit step per edge, KiCad +Y down.
+INB = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}
 e = b.GetBoardEdgesBoundingBox()
 cx = (e.GetX() + e.GetRight()) / 2.0
 cy = (e.GetY() + e.GetBottom()) / 2.0
 pads = []      # (pad_x, pad_y, term_x, term_y)
 bodies = []    # (x0, y0, x1, y1) body envelopes of the edge terminals (the BLOCKS)
+terms = []     # (edge, body, refdes_x, refdes_y) for the refdes check
 for fp in b.GetFootprints():
     if fp.GetReference() not in edge_refs:
         continue
@@ -166,7 +169,23 @@ for fp in b.GetFootprints():
         pp = pad.GetPosition()
         pads.append((pp.x, pp.y, fpos.x, fpos.y))
     bb = fp.GetBoundingBox(False, False)
-    bodies.append((bb.GetX(), bb.GetY(), bb.GetRight(), bb.GetBottom()))
+    body = (bb.GetX(), bb.GetY(), bb.GetRight(), bb.GetBottom())
+    bodies.append(body)
+    rp = fp.Reference().GetPosition()
+    terms.append((edge_of[fp.GetReference()], body, rp.x, rp.y))
+# Reference designator must be a clean callout BEYOND the block on the terminal's
+# INBOARD side (away from its edge) — not shoved to the side at pad level (the
+# wide-terminal bug the silk auto-fixer caused).
+refdes_misplaced = 0
+for (edge, (x0, y0, x1, y1), rdx, rdy) in terms:
+    ix, iy = INB.get(edge, (0, 0))
+    if iy < 0:    ok = rdy < y0    # inboard up (bottom edge)
+    elif iy > 0:  ok = rdy > y1    # inboard down (top edge)
+    elif ix > 0:  ok = rdx > x1    # inboard right (left edge)
+    elif ix < 0:  ok = rdx < x0    # inboard left (right edge)
+    else:         ok = True
+    if not ok:
+        refdes_misplaced += 1
 checked = 0
 outboard = 0
 under_block = 0
@@ -192,11 +211,12 @@ for d in b.GetDrawings():
     # UNDER the plastic block (the §6 failure the inboard-of-pad check missed).
     if any(x0 <= lp.x <= x1 and y0 <= lp.y <= y1 for (x0, y0, x1, y1) in bodies):
         under_block += 1
-print(json.dumps({"checked": checked, "outboard": outboard, "under_block": under_block}))
+print(json.dumps({"checked": checked, "outboard": outboard, "under_block": under_block,
+                  "refdes_misplaced": refdes_misplaced}))
 '''
     return run_pcbnew_script(script, params={"pcb_path": pcb_path,
                                              "legend_texts": list(legend_texts),
-                                             "edge_refs": list(edge_refs)}, timeout=30.0)
+                                             "edge_of": dict(edge_of)}, timeout=30.0)
 
 
 def test_firmware_to_routed_pcb(mcp_server, tmp_path):
@@ -473,8 +493,8 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
 
     # §6: every EDGE-terminal legend label sits INBOARD of its pad (beside the
     # block, toward board centre) — never outboard, under the body / wire-entry.
-    edge_refs = {d["ref"] for d in rot if d.get("edge")}
-    place = _legend_label_placement(r4["pcb_path"], legend_labels, edge_refs)
+    edge_of = {d["ref"]: d["edge"] for d in rot if d.get("edge")}
+    place = _legend_label_placement(r4["pcb_path"], legend_labels, edge_of)
     assert place["checked"] > 0, "no edge-terminal legend labels matched to pads"
     assert place["outboard"] == 0, (
         f"{place['outboard']}/{place['checked']} edge-terminal legend labels placed "
@@ -485,6 +505,11 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert place["under_block"] == 0, (
         f"{place['under_block']}/{place['checked']} legend labels sit UNDER a terminal "
         f"block (hidden under the plastic) — §6 wants them on exposed board")
+    # Reference designators are clean callouts beyond the block, not shoved to the
+    # side at pad level (the wide-terminal J5/J7 bug the silk auto-fixer caused).
+    assert place["refdes_misplaced"] == 0, (
+        f"{place['refdes_misplaced']} terminal refdes misplaced (not a clear callout "
+        f"beyond the block on the inboard side)")
 
 
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
@@ -518,8 +543,12 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
 
     pro.write_text(json.dumps(_MINIMAL_PRO))
+    # best-of-4 (not 2): this dense I2C board routes to 0–2 (a buzzer-orphan net +
+    # the odd structural one) but FreeRouter's best-of-2 occasionally leaves a 3rd
+    # on the tail (placement is unchanged — the silk step runs AFTER routing). More
+    # passes keeps the tight bound non-flaky.
     r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
-               autoroute_passes=2, export_gerbers=False)
+               autoroute_passes=4, export_gerbers=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=2)            # buzzer orphan must not break routing
