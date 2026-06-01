@@ -358,8 +358,13 @@ for spec in fp_specs:
     if has_keepout:
         z = next(z for z in fp.Zones() if z.GetIsRuleArea())
         zb = z.GetBoundingBox()
-        dxn = pcbnew.ToMM(zb.GetX()); dyn = pcbnew.ToMM(zb.GetY())
-        dxp = pcbnew.ToMM(zb.GetRight()); dyp = pcbnew.ToMM(zb.GetBottom())
+        # RELATIVE to the footprint origin (same formula as the tier-1 placer —
+        # FootprintLoad's origin is (0,0) so this matches today, but subtracting it
+        # keeps the two sources of "antenna side" from drifting if it ever isn't).
+        fp_pos = fp.GetPosition()
+        ox, oy = pcbnew.ToMM(fp_pos.x), pcbnew.ToMM(fp_pos.y)
+        dxn = pcbnew.ToMM(zb.GetX()) - ox; dyn = pcbnew.ToMM(zb.GetY()) - oy
+        dxp = pcbnew.ToMM(zb.GetRight()) - ox; dyp = pcbnew.ToMM(zb.GetBottom()) - oy
         em = {"left": abs(dxn), "right": abs(dxp), "top": abs(dyn), "bottom": abs(dyp)}
         keepout_side = max(em, key=em.get)
     components.append({"footprint": fp_name, "w": w, "h": h,

@@ -147,9 +147,10 @@ class TestRotationToFace:
         assert rotation_to_face((0.2, 0.2), (1.0, 0.0), eps=0.3) == 0
 
     def test_just_above_eps_rotates(self):
-        # magnitude ~0.42 > 0.3: pad points +x, want inward (+x, left edge) → 0,
-        # but for right edge inward is -x → 180
-        assert rotation_to_face((0.3, 0.3), (-1.0, 0.0), eps=0.3) != 0 or True
+        # magnitude ~0.42 > 0.3, so it does NOT short-circuit to 0 — it snaps to an
+        # orthogonal rotation via the dot-product (here 270 for this (+x,+y) vector
+        # aimed at the right edge's inward normal). The point is it's non-degenerate.
+        assert rotation_to_face((0.3, 0.3), (-1.0, 0.0), eps=0.3) == 270
         # pad +x facing inward of right edge (-x) needs 180
         assert rotation_to_face((0.42, 0.0), (-1.0, 0.0), eps=0.3) == 180
 
@@ -354,9 +355,21 @@ class TestEdgeTerminalHelperSource:
         for target in [(50.0, 5.0), (5.0, 40.0), (95.0, 40.0), (50.0, 75.0)]:
             assert ns["nearest_edge"](target, board) == nearest_edge(target, board)
 
+    def test_is_screw_terminal_class_match(self, ns):
+        for cls in ["J", "SW", "H", "USB", "J_PWR", "", "U"]:
+            assert ns["is_screw_terminal_class"](cls) == is_screw_terminal_class(cls)
+
+    def test_normals_match(self, ns):
+        for edge in ["top", "bottom", "left", "right", "none"]:
+            assert ns["inward_normal"](edge) == inward_normal(edge)
+            assert ns["outward_normal"](edge) == outward_normal(edge)
+
     def test_layout_along_edge_match(self, ns):
         board = (0.0, 0.0, 100.0, 80.0)
-        items = [(f"J{i+1}", (2.0, 2.0, 3.0, 3.0), (1.0, 1.0, 1.5, 1.5), True) for i in range(4)]
+        # MIX overhang True/False so BOTH layout branches are compared (the
+        # non-overhang branch anchors the full courtyard, not the pad box).
+        items = [(f"J{i+1}", (2.0, 2.0, 3.0, 3.0), (1.0, 1.0, 1.5, 1.5), i % 2 == 0)
+                 for i in range(4)]
         for edge in ["top", "bottom", "left", "right"]:
             assert ns["layout_along_edge"](items, edge, board, 1.0, 1.0) == layout_along_edge(
                 items, edge, board, 1.0, 1.0
