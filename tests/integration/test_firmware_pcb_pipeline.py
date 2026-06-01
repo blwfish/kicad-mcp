@@ -139,6 +139,58 @@ print(json.dumps({"overhang": sorted(set(over))}))
     return res.get("overhang", [])
 
 
+def _legend_label_placement(pcb_path, legend_texts, edge_refs):
+    """Count how many EDGE-terminal legend labels sit INBOARD vs OUTBOARD of their
+    nearest pad. Spec §6: the label must be readable beside the block (inboard,
+    toward board centre), NEVER under the body (outboard, the wire-entry side).
+    Scoped to ``edge_refs`` (the terminals actually edge-placed) — interior module
+    headers keep the default offset and are not under a one-sided body.
+    Returns ``{"checked", "outboard"}``."""
+    from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+    script = '''
+import pcbnew, json, sys
+p = json.loads(open(sys.argv[1]).read())
+b = pcbnew.LoadBoard(p["pcb_path"])
+texts = set(p["legend_texts"])
+edge_refs = set(p["edge_refs"])
+e = b.GetBoardEdgesBoundingBox()
+cx = (e.GetX() + e.GetRight()) / 2.0
+cy = (e.GetY() + e.GetBottom()) / 2.0
+pads = []  # (pad_x, pad_y, term_x, term_y)
+for fp in b.GetFootprints():
+    if fp.GetReference() not in edge_refs:
+        continue
+    fpos = fp.GetPosition()
+    for pad in fp.Pads():
+        pp = pad.GetPosition()
+        pads.append((pp.x, pp.y, fpos.x, fpos.y))
+checked = 0
+outboard = 0
+for d in b.GetDrawings():
+    if not isinstance(d, pcbnew.PCB_TEXT) or d.GetText() not in texts:
+        continue
+    lp = d.GetPosition()
+    best = None
+    bd = None
+    for (px, py, tx, ty) in pads:
+        dd = (lp.x - px) ** 2 + (lp.y - py) ** 2
+        if bd is None or dd < bd:
+            bd = dd; best = (px, py, tx, ty)
+    if best is None:
+        continue
+    px, py, tx, ty = best
+    # dot of (label - pad) with the inboard direction (terminal -> board centre)
+    dot = (lp.x - px) * (cx - tx) + (lp.y - py) * (cy - ty)
+    checked += 1
+    if dot <= 0:
+        outboard += 1
+print(json.dumps({"checked": checked, "outboard": outboard}))
+'''
+    return run_pcbnew_script(script, params={"pcb_path": pcb_path,
+                                             "legend_texts": list(legend_texts),
+                                             "edge_refs": list(edge_refs)}, timeout=30.0)
+
+
 def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     design = _tool(mcp_server, "design")
     build = _tool(mcp_server, "build_pcb_from_schematic")
@@ -400,6 +452,15 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     pad_hits = {o.get("silk_text") for o in ov.get("overlaps", [])}
     assert not (pad_hits & legend_labels), (
         f"legend label(s) overlap a pad: {sorted(pad_hits & legend_labels)}")
+
+    # §6: every EDGE-terminal legend label sits INBOARD of its pad (beside the
+    # block, toward board centre) — never outboard, under the body / wire-entry.
+    edge_refs = {d["ref"] for d in rot if d.get("edge")}
+    place = _legend_label_placement(r4["pcb_path"], legend_labels, edge_refs)
+    assert place["checked"] > 0, "no edge-terminal legend labels matched to pads"
+    assert place["outboard"] == 0, (
+        f"{place['outboard']}/{place['checked']} edge-terminal legend labels placed "
+        f"outboard (under the body) — §6 wants them inboard, clear of the block")
 
 
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):

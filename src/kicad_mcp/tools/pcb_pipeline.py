@@ -1288,15 +1288,17 @@ print(json.dumps({
 
 def _step_silkscreen_legends(
     pcb_path: str, legends: List[Dict[str, Any]], margin_mm: float = 0.5,
+    terminal_edges: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Add a per-position silk legend to each synthesized connector/terminal.
 
     For a field-wired terminal the silk legend IS the wiring documentation, so a
     connector is not complete without it (placement-locus §7.1). For each
     ``ConnectorLegend`` (``{ref, positions, device}``): label every pad ``i``
-    (1-indexed) with ``positions[i-1]`` placed ``margin_mm`` above that pad's TOP
-    EDGE (adaptive — terminal-block pads are large, so a fixed centre-offset would
-    sit on the pad), and set the footprint value to the device identity. After
+    (1-indexed) with ``positions[i-1]`` placed ``margin_mm`` past that pad's edge
+    on the INBOARD side (toward board centre — clear of the terminal body, which
+    extends outboard toward the wire-entry face; spec §6), and set the footprint
+    value to the device identity. After
     labelling, the existing silk overlap auto-fixer tidies footprint fields the
     new text may crowd (shared single source — same machinery the audit router
     uses)."""
@@ -1314,6 +1316,15 @@ thick = pcbnew.FromMM(0.15)
 silk = board.GetLayerID("F.SilkS")
 
 by_ref = {fp.GetReference(): fp for fp in board.GetFootprints()}
+# For an EDGE terminal the legend goes on the INBOARD side of each pad (away from
+# the terminal's edge), clear of the body that extends OUTBOARD toward the
+# wire-entry face (spec §6: readable beside the block, never under it). Interior
+# module headers (no edge assignment) keep the default above-pad offset — they
+# have no consistent body direction and "inboard" would point into the cluster.
+terminal_edges = params.get("terminal_edges") or {}
+# edge -> inboard (inward-normal) unit step. (0,0) marks "no edge" (interior).
+_INBOARD = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}
+
 labels_added = 0
 missing = []
 for leg in params["legends"]:
@@ -1323,6 +1334,7 @@ for leg in params["legends"]:
         continue
     fp.SetValue(leg["device"])
     positions = leg["positions"]
+    ix, iy = _INBOARD.get(terminal_edges.get(leg["ref"]), (0, 0))
     for pad in fp.Pads():
         num = pad.GetNumber()
         if not num.isdigit():
@@ -1332,12 +1344,20 @@ for leg in params["legends"]:
             continue
         p = pad.GetPosition()
         bb = pad.GetBoundingBox()
-        # Place the text CENTRE above the pad's top edge so its bbox is y-disjoint
-        # from the pad (touching counts as overlap, so include half the glyph).
-        ty = bb.GetTop() - margin - size // 2
+        # Offset the text CENTRE past the pad edge in the INBOARD direction so its
+        # bbox is disjoint from the pad (touching counts as overlap, so include
+        # half the glyph). Inboard keeps it clear of the terminal body.
+        if ix > 0:
+            tx, ty = bb.GetRight() + margin + size // 2, p.y
+        elif ix < 0:
+            tx, ty = bb.GetLeft() - margin - size // 2, p.y
+        elif iy > 0:
+            tx, ty = p.x, bb.GetBottom() + margin + size // 2
+        else:
+            tx, ty = p.x, bb.GetTop() - margin - size // 2
         txt = pcbnew.PCB_TEXT(board)
         txt.SetText(positions[idx])
-        txt.SetPosition(pcbnew.VECTOR2I(p.x, ty))
+        txt.SetPosition(pcbnew.VECTOR2I(int(tx), int(ty)))
         txt.SetLayer(silk)
         txt.SetTextSize(pcbnew.VECTOR2I(size, size))
         txt.SetTextThickness(thick)
@@ -1350,6 +1370,7 @@ print(json.dumps({"status": "ok", "labels_added": labels_added,
 """
     res = run_pcbnew_script(script, params={
         "pcb_path": pcb_path, "legends": legends, "margin_mm": margin_mm,
+        "terminal_edges": dict(terminal_edges or {}),
     }, timeout=60.0)
     # Tidy footprint refdes/value silk the new labels may crowd (best-effort).
     # NOTE: the auto-fixer relocates footprint FIELDS, not the free-text legend
@@ -1602,6 +1623,16 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         _record("smart_placement", step)
         # Non-fatal — continue even if placement is imperfect
 
+        # Which edge each terminal was placed on (from the rotation decisions) —
+        # used by the silk-legend step to offset labels inboard, away from that
+        # edge. Interior module headers (edge:"none") are absent here, so they
+        # keep the default label offset.
+        terminal_edges = {
+            d["ref"]: d["edge"]
+            for d in (step.get("placement_decisions") or [])
+            if d.get("event") == "rotation_chosen" and d.get("edge")
+        }
+
         # Surface placement decisions + hint diagnostics as an events envelope
         # (mcp-events). Info-level rotation/hint records included so the response
         # documents what the autoplacer chose; warnings for bad/unmatched hints.
@@ -1660,7 +1691,8 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     {"ref": L.ref, "positions": L.positions, "device": L.device}
                     for L in design_intent.connector_legends
                 ]
-                step = _step_silkscreen_legends(pcb_path, _legends)
+                step = _step_silkscreen_legends(pcb_path, _legends,
+                                                terminal_edges=terminal_edges)
                 _record("silkscreen_legends", step)
             except Exception as e:  # noqa: BLE001 — documentation step, never fatal
                 _record("silkscreen_legends",
