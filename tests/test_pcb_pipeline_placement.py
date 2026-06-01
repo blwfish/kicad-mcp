@@ -126,12 +126,13 @@ def _emit_one(decision):
 
 class TestEmitPlacementDecision:
     def test_rotation_chosen_is_info(self):
-        env = _emit_one({"event": "rotation_chosen", "ref": "J1",
-                         "edge": "top", "angle": 90})
+        env = _emit_one({"event": "rotation_chosen", "ref": "J1", "edge": "top",
+                         "angle": 90, "source": "wire_entry"})
         assert len(env) == 1
         assert env[0]["level"] == "info"
         assert env[0]["code"] == "rotation_chosen"
-        assert env[0]["context"] == {"ref": "J1", "edge": "top", "angle": 90}
+        assert env[0]["context"] == {"ref": "J1", "edge": "top", "angle": 90,
+                                     "source": "wire_entry"}
 
     def test_rotation_ambiguous_is_warn(self):
         env = _emit_one({"event": "rotation_ambiguous", "ref": "J2"})

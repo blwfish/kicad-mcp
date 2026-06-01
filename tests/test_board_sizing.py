@@ -49,6 +49,35 @@ def test_all_terminals_no_interior_cluster():
     assert (w, h) == (14, 14)
 
 
+def test_all_terminals_board_grows_to_seat_them():
+    # Regression: with no interior the cluster perimeter is 0, so growth must key
+    # off the BOARD perimeter — else a many-terminal adapter stays 14x14 and the
+    # terminals can't be seated (under-size).
+    comps = [{"w": 20.0, "h": 5.0, "is_terminal": True} for _ in range(4)]
+    w, h = _wh(_content_aware_size(comps, padding=2.0), "square")
+    assert 2 * (w + h) >= 4 * 20.0  # total terminal length 80mm fits the perimeter
+
+
+def test_perimeter_growth_boundary():
+    # Pin the `term_len_sum > board_perim` (strict) boundary. Use a ~zero-DEPTH
+    # terminal so the depth band doesn't perturb the board — only its LENGTH,
+    # which drives the perimeter-fit growth, varies.
+    interior = {"w": 20.0, "h": 20.0, "is_terminal": False}
+    bw, bh = _wh(_content_aware_size([interior], padding=2.0), "square")
+    perim = 2 * (bw + bh)
+
+    def board_perim(term_len):
+        comps = [interior, {"w": term_len, "h": 0.0, "is_terminal": True}]
+        w, h = _wh(_content_aware_size(comps, padding=2.0), "square")
+        return 2 * (w + h)
+
+    # At/below the perimeter -> no meaningful growth (stays ~base, modulo ceil).
+    assert board_perim(perim) <= perim + 4
+    assert board_perim(perim * 0.5) <= perim + 4
+    # Well above -> grows so the perimeter can seat the terminal end-to-end.
+    assert board_perim(perim * 2.0) >= perim * 2.0 - 4
+
+
 def test_empty_components_is_zero_plus_padding():
     w, h = _wh(_content_aware_size([], padding=2.0), "square")
     assert (w, h) == (4, 4)  # 2*padding only
