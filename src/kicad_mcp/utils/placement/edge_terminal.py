@@ -101,8 +101,13 @@ def pad_extent(
 # ---------------------------------------------------------------------------
 
 def _rotate_vec(vx: float, vy: float, theta: int) -> Tuple[float, float]:
-    """Rotate a vector by ``theta`` degrees (math-CCW in y-down coords)."""
-    a = math.radians(theta)
+    """Rotate a vector by ``theta`` degrees to MATCH pcbnew's
+    ``SetOrientationDegrees`` (empirically: pcbnew's positive rotation is the
+    opposite screen direction from a naive y-down ``R(theta)``, so we apply
+    ``R(-theta)``). Keeping this aligned with pcbnew means the angle
+    :func:`rotation_to_face` picks, applied verbatim, actually orients the pads
+    as predicted — and :func:`rotate_extents` predicts the as-placed extents."""
+    a = math.radians(-theta)
     ca = math.cos(a)
     sa = math.sin(a)
     return (vx * ca - vy * sa, vx * sa + vy * ca)
@@ -114,21 +119,21 @@ def rotate_extents(
 ) -> Tuple[float, float, float, float]:
     """Rotate asymmetric extents ``(L, R, T, B)`` by ``theta in {0,90,180,270}``.
 
-    Derived by mapping the extent-box corners through the same ``R(theta)`` used
-    by :func:`_rotate_vec`:
+    Derived by mapping the extent-box corners through the same ``R(-theta)`` used
+    by :func:`_rotate_vec`, so it predicts pcbnew's as-placed extents:
         0   → (L, R, T, B)
-        90  → (B, T, L, R)
+        90  → (T, B, R, L)
         180 → (R, L, B, T)
-        270 → (T, B, R, L)
+        270 → (B, T, L, R)
     A non-orthogonal angle leaves the (axis-aligned) extents unchanged."""
     L, R, T, B = ext
     t = theta % 360
     if t == 90:
-        return (B, T, L, R)
+        return (T, B, R, L)
     if t == 180:
         return (R, L, B, T)
     if t == 270:
-        return (T, B, R, L)
+        return (B, T, L, R)
     return (L, R, T, B)
 
 
@@ -357,7 +362,7 @@ def pad_extent(pads, origin):
     return (ox - xmin, xmax - ox, oy - ymin, ymax - oy)
 
 def _rotate_vec(vx, vy, theta):
-    a = _et_math.radians(theta)
+    a = _et_math.radians(-theta)
     ca = _et_math.cos(a)
     sa = _et_math.sin(a)
     return (vx * ca - vy * sa, vx * sa + vy * ca)
@@ -366,11 +371,11 @@ def rotate_extents(ext, theta):
     L, R, T, B = ext
     t = theta % 360
     if t == 90:
-        return (B, T, L, R)
+        return (T, B, R, L)
     if t == 180:
         return (R, L, B, T)
     if t == 270:
-        return (T, B, R, L)
+        return (B, T, L, R)
     return (L, R, T, B)
 
 def rotation_to_face(vec, target_normal, eps=0.3):

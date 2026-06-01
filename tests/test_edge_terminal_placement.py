@@ -105,11 +105,14 @@ class TestRotateExtents:
     def test_180_swaps_lr_and_tb(self):
         assert rotate_extents(self.EXT, 180) == (10.0, 3.0, 2.0, 1.0)
 
+    # 90/270 follow pcbnew's SetOrientationDegrees direction (empirically pinned:
+    # pcbnew(90) sends the right-extent to the top). A 90° CW-on-screen turn of
+    # (L,R,T,B) sends R→T, T→L, L→B, B→R, i.e. → (T,B,R,L).
     def test_90(self):
-        assert rotate_extents(self.EXT, 90) == (2.0, 1.0, 3.0, 10.0)
+        assert rotate_extents(self.EXT, 90) == (1.0, 2.0, 10.0, 3.0)
 
     def test_270(self):
-        assert rotate_extents(self.EXT, 270) == (1.0, 2.0, 10.0, 3.0)
+        assert rotate_extents(self.EXT, 270) == (2.0, 1.0, 3.0, 10.0)
 
     def test_round_trip_90_270(self):
         assert rotate_extents(rotate_extents(self.EXT, 90), 270) == self.EXT
@@ -158,17 +161,12 @@ class TestRotationToFace:
         assert math.isclose(math.hypot(0.0, -0.3), 0.3)
         assert rotation_to_face((0.0, -0.3), (0.0, 1.0), eps=0.3) == 180
 
-    def test_tie_resolves_to_lowest_angle(self):
-        # vec along +x equidistant (in dot) between 90 and 270 targets? Construct
-        # a target perpendicular so 90 and 270 give opposite signs — instead test
-        # that a symmetric situation picks the lowest. vec (1,0), target (0,1):
-        # theta=90 gives (0,1)·(0,1)=+1 ; theta=270 gives (0,-1)·(0,1)=-1.
-        # Use target where 0 and 180 tie at 0: vec (1,0), target (0,1) →
-        # 0:dot0, 180:dot0, 90:+1, 270:-1 → picks 90 (unique). For a real tie,
-        # vec (1,0) & target (1,0): 0:+1 (unique). Determinism covered by
-        # fixed-order strict-> ; assert stable repeat:
-        assert rotation_to_face((1.0, 0.0), (0.0, 1.0)) == 90
-        assert rotation_to_face((1.0, 0.0), (0.0, 1.0)) == 90
+    def test_unique_max_and_determinism(self):
+        # pcbnew convention: a pad pointing +x (right), aimed at the +y (down)
+        # normal, rotates 270 (pcbnew(270) sends R→B = down). Unique max, and the
+        # result is stable across repeats (fixed iteration order + strict `>`).
+        assert rotation_to_face((1.0, 0.0), (0.0, 1.0)) == 270
+        assert rotation_to_face((1.0, 0.0), (0.0, 1.0)) == 270
 
 
 # ---------------------------------------------------------------------------
