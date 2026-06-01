@@ -307,3 +307,38 @@ def find_lib(lib_name):
             return candidate
     return None
 """
+
+
+# Shared body-extent measurement (single source for "the body bbox excluding the
+# antenna keepout"), used by BOTH the placement collection loop and the
+# board-size estimator. Uses version-stable layer-ID CONSTANTS, so it needs no
+# board and sidesteps the KiCad-9 "F.CrtYd" -> KiCad-10 "F.Courtyard" rename.
+BODY_EXTENT_HELPER = """
+def body_bbox(fp, has_keepout):
+    # Body bbox (xmin, ymin, xmax, ymax mm) EXCLUDING rule-area zones, so an
+    # antenna keepout is free to overhang the board edge (spec §2). pads + the
+    # Fab/Silk[/Courtyard] outline; courtyard is the outer bound for ordinary
+    # parts but is EXCLUDED for keepout parts (on RF modules it wraps the antenna
+    # keepout). Text skipped (reference/value bloat ~2x). Falls back to the full
+    # body bbox if a footprint has neither pads nor body graphics.
+    body = set([pcbnew.F_Fab, pcbnew.B_Fab, pcbnew.F_SilkS, pcbnew.B_SilkS])
+    if not has_keepout:
+        body.add(pcbnew.F_CrtYd)
+        body.add(pcbnew.B_CrtYd)
+    bx0 = by0 = float("inf")
+    bx1 = by1 = float("-inf")
+    for pad in fp.Pads():
+        pb = pad.GetBoundingBox()
+        bx0 = min(bx0, pcbnew.ToMM(pb.GetX())); by0 = min(by0, pcbnew.ToMM(pb.GetY()))
+        bx1 = max(bx1, pcbnew.ToMM(pb.GetRight())); by1 = max(by1, pcbnew.ToMM(pb.GetBottom()))
+    for it in fp.GraphicalItems():
+        if it.GetLayer() in body and not hasattr(it, "GetText"):
+            ib = it.GetBoundingBox()
+            bx0 = min(bx0, pcbnew.ToMM(ib.GetX())); by0 = min(by0, pcbnew.ToMM(ib.GetY()))
+            bx1 = max(bx1, pcbnew.ToMM(ib.GetRight())); by1 = max(by1, pcbnew.ToMM(ib.GetBottom()))
+    if bx0 == float("inf"):
+        bb = fp.GetBoundingBox(False, False)
+        bx0, by0 = pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY())
+        bx1, by1 = pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom())
+    return bx0, by0, bx1, by1
+"""
