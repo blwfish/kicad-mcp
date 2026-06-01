@@ -19,6 +19,7 @@ from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definit
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.placement.edge_terminal import EDGE_TERMINAL_HELPER, normalize_hint
+from kicad_mcp.utils.placement.wire_entry import WIRE_ENTRY, WIRE_ENTRY_HELPER
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,16 @@ def _emit_placement_decision(d: Dict[str, Any]) -> None:
     elif ev == "rotation_ambiguous":
         emit_event("warn", "rotation_ambiguous",
                    f"{ref} has symmetric pads; rotation left at 0°", {"ref": ref})
+    elif ev == "rotation_fallback":
+        emit_event("warn", "rotation_fallback",
+                   f"{ref} ({d.get('footprint')}) has no wire-entry data; orientation "
+                   f"fell back to the pad-centroid proxy", {"ref": ref,
+                   "footprint": d.get("footprint")})
+    elif ev == "keepout_overhang":
+        emit_event("info", "keepout_overhang",
+                   f"{ref} placed with its keepout overhanging the {d.get('edge')} edge "
+                   f"(rotated {d.get('angle')}°)",
+                   {"ref": ref, "edge": d.get("edge"), "angle": d.get("angle")})
     elif ev == "placement_hint_applied":
         emit_event("info", "placement_hint_applied",
                    f"Applied placement hint to {ref}: {d.get('directive')}",
@@ -564,7 +575,7 @@ def _step_smart_placement(
 import pcbnew, json, math, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + KEEPOUT_HELPER + POWER_NET_HELPER + EDGE_TERMINAL_HELPER + """
+""" + KEEPOUT_HELPER + POWER_NET_HELPER + EDGE_TERMINAL_HELPER + WIRE_ENTRY_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
@@ -668,6 +679,14 @@ for fp in board.GetFootprints():
     pad_cx, pad_cy = pad_centroid_offset(pad_boxes, (fp_x, fp_y))
     pad_el, pad_er, pad_et, pad_eb = pad_extent(pad_boxes, (fp_x, fp_y))
 
+    # Footprint item name (the only stable id surviving schematic->PCB) → keys
+    # the wire-entry table for terminal orientation (replaces the pad-centroid
+    # proxy for known families; see WIRE_ENTRY_HELPER / the rotation branch).
+    try:
+        fpname = fp.GetFPID().GetLibItemName()
+    except Exception:
+        fpname = ""
+
     w = ext_left + ext_right
     h = ext_top + ext_bot
     fp_info[ref] = {
@@ -680,6 +699,7 @@ for fp in board.GetFootprints():
         "pad_cx": round(pad_cx, 4), "pad_cy": round(pad_cy, 4),
         "pad_ext": [round(pad_el, 3), round(pad_er, 3),
                     round(pad_et, 3), round(pad_eb, 3)],
+        "footprint": str(fpname),
     }
 
 if not fp_info:
@@ -692,6 +712,10 @@ net_members = params["net_members"]
 # of {edge, rotation, fixed}. Absent ref → heuristic. Single source of truth
 # for placement overrides; the engine never silently substitutes a default.
 placement_hints = params.get("placement_hints", {})
+# Wire-entry table (data, single-source via JSON; keyed by normalize_family from
+# WIRE_ENTRY_HELPER). Resolves terminal orientation for known footprint families;
+# unknown families fall back to the pad-centroid proxy with a logged event.
+wire_entry_table = {k: tuple(v) for k, v in (params.get("wire_entry") or {}).items()}
 connectivity = {}
 conn_score = {ref: 0.0 for ref in fp_info}
 
@@ -950,6 +974,7 @@ for edge in ("top", "bottom", "left", "right"):
     prior_boxes = list(placed_boxes)  # tier-1 + already-laid edges (not this one)
     items = []
     rot_by_ref = {}
+    rot_source = {}
     for ref in group:
         info = fp_info[ref]
         cls = _ref_class(ref)
@@ -959,10 +984,23 @@ for edge in ("top", "bottom", "left", "right"):
         pad0 = (info["pad_ext"][0], info["pad_ext"][1], info["pad_ext"][2], info["pad_ext"][3])
         if "rotation" in hint:
             ang = hint["rotation"]
+            rot_source[ref] = "hint"
         elif is_term:
-            ang = rotation_to_face((info["pad_cx"], info["pad_cy"]), inward_normal(edge))
-            if math.hypot(info["pad_cx"], info["pad_cy"]) < 0.3:
-                placement_decisions.append({"event": "rotation_ambiguous", "ref": ref})
+            wv = wire_entry_table.get(normalize_family(info.get("footprint", "")))
+            if wv is not None:
+                # Known family: aim the WIRE-ENTRY face at the edge's OUTWARD
+                # normal — the cable side hangs off-board, pads stay inboard.
+                ang = rotation_to_face(wv, outward_normal(edge))
+                rot_source[ref] = "wire_entry"
+            else:
+                # Unknown family: fall back to the pad-centroid proxy (aim the
+                # pad side inward) and FLAG it — never silently mis-orient.
+                ang = rotation_to_face((info["pad_cx"], info["pad_cy"]), inward_normal(edge))
+                rot_source[ref] = "pad_centroid"
+                placement_decisions.append({"event": "rotation_fallback", "ref": ref,
+                                            "footprint": info.get("footprint", "")})
+                if math.hypot(info["pad_cx"], info["pad_cy"]) < 0.3:
+                    placement_decisions.append({"event": "rotation_ambiguous", "ref": ref})
         else:
             ang = 0
         rext = rotate_extents(ext0, ang)
@@ -984,7 +1022,8 @@ for edge in ("top", "bottom", "left", "right"):
             # orient); SW/H/USB edge-place at 0° and aren't noteworthy.
             if is_screw_terminal_class(_ref_class(ref)):
                 placement_decisions.append({"event": "rotation_chosen", "ref": ref,
-                                            "edge": edge, "angle": ang})
+                                            "edge": edge, "angle": ang,
+                                            "source": rot_source.get(ref, "pad_centroid")})
         else:
             # Couldn't seat on the edge slot → interior fallback (no rotation).
             fb = fallback_grid(*get_extents(ref))
@@ -1115,6 +1154,9 @@ print(json.dumps({
         "spacing_mm": spacing_mm,
         "net_members": dict(net_members),
         "placement_hints": dict(placement_hints or {}),
+        # Wire-entry table as plain data (lists, JSON-safe); the embedded script
+        # keys it via normalize_family (WIRE_ENTRY_HELPER). Single source = WIRE_ENTRY.
+        "wire_entry": {k: list(v) for k, v in WIRE_ENTRY.items()},
     }, timeout=60.0)
 
 

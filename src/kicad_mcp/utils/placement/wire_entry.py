@@ -137,3 +137,23 @@ WIRE_ENTRY: Dict[str, Tuple[float, float]] = {
 def lookup(footprint: str) -> Optional[Tuple[float, float]]:
     """Wire-entry vector for a footprint, or None if the family isn't shipped."""
     return WIRE_ENTRY.get(normalize_family(footprint))
+
+
+# --- Injectable source for the embedded pcbnew placement script ---------------
+# The placer runs inside pcbnew's interpreter (a source string assembled by
+# tools/pcb_pipeline.py) which cannot import this module. It needs ``normalize_family``
+# to key the wire-entry table (passed separately as JSON data via params, so the
+# TABLE stays single-source). This string defines a behaviourally-identical copy
+# (annotations stripped); the drift test in tests/test_wire_entry.py execs it and
+# compares to the imported function, keeping the two from diverging (CLAUDE.md
+# Syntactic-Semantic Seam Rule — same pattern as edge_terminal.EDGE_TERMINAL_HELPER).
+WIRE_ENTRY_HELPER = r'''
+import re as _we_re
+_WE_PHX = _we_re.compile(r"(MKDS-\d+,\d+)-\d+-(\d+\.\d+)")
+_WE_ARR = _we_re.compile(r"\d+x\d+")
+def normalize_family(footprint):
+    name = footprint.split(":")[-1]
+    name = _WE_PHX.sub(r"\1-N-\2", name)
+    name = _WE_ARR.sub("NxN", name)
+    return name
+'''

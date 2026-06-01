@@ -333,6 +333,24 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     for _edge, _refs in by_edge.items():
         assert _refs == sorted(_refs, key=natural_ref_key), \
             f"terminals on {_edge} edge out of natural order: {_refs}"
+
+    # M1 oracle (spec §1): the synthesized MKDS terminals are oriented from the
+    # WIRE_ENTRY table + the edge's OUTWARD normal — NOT the pad-centroid proxy
+    # the core lesson rejects. At least one terminal resolves via wire-entry, and
+    # each such angle equals the table prediction (wire-entry face points
+    # off-board). This is the deterministic check that replaces "came out right
+    # by luck".
+    from kicad_mcp.utils.placement.edge_terminal import outward_normal, rotation_to_face
+    from kicad_mcp.utils.placement.wire_entry import WIRE_ENTRY
+    we_rot = [d for d in rot if d.get("source") == "wire_entry"]
+    assert we_rot, "no terminal oriented from WIRE_ENTRY — did they fall back to pad-centroid?"
+    mkds_vec = WIRE_ENTRY["TerminalBlock_Phoenix_MKDS-1,5-N-5.08_NxN_P5.08mm_Horizontal"]
+    for d in we_rot:
+        expect = rotation_to_face(mkds_vec, outward_normal(d["edge"]))
+        assert d["angle"] == expect, (
+            f"{d['ref']} on {d['edge']}: wire-entry angle {d['angle']} != oracle "
+            f"{expect} (WIRE_ENTRY vector aimed at the outward normal)")
+
     # Decisions surface as an mcp-events envelope on the build response.
     assert "events" in r4, "placement events not surfaced on the response"
     assert any(e["code"] == "rotation_chosen" for e in r4["events"])
