@@ -6,9 +6,10 @@ import re
 import subprocess
 import time
 import zipfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
+from mcp_events import emit_event, event_context
 
 from kicad_mcp.tools.pcb_silkscreen import _op_auto_fix_silkscreen
 from kicad_mcp.utils.firmware.intent import load_intent
@@ -17,8 +18,37 @@ from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.placement.edge_terminal import EDGE_TERMINAL_HELPER, normalize_hint
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_placement_decision(d: Dict[str, Any]) -> None:
+    """Translate one engine placement-decision record into an OOB event.
+
+    The embedded placement script can't emit events directly, so it accumulates
+    structured decision dicts and returns them; this maps each to ``emit_event``
+    inside the caller's ``event_context``. Unknown event kinds fall through to a
+    generic info record rather than being silently dropped."""
+    ev = d.get("event")
+    ref = d.get("ref")
+    if ev == "rotation_chosen":
+        emit_event("info", "rotation_chosen",
+                   f"{ref} rotated {d.get('angle')}° on the {d.get('edge')} edge",
+                   {"ref": ref, "edge": d.get("edge"), "angle": d.get("angle")})
+    elif ev == "rotation_ambiguous":
+        emit_event("warn", "rotation_ambiguous",
+                   f"{ref} has symmetric pads; rotation left at 0°", {"ref": ref})
+    elif ev == "placement_hint_applied":
+        emit_event("info", "placement_hint_applied",
+                   f"Applied placement hint to {ref}: {d.get('directive')}",
+                   {"ref": ref, "directive": d.get("directive")})
+    elif ev == "placement_hint_offboard":
+        emit_event("warn", "placement_hint_offboard",
+                   f"Fixed-position hint for {ref} is off-board or overlaps a "
+                   f"placed part; placed as given", {"ref": ref})
+    else:
+        emit_event("info", "placement_decision", str(d), {"ref": ref})
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +206,7 @@ components = []
 errors = []
 total_area = 0.0
 max_dim = 0.0
+total_keepout = 0.0
 
 for spec in fp_specs:
     lib_name = spec["library"]
@@ -193,13 +224,21 @@ for spec in fp_specs:
     h = round(pcbnew.ToMM(bbox.GetHeight()), 2)
     total_area += w * h
     max_dim = max(max_dim, w, h)
+    # Embedded keepout zones (e.g. ESP32 antenna) consume board area but aren't
+    # in the body bbox — add them so antenna boards aren't under-sized. Mirrors
+    # the public estimate_board_size (pcb_planning.py) so the two agree.
+    if hasattr(fp, 'Zones'):
+        for zone in fp.Zones():
+            if zone.GetIsRuleArea():
+                zbb = zone.GetBoundingBox()
+                total_keepout += pcbnew.ToMM(zbb.GetWidth()) * pcbnew.ToMM(zbb.GetHeight())
     components.append({"library": lib_name, "footprint": fp_name, "width_mm": w, "height_mm": h})
 
 if not components:
     print(json.dumps({"error": "No valid footprints found", "details": errors}))
     raise SystemExit(0)
 
-needed_area = total_area * routing_factor
+needed_area = total_area * routing_factor + total_keepout
 min_dim = max_dim + padding * 2
 
 suggestions = []
@@ -444,6 +483,7 @@ def _step_smart_placement(
     pcb_path: str,
     nets: Dict[str, List],
     spacing_mm: float = 1.0,
+    placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Step 5: Smart tiered placement based on connectivity and component type.
 
@@ -469,7 +509,7 @@ def _step_smart_placement(
 import pcbnew, json, math, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + KEEPOUT_HELPER + POWER_NET_HELPER + """
+""" + KEEPOUT_HELPER + POWER_NET_HELPER + EDGE_TERMINAL_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
@@ -524,6 +564,20 @@ for fp in board.GetFootprints():
         ext_top   = fp_y - cy_ymin_abs
         ext_bot   = cy_ymax_abs - fp_y
 
+    # Pad bounding boxes (absolute mm) → pad-centroid offset + pad extent from
+    # the footprint origin. The edge-terminal heuristic rotates a connector so
+    # its pad side faces INWARD (wire/screw side overhangs the edge); the pad
+    # extent lets terminals overhang with their copper still on-board.
+    pad_boxes = []
+    for pad in fp.Pads():
+        pbb = pad.GetBoundingBox()
+        pad_boxes.append((
+            pcbnew.ToMM(pbb.GetX()), pcbnew.ToMM(pbb.GetY()),
+            pcbnew.ToMM(pbb.GetRight()), pcbnew.ToMM(pbb.GetBottom()),
+        ))
+    pad_cx, pad_cy = pad_centroid_offset(pad_boxes, (fp_x, fp_y))
+    pad_el, pad_er, pad_et, pad_eb = pad_extent(pad_boxes, (fp_x, fp_y))
+
     # Keepout zones
     has_keepout = False
     keepout_side = None
@@ -559,6 +613,9 @@ for fp in board.GetFootprints():
         "has_keepout": has_keepout, "keepout_side": keepout_side,
         "keepout_rel": keepout_rel,
         "area": round(w * h, 2),
+        "pad_cx": round(pad_cx, 4), "pad_cy": round(pad_cy, 4),
+        "pad_ext": [round(pad_el, 3), round(pad_er, 3),
+                    round(pad_et, 3), round(pad_eb, 3)],
     }
 
 if not fp_info:
@@ -567,6 +624,10 @@ if not fp_info:
 
 # --- Build connectivity from netlist ---
 net_members = params["net_members"]
+# Per-ref placement hints (validated parent-side by normalize_hint): a subset
+# of {edge, rotation, fixed}. Absent ref → heuristic. Single source of truth
+# for placement overrides; the engine never silently substitutes a default.
+placement_hints = params.get("placement_hints", {})
 connectivity = {}
 conn_score = {ref: 0.0 for ref in fp_info}
 
@@ -615,9 +676,26 @@ tier3.sort(key=sort_key)
 tier4.sort(key=sort_key)
 
 # --- Placement engine ---
-placements = {}
+placements = {}            # ref -> (x_mm, y_mm, angle_deg)
 placed_boxes = []
 keepout_boxes = []  # absolute keepout zone bboxes
+placement_decisions = []   # structured rotation/hint events → response envelope
+
+def rotate_keepout(krel, theta):
+    # Rotate a relative keepout bbox (dx0,dy0,dx1,dy1) about the origin by theta
+    # and re-derive an axis-aligned bbox. Uses the SAME _rotate_vec as
+    # rotate_extents, so keepout and courtyard rotate by one convention.
+    if not krel:
+        return krel
+    dx0, dy0, dx1, dy1 = krel
+    xs = []
+    ys = []
+    for cxv in (dx0, dx1):
+        for cyv in (dy0, dy1):
+            rx, ry = _rotate_vec(cxv, cyv, theta)
+            xs.append(rx)
+            ys.append(ry)
+    return (min(xs), min(ys), max(xs), max(ys))
 
 def get_extents(ref):
     info = fp_info[ref]
@@ -647,14 +725,21 @@ def hits_keepout(cx, cy, el, er, et, eb):
             return True
     return False
 
-def place_at(ref, cx, cy):
+def place_at(ref, cx, cy, angle=0, rot_ext=None, rot_keepout=None):
+    # rot_ext / rot_keepout carry the rotated courtyard / keepout for rotated
+    # connectors so collision tracking uses the as-placed footprint, not the 0°
+    # one. Absent → use the footprint's stored (0°) extents.
     info = fp_info[ref]
-    el, er, et, eb = info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"]
-    placements[ref] = (round(cx, 2), round(cy, 2))
+    if rot_ext is None:
+        el, er, et, eb = info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"]
+    else:
+        el, er, et, eb = rot_ext
+    placements[ref] = (round(cx, 2), round(cy, 2), int(angle))
     placed_boxes.append((cx - el, cy - et, cx + er, cy + eb))
     # Track keepout zones in absolute coords
-    if info["keepout_rel"]:
-        dx0, dy0, dx1, dy1 = info["keepout_rel"]
+    krel = rot_keepout if rot_keepout is not None else info["keepout_rel"]
+    if krel:
+        dx0, dy0, dx1, dy1 = krel
         keepout_boxes.append((cx + dx0, cy + dy0, cx + dx1, cy + dy1))
 
 def find_partner_pos(ref):
@@ -666,7 +751,8 @@ def find_partner_pos(ref):
         if score > best_score:
             best_score = score
             best_pos = pos
-    return best_pos if best_pos else (board_cx, board_cy)
+    # placements values are (x, y, angle); partner targeting needs only (x, y).
+    return (best_pos[0], best_pos[1]) if best_pos else (board_cx, board_cy)
 
 def valid_pos(cx, cy, el, er, et, eb):
     return fits_on_board(cx, cy, el, er, et, eb) and not collides(cx, cy, el, er, et, eb) and not hits_keepout(cx, cy, el, er, et, eb)
@@ -722,40 +808,119 @@ for ref in tier1:
         if fb:
             place_at(ref, fb[0], fb[1])
 
-# --- Tier 2: Connectors → edge placement near partners ---
+# --- Tier 2: Connectors → hint-aware, ordered, pad-inward edge placement ---
+# Three dispositions per connector (hint = validated {edge,rotation,fixed}):
+#   fixed:[x,y]  → absolute coords (skip edge logic)
+#   edge:"none"  → interior, like a passive (module headers belong near their IC)
+#   otherwise    → an edge (hint, else nearest to partner), ordered + rotated
+# J terminals rotate so their pad side faces INWARD (wire side overhangs the
+# board edge); SW/H/USB edge-place but never rotate. Layout is ordered by
+# natural ref key so J1..J10 march along the edge, not scatter by proximity.
+board_box = (board_xmin, board_ymin, board_xmax, board_ymax)
+
+def clear_of(boxes, cx, cy, el, er, et, eb):
+    # Spacing-buffered overlap against an explicit box list. Edge layout checks
+    # only boxes placed BEFORE the current edge (tier-1 + prior edges); the
+    # current edge's members are already spaced by layout_along_edge, so running
+    # the buffered check between adjacent terminals would false-positive.
+    box = (cx - el - spacing, cy - et - spacing, cx + er + spacing, cy + eb + spacing)
+    for pb in boxes:
+        if aabb_overlap(box, pb):
+            return True
+    return False
+
+edge_groups = {"top": [], "bottom": [], "left": [], "right": []}
+t2_interior = []
+t2_fixed = []
 for ref in tier2:
-    el, er, et, eb = get_extents(ref)
-    target = find_partner_pos(ref)
-
-    best = None
-    best_dist = float("inf")
-
-    for edge in ["top", "bottom", "left", "right"]:
-        if edge in ("top", "bottom"):
-            fixed_y = board_ymin + et + margin if edge == "top" else board_ymax - eb - margin
-            x = board_xmin + el + margin
-            while x <= board_xmax - er - margin:
-                if valid_pos(x, fixed_y, el, er, et, eb):
-                    d = math.hypot(x - target[0], fixed_y - target[1])
-                    if d < best_dist:
-                        best_dist = d
-                        best = (x, fixed_y)
-                x += 2.0
-        else:
-            fixed_x = board_xmin + el + margin if edge == "left" else board_xmax - er - margin
-            y = board_ymin + et + margin
-            while y <= board_ymax - eb - margin:
-                if valid_pos(fixed_x, y, el, er, et, eb):
-                    d = math.hypot(fixed_x - target[0], y - target[1])
-                    if d < best_dist:
-                        best_dist = d
-                        best = (fixed_x, y)
-                y += 2.0
-
-    if best:
-        place_at(ref, best[0], best[1])
+    hint = placement_hints.get(ref, {})
+    if "fixed" in hint:
+        t2_fixed.append(ref)
+    elif hint.get("edge") == "none":
+        t2_interior.append(ref)
+    elif hint.get("edge") in ("top", "bottom", "left", "right"):
+        edge_groups[hint["edge"]].append(ref)
     else:
-        # Connector couldn't fit on edge, try interior
+        edge_groups[nearest_edge(find_partner_pos(ref), board_box)].append(ref)
+
+# Fixed-coordinate connectors (explicit override): place as given, warn if off.
+for ref in t2_fixed:
+    fx, fy = placement_hints[ref]["fixed"]
+    el, er, et, eb = get_extents(ref)
+    placement_decisions.append({"event": "placement_hint_applied", "ref": ref,
+                                "directive": {"fixed": [fx, fy]}})
+    if not fits_on_board(fx, fy, el, er, et, eb) or collides(fx, fy, el, er, et, eb):
+        placement_decisions.append({"event": "placement_hint_offboard", "ref": ref})
+    place_at(ref, fx, fy)
+
+# Edge groups: order by ref, choose rotation, lay out along the edge.
+for edge in ("top", "bottom", "left", "right"):
+    group = sorted(edge_groups[edge], key=natural_ref_key)
+    if not group:
+        continue
+    prior_boxes = list(placed_boxes)  # tier-1 + already-laid edges (not this one)
+    items = []
+    rot_by_ref = {}
+    for ref in group:
+        info = fp_info[ref]
+        cls = _ref_class(ref)
+        hint = placement_hints.get(ref, {})
+        is_term = is_screw_terminal_class(cls)
+        ext0 = (info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"])
+        pad0 = (info["pad_ext"][0], info["pad_ext"][1], info["pad_ext"][2], info["pad_ext"][3])
+        if "rotation" in hint:
+            ang = hint["rotation"]
+        elif is_term:
+            ang = rotation_to_face((info["pad_cx"], info["pad_cy"]), inward_normal(edge))
+            if math.hypot(info["pad_cx"], info["pad_cy"]) < 0.3:
+                placement_decisions.append({"event": "rotation_ambiguous", "ref": ref})
+        else:
+            ang = 0
+        rext = rotate_extents(ext0, ang)
+        rpad = rotate_extents(pad0, ang)
+        rot_by_ref[ref] = (ang, rext, rpad)
+        items.append((ref, rext, rpad, is_term))
+        if hint:
+            placement_decisions.append({"event": "placement_hint_applied",
+                                        "ref": ref, "directive": hint})
+    laid = layout_along_edge(items, edge, board_box, margin, spacing)
+    for (ref, x, y, fits) in laid:
+        ang, rext, rpad = rot_by_ref[ref]
+        el, er, et, eb = rext
+        info = fp_info[ref]
+        rkeep = rotate_keepout(info["keepout_rel"], ang)
+        if fits and not clear_of(prior_boxes, x, y, el, er, et, eb) and not hits_keepout(x, y, el, er, et, eb):
+            place_at(ref, x, y, ang, rext, rkeep)
+            placement_decisions.append({"event": "rotation_chosen", "ref": ref,
+                                        "edge": edge, "angle": ang})
+        else:
+            # Couldn't seat on the edge slot → interior fallback (no rotation).
+            fb = fallback_grid(*get_extents(ref))
+            if fb:
+                place_at(ref, fb[0], fb[1])
+
+# Interior connectors (edge:"none") → spiral near partner, like a passive.
+for ref in t2_interior:
+    el, er, et, eb = get_extents(ref)
+    placement_decisions.append({"event": "placement_hint_applied", "ref": ref,
+                                "directive": {"edge": "none"}})
+    target = find_partner_pos(ref)
+    step = max(2.0, min(el + er, et + eb) / 2)
+    found = False
+    for r_mult in range(1, 60):
+        if found:
+            break
+        radius = r_mult * step
+        n_angles = max(12, int(2 * math.pi * radius / step))
+        for i in range(n_angles):
+            angle = 2 * math.pi * i / n_angles
+            cx = target[0] + radius * math.cos(angle)
+            cy = target[1] + radius * math.sin(angle)
+            if valid_pos(cx, cy, el, er, et, eb):
+                place_at(ref, cx, cy)
+                found = True
+                break
+    if not found:
         fb = fallback_grid(el, er, et, eb)
         if fb:
             place_at(ref, fb[0], fb[1])
@@ -817,11 +982,17 @@ failed = []
 all_refs = set(fp_info.keys())
 placed_refs = set(placements.keys())
 
-for ref, (px, py) in placements.items():
+for ref, (px, py, pa) in placements.items():
     fp = board.FindFootprintByReference(ref)
     if fp:
         fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(px), pcbnew.FromMM(py)))
-        moved.append({"ref": ref, "x_mm": px, "y_mm": py})
+        if pa:
+            # KiCad 9/10: SetOrientationDegrees; older API: EDA_ANGLE.
+            if hasattr(fp, "SetOrientationDegrees"):
+                fp.SetOrientationDegrees(pa)
+            else:
+                fp.SetOrientation(pcbnew.EDA_ANGLE(pa, pcbnew.DEGREES_T))
+        moved.append({"ref": ref, "x_mm": px, "y_mm": py, "angle": pa})
 
 for ref in all_refs - placed_refs:
     failed.append(ref)
@@ -844,12 +1015,14 @@ print(json.dumps({
     "failed_placements": failed,
     "placements": moved[:10],
     "placements_truncated": len(moved) > 10,
+    "placement_decisions": placement_decisions,
 }))
 """
     return run_pcbnew_script(script, params={
         "pcb_path": pcb_path,
         "spacing_mm": spacing_mm,
         "net_members": dict(net_members),
+        "placement_hints": dict(placement_hints or {}),
     }, timeout=60.0)
 
 
@@ -1140,6 +1313,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         autoroute_passes: int = 1,
         export_gerbers: bool = False,
         intent_path: str = "",
+        placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Build a complete routed PCB from a KiCad schematic in one step.
 
@@ -1168,6 +1342,15 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 its connector legends drive a silk-legend pass that labels each
                 synthesized terminal's positions (the field-wiring documentation)
                 — the firmware front end passes the same intent it generated from.
+                Its ``source.board_size_mm`` (if any) sizes the board when no
+                explicit dimensions are given, and its ``placement_hints`` feed
+                the per-ref placement overrides below.
+            placement_hints: Per-ref PCB placement overrides, keyed by KiCad
+                reference. Each value is a subset of ``{edge, rotation, fixed}``
+                — ``edge`` ∈ {top,bottom,left,right,none}, ``rotation`` ∈
+                {0,90,180,270}, ``fixed`` = [x,y] mm. Invalid keys/values are
+                reported (events) and ignored, never crash. Merged over any
+                hints carried in the design intent (these win — explicit caller).
         """
         if not os.path.exists(project_path):
             return {"error": f"Project file not found: {project_path}"}
@@ -1212,9 +1395,38 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             pipeline_result["error"] = "No components with footprints found in schematic"
             return pipeline_result
 
+        # Load the design intent ONCE (reused for board size, placement hints,
+        # and the silk-legend pass). Non-fatal: a bad/absent intent just means
+        # no intent-derived board size or hints.
+        design_intent = None
+        if intent_path and os.path.exists(intent_path):
+            try:
+                design_intent = load_intent(intent_path)
+            except Exception as e:  # noqa: BLE001 — intent is advisory here
+                pipeline_result.setdefault("warnings", []).append(
+                    f"Could not load intent {intent_path} (non-fatal): {e}"
+                )
+
+        # Board size precedence: explicit args (>0) > intent source.board_size_mm
+        # > auto-estimate. Each axis resolved independently so a caller may fix
+        # one and inherit the other. Transpose is a footgun: [0]=width, [1]=height.
+        eff_width_mm, eff_height_mm = board_width_mm, board_height_mm
+        if (board_width_mm <= 0 or board_height_mm <= 0) and design_intent is not None:
+            bsz = (design_intent.source or {}).get("board_size_mm")
+            if (isinstance(bsz, (list, tuple)) and len(bsz) == 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                            and v > 0 for v in bsz)):
+                if board_width_mm <= 0:
+                    eff_width_mm = float(bsz[0])
+                if board_height_mm <= 0:
+                    eff_height_mm = float(bsz[1])
+                pipeline_result.setdefault("warnings", []).append(
+                    f"Board sized to {eff_width_mm}x{eff_height_mm}mm from design intent"
+                )
+
         # Step 2: Create PCB + board outline
         step = _step_create_pcb_and_outline(
-            pcb_path, board_width_mm, board_height_mm, components,
+            pcb_path, eff_width_mm, eff_height_mm, components,
         )
         if not _record("create_pcb", step):
             return pipeline_result
@@ -1242,10 +1454,44 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         pipeline_result["pads_assigned"] = step.get("pads_assigned", 0)
 
+        # Merge placement hints: intent-carried first, explicit param wins.
+        # normalize_hint is the single validation source — invalid keys/values
+        # are dropped and surfaced as events, never silently substituted.
+        merged_raw: Dict[str, Any] = {}
+        if design_intent is not None:
+            merged_raw.update(design_intent.placement_hints or {})
+        if placement_hints:
+            merged_raw.update(placement_hints)
+        clean_hints: Dict[str, Dict[str, Any]] = {}
+        hint_warnings: List[str] = []
+        for _ref, _raw in merged_raw.items():
+            _clean, _warns = normalize_hint(_raw)
+            if _clean:
+                clean_hints[_ref] = _clean
+            for _w in _warns:
+                hint_warnings.append(f"{_ref}: {_w}")
+
         # Step 5: Smart placement (tiered, connectivity-aware)
-        step = _step_smart_placement(pcb_path, nets)
+        step = _step_smart_placement(pcb_path, nets, placement_hints=clean_hints)
         _record("smart_placement", step)
         # Non-fatal — continue even if placement is imperfect
+
+        # Surface placement decisions + hint diagnostics as an events envelope
+        # (mcp-events). Info-level rotation/hint records included so the response
+        # documents what the autoplacer chose; warnings for bad/unmatched hints.
+        with event_context() as _ev:
+            for _d in step.get("placement_decisions", []) or []:
+                _emit_placement_decision(_d)
+            for _ref in clean_hints:
+                if _ref not in components:
+                    emit_event("warn", "placement_hint_unmatched",
+                               f"Placement hint for {_ref} has no matching "
+                               f"component on the board", {"ref": _ref})
+            for _w in hint_warnings:
+                emit_event("warn", "placement_hint_invalid", _w, {})
+            _env = _ev.to_envelope("info")
+        if _env:
+            pipeline_result["events"] = _env
 
         # Step 6: Autoroute
         step = _step_autoroute(pcb_path, passes=autoroute_passes)
@@ -1277,12 +1523,11 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # so a bad intent OR a pcbnew failure inside the step (run_pcbnew_script
         # RAISES on subprocess error/timeout) is recorded, never propagated, so it
         # cannot abort an already-routed board.
-        if intent_path and os.path.exists(intent_path):
+        if design_intent is not None:
             try:
-                _intent = load_intent(intent_path)
                 _legends = [
                     {"ref": L.ref, "positions": L.positions, "device": L.device}
-                    for L in _intent.connector_legends
+                    for L in design_intent.connector_legends
                 ]
                 step = _step_silkscreen_legends(pcb_path, _legends)
                 _record("silkscreen_legends", step)

@@ -190,9 +190,10 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
         return {"status": "error", "code": "write_failed",
                 "message": f"Could not write intent doc: {e}"}
 
-    # power_source / board_size_mm are ADVISORY metadata recorded in the intent
-    # for the human + the PCB step — surfaced here (build_pcb does not yet apply
-    # board_size automatically; pass it explicitly).
+    # power_source / board_size_mm are metadata recorded in the intent and
+    # surfaced here. build_pcb_from_schematic reads board_size_mm from the intent
+    # to size the board when no explicit dimensions are passed (explicit args
+    # still win); power_source remains advisory.
     return {
         "status": "ok", "intent_path": str(dest),
         "board": board, "summary": _summary(intent), "gaps": _gaps_list(intent),
