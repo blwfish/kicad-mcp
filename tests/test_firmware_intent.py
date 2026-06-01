@@ -111,6 +111,19 @@ def test_yaml_round_trip(tmp_path):
     save_intent(i, str(p))
     assert to_dict(load_intent(str(p))) == to_dict(i)
 
+
+def test_placement_hints_round_trip(tmp_path):
+    """The v5 per-ref placement_hints channel survives save/load with its nested
+    directive dicts intact (the build step reads these to override placement)."""
+    i = _intent()
+    i.placement_hints = {
+        "J6": {"edge": "none"},
+        "J1": {"rotation": 90, "fixed": [10, 20]},
+    }
+    p = tmp_path / "intent.yaml"
+    save_intent(i, str(p))
+    assert load_intent(str(p)).placement_hints == i.placement_hints
+
 def test_from_dict_to_dict_identity():
     i = _intent()
     assert to_dict(from_dict(to_dict(i))) == to_dict(i)

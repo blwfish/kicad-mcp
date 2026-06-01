@@ -233,6 +233,27 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert silk.get("labels_added", 0) > 0
     assert not silk.get("missing_refs")
 
+    # Human-rational placement: the synthesized screw terminals were rotated to
+    # orthogonal angles and laid out in natural ref order along each edge. (The
+    # rotation *sign* is pinned by _assert_mostly_routed above — a wrong sign
+    # points pads off-board and routing collapses; here we pin orthogonality +
+    # ordering + the decision/event surfacing.)
+    from kicad_mcp.utils.placement.edge_terminal import natural_ref_key
+    decisions = r4["steps"]["smart_placement"]["placement_decisions"]
+    rot = [d for d in decisions if d["event"] == "rotation_chosen"]
+    assert rot, "no terminal rotations recorded — expected synthesized J terminals"
+    assert all(d["angle"] in (0, 90, 180, 270) for d in rot), \
+        f"terminal rotations must be orthogonal: {[d['angle'] for d in rot]}"
+    by_edge: dict = {}
+    for d in rot:
+        by_edge.setdefault(d["edge"], []).append(d["ref"])
+    for _edge, _refs in by_edge.items():
+        assert _refs == sorted(_refs, key=natural_ref_key), \
+            f"terminals on {_edge} edge out of natural order: {_refs}"
+    # Decisions surface as an mcp-events envelope on the build response.
+    assert "events" in r4, "placement events not surfaced on the response"
+    assert any(e["code"] == "rotation_chosen" for e in r4["events"])
+
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
     nl = extract_netlist_via_cli(str(sch))
     vals = [c.get("value") for c in nl["components"].values()]

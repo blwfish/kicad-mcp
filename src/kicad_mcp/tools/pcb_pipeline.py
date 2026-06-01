@@ -51,6 +51,59 @@ def _emit_placement_decision(d: Dict[str, Any]) -> None:
         emit_event("info", "placement_decision", str(d), {"ref": ref})
 
 
+def _resolve_board_size(
+    explicit_w: float, explicit_h: float, intent_source: Optional[Dict[str, Any]],
+) -> tuple:
+    """Resolve board ``(width, height, from_intent)``.
+
+    Precedence per axis: explicit dimension (>0) > intent ``source.board_size_mm``
+    > 0 (auto-estimate downstream). Each axis is resolved independently so a
+    caller may fix one and inherit the other. The intent size is honoured only
+    when it is a 2-element ``[w, h]`` of positive non-bool numbers; a malformed,
+    partial, or non-positive value is ignored (never substitutes). ``[0]`` is
+    width, ``[1]`` is height — transpose is a footgun, so the order is fixed."""
+    w, h = explicit_w, explicit_h
+    from_intent = False
+    if (explicit_w > 0 and explicit_h > 0) or not intent_source:
+        return w, h, from_intent
+    bsz = intent_source.get("board_size_mm")
+    if (isinstance(bsz, (list, tuple)) and len(bsz) == 2
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                    for v in bsz)):
+        if explicit_w <= 0:
+            w = float(bsz[0])
+            from_intent = True
+        if explicit_h <= 0:
+            h = float(bsz[1])
+            from_intent = True
+    return w, h, from_intent
+
+
+def _merge_placement_hints(
+    intent_hints: Optional[Dict[str, Any]], param_hints: Optional[Dict[str, Any]],
+) -> tuple:
+    """Merge placement hints and validate each. Returns ``(clean, warnings)``.
+
+    Sources merge intent-first, explicit ``param`` second (the caller wins on a
+    ref collision). Every directive passes through ``normalize_hint`` — the single
+    validation source — so invalid keys/values are dropped and surfaced in
+    ``warnings`` (``"<ref>: <reason>"``), never silently substituted."""
+    merged: Dict[str, Any] = {}
+    if intent_hints:
+        merged.update(intent_hints)
+    if param_hints:
+        merged.update(param_hints)
+    clean: Dict[str, Dict[str, Any]] = {}
+    warnings: List[str] = []
+    for ref, raw in merged.items():
+        c, ws = normalize_hint(raw)
+        if c:
+            clean[ref] = c
+        for w in ws:
+            warnings.append(f"{ref}: {w}")
+    return clean, warnings
+
+
 # ---------------------------------------------------------------------------
 # Internal pipeline step functions (module-level for testability)
 # ---------------------------------------------------------------------------
@@ -891,8 +944,11 @@ for edge in ("top", "bottom", "left", "right"):
         rkeep = rotate_keepout(info["keepout_rel"], ang)
         if fits and not clear_of(prior_boxes, x, y, el, er, et, eb) and not hits_keepout(x, y, el, er, et, eb):
             place_at(ref, x, y, ang, rext, rkeep)
-            placement_decisions.append({"event": "rotation_chosen", "ref": ref,
-                                        "edge": edge, "angle": ang})
+            # Record the rotation decision for terminals (the ones we actually
+            # orient); SW/H/USB edge-place at 0° and aren't noteworthy.
+            if is_screw_terminal_class(_ref_class(ref)):
+                placement_decisions.append({"event": "rotation_chosen", "ref": ref,
+                                            "edge": edge, "angle": ang})
         else:
             # Couldn't seat on the edge slot → interior fallback (no rotation).
             fb = fallback_grid(*get_extents(ref))
@@ -1408,21 +1464,15 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 )
 
         # Board size precedence: explicit args (>0) > intent source.board_size_mm
-        # > auto-estimate. Each axis resolved independently so a caller may fix
-        # one and inherit the other. Transpose is a footgun: [0]=width, [1]=height.
-        eff_width_mm, eff_height_mm = board_width_mm, board_height_mm
-        if (board_width_mm <= 0 or board_height_mm <= 0) and design_intent is not None:
-            bsz = (design_intent.source or {}).get("board_size_mm")
-            if (isinstance(bsz, (list, tuple)) and len(bsz) == 2
-                    and all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                            and v > 0 for v in bsz)):
-                if board_width_mm <= 0:
-                    eff_width_mm = float(bsz[0])
-                if board_height_mm <= 0:
-                    eff_height_mm = float(bsz[1])
-                pipeline_result.setdefault("warnings", []).append(
-                    f"Board sized to {eff_width_mm}x{eff_height_mm}mm from design intent"
-                )
+        # > auto-estimate (resolved per axis; see _resolve_board_size).
+        eff_width_mm, eff_height_mm, _bsz_from_intent = _resolve_board_size(
+            board_width_mm, board_height_mm,
+            design_intent.source if design_intent is not None else None,
+        )
+        if _bsz_from_intent:
+            pipeline_result.setdefault("warnings", []).append(
+                f"Board sized to {eff_width_mm}x{eff_height_mm}mm from design intent"
+            )
 
         # Step 2: Create PCB + board outline
         step = _step_create_pcb_and_outline(
@@ -1455,21 +1505,12 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         pipeline_result["pads_assigned"] = step.get("pads_assigned", 0)
 
         # Merge placement hints: intent-carried first, explicit param wins.
-        # normalize_hint is the single validation source — invalid keys/values
-        # are dropped and surfaced as events, never silently substituted.
-        merged_raw: Dict[str, Any] = {}
-        if design_intent is not None:
-            merged_raw.update(design_intent.placement_hints or {})
-        if placement_hints:
-            merged_raw.update(placement_hints)
-        clean_hints: Dict[str, Dict[str, Any]] = {}
-        hint_warnings: List[str] = []
-        for _ref, _raw in merged_raw.items():
-            _clean, _warns = normalize_hint(_raw)
-            if _clean:
-                clean_hints[_ref] = _clean
-            for _w in _warns:
-                hint_warnings.append(f"{_ref}: {_w}")
+        # normalize_hint (via _merge_placement_hints) is the single validation
+        # source — invalid keys/values are dropped + surfaced, never substituted.
+        clean_hints, hint_warnings = _merge_placement_hints(
+            design_intent.placement_hints if design_intent is not None else None,
+            placement_hints,
+        )
 
         # Step 5: Smart placement (tiered, connectivity-aware)
         step = _step_smart_placement(pcb_path, nets, placement_hints=clean_hints)
