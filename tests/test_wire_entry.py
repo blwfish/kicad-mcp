@@ -131,6 +131,21 @@ def test_square_two_pad_cluster_has_no_row_axis():
     assert conf == "skip"
 
 
+@pytest.mark.parametrize("sx,sy,skips", [
+    (2.5, 2.0, False),    # |span_x - span_y| == 0.5 == threshold -> strict < -> NOT skip
+    (2.499, 2.0, True),   # 0.499 < 0.5 -> skip (no clear row axis)
+    (2.501, 2.0, False),  # 0.501 -> has a row axis -> proceeds
+])
+def test_row_axis_span_boundary(sx, sy, skips):
+    # Two pads spanning (sx, sy); a clear -Y courtyard overhang so a non-skip
+    # resolves to high. Pins the MIN_ROW_AXIS_SPAN_MM strict-< boundary.
+    pads = [(0.0, 0.0, 1.0, sy), (sx - 1.0, 0.0, sx, sy)]
+    cy = (-1.0, -5.0, sx + 1.0, sy + 1.0)
+    _, _, conf = derive_wire_entry(pads, cy)
+    assert (conf == "skip") == skips
+    assert MIN_ROW_AXIS_SPAN_MM == 0.5   # the boundary the cases are built around
+
+
 def test_single_anisotropic_pad_skips():
     # A LONE oval pad has an anisotropic shape that passes the row-axis span
     # guard — but a single pad has no ROW, so it must skip (else a lug/clip could
@@ -177,6 +192,8 @@ def test_helper_normalize_family_matches_import():
         "TerminalBlock_Phoenix_MKDS-1,5-16-5.08_1x16_P5.08mm_Horizontal",
         "PinHeader_1x04_P2.54mm_Vertical",
         "Conn_02x05_Odd_Even",
+        # exercises the (?!\d*mm) lookahead: collapse 1x04 but leave 5x8mm intact
+        "SomePart_1x04_5x8mm_Horizontal",
         "SomeBlock_P5.08mm_Horizontal",
         "",
     ]

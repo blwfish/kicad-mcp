@@ -585,6 +585,9 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         j = _header(alloc, K.HDR_1X4, f"UART{n}")
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
         ex.components += [j, c]
+        # UART breakout module header → keep interior near its IC, not forced to a
+        # board edge by the connector heuristic (matches i2c_device_header).
+        ex.placement_hints[j.ref] = {"edge": "none"}
         ex.power += [("GND", Endpoint(ref=j.ref, pin="1")),
                      ("+3V3", Endpoint(ref=j.ref, pin="2")),
                      ("+3V3", Endpoint(ref=c.ref, pin="1")),

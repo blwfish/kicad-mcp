@@ -125,6 +125,8 @@ X1, Y1 = pcbnew.ToMM(e.GetRight()), pcbnew.ToMM(e.GetBottom())
 tol = 0.05
 over = []
 for fp in b.GetFootprints():
+    if not hasattr(fp, 'Zones'):     # match the production guard (older pcbnew API)
+        continue
     for z in fp.Zones():
         if z.GetIsRuleArea():
             zb = z.GetBoundingBox()

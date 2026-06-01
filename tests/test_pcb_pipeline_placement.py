@@ -152,6 +152,32 @@ class TestEmitPlacementDecision:
         assert env[0]["level"] == "warn"
         assert env[0]["code"] == "placement_hint_offboard"
 
+    def test_keepout_overhang_is_info(self):
+        env = _emit_one({"event": "keepout_overhang", "ref": "U1",
+                         "edge": "top", "angle": 0})
+        assert env[0]["level"] == "info"
+        assert env[0]["code"] == "keepout_overhang"
+        assert env[0]["context"]["edge"] == "top"
+
+    def test_keepout_fallback_interior_is_warn(self):
+        env = _emit_one({"event": "keepout_fallback_interior", "ref": "U1"})
+        assert env[0]["level"] == "warn"
+        assert env[0]["code"] == "keepout_fallback_interior"
+
+    def test_terminal_edge_crowded_is_warn(self):
+        env = _emit_one({"event": "terminal_edge_crowded", "ref": "J7",
+                         "edge": "bottom"})
+        assert env[0]["level"] == "warn"
+        assert env[0]["code"] == "terminal_edge_crowded"
+        assert env[0]["context"]["edge"] == "bottom"
+
+    def test_rotation_fallback_is_warn(self):
+        env = _emit_one({"event": "rotation_fallback", "ref": "J5",
+                         "footprint": "Some_Unknown_Terminal"})
+        assert env[0]["level"] == "warn"
+        assert env[0]["code"] == "rotation_fallback"
+        assert env[0]["context"]["footprint"] == "Some_Unknown_Terminal"
+
     def test_unknown_event_falls_through_to_info(self):
         # An unrecognised kind is surfaced generically, never silently dropped.
         env = _emit_one({"event": "something_new", "ref": "J9"})
