@@ -30,7 +30,15 @@ placement_hints:               # per-ref PCB placement overrides (keyed by KiCad
     edge: none                 # top|bottom|left|right|none ("none" = keep interior)
     rotation: 90               # 0|90|180|270 (omit to use the auto heuristic)
     fixed: [40, 12]            # absolute [x, y] mm (wins over edge/rotation)
+mounting_holes:                # corner fixture holes (firmware-blind mechanical)
+  count: 4                     # 4 (default) | 2 (diagonal) | 0 (none)
+  drill_mm: 3.2                # M3 = 3.2, M2.5 = 2.7
+  inset_mm: 3.5                # hole-centre inset from each board edge
+  keepout_mm: 1.5              # no-copper margin beyond the drill
 ```
+
+Unknown top-level keys are REJECTED (a typo like ``board_size`` for
+``board_size_mm`` is a loud error, never a silently-ignored directive).
 """
 from __future__ import annotations
 
@@ -91,6 +99,18 @@ class BoardSidecar:
     placement: dict[str, dict[str, Any]] = field(default_factory=dict)
     # PCB placement-hint overrides {edge, rotation, fixed}, keyed by KiCad ref.
     placement_hints: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # corner mounting holes {count, drill_mm, inset_mm, keepout_mm}; None = use
+    # the pipeline default (4 × M3). Defaults are resolved in pcb_pipeline, not
+    # here — this layer only validates + carries the user's overrides.
+    mounting_holes: Optional[dict[str, Any]] = None
+
+
+# Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
+# `board_size` for `board_size_mm` instead of silently ignoring the directive).
+_KNOWN_SIDECAR_KEYS = frozenset({
+    "power_source", "board_size_mm", "extra_connectors",
+    "placement", "placement_hints", "mounting_holes",
+})
 
 
 def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
@@ -145,8 +165,35 @@ def _validate_hints(d: dict[str, Any], errs: list[str]) -> None:
             errs.append(f"placement_hints[{key!r}]: must be a mapping")
 
 
+def _validate_mounting_holes(d: dict[str, Any], errs: list[str]) -> None:
+    """``mounting_holes`` is optional; when present it's a mapping with an integer
+    ``count`` in {0, 2, 4} and positive numeric ``drill_mm`` / ``inset_mm`` /
+    ``keepout_mm``. Missing fields fall back to pipeline defaults (validated
+    there); only supplied fields are checked here."""
+    mh = d.get("mounting_holes")
+    if mh is None:
+        return
+    if not isinstance(mh, dict):
+        errs.append("mounting_holes must be a mapping")
+        return
+    if "count" in mh and mh["count"] not in (0, 2, 4):
+        errs.append(f"mounting_holes.count {mh['count']!r} must be 0, 2, or 4")
+    for key in ("drill_mm", "inset_mm", "keepout_mm"):
+        if key in mh:
+            v = mh[key]
+            # bool is an int subclass — reject True/False masquerading as a number
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+                errs.append(f"mounting_holes.{key} must be a positive number")
+
+
 def _validate(d: dict[str, Any]) -> list[str]:
     errs: list[str] = []
+    unknown = set(d) - _KNOWN_SIDECAR_KEYS
+    if unknown:
+        errs.append(
+            f"unknown board.yaml key(s) {sorted(unknown)} — "
+            f"valid keys: {sorted(_KNOWN_SIDECAR_KEYS)}"
+        )
     ps = d.get("power_source")
     if ps is not None and ps not in _POWER_SOURCES:
         errs.append(f"power_source {ps!r} not in {sorted(_POWER_SOURCES)}")
@@ -175,6 +222,7 @@ def _validate(d: dict[str, Any]) -> list[str]:
                     errs.append(f"{where}: nets entries must be pin_str -> net_str")
     _validate_placement(d, errs)
     _validate_hints(d, errs)
+    _validate_mounting_holes(d, errs)
     return errs
 
 
@@ -197,6 +245,8 @@ def load_sidecar(path: str) -> BoardSidecar:
         extra_connectors=list(data.get("extra_connectors", []) or []),
         placement=dict(data.get("placement", {}) or {}),
         placement_hints=dict(data.get("placement_hints", {}) or {}),
+        mounting_holes=(dict(data["mounting_holes"])
+                        if data.get("mounting_holes") is not None else None),
     )
 
 
@@ -229,6 +279,8 @@ def apply_sidecar(
         intent.source["power_source"] = sidecar.power_source
     if sidecar.board_size_mm is not None:
         intent.source["board_size_mm"] = list(sidecar.board_size_mm)
+    if sidecar.mounting_holes is not None:
+        intent.source["mounting_holes"] = dict(sidecar.mounting_holes)
 
     nets_by_name = {n.name: n for n in intent.nets}
     existing_refs = {p.ref for p in intent.peripherals}
