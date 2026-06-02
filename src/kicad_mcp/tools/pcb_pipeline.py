@@ -1499,8 +1499,12 @@ print(json.dumps({"status": "ok", "labels_added": labels_added,
     # Tidy footprint refdes/value silk the new labels may crowd (best-effort).
     # NOTE: the auto-fixer relocates footprint FIELDS, not the free-text legend
     # labels themselves — those are placed clear of the pad by construction.
+    # The legend terminals' refdes callouts ARE deliberately placed above, so we
+    # protect them (skip_refs) — otherwise the generic auto-fixer could relocate
+    # or hide a callout that overlaps a legend label, undoing this step's work.
     if res.get("status") == "ok" and res.get("labels_added", 0) > 0:
-        fix = _op_auto_fix_silkscreen(pcb_path)
+        legend_refs = [leg["ref"] for leg in legends if leg.get("ref")]
+        fix = _op_auto_fix_silkscreen(pcb_path, skip_refs=legend_refs)
         res["overlap_autofix"] = {
             "moved": fix.get("moved"), "hidden": fix.get("hidden"),
             "error": fix.get("error"),

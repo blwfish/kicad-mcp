@@ -214,6 +214,23 @@ class TestAutoFixSilkscreen:
         assert result["status"] == "ok"
         assert result["fixes_applied"] == 4
 
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_router_passes_empty_skip_refs(self, mock_run, pcb_server, pcb_file):
+        # The public router op does not protect any refdes — skip_refs is empty.
+        mock_run.return_value = {"status": "ok", "moved": 0, "hidden": 0}
+        fn = _get_pcb_fn(pcb_server)
+        fn("auto_fix_silkscreen", pcb_path=pcb_file)
+        assert mock_run.call_args.kwargs["params"]["skip_refs"] == []
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_skip_refs_threaded_into_params(self, mock_run, pcb_file):
+        # A caller (the pipeline legend step) protects deliberately-placed refdes.
+        from kicad_mcp.tools.pcb_silkscreen import _op_auto_fix_silkscreen
+        mock_run.return_value = {"status": "ok", "moved": 0, "hidden": 0}
+        _op_auto_fix_silkscreen(pcb_file, skip_refs=["J5", "J2"])
+        # Sorted + deduped for a stable param payload.
+        assert mock_run.call_args.kwargs["params"]["skip_refs"] == ["J2", "J5"]
+
 
 # -- edit_text tests --------------------------------------------------------
 
