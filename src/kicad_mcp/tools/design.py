@@ -273,6 +273,9 @@ def _op_expand(*, intent_path: Optional[str], out_path: Optional[str]) -> dict:
         "status": "ok", "intent_path": str(dest),
         "components_added": len(intent.peripherals) - n_comp_before,
         "gaps_resolved": [g.kind for g in intent.gaps if g.resolved],
+        # Open gaps the expansion surfaced (e.g. assumed_part / part_unavailable
+        # from part resolution) — disclosure is worthless if the op hides it.
+        "gaps": _gaps_list(intent),
         "summary": _summary(intent),
     }
 
