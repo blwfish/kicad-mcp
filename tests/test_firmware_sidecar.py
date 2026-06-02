@@ -194,3 +194,70 @@ def test_find_sidecar_one_dir_up(tmp_path):
     (inc / "config.h").write_text("#define X 1\n")
     (tmp_path / "board.yaml").write_text("power_source: usb_c\n")
     assert find_sidecar(str(inc / "config.h")) == str(tmp_path / "board.yaml")
+
+
+# --- unknown-key rejection ----------------------------------------------------
+
+def test_unknown_top_level_key_rejected(tmp_path):
+    # A typo for a real key is a loud error, not a silently-ignored directive.
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, "board_size: [90, 75]\n"))   # missing _mm
+    assert "unknown board.yaml key" in str(e.value) and "board_size" in str(e.value)
+
+
+def test_known_keys_all_accepted(tmp_path):
+    # Every documented key loads clean together (guards the _KNOWN set drifting).
+    sc = load_sidecar(_write(tmp_path, """\
+        power_source: usb_c
+        board_size_mm: [90, 75]
+        extra_connectors: []
+        placement: {}
+        placement_hints: {}
+        mounting_holes: {count: 4}
+    """))
+    assert sc.power_source == "usb_c"
+
+
+# --- mounting_holes -----------------------------------------------------------
+
+def test_mounting_holes_absent_is_none(tmp_path):
+    assert load_sidecar(_write(tmp_path, "power_source: usb_c\n")).mounting_holes is None
+
+
+def test_mounting_holes_loads(tmp_path):
+    sc = load_sidecar(_write(tmp_path, """\
+        mounting_holes:
+          count: 2
+          drill_mm: 2.7
+          inset_mm: 4.0
+          keepout_mm: 1.0
+    """))
+    assert sc.mounting_holes == {"count": 2, "drill_mm": 2.7,
+                                 "inset_mm": 4.0, "keepout_mm": 1.0}
+
+
+@pytest.mark.parametrize("body,needle", [
+    ("mounting_holes: 4\n", "mounting_holes must be a mapping"),
+    ("mounting_holes: {count: 3}\n", "count"),          # not in {0,2,4}
+    ("mounting_holes: {count: 1}\n", "count"),          # boundary just below 2
+    ("mounting_holes: {drill_mm: 0}\n", "drill_mm"),    # not positive
+    ("mounting_holes: {drill_mm: -1}\n", "drill_mm"),   # negative
+    ("mounting_holes: {inset_mm: true}\n", "inset_mm"),  # bool is not a number
+])
+def test_mounting_holes_rejected(tmp_path, body, needle):
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, body))
+    assert needle in str(e.value)
+
+
+@pytest.mark.parametrize("count", [0, 2, 4])
+def test_mounting_holes_count_accepted(tmp_path, count):
+    sc = load_sidecar(_write(tmp_path, f"mounting_holes: {{count: {count}}}\n"))
+    assert sc.mounting_holes == {"count": count}
+
+
+def test_apply_threads_mounting_holes_into_source():
+    i = _intent()
+    sc = BoardSidecar(mounting_holes={"count": 4, "drill_mm": 3.2})
+    apply_sidecar(i, sc)
+    assert i.source["mounting_holes"] == {"count": 4, "drill_mm": 3.2}
