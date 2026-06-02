@@ -322,8 +322,12 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     # add_mounting_holes=False: this explicit size was calibrated pre-Phase-5 and
     # is tight; the test gates nets + routing, not holes (holes-on is gated by the
     # roomy audio_s3 and the auto-sized audio-remote boards).
+    # autoroute_passes=6 (not 2): FreeRouter is stochastic and does best-of-N.
+    # best-of-2 against the bound of 2 sits at the noise floor and occasionally
+    # lands at 3 unrouted. More passes reduce — but do not eliminate — that
+    # flake; the bound stays at 2 (SPEC §9-A3: bump passes, never loosen it).
     r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
-               autoroute_passes=2, export_gerbers=False, add_mounting_holes=False)
+               autoroute_passes=6, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=2)
@@ -1009,8 +1013,11 @@ def test_sidecar_to_routed_pcb(mcp_server, tmp_path):
     pro.write_text(json.dumps(_MINIMAL_PRO))
     # add_mounting_holes=False: explicit pre-Phase-5 size, tight; gates the sidecar
     # connector route, not holes (holes-on gated by audio_s3 + audio-remote).
+    # autoroute_passes=6 (not 2): same noise-floor flake as test_firmware_to_routed_pcb
+    # — best-of-2 against a bound of 2 occasionally lands at 3. Bump passes, hold the
+    # bound at 2 (SPEC §9-A3). More passes reduce but do not eliminate the stochastic flake.
     r4 = build(project_path=str(pro), board_width_mm=70, board_height_mm=55,
-               autoroute_passes=2, export_gerbers=False, add_mounting_holes=False)
+               autoroute_passes=6, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     _assert_mostly_routed(r4, max_unrouted=2)            # connector routes
 
