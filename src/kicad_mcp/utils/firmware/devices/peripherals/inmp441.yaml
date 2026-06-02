@@ -1,0 +1,26 @@
+# INMP441 I2S MEMS microphone — EOL (TDK discontinued; absent from the KiCad lib,
+# which is WHY it can't be placed). Carried as a 6-pin breakout-MODULE header
+# (like the MPU6050/OLED cards) PURELY so the part resolver RECOGNIZES it: a
+# firmware "INMP441" mention resolves to this card, the i2s_mic template (which
+# builds SPH0645) then REFUSES to substitute and emits a part_unavailable gap, and
+# the user picks a current replacement via a board.yaml bus_part_overrides entry
+# (e.g. {part: SPH0645} or {part: ICS-43434}). It exercises the part-resolution
+# feature on a real EOL part; it is not placed unless i2s_mic is later generalized
+# to card-driven mics.
+#
+# Header pin order is the common single-row GY-INMP441 layout (1=L/R 2=WS 3=SCK
+# 4=SD 5=VDD 6=GND) — variant-specific, confirm against the actual module before
+# ever placing it.
+type: INMP441
+aliases: ["INMP441ACEZ", "GY-INMP441"]
+lib_id: Connector_Generic:Conn_01x06
+value: INMP441 (module)
+bus: I2S
+serves: I2S_IN
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x06_P2.54mm_Vertical
+module: true
+roles: {SCK: "3", SD: "4", WS: "2"}
+supply_pins: ["5"]
+ground_pins: ["6"]
+config:
+  static_ties: [{pin: "1", rail: GND}]   # L/R low = left channel
