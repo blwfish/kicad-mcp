@@ -190,9 +190,10 @@ def _step_create_pcb_and_outline(
         if not fp_specs:
             return {"error": "No footprints to estimate board size from"}
 
-        inset = (holes["inset_mm"]
-                 if holes and holes.get("count", 0) > 0 else 0.0)
-        size_result = _estimate_board_size(fp_specs, corner_inset_mm=inset)
+        # Reserve the FULL corner clearance (center inset + keepout), not just the
+        # hole-center inset, so terminals laid out past the corner holes still fit.
+        size_result = _estimate_board_size(
+            fp_specs, corner_inset_mm=_hole_corner_clear(holes))
         if "error" in size_result:
             return size_result
 
@@ -291,6 +292,18 @@ def _resolve_mounting_holes(mh_source: Optional[Dict[str, Any]]) -> Dict[str, An
     if mh_source:
         holes.update({k: mh_source[k] for k in _HOLE_DEFAULTS if k in mh_source})
     return holes
+
+
+def _hole_corner_clear(holes: Optional[Dict[str, Any]]) -> float:
+    """Along-edge distance from a board corner that a mounting hole occupies: the
+    hole CENTER is ``inset`` in, and its keepout extends ``drill/2 + keepout``
+    further, so the corner is occupied out to their sum. 0 when holes are off.
+    SINGLE SOURCE for both board sizing (reserve this much at each corner) and
+    terminal layout (start the run past it) — so the two never disagree and a
+    terminal can't land on a hole."""
+    if not holes or holes.get("count", 0) <= 0:
+        return 0.0
+    return float(holes["inset_mm"] + holes["drill_mm"] / 2.0 + holes["keepout_mm"])
 
 
 def _step_add_mounting_holes(pcb_path: str, holes: Dict[str, Any]) -> Dict[str, Any]:
@@ -730,6 +743,7 @@ def _step_smart_placement(
     nets: Dict[str, List],
     spacing_mm: float = 1.0,
     placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
+    corner_clear_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Step 5: Smart tiered placement based on connectivity and component type.
 
@@ -759,6 +773,7 @@ params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
+corner_clear = params.get("corner_clear_mm", 0.0)  # corner space the mounting holes occupy
 outline = get_board_outline(board)
 
 if not outline:
@@ -1222,7 +1237,16 @@ for edge in ("top", "bottom", "left", "right"):
         if hint:
             placement_decisions.append({"event": "placement_hint_applied",
                                         "ref": ref, "directive": hint})
-    laid = layout_along_edge(items, edge, board_box, margin, spacing)
+    # Shrink the usable span ALONG this edge by the corner-hole clearance so the
+    # terminal run starts/ends past the two corner mounting holes (the cross-axis
+    # / seating depth is untouched). Without this a field terminal lands on a hole.
+    if edge in ("top", "bottom"):
+        lay_box = (board_xmin + corner_clear, board_ymin,
+                   board_xmax - corner_clear, board_ymax)
+    else:
+        lay_box = (board_xmin, board_ymin + corner_clear,
+                   board_xmax, board_ymax - corner_clear)
+    laid = layout_along_edge(items, edge, lay_box, margin, spacing)
     for (ref, x, y, fits) in laid:
         ang, rext, rpad = rot_by_ref[ref]
         el, er, et, eb = rext
@@ -1371,6 +1395,7 @@ print(json.dumps({
     return run_pcbnew_script(script, params={
         "pcb_path": pcb_path,
         "spacing_mm": spacing_mm,
+        "corner_clear_mm": corner_clear_mm,
         "net_members": dict(net_members),
         "placement_hints": dict(placement_hints or {}),
         "edge_classes": list(_EDGE_DESIGNATOR_CLASSES),
@@ -1971,8 +1996,12 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             clean_hints.update(norm_holes)
             hint_warnings.extend(hole_ws)
 
-        # Step 5: Smart placement (tiered, connectivity-aware)
-        step = _step_smart_placement(pcb_path, nets, placement_hints=clean_hints)
+        # Step 5: Smart placement (tiered, connectivity-aware). corner_clear keeps
+        # edge terminals clear of the corner mounting holes (single source with
+        # the board-size reservation above, so the cleared span actually fits).
+        step = _step_smart_placement(
+            pcb_path, nets, placement_hints=clean_hints,
+            corner_clear_mm=_hole_corner_clear(holes))
         _record("smart_placement", step)
         # Non-fatal — continue even if placement is imperfect
 
