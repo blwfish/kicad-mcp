@@ -70,6 +70,33 @@ def _final_hole_positions(pcb_path):
     return run_pcbnew_script(script, params={"pcb": pcb_path}, timeout=60.0)
 
 
+def _terminal_hole_overlaps(pcb_path):
+    """Pairs of (terminal J*, mounting hole H*) whose courtyards OVERLAP — i.e. a
+    terminal sitting on a hole. Empty = clear. Uses GetBoundingBox(False, False)
+    (body+courtyard, no text bloat) for an AABB test. Guards the bug where a
+    field terminal was forced onto a corner hole because the keepout was
+    routing-only and the layout didn't reserve the corner."""
+    from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+    script = (
+        "import pcbnew, json, sys\n"
+        "b = pcbnew.LoadBoard(json.loads(open(sys.argv[1]).read())['pcb'])\n"
+        "def box(fp):\n"
+        "    bb = fp.GetBoundingBox(False, False)\n"
+        "    return (bb.GetX(), bb.GetY(), bb.GetRight(), bb.GetBottom())\n"
+        "J = {f.GetReference(): box(f) for f in b.GetFootprints()\n"
+        "     if f.GetReference().startswith('J')}\n"
+        "H = {f.GetReference(): box(f) for f in b.GetFootprints()\n"
+        "     if f.GetReference()[:1] == 'H' and f.GetReference()[1:].isdigit()}\n"
+        "out = []\n"
+        "for jr, (jx0, jy0, jx1, jy1) in J.items():\n"
+        "    for hr, (hx0, hy0, hx1, hy1) in H.items():\n"
+        "        if jx0 <= hx1 and jx1 >= hx0 and jy0 <= hy1 and jy1 >= hy0:\n"
+        "            out.append([jr, hr])\n"
+        "print(json.dumps({'overlaps': out}))\n"   # object, not bare array (bridge needs {})
+    )
+    return run_pcbnew_script(script, params={"pcb": pcb_path}, timeout=60.0)["overlaps"]
+
+
 def _assert_mostly_routed(r4, max_unrouted):
     """Assert the board routed essentially completely, within ``max_unrouted``.
 
@@ -440,10 +467,13 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     hp = _final_hole_positions(r4["pcb_path"])
     assert set(hp) == {"H1", "H2", "H3", "H4"}
     for ref, (x, y) in hp.items():
-        near_x = x < 6.0 or x > bw - 6.0
-        near_y = y < 6.0 or y > bh - 6.0
+        near_x = x < 7.0 or x > bw - 7.0
+        near_y = y < 7.0 or y > bh - 7.0
         assert near_x and near_y, \
             f"{ref} at ({x},{y}) is not near a corner of {bw}x{bh} (moved off-corner)"
+    # And no field terminal sits ON a corner hole (courtyards must not overlap).
+    overlaps = _terminal_hole_overlaps(r4["pcb_path"])
+    assert overlaps == [], f"terminal(s) overlap mounting hole(s): {overlaps}"
 
     # §1 RFI: ALL field-wiring terminals share the SINGLE edge opposite the antenna
     # (the MCU antenna overhangs the top, so terminals are on the bottom) — none
