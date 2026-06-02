@@ -111,6 +111,9 @@ class BoardSidecar:
     # terminals on the antenna-opposite edge) or "multi_edge" (spill onto the side
     # edges to square the board). See SPEC_Multi_Edge_Terminal_Distribution.md.
     terminal_distribution: Optional[str] = None
+    # centre each edge's field-terminal group within its edge (vs the default
+    # pack-from-one-end). Layout balance only — does not change board size.
+    terminal_centering: Optional[bool] = None
 
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
@@ -120,7 +123,7 @@ class BoardSidecar:
 _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
     "placement", "placement_hints", "mounting_holes", "bus_part_overrides",
-    "terminal_distribution",
+    "terminal_distribution", "terminal_centering",
 })
 
 _TERMINAL_DISTRIBUTIONS = frozenset({"single_edge", "multi_edge"})
@@ -232,6 +235,9 @@ def _validate(d: dict[str, Any]) -> list[str]:
     if td is not None and td not in _TERMINAL_DISTRIBUTIONS:
         errs.append(f"terminal_distribution {td!r} not in "
                     f"{sorted(_TERMINAL_DISTRIBUTIONS)}")
+    tc = d.get("terminal_centering")
+    if tc is not None and not isinstance(tc, bool):
+        errs.append(f"terminal_centering must be true/false, got {tc!r}")
     for i, c in enumerate(d.get("extra_connectors", []) or []):
         where = f"extra_connectors[{i}]"
         if not isinstance(c, dict):
@@ -309,6 +315,7 @@ def load_sidecar(path: str) -> BoardSidecar:
                         if data.get("mounting_holes") is not None else None),
         bus_part_overrides=dict(data.get("bus_part_overrides", {}) or {}),
         terminal_distribution=data.get("terminal_distribution"),
+        terminal_centering=data.get("terminal_centering"),
     )
 
 
@@ -345,6 +352,8 @@ def apply_sidecar(
         intent.source["mounting_holes"] = dict(sidecar.mounting_holes)
     if sidecar.terminal_distribution is not None:
         intent.source["terminal_distribution"] = sidecar.terminal_distribution
+    if sidecar.terminal_centering is not None:
+        intent.source["terminal_centering"] = sidecar.terminal_centering
 
     nets_by_name = {n.name: n for n in intent.nets}
     existing_refs = {p.ref for p in intent.peripherals}
