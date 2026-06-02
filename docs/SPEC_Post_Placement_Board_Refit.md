@@ -1,17 +1,24 @@
-# SPEC — Post-Placement Board Re-Fit (autoplacer RFE)
+# SPEC — Board Re-Fit + Terminal Centering (autoplacer RFE)
 
-> **STATUS: COLD-REVIEWED 2026-06-02 (3 fresh-context agents) — findings folded in.** The review
-> caught FOUR mechanism-breaking blockers in the first draft (board-wipe on re-outline, holes not
-> classified as terminals, no `comps` cache, no board backup for the fallback) and corrected an
-> over-optimistic payoff estimate. Changed sections tagged `[CR-fixed]`. Authored against
-> `claude/recursing-kowalevski-365bfb` @ `e27a3b6`. Re-confirm line numbers before editing.
+> **TWO independent, composing features** that together tighten + balance the auto-placed board:
+> **Part A — Board Re-Fit** (size the board to the *measured* cluster, not the over-estimate) and
+> **Part B — Terminal Centering** (center each edge's terminal group instead of packing it at one
+> end). Audio-remote opts into both. **BOTH COLD-REVIEWED** (Part A: 3 agents, 4 blockers; Part B:
+> 2 agents, 2 blockers — extend the drift test to cover `anchor="center"`, and don't claim to fix
+> the pre-existing §4.1 layout gap). All `[CR-fixed]` inline.
 >
-> **Payoff is partial — decide if it's worth it.** The refit recovers the *sizing over-estimate*
-> only: ≈ `C − measured_cluster` minus routing slack ≈ **~8–12 mm** of height on audio-remote
-> (72 → ~62–64 mm, not the ~55 the draft claimed). The rest of the visible ~21 mm band is
-> structural padding/reserve + the cluster being *placed high* — that latter part is the separate
-> **cluster-centering** nit. Refit + cluster-centering together would close most of the gap; refit
-> alone is a modest ~10–15 % area win. See §1.
+> Authored against `claude/recursing-kowalevski-365bfb` @ `e27a3b6` (multi-edge, just shipped).
+> Re-confirm line numbers before editing.
+>
+> **Why both — neither alone closes the gap.** *Cluster-centering is NOT viable*: the MCU antenna
+> keepout overhangs the top edge by design, pinning the cluster there — moving it down un-overhangs
+> the antenna. So the gap is attacked two other ways: **Re-fit** recovers the *sizing over-estimate*
+> (≈ `C − measured_cluster` − routing slack ≈ ~8–12 mm height on audio-remote, 72 → ~62–64 mm,
+> ~10–15 % area). **Terminal-centering** does NOT shrink the board — it fixes the *look*: today
+> terminals pack at one end of their edge (bottom row left-packed, side terminals top-packed),
+> leaving the far ends empty; centering fills the edges symmetrically. Together: a tighter board
+> that also reads as balanced. The residual ~9 mm reserve gap (routing margin + corner-hole inset
+> between cluster and terminal band) is structural and not recoverable without routing risk.
 
 ## 1. Context & motivation (measured)
 
@@ -281,3 +288,108 @@ New `board_refit: true` audio-remote variant (mirror the multi-edge test):
    confirm the gap closes, routes 0–few unconnected across several FreeRouter runs, antenna still
    overhangs, holes at new corners, silk clear, DRC clean. Verify the other three goldens
    byte-identical.
+
+---
+
+# PART B — Terminal Centering (NEW — needs cold review)
+
+## 13. Terminal centering
+
+**Problem.** `layout_along_edge` (`edge_terminal.py:218`) anchors the cursor at `edge_start +
+margin` and packs terminals from the START of each edge, so a group shorter than the edge leaves
+the FAR end empty: on audio-remote the bottom row (J1–J3) is left-packed and the side terminals
+(J4/J5 left, J7 right) are top-packed. The board reads as lopsided even when correctly sized. This
+is a **layout-quality / balance** change — it does NOT shrink the board (the edge length is fixed by
+sizing; centering only repositions the group within it).
+
+### 13.1 Design — `anchor="center"` in `layout_along_edge`
+Add an `anchor: str = "start"` parameter (values `"start"` | `"center"`). `"start"` is today's
+behaviour byte-for-byte (the regression lock). `"center"` works ENTIRELY within the `board_box`
+`layout_along_edge` already receives — `[CR-fixed: the hole corner-clear is ALREADY baked into that
+box by the caller (`lay_box = board ± corner_clear`, pcb_pipeline.py:~1293); centring must NOT
+re-apply a corner offset — it uses the span as handed in]`:
+```
+edge_lo = board_box edge-start + margin        # exactly today's start cursor
+edge_hi = board_box edge-end   − margin        # exactly today's `fits` limit
+usable  = edge_hi − edge_lo                     # SCALAR span (CR-fixed: not len() of a 2-list)
+total   = Σ items' along-extent + spacing·(n−1)
+cursor0 = edge_lo + max(0, (usable − total) / 2)    # centre the group within usable
+```
+then advance exactly as today (`cursor += along-extent + spacing`). **Only the along-axis START
+moves**; cross-axis anchoring (overhang pad-inside / body-outside), rotation, order, and the `fits`
+overflow check are untouched. If `total > usable` (won't fit centred), `max(0,…)` keeps `cursor0 =
+edge_lo` → falls back to start (never a negative offset, never past a corner).
+
+`[CR-noted — PRE-EXISTING gap, NOT introduced by centring, NOT in this spec's scope]:` the multi-edge
+**§4.1 adjacent-edge band** (a side terminal must clear the bottom band's depth at a shared corner)
+is reserved in SIZING but is NOT yet enforced in `layout_along_edge` — `lay_box` insets only by the
+hole `corner_clear` (~6.6 mm), not `max(corner_clear, depth(F)+spacing)`. This affects START anchoring
+identically (both start at `edge_lo`), so centring neither causes nor cures it; on audio-remote the
+side group has ~4.9 mm of slack so no overlap manifests. Fixing it (pre-adjust `lay_box` per shared
+corner, or pass adjacent-band depths into `layout_along_edge`) is a separate follow-up — see
+`SPEC_Multi_Edge_Terminal_Distribution.md` step 5. **Centring composes with whatever `lay_box` it is
+handed**, so it picks up that fix for free once landed.
+
+### 13.2 Composition with re-fit + multi-edge
+Orthogonal. Centering is a pure repositioning inside `_step_smart_placement`'s edge layout; it runs
+in BOTH passes of a re-fit (pass 2 centres on the tighter edges) and on every used edge of a
+multi-edge board (each of bottom/left/right is centred independently within its `lay_box`). No
+interaction with `cluster_wh` sizing. The only data dependency is the `lay_box` corner inset, which
+the caller computes per-edge (and, once the §4.1 follow-up lands, per pass-2 `edge_of`).
+
+### 13.3 Flag
+`board.yaml terminal_centering: true|false`, default `false` (mirror `terminal_distribution` /
+`board_refit`: field + `_KNOWN_SIDECAR_KEYS` + bool validation + `intent.source`). Read in the
+orchestration and threaded to `_step_smart_placement` → `layout_along_edge(anchor=…)`. **Default-off
+rationale:** centering repositions terminals on EVERY board, which changes FreeRouter's net topology
+(stochastic) and could nudge a golden over its unrouted bound — so opt-in keeps the other three
+goldens' routing untouched, even though the position checks (edge membership, natural order,
+wire-entry outward, pads-on-board, silk-clear) would all still pass (they don't assert exact x/y).
+Audio-remote opts into `board_refit` AND `terminal_centering`. *(Open: could be merged with
+`board_refit` into one "tidy board" flag — see §15-R4.)*
+
+### 13.4 Tests
+- **Pure** (`tests/test_edge_terminal_placement.py`): `anchor="start"` ≡ today (regression lock,
+  parametrize existing `layout_along_edge` tests). `anchor="center"`: a short group on a long edge
+  gets equal margins both ends; a group that exactly fills the edge is unchanged; an over-long group
+  falls back to start (no negative offset, no corner overlap).
+- **Drift test MUST be EXTENDED to exercise `anchor="center"`** `[CR-fixed: BLOCKER — the existing
+  drift test (`test_edge_terminal_placement.py:~367`) calls `layout_along_edge` with NO `anchor`, so
+  it runs only the default `"start"` path and would NOT catch a centring bug present in only ONE
+  copy. Add an `anchor="center"` case to the exec-compare so a helper-string-only divergence is
+  caught at unit time, not just at the integration test.]`
+- **Integration** (`tests/integration/test_firmware_pcb_pipeline.py`, the `terminal_centering: true`
+  variant): each used edge's terminal group is centred (group centre within ~margin of the edge
+  centre, between the corner reserves); terminals still on their edges, natural order, wire-entry
+  outward, pads-on-board, silk clear; still routes within `_assert_mostly_routed`. The three other
+  goldens with the flag absent are byte-identical.
+
+### 13.5 External-system assumptions (Part B)
+- **B1 — `layout_along_edge` is in `EDGE_TERMINAL_HELPER`** (the injected pcbnew-script string), so
+  the `anchor` param + centring logic must be added to BOTH copies (Python `:218` + helper string
+  `:549`). `[CR-fixed: the drift test does NOT currently guard this — it must be extended to pass
+  `anchor="center"` (§13.4); without that, a half-updated helper surfaces only as a `TypeError` at
+  integration time.]` HIGHEST Part-B risk. (Re-fit's `cluster_wh` was parent-side only; centering
+  runs INSIDE the placement script, hence the two-copy exposure.)
+- **B2 — Repositioning changes FreeRouter topology** (stochastic) — only the integration routing
+  gate catches a regression; run the build several times when validating. Same class as re-fit A3.
+
+## 14. Critical files (Part B, @ `e27a3b6`)
+
+| File | Change |
+|---|---|
+| `src/kicad_mcp/utils/placement/edge_terminal.py` | `anchor` param + centring in `layout_along_edge` (`:218`) AND in the `EDGE_TERMINAL_HELPER` string copy (`:549`, the helper assignment is at `:444`) — keep them drift-identical |
+| `src/kicad_mcp/tools/pcb_pipeline.py` | `[CR-fixed: name the plumbing]` add `anchor` param to `_step_smart_placement` (`:~790`) → put it in the `run_pcbnew_script(params={…})` dict (`:~1444`, exactly how `corner_clear_mm` flows) → embedded script reads `params.get("anchor","start")` and passes it to the `layout_along_edge` call (`:~1298`); orchestration resolves `terminal_centering` from `design_intent.source` next to `board_refit` and passes `anchor="center" if _tc else "start"` |
+| `src/kicad_mcp/utils/firmware/sidecar.py` | `terminal_centering` bool field + `_KNOWN_SIDECAR_KEYS` + validation + `intent.source` |
+| `tests/test_edge_terminal_placement.py` | `anchor="center"` math + `anchor="start"` regression lock + drift test |
+| `tests/integration/test_firmware_pcb_pipeline.py` | `terminal_centering: true` gate |
+
+## 15. Combined open questions
+
+- (Part A) R1 `cluster_routing_margin_mm`; R2 default-on later; R3 pass-2 non-determinism (above).
+- **R4 — One flag or two?** `board_refit` + `terminal_centering` are orthogonal and independently
+  testable, but a user wanting a "tidy compact board" must set both. Consider a single
+  `compact_layout: true` umbrella, or keep them separate. Cold reviewer / Brian to decide.
+- **R5 — Order of implementation.** Part B (centering) is smaller, lower-risk, and independently
+  shippable — recommend doing it FIRST (it's a contained `layout_along_edge` change with no
+  two-pass/routing-shrink risk), then Part A (re-fit). They compose regardless of order.
