@@ -848,6 +848,52 @@ class TestBuildPcbFromSchematic:
         assert result["gerber_zip"] == "/tmp/test-gerbers.zip"
         mock_gerbers.assert_called_once()
 
+    @patch("kicad_mcp.tools.pcb_pipeline._render_board_svg", return_value=None)
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_approval_gate_stops_before_autoroute(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones, mock_gerbers, mock_holes,
+        mock_render, mcp_server, tmp_path,
+    ):
+        """approved=False returns a proposal and never runs autoroute/zones."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        (tmp_path / "test.kicad_sch").write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603"}},
+            "components_without_footprint": [],
+            "nets": {"SIG": [{"component": "R1", "pin": "1"}]},
+            "component_count": 1, "net_count": 1, "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": [],
+                                   "placement_decisions": []}
+        mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
+        mock_holes.return_value = {"status": "ok", "holes_added": 0, "positions": []}
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro), approved=False)
+
+        assert result["status"] == "pending_approval"
+        prop = result["proposal"]
+        assert set(prop) >= {"board_size_mm", "antenna_edge", "terminal_table",
+                             "mounting_holes", "render_path", "proposed_board_yaml"}
+        assert prop["board_size_mm"] == [30, 20]
+        # The expensive steps were NOT run — that's the whole point of the gate.
+        mock_route.assert_not_called()
+        mock_zones.assert_not_called()
+        mock_gerbers.assert_not_called()
+
 
 class TestFinalizePadAssignment:
     """h-pad-deadboard: a board with pads requested but ZERO assigned is
