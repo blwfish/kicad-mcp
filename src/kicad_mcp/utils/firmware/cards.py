@@ -11,6 +11,11 @@ This module is **pure data plumbing**: it imports nothing from ``knowledge.py``
 (avoids an import cycle) and returns plain dicts. ``knowledge.py`` casts those to
 its ``PeripheralInfo`` / ``McuInfo`` TypedDicts and exposes ``resolve_*``.
 
+For part-resolution it also exposes ``recognized_part_names()`` (raw part name →
+canonical lookup key) feeding the corpus scanner, and accepts two optional
+peripheral-card fields: ``aliases`` (alternate raw names) and ``serves`` (the
+directional bus a part resolves onto, ``_SERVES_BUS_TYPES``).
+
 Two validation tiers (the honesty backstop):
   * **structural** — here, no KiCad needed: required fields, types, strap math.
     Runs in the no-KiCad unit matrix.
@@ -228,6 +233,14 @@ def recognized_part_names(
     for card in peripherals.values():
         canonical = canonical_type(str(card["type"]))
         for raw in (str(card["type"]), *(card.get("aliases") or [])):
+            prior = out.get(raw)
+            if prior is not None and prior != canonical:
+                raise CardError(
+                    f"part name {raw!r} is claimed by two cards ({prior!r} and "
+                    f"{canonical!r}); a type/alias must map to exactly one card "
+                    "(load order is filesystem-dependent — silent last-write-wins "
+                    "would pick a card non-deterministically)"
+                )
             out[raw] = canonical
     return out
 

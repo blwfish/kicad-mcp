@@ -116,9 +116,9 @@ config.h text
 
 ### 5.2 Recognition registry = cards (single source of truth)
 
-Cards gain an optional **`aliases`** list and a **`serves`** field (the bus type the part attaches to — `I2S_IN`, `I2S_OUT`, `I2C`, `UART`). `cards.recognized_part_names()` returns the union of all card `type` values + aliases, each run through the existing `canonical_type()` normalizer (no second source; no drift). Validator extends to check `aliases` (list of str) and `serves` (known bus type).
+Cards gain an optional **`aliases`** list and a **`serves`** field (the directional bus type the part attaches to — `_SERVES_BUS_TYPES`: `I2S_IN`, `I2S_OUT`, `I2C`, `SPI`, `UART`). `cards.recognized_part_names()` returns `{raw_name: canonical_key}` — the RAW name (each card `type` + every alias, hyphen intact) is the dict KEY used to build the corpus regex; the `canonical_type()` form is only the VALUE used for card lookup. This IS the I1 contract: building the regex from canonical names would strip `ICS-43434`'s hyphen and never match the firmware text. Validator extends to check `aliases` (list of non-empty str) and `serves` (member of `_SERVES_BUS_TYPES`).
 
-**Tests** extend `test_device_cards.py`: alias validates; `recognized_part_names()` includes canonicalized type + aliases; parity check guards drift.
+**Tests** extend `test_device_cards.py`: alias/serves validate (accept/reject edges); `recognized_part_names()` maps raw type + aliases → canonical key (incl. the hyphenated `ICS-43434` I1 regression); a conflicting-alias claim across two cards raises.
 
 ### 5.3 Bus-part resolution (`bus_part_resolver.py`, new) — **binding by semantics, not proximity**
 

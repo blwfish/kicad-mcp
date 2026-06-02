@@ -119,8 +119,13 @@ def extract_part_names(
     hyphen in ``ICS-43434`` is preserved (blocker I1). Returns evidence sorted by
     kind strength (source > config_comment > doc), then file, then line.
     """
+    # Guard BOTH sides against a word char OR a hyphen, not just \b: a part name
+    # is a unit, so a hyphenated neighbour is a DIFFERENT part — "ICS-43434-PDM"
+    # and "PRE-INMP441" must NOT resolve to the bare "ICS-43434" / "INMP441" card.
+    # (Plain \b treats the inner hyphen as a boundary and would false-match those.)
     patterns = [
-        (raw, canon, re.compile(r"\b" + re.escape(raw) + r"\b", re.IGNORECASE))
+        (raw, canon,
+         re.compile(r"(?<![\w-])" + re.escape(raw) + r"(?![\w-])", re.IGNORECASE))
         for raw, canon in recognized_names.items()
     ]
     out: list[PartEvidence] = []
@@ -130,6 +135,8 @@ def extract_part_names(
                 if pat.search(line):
                     out.append(PartEvidence(
                         part_name=raw, canonical=canon, file=entry.file,
+                        # raw_text is DISPLAY-ONLY context; the match (part_name/
+                        # canonical/line) is complete, so this cap loses no data.
                         line=lineno, kind=entry.kind, raw_text=line.strip()[:200],
                     ))
     out.sort(key=lambda e: (_KIND_PRIORITY.get(e.kind, 9), e.file, e.line))
