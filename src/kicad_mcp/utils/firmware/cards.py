@@ -38,6 +38,13 @@ _PROJECT_DIR = Path("firmware-devices")
 
 _BUSES = frozenset({"I2C", "SPI", "I2S", "UART", None})
 
+# What a card may declare it ``serves`` — the bus a part can be RESOLVED onto.
+# Deliberately FINER than ``_BUSES``: a bus is directional at resolution time
+# (``Bus.type`` is ``I2S_IN`` / ``I2S_OUT``), so a mic card serves ``I2S_IN`` and
+# an amp serves ``I2S_OUT``. Validating ``serves`` against ``_BUSES`` (which only
+# has the coarse ``"I2S"``) would let a card claim a bus it can never match.
+_SERVES_BUS_TYPES = frozenset({"I2C", "SPI", "I2S_IN", "I2S_OUT", "UART"})
+
 
 class CardError(ValueError):
     """A malformed card. Raised loudly at load — never silently skipped."""
@@ -138,8 +145,34 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
         errs.append(f"{where}: roles must be a mapping role->pin")
     if not isinstance(card["module"], bool):
         errs.append(f"{where}: module must be a bool")
+    _validate_aliases(card.get("aliases"), where, errs)
+    _validate_serves(card.get("serves"), where, errs)
     _validate_config(card.get("config"), where, errs)
     return errs
+
+
+def _validate_aliases(aliases: Any, where: str, errs: list[str]) -> None:
+    """``aliases`` is optional; when present it must be a list of non-empty
+    strings (alternate part names the firmware might spell, e.g. SPH0645LM4H for
+    SPH0645). Each becomes a raw-name regex target in part resolution."""
+    if aliases is None:
+        return
+    if not isinstance(aliases, list) or not all(
+        isinstance(a, str) and a.strip() for a in aliases
+    ):
+        errs.append(f"{where}: aliases must be a list of non-empty strings")
+
+
+def _validate_serves(serves: Any, where: str, errs: list[str]) -> None:
+    """``serves`` is optional; when present it names the DIRECTIONAL bus this
+    part can be resolved onto (``_SERVES_BUS_TYPES``), matched against
+    ``Bus.type`` during part resolution."""
+    if serves is None:
+        return
+    if serves not in _SERVES_BUS_TYPES:
+        errs.append(
+            f"{where}: serves {serves!r} not in {sorted(_SERVES_BUS_TYPES)}"
+        )
 
 
 def validate_mcu_card(card: dict[str, Any]) -> list[str]:
@@ -173,6 +206,30 @@ def _card_dirs(extra_dirs: Optional[list[str]] = None) -> list[Path]:
         dirs.append(_PROJECT_DIR)
     dirs += [Path(p) for p in (extra_dirs or [])]
     return dirs
+
+
+def recognized_part_names(
+    peripherals: dict[str, dict[str, Any]]
+) -> dict[str, str]:
+    """Map every RAW part name a card answers to → its canonical lookup key.
+
+    The part-name extractor must match firmware text against the *raw* names
+    (``"INMP441"``, ``"ICS-43434"``, ``"SPH0645LM4H"``) — building the search
+    regex from canonical names would strip the hyphen in ``ICS-43434`` and never
+    match the source (blocker **I1**). So this returns ``raw -> canonical``: the
+    extractor compiles ``\\bRAW\\b`` patterns from the keys; the resolver then
+    looks the matched name's value up in the canonical-keyed ``peripherals`` dict.
+
+    Covers each card's ``type`` plus every ``aliases`` entry. Raw names collide
+    to the same canonical key by construction (``ICS-43434`` and ``ICS43434`` →
+    ``ICS43434``), so a firmware spelling either way resolves to one card.
+    """
+    out: dict[str, str] = {}
+    for card in peripherals.values():
+        canonical = canonical_type(str(card["type"]))
+        for raw in (str(card["type"]), *(card.get("aliases") or [])):
+            out[raw] = canonical
+    return out
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
