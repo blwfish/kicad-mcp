@@ -73,3 +73,22 @@ corpus (not invented); the unnamed mic is a disclosed SPH0645 assumption.
   absent in a given KiCad install (e.g. the INMP441 card pre-symbol). Add then.
 - **C7 footprint-only override** parsed/validated but not applied (the INMP441
   bare-LGA-vs-module case, blocked on the symbol).
+
+## UPDATE — INMP441 handled as a feature test case (not a production part)
+INMP441 is EOL (TDK discontinued it; absent from the KiCad lib — that's why it
+wasn't there). Rather than author a bare-LGA symbol for a dead part, it's used as
+a TEST CASE that exercises the feature's handling of a declared-but-unbuildable
+part: `inmp441.yaml` recognition card (module-header form) → firmware naming
+INMP441 resolves it → `i2s_mic` REFUSES to substitute SPH0645 (`part_unavailable`)
+→ board.yaml `bus_part_overrides` substitutes a current replacement (provenance
+"user"). Covered by `test_part_resolution_inmp441.py`; card validates on KiCad 9 & 10.
+
+**Real-board replacement (for mr-esp32, a SEPARATE effort):** the sensible
+still-made I2S MEMS mics in the KiCad lib are **SPH0645LM4H** (Knowles/Syntiant —
+already the template default + carded, so it just works) or **ICS-43434** (TDK,
+closest INMP441 spec-twin, needs a trivial card). PDM mics (Infineon IM69, Knowles
+SPH0641) are NOT drop-ins (different interface).
+
+Still deferred (genuinely optional): generalizing `i2s_mic` to place ANY resolved
+card's part (so an on-board INMP441/ICS-43434 module is placed, not refused);
+C5 generate-level symbol-absent gap; C7 footprint-only override application.
