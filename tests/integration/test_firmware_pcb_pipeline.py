@@ -593,6 +593,92 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
         f"beyond the block on the inboard side)")
 
 
+def test_audio_remote_multi_edge_distribution(mcp_server, tmp_path):
+    """board.yaml ``terminal_distribution: multi_edge`` spreads the field terminals
+    across the antenna-opposite edge AND the two side edges (vs the single-edge
+    default the test above guards) → a squarer, smaller board. Pins the real-board
+    invariants: terminals on ≤3 edges (never the antenna), oriented wire-entry
+    OUTWARD on the side edges too, side-edge legends clear of pads, still routes,
+    and no antenna_frame_mismatch. See SPEC_Multi_Edge_Terminal_Distribution.md."""
+    import shutil
+
+    from kicad_mcp.utils.firmware.intent import load_intent
+    from kicad_mcp.utils.placement.edge_terminal import (
+        natural_ref_key, outward_normal, rotation_to_face)
+    from kicad_mcp.utils.placement.wire_entry import WIRE_ENTRY
+    from kicad_mcp.tools.pcb_silkscreen import _op_check_silkscreen_overlaps
+
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+
+    fw = tmp_path / "fw"
+    fw.mkdir()
+    shutil.copy(AUDIO_CONFIG_H, fw / "config.h")
+    shutil.copy(AUDIO_CONFIG_H.parent / "platformio.ini", fw / "platformio.ini")
+    (fw / "board.yaml").write_text(
+        "terminal_distribution: multi_edge\n"
+        "placement:\n"
+        "  CMCA_MIC: {locus: remote, device: INMP441}\n"
+        "  CMCA_PRESENCE: {locus: remote, device: LD2410}\n"
+        "  CMCA_I2S: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+        "  CMCA_I2S2: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+    )
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "ar.kicad_sch"
+    pro = tmp_path / "ar.kicad_pro"
+
+    assert design(operation="import_firmware", firmware_path=str(fw / "config.h"),
+                  out_path=str(intent))["status"] == "ok"
+    assert design(operation="expand_templates", intent_path=str(intent))["status"] == "ok"
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    r4 = build(project_path=str(pro), board_width_mm=0, board_height_mm=0,
+               autoroute_passes=4, export_gerbers=False, intent_path=str(intent))
+    assert r4["status"] == "ok"
+    _assert_mostly_routed(r4, max_unrouted=4)
+
+    bw, bh = r4["board_width_mm"], r4["board_height_mm"]
+    # Squarer than the single-edge letterbox the sibling test pins (~129x65, AR≈2.0).
+    assert max(bw, bh) / min(bw, bh) < 1.6, f"multi-edge board not squarer: {bw}x{bh}"
+    assert bw * bh < 129 * 65, f"multi-edge area {bw*bh} not smaller than single-edge"
+
+    rot = [d for d in r4["steps"]["smart_placement"]["placement_decisions"]
+           if d["event"] == "rotation_chosen"]
+    edges = {d["edge"] for d in rot}
+    # Spread across opposite + side edges; NEVER the antenna edge (top here).
+    assert edges <= {"bottom", "left", "right"} and "top" not in edges
+    assert len(edges) >= 2, f"multi_edge did not spread terminals: {edges}"
+    # Per-edge natural ref order still holds (the layout gate).
+    by_edge: dict = {}
+    for d in rot:
+        by_edge.setdefault(d["edge"], []).append(d["ref"])
+    for e, refs in by_edge.items():
+        assert refs == sorted(refs, key=natural_ref_key), f"{e} out of order: {refs}"
+    # Wire-entry faces OUTWARD on EVERY used edge — incl. the new side edges
+    # (the A2 assumption: rotation_to_face works for left/right, not just top/bottom).
+    mkds = WIRE_ENTRY["TerminalBlock_Phoenix_MKDS-1,5-N-5.08_1xN_P5.08mm_Horizontal"]
+    for d in (x for x in rot if x.get("source") == "wire_entry"):
+        assert d["angle"] == rotation_to_face(mkds, outward_normal(d["edge"])), \
+            f"{d['ref']} on {d['edge']}: wire-entry not aimed outward"
+    # No copper pad off the board (rotation-sign guard on the side edges too).
+    assert not _refs_with_pads_off_board(r4["pcb_path"]), "pads off the board outline"
+
+    # Side-edge legends render clear of every pad (A1 — the crowding that drove the
+    # original single-edge decision; the side_silk_gap must actually clear them).
+    legend_labels = {p for L in load_intent(str(intent)).connector_legends
+                     for p in L.positions if p}
+    ov = _op_check_silkscreen_overlaps(str(pro).replace(".kicad_pro", ".kicad_pcb"))
+    pad_hits = {o.get("silk_text") for o in ov.get("overlaps", [])}
+    assert not (pad_hits & legend_labels), \
+        f"legend label(s) overlap a pad: {sorted(pad_hits & legend_labels)}"
+
+    # The frame guard stayed silent (parent/script antenna edge agree, A4).
+    assert not any("antenna_frame_mismatch" in w for w in (r4.get("warnings") or []))
+
+
 def test_approval_gate_audio_remote(mcp_server, tmp_path):
     """Phase 7 approval gate: build with approved=False returns a proposal of the
     PLACED (unrouted) board — real terminal edges, holes, a tweakable board.yaml,

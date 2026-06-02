@@ -107,6 +107,10 @@ class BoardSidecar:
     # DECLARES the bus's part {part: "INMP441"} when firmware doesn't name it (or
     # to correct an assumption/ambiguity). Provenance "user" — wins over corpus.
     bus_part_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # terminal distribution across board edges: "single_edge" (default — all field
+    # terminals on the antenna-opposite edge) or "multi_edge" (spill onto the side
+    # edges to square the board). See SPEC_Multi_Edge_Terminal_Distribution.md.
+    terminal_distribution: Optional[str] = None
 
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
@@ -116,7 +120,10 @@ class BoardSidecar:
 _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
     "placement", "placement_hints", "mounting_holes", "bus_part_overrides",
+    "terminal_distribution",
 })
+
+_TERMINAL_DISTRIBUTIONS = frozenset({"single_edge", "multi_edge"})
 
 _KNOWN_BUS_OVERRIDE_KEYS = frozenset({"part", "footprint"})
 
@@ -221,6 +228,10 @@ def _validate(d: dict[str, Any]) -> list[str]:
     if bs is not None and not (isinstance(bs, list) and len(bs) == 2
                                and all(isinstance(x, (int, float)) for x in bs)):
         errs.append("board_size_mm must be [width, height] numbers")
+    td = d.get("terminal_distribution")
+    if td is not None and td not in _TERMINAL_DISTRIBUTIONS:
+        errs.append(f"terminal_distribution {td!r} not in "
+                    f"{sorted(_TERMINAL_DISTRIBUTIONS)}")
     for i, c in enumerate(d.get("extra_connectors", []) or []):
         where = f"extra_connectors[{i}]"
         if not isinstance(c, dict):
@@ -297,6 +308,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         mounting_holes=(dict(data["mounting_holes"])
                         if data.get("mounting_holes") is not None else None),
         bus_part_overrides=dict(data.get("bus_part_overrides", {}) or {}),
+        terminal_distribution=data.get("terminal_distribution"),
     )
 
 
@@ -331,6 +343,8 @@ def apply_sidecar(
         intent.source["board_size_mm"] = list(sidecar.board_size_mm)
     if sidecar.mounting_holes is not None:
         intent.source["mounting_holes"] = dict(sidecar.mounting_holes)
+    if sidecar.terminal_distribution is not None:
+        intent.source["terminal_distribution"] = sidecar.terminal_distribution
 
     nets_by_name = {n.name: n for n in intent.nets}
     existing_refs = {p.ref for p in intent.peripherals}

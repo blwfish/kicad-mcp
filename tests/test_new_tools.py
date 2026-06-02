@@ -739,6 +739,7 @@ class TestBuildPcbFromSchematic:
             str(tmp_path / "test.kicad_pcb"), 22, 69,
             mock_netlist.return_value["components"],
             holes={"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5},
+            terminal_distribution="single_edge",
         )
 
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")

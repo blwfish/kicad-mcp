@@ -312,8 +312,128 @@ def normalize_hint(raw: object) -> Tuple[dict, list]:
 
 
 # ---------------------------------------------------------------------------
-# Injectable source string for embedded pcbnew scripts
+# Terminal distribution (SPEC_Multi_Edge_Terminal_Distribution.md §3-§5)
+# Pure, parent-side: the SINGLE source for BOTH the board size and the per-ref
+# edge assignment (passed to placement as {"edge": E} hints). Runs in the parent
+# only — NOT injected into the pcbnew script — so it does not appear in
+# EDGE_TERMINAL_HELPER and must not import tools.pcb_pipeline (no cycle).
 # ---------------------------------------------------------------------------
+
+_OPP_EDGE = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}
+
+
+def _size_from_assignment(
+    interior, terminals, edge_of, primary, side_a, side_b, horizontal,
+    routing_factor, padding, spacing, corner_inset_mm, corner_center_inset_mm,
+    side_silk_gap_mm,
+):
+    """Board ``{width_mm,height_mm}`` for a given edge assignment (SPEC §4,
+    generalized). Canonical frame: ``primary`` terminals run along the ALONG axis;
+    the two side edges run along the CROSS axis. Reduces EXACTLY to
+    ``_content_aware_size`` when every terminal is on ``primary`` (the regression
+    lock) — verified by ``test_terminal_distribution``."""
+    interior_area = sum(c["w"] * c["h"] for c in interior)
+    max_interior = max((max(c["w"], c["h"]) for c in interior), default=0.0)
+    cluster = math.sqrt(interior_area * routing_factor) if interior_area > 0 else 0.0
+    cluster = max(cluster, max_interior)
+
+    def _on(edge):
+        return [t for t in terminals if edge_of.get(t["ref"]) == edge]
+
+    def _along(ts):
+        return sum(max(t["w"], t["h"]) + spacing for t in ts)
+
+    def _depth(ts):
+        return max((min(t["w"], t["h"]) for t in ts), default=0.0)
+
+    p_ts, a_ts, b_ts = _on(primary), _on(side_a), _on(side_b)
+    sides_used = bool(a_ts) or bool(b_ts)
+    # Side bands eat the ALONG axis (depth inward) + reserve an inboard silk gap so
+    # side-edge legends clear the cluster. The primary band eats the CROSS axis.
+    d_a = _depth(a_ts) + (side_silk_gap_mm if a_ts else 0.0)
+    d_b = _depth(b_ts) + (side_silk_gap_mm if b_ts else 0.0)
+    d_p = _depth(p_ts)
+    # ALONG: the primary run / cluster sits BETWEEN the two side bands (so the
+    # primary terminals never extend into a side band — §4.1 body-overlap guard).
+    along_dim = max(cluster, _along(p_ts)) + d_a + d_b + 2 * padding + 2 * corner_inset_mm
+    # CROSS: cluster / side runs sit ABOVE the primary band. Corner reserve is FULL
+    # on this axis only when a terminal edge (a side) runs along it (RFE #1).
+    cross_corner = corner_inset_mm if sides_used else corner_center_inset_mm
+    cross_dim = (max(cluster, _along(a_ts), _along(b_ts)) + d_p
+                 + 2 * padding + 2 * cross_corner)
+    w, h = (along_dim, cross_dim) if horizontal else (cross_dim, along_dim)
+    return {"width_mm": math.ceil(w), "height_mm": math.ceil(h)}
+
+
+def distribute_terminals(
+    components,
+    antenna_side: Optional[str] = None,
+    *,
+    mode: str = "single_edge",
+    routing_factor: float = 2.5,
+    padding: float = 2.0,
+    spacing: float = 1.0,
+    corner_inset_mm: float = 0.0,
+    corner_center_inset_mm: float = 0.0,
+    side_silk_gap_mm: float = 2.5,
+    near_square_thresh: float = 1.35,
+) -> dict:
+    """Decide each field-wiring terminal's board edge AND the board size — the
+    single source for sizing + placement (SPEC §3-§5).
+
+    ``components``: ``[{"ref","w","h","is_terminal"}, …]``. ``antenna_side``: the
+    edge the MCU antenna overhangs ("top"/…/None); terminals go OPPOSITE it
+    (``primary``), spilling only to the perpendicular SIDE edges, never the antenna
+    edge. ``mode="single_edge"`` keeps today's all-on-one-edge behaviour;
+    ``"multi_edge"`` peels terminals onto the side edges to square the board.
+
+    Returns ``{"edge_of": {ref: edge}, "size": {"width_mm","height_mm"},
+    "primary_edge": edge}``."""
+    interior = [c for c in components if not c.get("is_terminal")]
+    terminals = sorted((c for c in components if c.get("is_terminal")),
+                       key=lambda t: natural_ref_key(t.get("ref", "")))
+    horizontal = (antenna_side in ("top", "bottom")) if antenna_side else True
+    primary = _OPP_EDGE.get(antenna_side or "", "bottom")
+    side_a, side_b = ("left", "right") if horizontal else ("top", "bottom")
+
+    def _size(edge_of):
+        return _size_from_assignment(
+            interior, terminals, edge_of, primary, side_a, side_b, horizontal,
+            routing_factor, padding, spacing, corner_inset_mm,
+            corner_center_inset_mm, side_silk_gap_mm)
+
+    all_primary = {t["ref"]: primary for t in terminals}
+    base_size = _size(all_primary)
+    base = {"edge_of": all_primary, "size": base_size, "primary_edge": primary}
+
+    # single_edge, or too few terminals to split → today's behaviour.
+    if mode != "multi_edge" or len(terminals) < 2:
+        return base
+
+    # Step 2: already near-square (aspect-ratio cutoff, axis-independent) → no-op.
+    bw, bh = base_size["width_mm"], base_size["height_mm"]
+    lo, hi = min(bw, bh), max(bw, bh)
+    if lo > 0 and hi <= lo * near_square_thresh:
+        return base
+
+    # Step 3: peel a suffix (natural-ref order) off primary; first ceil(k/2) of the
+    # peeled refs → side_a, the rest → side_b (each side stays in natural order).
+    # Score (max-dimension, area); argmin, ties → smaller k (and single-edge wins
+    # over any multi-edge tie, since the loop only replaces on a STRICT improvement).
+    n = len(terminals)
+    best_edge_of, best_size = all_primary, base_size
+    best_score = (hi, bw * bh)
+    for k in range(1, n):
+        edge_of = dict(all_primary)
+        peeled = terminals[n - k:]
+        half = (k + 1) // 2
+        for i, t in enumerate(peeled):
+            edge_of[t["ref"]] = side_a if i < half else side_b
+        sz = _size(edge_of)
+        score = (max(sz["width_mm"], sz["height_mm"]), sz["width_mm"] * sz["height_mm"])
+        if score < best_score:
+            best_score, best_edge_of, best_size = score, edge_of, sz
+    return {"edge_of": best_edge_of, "size": best_size, "primary_edge": primary}
 # Concatenated into the _step_smart_placement script.  The definitions below
 # MUST stay behaviourally identical to the Python-side functions above (type
 # annotations stripped — the embedded script has no `from __future__ import
