@@ -1582,15 +1582,35 @@ silk = board.GetLayerID("F.SilkS")
 by_ref = {fp.GetReference(): fp for fp in board.GetFootprints()}
 # For an EDGE terminal the legend goes on the INBOARD side of each pad (away from
 # the terminal's edge), clear of the body that extends OUTBOARD toward the
-# wire-entry face (spec §6: readable beside the block, never under it). Interior
-# module headers (no edge assignment) keep the default above-pad offset — they
-# have no consistent body direction and "inboard" would point into the cluster.
+# wire-entry face (spec §6: readable beside the block, never under it). An interior
+# module header (no edge assignment) has no inboard normal, so its labels go to the
+# SIDE of the pad column — past the body, toward the nearer board edge — never
+# "above the pad", which lands ON the pad above it for a VERTICAL header.
 terminal_edges = params.get("terminal_edges") or {}
 # edge -> inboard (inward-normal) unit step. (0,0) marks "no edge" (interior).
 _INBOARD = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}
+# Every pad bbox on the board (ref, x0, y0, x1, y1). An interior module header has
+# no inboard normal and is packed into the cluster, so we pick the SIDE whose label
+# band is CLEAR of all OTHER pads — and skip the header's silk if no side is clear,
+# rather than draw a label on a neighbour's pad.
+_all_pads = []
+for f in board.GetFootprints():
+    for pd in f.Pads():
+        pb = pd.GetBoundingBox()
+        _all_pads.append((f.GetReference(), pb.GetLeft(), pb.GetTop(),
+                          pb.GetRight(), pb.GetBottom()))
+
+def _band_clear(own, x0, y0, x1, y1):
+    for ref, px0, py0, px1, py1 in _all_pads:
+        if ref == own:
+            continue
+        if not (px1 < x0 or px0 > x1 or py1 < y0 or py0 > y1):
+            return False
+    return True
 
 labels_added = 0
 missing = []
+legends_unplaced = []   # interior headers boxed into the cluster (no clear side)
 for leg in params["legends"]:
     fp = by_ref.get(leg["ref"])
     if fp is None:
@@ -1604,6 +1624,30 @@ for leg in params["legends"]:
     # label merely past the pad edge sits UNDER the block. Offset past the body
     # edge so the label lands on exposed board, beyond the block, in the open gap.
     fbb = fp.GetBoundingBox(False, False)
+
+    # Interior module header (no edge normal): choose the side whose label band is
+    # clear of every other pad. A VERTICAL pad column -> labels go left/right (each
+    # beside its own pad); a HORIZONTAL row -> up/down. "Above the pad" (the old
+    # default) lands ON the pad above for a vertical header. If neither valid side
+    # is clear (the header is boxed into the cluster) the per-pad silk is SKIPPED,
+    # not drawn over a neighbour — the pinout still lives in the connector legend
+    # data; rendering it would need a placement-level silk clearance.
+    side = None
+    if (ix, iy) == (0, 0):
+        maxw = max((len(positions[i]) for i in range(len(positions)) if positions[i]),
+                   default=1) * size
+        d = margin + maxw + size // 2      # band depth (+ a glyph of safety)
+        if (fbb.GetBottom() - fbb.GetTop()) >= (fbb.GetRight() - fbb.GetLeft()):
+            cands = [("R", fbb.GetRight() + margin, fbb.GetTop(), fbb.GetRight() + d, fbb.GetBottom()),
+                     ("L", fbb.GetLeft() - d, fbb.GetTop(), fbb.GetLeft() - margin, fbb.GetBottom())]
+        else:
+            cands = [("U", fbb.GetLeft(), fbb.GetTop() - d, fbb.GetRight(), fbb.GetTop() - margin),
+                     ("D", fbb.GetLeft(), fbb.GetBottom() + margin, fbb.GetRight(), fbb.GetBottom() + d)]
+        side = next((s for s, a, b, c, e in cands if _band_clear(leg["ref"], a, b, c, e)), None)
+        if side is None:
+            legends_unplaced.append(leg["ref"])
+            continue
+
     for pad in fp.Pads():
         num = pad.GetNumber()
         if not num.isdigit():
@@ -1612,10 +1656,13 @@ for leg in params["legends"]:
         if idx < 0 or idx >= len(positions) or not positions[idx]:
             continue
         p = pad.GetPosition()
-        bb = pad.GetBoundingBox()
-        # Cross-axis = the pad's own position (label stays over its pad); the
-        # inboard axis clears the BODY envelope (fbb) + half the glyph.
-        if ix > 0:        # inboard right (terminal on the left edge)
+        lw = len(positions[idx]) * size    # this label's width (centre-justified)
+        # Cross-axis = the pad's own position (label stays over its pad); the offset
+        # axis clears the BODY envelope (fbb). Edge terminals push the centre out by
+        # half a glyph (their body already extends past the pads); interior headers
+        # push by half the LABEL width so the whole centre-justified glyph clears the
+        # thin header body.
+        if ix > 0:        # edge terminal, inboard right (terminal on the left edge)
             tx, ty = fbb.GetRight() + margin + size // 2, p.y
         elif ix < 0:      # inboard left (right edge)
             tx, ty = fbb.GetLeft() - margin - size // 2, p.y
@@ -1623,8 +1670,14 @@ for leg in params["legends"]:
             tx, ty = p.x, fbb.GetBottom() + margin + size // 2
         elif iy < 0:      # inboard up (bottom edge)
             tx, ty = p.x, fbb.GetTop() - margin - size // 2
-        else:             # interior module header: keep the simple above-pad offset
-            tx, ty = p.x, bb.GetTop() - margin - size // 2
+        elif side == "R":
+            tx, ty = fbb.GetRight() + margin + lw // 2, p.y
+        elif side == "L":
+            tx, ty = fbb.GetLeft() - margin - lw // 2, p.y
+        elif side == "U":
+            tx, ty = p.x, fbb.GetTop() - margin - size // 2
+        else:             # "D"
+            tx, ty = p.x, fbb.GetBottom() + margin + size // 2
         txt = pcbnew.PCB_TEXT(board)
         txt.SetText(positions[idx])
         txt.SetPosition(pcbnew.VECTOR2I(int(tx), int(ty)))
@@ -1656,7 +1709,8 @@ for leg in params["legends"]:
 
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "labels_added": labels_added,
-                  "missing_refs": missing}))
+                  "missing_refs": missing,
+                  "legends_unplaced": legends_unplaced}))
 """
     res = run_pcbnew_script(script, params={
         "pcb_path": pcb_path, "legends": legends, "margin_mm": margin_mm,
