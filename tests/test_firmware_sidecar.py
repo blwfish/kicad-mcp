@@ -215,6 +215,7 @@ def test_known_keys_all_accepted(tmp_path):
         placement: {}
         placement_hints: {}
         mounting_holes: {count: 4}
+        bus_part_overrides: {}
     """))
     assert sc.power_source == "usb_c"
     assert sc.board_size_mm == [90, 75]
@@ -222,6 +223,46 @@ def test_known_keys_all_accepted(tmp_path):
     assert sc.placement == {}
     assert sc.placement_hints == {}
     assert sc.mounting_holes == {"count": 4}
+    assert sc.bus_part_overrides == {}
+
+
+# --- bus_part_overrides (C7) --------------------------------------------------
+
+def test_bus_part_override_loads(tmp_path):
+    sc = load_sidecar(_write(tmp_path, """\
+        bus_part_overrides:
+          CMCA_MIC: {part: INMP441}
+    """))
+    assert sc.bus_part_overrides == {"CMCA_MIC": {"part": "INMP441"}}
+
+
+@pytest.mark.parametrize("body,needle", [
+    ("bus_part_overrides: 5\n", "must be a mapping"),
+    ("bus_part_overrides: {B: 5}\n", "must be a mapping"),
+    ("bus_part_overrides: {B: {}}\n", "empty"),
+    ("bus_part_overrides: {B: {part: 7}}\n", "part must be"),
+    ("bus_part_overrides: {B: {prt: INMP441}}\n", "unknown key"),   # typo'd sub-key
+])
+def test_bus_part_override_rejected(tmp_path, body, needle):
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, body))
+    assert needle in str(e.value)
+
+
+def test_apply_bus_part_override_stamps_user_provenance():
+    from kicad_mcp.utils.firmware.intent import Bus
+    i = _intent()
+    i.buses.append(Bus(name="CMCA_MIC", type="I2S_IN"))
+    apply_sidecar(i, BoardSidecar(bus_part_overrides={"CMCA_MIC": {"part": "INMP441"}}))
+    bus = next(b for b in i.buses if b.name == "CMCA_MIC")
+    assert bus.resolved_part == "INMP441"
+    assert bus.part_provenance == "user" and bus.part_is_assumption is False
+
+
+def test_apply_bus_part_override_unknown_bus_gaps():
+    i = _intent()
+    apply_sidecar(i, BoardSidecar(bus_part_overrides={"NOPE": {"part": "INMP441"}}))
+    assert any(g.kind == "bus_part_override_unknown" for g in i.gaps)
 
 
 # --- mounting_holes -----------------------------------------------------------
