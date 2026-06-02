@@ -7,7 +7,7 @@ to serve audit.check_silkscreen_overlaps — single source of truth, two surface
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
@@ -464,8 +464,17 @@ print(json.dumps({
     return run_pcbnew_script(script, params={"pcb_path": pcb_path})
 
 
-def _op_auto_fix_silkscreen(pcb_path: str) -> Dict[str, Any]:
-    """Automatically fix silkscreen text that overlaps copper pads or other text."""
+def _op_auto_fix_silkscreen(
+    pcb_path: str, skip_refs: Optional[Iterable[str]] = None
+) -> Dict[str, Any]:
+    """Automatically fix silkscreen text that overlaps copper pads or other text.
+
+    ``skip_refs`` lists footprint references whose ``reference`` (refdes) field is
+    DELIBERATELY positioned by a caller (e.g. the field-terminal legend callouts in
+    the pipeline) and must not be relocated or hidden. Their VALUE fields are still
+    tidied — only the hand-placed refdes is protected. The skipped refdes still
+    participate as overlap OBSTACLES for everything else (it remains in ``all_silk``),
+    so other text is moved clear of it rather than the reverse."""
     if not os.path.exists(pcb_path):
         return {"error": f"PCB file not found: {pcb_path}"}
 
@@ -474,6 +483,7 @@ import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
+skip_refs = set(params.get("skip_refs") or [])
 
 board = pcbnew.LoadBoard(pcb_path)
 
@@ -568,6 +578,11 @@ for fp in board.GetFootprints():
             continue
         if field_obj.GetLayer() not in silk_layer_ids:
             continue
+        # A deliberately-placed refdes callout (field-terminal legend) is left
+        # exactly where the caller put it — never relocated or hidden. Its value
+        # field is still eligible. It stays an obstacle for other text via all_silk.
+        if field_type == "reference" and ref in skip_refs:
+            continue
 
         text_bbox = field_obj.GetBoundingBox()
         own_layer = field_obj.GetLayer()
@@ -637,4 +652,6 @@ print(json.dumps({
     "fixes": fixed + hidden,
 }))
 """
-    return run_pcbnew_script(script, params={"pcb_path": pcb_path})
+    return run_pcbnew_script(
+        script, params={"pcb_path": pcb_path, "skip_refs": sorted(skip_refs or [])}
+    )
