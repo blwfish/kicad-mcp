@@ -351,8 +351,21 @@ def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
     assert r1["board"] == "esp32-s3-devkitc-1"          # multi-board= prefers S3
     assert r1["summary"]["mcu"] == "ESP32-S3-WROOM-1"
 
+    # Part resolution (C4-C7): the firmware NAMES MAX98357A in a bus comment, so
+    # both I2S_OUT amp buses bind to it from the corpus (not invented). The mic
+    # bus names no part → a disclosed assumption, never a silent substitution.
+    rp = r1["resolved_parts"]
+    i2s_out = {v["part"] for k, v in rp.items() if v["via"] == "corpus"}
+    assert "MAX98357A" in i2s_out, f"MAX98357A not resolved from corpus: {rp}"
+    assert all(v["via"] == "corpus" for k, v in rp.items()
+               if v["part"] == "MAX98357A")
+
     r2 = design(operation="expand_templates", intent_path=str(intent))
     assert r2["status"] == "ok"
+    # The unnamed mic is realized as a DISCLOSED assumption at expand time, never a
+    # silent substitution — and expand surfaces the gap so the user sees it.
+    assert any(g["kind"] == "assumed_part" for g in r2["gaps"]), \
+        "the unnamed mic should surface a disclosed assumed_part gap"
 
     r3 = design(operation="generate_schematic", intent_path=str(intent),
                 schematic_path=str(sch))
