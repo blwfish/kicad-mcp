@@ -44,3 +44,17 @@ Tests: `TestPlanTerminalEdges` (empty / one-edge / overflow boundary / no-antenn
 
 ## Sequencing
 Phase 5 sidecar+pure helpers → `_content_aware_size` inset → Phase 7 `_plan_terminal_edges` extraction → Phase 5 hole step + `_EDGE_DESIGNATOR_CLASSES` → orchestrator wiring → Phase 7 op+render → router+`approved`.
+
+## DEFERRED (RFE — cosmetic sizing quality, correctness complete)
+Phase 5 + Phase 7 are DONE and verified (integration 6/6 on KiCad 9 & 10), incl.
+two eyeball-driven fixes (holes pinned at corners; terminals cleared of corner
+holes). Deferred sizing polish, in priority order:
+1. **Axis-aware corner reservation.** `_hole_corner_clear` is reserved on BOTH
+   board axes, but only the terminal-EDGE (along) axis needs the full clearance;
+   the depth axis needs only the hole-center inset. Result: the board is taller
+   than the content needs (dead band between the interior cluster and the terminal
+   row). Fix: reserve full clearance only along the terminal edge, hole-center
+   inset on the depth axis. Cosmetic — does not affect routing/correctness.
+2. **Multi-edge terminal distribution** (the original v1 board-AREA RFE): spread
+   terminals across antenna-opposite + side edges → squarer, smaller board vs. the
+   current single-edge letterbox. Bigger change (side-edge silk crowding).
