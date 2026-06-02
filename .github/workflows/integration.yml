@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One in-flight integration run per PR; a new push to the same PR cancels the
+  # superseded run so it stops occupying a scarce self-hosted runner. Keyed by
+  # github.ref, so different PRs never cancel each other. cancel-in-progress is
+  # gated to pull_request events ONLY — push-to-main runs are never cancelled
+  # (every merge commit must be fully tested before the next one lands).
+  group: integration-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   integration:
     name: integration / kicad-${{ matrix.kicad }}
@@ -40,6 +49,13 @@ jobs:
         run: uv sync
 
       - name: Run integration tests
+        # Isolate KiCad's config/cache per runner so concurrent kicad-cli runs
+        # (multiple self-hosted runners on one machine) can't race on shared
+        # config init or lock files. runner.temp is unique per runner and wiped
+        # per job. Verified: KiCad 10 honors KICAD_CONFIG_HOME (writes
+        # kicad_common.json there, ignores $HOME).
+        env:
+          KICAD_CONFIG_HOME: ${{ runner.temp }}/kicad-config
         run: |
           KICAD_INTEGRATION=1 uv run pytest tests/integration/ -v \
             --tb=short \
