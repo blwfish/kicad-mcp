@@ -50,6 +50,26 @@ def _tool(mcp, name):
     return asyncio.run(mcp.get_tool(name)).fn
 
 
+def _final_hole_positions(pcb_path):
+    """The H* mounting-hole positions as they ACTUALLY ended up on the board (mm).
+    Reads the placed board, not a step's report — placement can move a footprint
+    after a step records its intended spot (the bug this guards: holes that the
+    create step put at the corners were silently spiral-placed into the interior)."""
+    from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+    script = (
+        "import pcbnew, json, sys\n"
+        "b = pcbnew.LoadBoard(json.loads(open(sys.argv[1]).read())['pcb'])\n"
+        "out = {}\n"
+        "for fp in b.GetFootprints():\n"
+        "    r = fp.GetReference()\n"
+        "    if r and r[0] == 'H' and r[1:].isdigit():\n"
+        "        p = fp.GetPosition()\n"
+        "        out[r] = [round(pcbnew.ToMM(p.x), 2), round(pcbnew.ToMM(p.y), 2)]\n"
+        "print(json.dumps(out))\n"
+    )
+    return run_pcbnew_script(script, params={"pcb": pcb_path}, timeout=60.0)
+
+
 def _assert_mostly_routed(r4, max_unrouted):
     """Assert the board routed essentially completely, within ``max_unrouted``.
 
@@ -412,17 +432,18 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert not r4["steps"]["smart_placement"].get("failed_placements"), \
         "content-aware size left parts unplaced (under-estimate)"
 
-    # §3 mounting holes (Phase 5): 4 corner M3 fixtures, each inset ~3.5mm from a
-    # corner (within line-width tolerance), pinned (not floating mid-board). The
+    # §3 mounting holes (Phase 5): 4 corner M3 fixtures that ACTUALLY ended up at
+    # the corners on the placed+routed board (read the board, not the step report —
+    # the placer used to silently move fixed-hint holes into the interior). The
     # board still routes within bound above, so the corner keepouts didn't break it.
-    mh = r4["steps"]["mounting_holes"]
-    assert mh["holes_added"] == 4
-    assert {p["ref"] for p in mh["positions"]} == {"H1", "H2", "H3", "H4"}
-    for p in mh["positions"]:
-        near_x = abs(p["x_mm"] - 3.5) < 1.0 or abs(p["x_mm"] - (bw - 3.5)) < 1.0
-        near_y = abs(p["y_mm"] - 3.5) < 1.0 or abs(p["y_mm"] - (bh - 3.5)) < 1.0
+    assert r4["steps"]["mounting_holes"]["holes_added"] == 4
+    hp = _final_hole_positions(r4["pcb_path"])
+    assert set(hp) == {"H1", "H2", "H3", "H4"}
+    for ref, (x, y) in hp.items():
+        near_x = x < 6.0 or x > bw - 6.0
+        near_y = y < 6.0 or y > bh - 6.0
         assert near_x and near_y, \
-            f"{p['ref']} at ({p['x_mm']},{p['y_mm']}) not near a corner of {bw}x{bh}"
+            f"{ref} at ({x},{y}) is not near a corner of {bw}x{bh} (moved off-corner)"
 
     # §1 RFI: ALL field-wiring terminals share the SINGLE edge opposite the antenna
     # (the MCU antenna overhangs the top, so terminals are on the bottom) — none
@@ -572,6 +593,13 @@ def test_approval_gate_audio_remote(mcp_server, tmp_path):
     assert prop["terminal_table"], "no terminals in the proposal"
     assert {t["edge"] for t in prop["terminal_table"]} == {"bottom"}   # antenna-opposite
     assert len(prop["mounting_holes"]) == 4       # default corner holes proposed
+    # And they ACTUALLY sit at the corners on the placed board (not just reported):
+    bw, bh = prop["board_size_mm"]
+    hp = _final_hole_positions(r["pcb_path"])
+    assert set(hp) == {"H1", "H2", "H3", "H4"}
+    for ref, (x, y) in hp.items():
+        assert (x < 6.0 or x > bw - 6.0) and (y < 6.0 or y > bh - 6.0), \
+            f"{ref} at ({x},{y}) not at a corner of {bw}x{bh}"
     # the proposed board.yaml is valid and round-trips through the sidecar loader
     yp = tmp_path / "proposed.yaml"
     yp.write_text(yaml.dump(prop["proposed_board_yaml"]))

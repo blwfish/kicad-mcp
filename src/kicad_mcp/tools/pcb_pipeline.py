@@ -900,7 +900,14 @@ tier1, tier2, tier3, tier4 = [], [], [], []
 
 for ref, info in fp_info.items():
     cls = _ref_class(ref)
-    if info["has_keepout"]:
+    if "fixed" in placement_hints.get(ref, {}):
+        # An explicit fixed-coordinate hint is an ABSOLUTE override — honor it
+        # regardless of class. tier2 owns the fixed-placement path; without this a
+        # non-edge-class ref with fixed coords (e.g. an "H" mounting hole, no
+        # longer an edge class) would fall to the interior tier and be
+        # spiral-placed, silently ignoring its hint.
+        tier2.append(ref)
+    elif info["has_keepout"]:
         tier1.append(ref)
     elif cls in EDGE_CLASSES:
         tier2.append(ref)
@@ -1633,8 +1640,12 @@ def _render_board_svg(pcb_path: str) -> Optional[str]:
     out = os.path.splitext(pcb_path)[0] + "_proposal.svg"
     try:
         r = subprocess.run(
+            # --exclude-drawing-sheet: no title-block/rev frame, so the Edge.Cuts
+            # rectangle IS the only boundary in the image (a frame around a larger
+            # page reads as a false board edge and hides where parts really sit).
             [cli, "pcb", "export", "svg", pcb_path, "-o", out,
-             "--layers", "F.Cu,B.Cu,F.SilkS,Edge.Cuts", "--page-size-mode", "2"],
+             "--layers", "F.Cu,B.Cu,F.SilkS,Edge.Cuts",
+             "--page-size-mode", "2", "--exclude-drawing-sheet"],
             capture_output=True, text=True, timeout=60,
         )
         return out if (r.returncode == 0 and os.path.exists(out)) else None
