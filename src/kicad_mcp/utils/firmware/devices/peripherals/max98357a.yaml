@@ -1,0 +1,14 @@
+# MAX98357A I2S class-D mono amplifier (the audio-node output stage). Formalizes
+# the knowledge.py MAX98357A constant; pins verified vs the audio-node ground
+# truth. `serves: I2S_OUT` lets the part resolver bind it when the firmware names
+# it (the audio config names "MAX98357A" in a bus comment).
+type: MAX98357A
+lib_id: Audio:MAX98357A
+value: MAX98357A
+bus: I2S
+serves: I2S_OUT
+footprint: Package_DFN_QFN:HVQFN-16-1EP_3x3mm_P0.5mm_EP1.5x1.5mm
+roles: {DIN: DIN, BCLK: BCLK, LRCLK: LRCLK, SD_MODE: "~{SD_MODE}", OUTP: OUTP, OUTN: OUTN}
+supply_pins: ["7", "8"]
+ground_pins: ["3", "11", "15", "17"]   # GND pins + EP pad 17
+module: false

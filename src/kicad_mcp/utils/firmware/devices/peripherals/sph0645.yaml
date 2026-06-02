@@ -1,0 +1,17 @@
+# SPH0645LM4H I2S MEMS microphone. Formalizes the knowledge.py SPH0645 constant.
+# `serves: I2S_IN` lets the resolver bind it when the firmware names it; the
+# `SPH0645LM4H` alias covers the full datasheet spelling. (The audio-node mic is
+# actually an INMP441 — once that symbol exists and is named, the resolver binds
+# INMP441 instead; until then an INMP441 mention resolves to a part_unavailable
+# gap rather than silently substituting this part.)
+type: SPH0645
+aliases: ["SPH0645LM4H"]
+lib_id: Sensor_Audio:SPH0645LM4H
+value: SPH0645LM4H
+bus: I2S
+serves: I2S_IN
+footprint: Sensor_Audio:Knowles_SPH0645LM4H-6_3.5x2.65mm
+roles: {WS: WS, BCLK: BCLK, DATA: DATA, SEL: SEL}
+supply_pins: ["VDD"]
+ground_pins: ["GND"]
+module: false
