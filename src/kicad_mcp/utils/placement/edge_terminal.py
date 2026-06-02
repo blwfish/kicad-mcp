@@ -222,6 +222,7 @@ def layout_along_edge(
     margin: float,
     spacing: float,
     clearance: Optional[float] = None,
+    anchor: str = "start",
 ) -> list:
     """Lay connectors out in given order along ``edge``.
 
@@ -233,13 +234,25 @@ def layout_along_edge(
     Cross-axis anchoring: an ``overhang`` terminal anchors its PAD box at
     ``clearance`` inside the edge (courtyard may cross the edge outward, pads
     stay on-board); otherwise the full courtyard sits ``margin`` inside.  Along
-    the edge, connectors advance by their courtyard width plus ``spacing``."""
+    the edge, connectors advance by their courtyard width plus ``spacing``.
+
+    ``anchor``: ``"start"`` (default) packs the group from the edge start (the
+    historical behaviour); ``"center"`` centres the whole group within the usable
+    span ``[edge_start+margin, edge_end-margin]`` — equal slack at both ends — so
+    a group shorter than its edge sits balanced rather than packed at one end. A
+    group that fills (or over-fills) the edge falls back to ``start`` (the
+    ``max(0, …)`` clamp), and the per-item ``fits`` check is unchanged. The corner
+    keepout the caller bakes into ``board_box`` is respected either way."""
     if clearance is None:
         clearance = margin
     xmin, ymin, xmax, ymax = board_box
     out = []
     if edge in ("top", "bottom"):
-        cursor = xmin + margin
+        edge_lo = xmin + margin
+        total = (sum(it[1][0] + it[1][1] for it in items)
+                 + spacing * max(0, len(items) - 1))
+        cursor = edge_lo + (max(0.0, ((xmax - margin) - edge_lo - total) / 2.0)
+                            if anchor == "center" else 0.0)
         for (ref, ext, pad_ext, overhang) in items:
             L, R, T, B = ext
             pL, pR, pT, pB = pad_ext
@@ -252,7 +265,11 @@ def layout_along_edge(
             out.append((ref, x, y, fits))
             cursor = x + R + spacing
     else:
-        cursor = ymin + margin
+        edge_lo = ymin + margin
+        total = (sum(it[1][2] + it[1][3] for it in items)
+                 + spacing * max(0, len(items) - 1))
+        cursor = edge_lo + (max(0.0, ((ymax - margin) - edge_lo - total) / 2.0)
+                            if anchor == "center" else 0.0)
         for (ref, ext, pad_ext, overhang) in items:
             L, R, T, B = ext
             pL, pR, pT, pB = pad_ext
@@ -546,13 +563,17 @@ def nearest_edge(target, board_box):
             best_edge = edge
     return best_edge
 
-def layout_along_edge(items, edge, board_box, margin, spacing, clearance=None):
+def layout_along_edge(items, edge, board_box, margin, spacing, clearance=None, anchor="start"):
     if clearance is None:
         clearance = margin
     xmin, ymin, xmax, ymax = board_box
     out = []
     if edge in ("top", "bottom"):
-        cursor = xmin + margin
+        edge_lo = xmin + margin
+        total = (sum(it[1][0] + it[1][1] for it in items)
+                 + spacing * max(0, len(items) - 1))
+        cursor = edge_lo + (max(0.0, ((xmax - margin) - edge_lo - total) / 2.0)
+                            if anchor == "center" else 0.0)
         for (ref, ext, pad_ext, overhang) in items:
             L, R, T, B = ext
             pL, pR, pT, pB = pad_ext
@@ -565,7 +586,11 @@ def layout_along_edge(items, edge, board_box, margin, spacing, clearance=None):
             out.append((ref, x, y, fits))
             cursor = x + R + spacing
     else:
-        cursor = ymin + margin
+        edge_lo = ymin + margin
+        total = (sum(it[1][2] + it[1][3] for it in items)
+                 + spacing * max(0, len(items) - 1))
+        cursor = edge_lo + (max(0.0, ((ymax - margin) - edge_lo - total) / 2.0)
+                            if anchor == "center" else 0.0)
         for (ref, ext, pad_ext, overhang) in items:
             L, R, T, B = ext
             pL, pR, pT, pB = pad_ext

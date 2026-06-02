@@ -243,6 +243,51 @@ class TestLayoutAlongEdge:
         res = layout_along_edge(self._items(30), "top", self.BOARD, 1.0, 1.0)
         assert any(not fits for (_, _, _, fits) in res)
 
+    # --- anchor="center" (Part B: terminal centering) ------------------------
+
+    def test_anchor_start_is_default_and_unchanged(self):
+        # The regression lock: anchor="start" must be byte-identical to the
+        # historical no-anchor call on every edge.
+        items = self._items(3)
+        for edge in ("top", "bottom", "left", "right"):
+            assert (layout_along_edge(items, edge, self.BOARD, 1.0, 1.0)
+                    == layout_along_edge(items, edge, self.BOARD, 1.0, 1.0, anchor="start"))
+
+    def test_center_balances_a_short_group_on_top_edge(self):
+        # 3 items, each 4mm wide (+1 spacing) → total span 4*3 + 1*2 = 14mm.
+        # usable = 100 - 2*margin(1) = 98 → slack 84 → 42 each side.
+        items = self._items(3)
+        res = layout_along_edge(items, "top", self.BOARD, 1.0, 1.0, anchor="center")
+        xs = [x for (_, x, _, _) in res]
+        left_gap = xs[0] - 2.0 - (self.BOARD[0] + 1.0)        # first courtyard-left to edge_lo
+        right_gap = (self.BOARD[2] - 1.0) - (xs[-1] + 2.0)    # edge_hi to last courtyard-right
+        assert abs(left_gap - right_gap) < EPS                # symmetric
+        assert left_gap > 0                                   # actually moved inboard
+        # order + spacing preserved
+        assert xs == sorted(xs)
+
+    def test_center_on_left_edge_balances_vertically(self):
+        items = self._items(2)
+        res = layout_along_edge(items, "left", self.BOARD, 1.0, 1.0, anchor="center")
+        ys = [y for (_, _, y, _) in res]
+        top_gap = ys[0] - 3.0 - (self.BOARD[1] + 1.0)
+        bot_gap = (self.BOARD[3] - 1.0) - (ys[-1] + 3.0)
+        assert abs(top_gap - bot_gap) < EPS
+
+    def test_center_group_filling_edge_falls_back_to_start(self):
+        # A group as long as the edge → no slack → center clamps to start (no
+        # negative offset, identical to start anchoring).
+        items = self._items(30)   # overflows the 100mm edge
+        start = layout_along_edge(items, "top", self.BOARD, 1.0, 1.0, anchor="start")
+        center = layout_along_edge(items, "top", self.BOARD, 1.0, 1.0, anchor="center")
+        assert center == start
+
+    def test_center_single_item_is_edge_centre(self):
+        res = layout_along_edge(self._items(1), "top", self.BOARD, 1.0, 1.0, anchor="center")
+        _, x, _, _ = res[0]
+        # courtyard centre lands at the board centre x
+        assert abs(x - (self.BOARD[0] + self.BOARD[2]) / 2.0) < EPS
+
 
 # ---------------------------------------------------------------------------
 # normalize_hint — explicit ambiguous-input pinning (the validation seam)
@@ -370,7 +415,9 @@ class TestEdgeTerminalHelperSource:
         # non-overhang branch anchors the full courtyard, not the pad box).
         items = [(f"J{i+1}", (2.0, 2.0, 3.0, 3.0), (1.0, 1.0, 1.5, 1.5), i % 2 == 0)
                  for i in range(4)]
+        # Compare BOTH anchors — a "center" bug present in only one copy would slip
+        # past a default-only ("start") comparison (the param defaults to "start").
         for edge in ["top", "bottom", "left", "right"]:
-            assert ns["layout_along_edge"](items, edge, board, 1.0, 1.0) == layout_along_edge(
-                items, edge, board, 1.0, 1.0
-            )
+            for anchor in ("start", "center"):
+                assert ns["layout_along_edge"](items, edge, board, 1.0, 1.0, anchor=anchor) \
+                    == layout_along_edge(items, edge, board, 1.0, 1.0, anchor=anchor)

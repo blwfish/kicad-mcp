@@ -793,6 +793,7 @@ def _step_smart_placement(
     spacing_mm: float = 1.0,
     placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
     corner_clear_mm: float = 0.0,
+    terminal_anchor: str = "start",
 ) -> Dict[str, Any]:
     """Step 5: Smart tiered placement based on connectivity and component type.
 
@@ -823,6 +824,7 @@ params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
 spacing = params["spacing_mm"]
 corner_clear = params.get("corner_clear_mm", 0.0)  # corner space the mounting holes occupy
+terminal_anchor = params.get("anchor", "start")    # "start" | "center" along each edge
 outline = get_board_outline(board)
 
 if not outline:
@@ -1295,7 +1297,7 @@ for edge in ("top", "bottom", "left", "right"):
     else:
         lay_box = (board_xmin, board_ymin + corner_clear,
                    board_xmax, board_ymax - corner_clear)
-    laid = layout_along_edge(items, edge, lay_box, margin, spacing)
+    laid = layout_along_edge(items, edge, lay_box, margin, spacing, anchor=terminal_anchor)
     for (ref, x, y, fits) in laid:
         ang, rext, rpad = rot_by_ref[ref]
         el, er, et, eb = rext
@@ -1445,6 +1447,7 @@ print(json.dumps({
         "pcb_path": pcb_path,
         "spacing_mm": spacing_mm,
         "corner_clear_mm": corner_clear_mm,
+        "anchor": terminal_anchor,
         "net_members": dict(net_members),
         "placement_hints": dict(placement_hints or {}),
         "edge_classes": list(_EDGE_DESIGNATOR_CLASSES),
@@ -2044,8 +2047,13 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # terminal_distribution (board.yaml, default single_edge) decides whether the
         # auto-size spreads field terminals across the side edges.
         _term_dist = "single_edge"
+        _term_anchor = "start"
         if design_intent is not None:
             _term_dist = design_intent.source.get("terminal_distribution", "single_edge")
+            # terminal_centering (board.yaml, default off) centres each edge's
+            # terminal group instead of packing it at one end (layout balance only).
+            _term_anchor = ("center" if design_intent.source.get("terminal_centering")
+                            else "start")
         step = _step_create_pcb_and_outline(
             pcb_path, eff_width_mm, eff_height_mm, components, holes=holes,
             terminal_distribution=_term_dist,
@@ -2121,7 +2129,8 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # the board-size reservation above, so the cleared span actually fits).
         step = _step_smart_placement(
             pcb_path, nets, placement_hints=clean_hints,
-            corner_clear_mm=_hole_corner_clear(holes))
+            corner_clear_mm=_hole_corner_clear(holes),
+            terminal_anchor=_term_anchor)
         _record("smart_placement", step)
         # Non-fatal — continue even if placement is imperfect
 

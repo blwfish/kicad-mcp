@@ -97,6 +97,28 @@ def _terminal_hole_overlaps(pcb_path):
     return run_pcbnew_script(script, params={"pcb": pcb_path}, timeout=60.0)["overlaps"]
 
 
+def _terminal_centers(pcb_path):
+    """Each field-terminal J*'s courtyard centre (mm) AND the board centre — for the
+    terminal-centering gate (a centred edge group's mid-point sits near the board
+    mid-point on that edge's along-axis)."""
+    from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+    script = (
+        "import pcbnew, json, sys\n"
+        "b = pcbnew.LoadBoard(json.loads(open(sys.argv[1]).read())['pcb'])\n"
+        "be = b.GetBoardEdgesBoundingBox()\n"
+        "out = {'board': [pcbnew.ToMM((be.GetLeft()+be.GetRight())//2),\n"
+        "                 pcbnew.ToMM((be.GetTop()+be.GetBottom())//2)], 'J': {}}\n"
+        "for f in b.GetFootprints():\n"
+        "    r = f.GetReference()\n"
+        "    if r.startswith('J'):\n"
+        "        bb = f.GetBoundingBox(False, False)\n"
+        "        out['J'][r] = [pcbnew.ToMM((bb.GetLeft()+bb.GetRight())//2),\n"
+        "                       pcbnew.ToMM((bb.GetTop()+bb.GetBottom())//2)]\n"
+        "print(json.dumps(out))\n"
+    )
+    return run_pcbnew_script(script, params={"pcb": pcb_path}, timeout=60.0)
+
+
 def _assert_mostly_routed(r4, max_unrouted):
     """Assert the board routed essentially completely, within ``max_unrouted``.
 
@@ -677,6 +699,84 @@ def test_audio_remote_multi_edge_distribution(mcp_server, tmp_path):
 
     # The frame guard stayed silent (parent/script antenna edge agree, A4).
     assert not any("antenna_frame_mismatch" in w for w in (r4.get("warnings") or []))
+
+
+def test_audio_remote_terminal_centering(mcp_server, tmp_path):
+    """board.yaml ``terminal_centering: true`` centres each edge's field-terminal
+    group within its edge instead of packing it at one end (Part B of
+    SPEC_Post_Placement_Board_Refit.md). Layout balance only — the board size is
+    unchanged. Combined here with multi_edge so all three used edges are exercised.
+    Pins: each used edge's terminal group is centred (group mid ≈ board mid on that
+    edge's axis), and the placement is still valid (on-edge, ordered, oriented,
+    pads on-board, silk clear, routes)."""
+    import shutil
+
+    from kicad_mcp.utils.placement.edge_terminal import natural_ref_key
+    from kicad_mcp.tools.pcb_silkscreen import _op_check_silkscreen_overlaps
+
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+
+    fw = tmp_path / "fw"
+    fw.mkdir()
+    shutil.copy(AUDIO_CONFIG_H, fw / "config.h")
+    shutil.copy(AUDIO_CONFIG_H.parent / "platformio.ini", fw / "platformio.ini")
+    (fw / "board.yaml").write_text(
+        "terminal_distribution: multi_edge\n"
+        "terminal_centering: true\n"
+        "placement:\n"
+        "  CMCA_MIC: {locus: remote, device: INMP441}\n"
+        "  CMCA_PRESENCE: {locus: remote, device: LD2410}\n"
+        "  CMCA_I2S: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+        "  CMCA_I2S2: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+    )
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "ar.kicad_sch"
+    pro = tmp_path / "ar.kicad_pro"
+
+    assert design(operation="import_firmware", firmware_path=str(fw / "config.h"),
+                  out_path=str(intent))["status"] == "ok"
+    assert design(operation="expand_templates", intent_path=str(intent))["status"] == "ok"
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    r4 = build(project_path=str(pro), board_width_mm=0, board_height_mm=0,
+               autoroute_passes=4, export_gerbers=False, intent_path=str(intent))
+    assert r4["status"] == "ok"
+    _assert_mostly_routed(r4, max_unrouted=4)
+
+    rot = [d for d in r4["steps"]["smart_placement"]["placement_decisions"]
+           if d["event"] == "rotation_chosen"]
+    edge_of = {d["ref"]: d["edge"] for d in rot}
+    assert set(edge_of.values()) <= {"bottom", "left", "right"}
+
+    # Each used edge's terminal group is CENTRED: the midpoint of the group's
+    # span (along that edge's axis) sits near the board midpoint. A start-packed
+    # group would sit well off-centre toward one end.
+    cen = _terminal_centers(r4["pcb_path"])
+    bcx, bcy = cen["board"]
+    by_edge: dict = {}
+    for ref, edge in edge_of.items():
+        by_edge.setdefault(edge, []).append(ref)
+    for edge, refs in by_edge.items():
+        horiz = edge in ("top", "bottom")
+        coords = sorted(cen["J"][r][0 if horiz else 1] for r in refs)
+        group_mid = (coords[0] + coords[-1]) / 2.0
+        board_mid = bcx if horiz else bcy
+        assert abs(group_mid - board_mid) < 6.0, \
+            f"{edge} group not centred: mid {group_mid:.1f} vs board {board_mid:.1f}"
+        # order still ascending along the edge
+        ordered = sorted(refs, key=natural_ref_key)
+        assert [cen["J"][r][0 if horiz else 1] for r in ordered] == \
+            sorted(cen["J"][r][0 if horiz else 1] for r in ordered)
+
+    # Still a valid placement: pads on-board, silk clear, no failed placements.
+    assert not _refs_with_pads_off_board(r4["pcb_path"])
+    assert not r4["steps"]["smart_placement"].get("failed_placements")
+    ov = _op_check_silkscreen_overlaps(str(pro).replace(".kicad_pro", ".kicad_pcb"))
+    assert not {o.get("silk_text") for o in ov.get("overlaps", [])} & {"SCL", "SDA", "BCLK"}
 
 
 def test_approval_gate_audio_remote(mcp_server, tmp_path):
