@@ -150,6 +150,18 @@ def test_recognized_part_names_maps_raw_to_canonical():
     assert names["SPH0645LM4H"] == "SPH0645"
 
 
+def test_recognized_part_names_conflicting_alias_raises():
+    # Two cards claiming the same name for different canonical keys is ambiguous
+    # (load order is filesystem-dependent) → loud error, not silent last-write-wins.
+    peripherals = {
+        "FOO": dict(_GOOD_PERIPHERAL, type="FOO", aliases=["SHARED"]),
+        "BAR": dict(_GOOD_PERIPHERAL, type="BAR", aliases=["SHARED"]),
+    }
+    with pytest.raises(CardError) as e:
+        recognized_part_names(peripherals)
+    assert "SHARED" in str(e.value)
+
+
 def test_recognized_part_names_hyphenated_raw_preserved_I1():
     # I1: the regex must match the RAW hyphenated name in firmware text, while
     # the canonical key (hyphen stripped) is what the resolver looks up. Both the

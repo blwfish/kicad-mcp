@@ -51,6 +51,11 @@ lib_id: Connector_Generic:Conn_01x05
 value: GY-521 (MPU-6050)
 footprint: Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical
 bus: I2C                      # null for non-bus devices
+aliases: ["MPU-6050", "GY521"]  # optional; alternate RAW names firmware may spell
+                              # (part-resolution matches these too, hyphen intact)
+serves: I2C                   # optional; DIRECTIONAL bus a part resolves onto for
+                              # part-resolution — I2C|SPI|I2S_IN|I2S_OUT|UART
+                              # (finer than `bus`: a mic serves I2S_IN, an amp I2S_OUT)
 module: true                 # breakout-module-header representation (carrier-board)
 roles:                        # firmware signal-role (UPPER) -> symbol pin NAME or NUMBER
   SDA: "4"

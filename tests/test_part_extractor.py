@@ -36,10 +36,29 @@ def _corpus(text: str, kind: str = "source", file: str = "x.cpp") -> FirmwareCor
     ("the inmp441 mic", ["INMP441"]),            # case-insensitive
     ("// using ICS-43434 here", ["ICS-43434"]),  # hyphen preserved (I1)
     ("XICS-43434", []),                          # leading word char — no boundary
+    ("ICS-43434-PDM variant", []),               # trailing hyphen → different part
+    ("PRE-INMP441", []),                         # leading hyphen → different part
 ])
 def test_word_boundary(line, hits):
     ev = extract_part_names(_corpus(line), _NAMES)
     assert [e.part_name for e in ev] == hits
+
+
+@pytest.mark.parametrize("corpus", [
+    FirmwareCorpus(entries=[]),                          # empty corpus
+    FirmwareCorpus(entries=[CorpusEntry("INMP441", "x", "source")]),
+])
+def test_extract_empty_recognized_names_is_empty(corpus):
+    # no recognized names → nothing to find, regardless of corpus content
+    assert extract_part_names(corpus, {}) == []
+
+
+def test_extract_prefix_name_not_overmatched():
+    # SPH0645 is a prefix of SPH0645LM4H; text has only the longer form. The
+    # shorter name must NOT match the longer token (lookahead rejects trailing \w).
+    names = {"SPH0645": "SPH0645", "SPH0645LM4H": "SPH0645LM4H"}
+    ev = extract_part_names(_corpus("part SPH0645LM4H here"), names)
+    assert [e.part_name for e in ev] == ["SPH0645LM4H"]
 
 
 def test_hyphenated_raw_maps_to_canonical_I1():
