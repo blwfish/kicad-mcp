@@ -1,5 +1,38 @@
 # SPEC — Board Re-Fit + Terminal Centering (autoplacer RFE)
 
+> ## ⚠️ 0. IMPLEMENTATION OUTCOME (2026-06-02) — Part A is a VERIFIED NO-OP on audio-remote
+>
+> Part A shipped (opt-in `board_refit`, default off) and is **correct + safe**, but the real-KiCad
+> eyeball gate (§12 step 6) showed the **motivating measurement in §1 was wrong**, so the size win
+> does not materialize on audio-remote:
+>
+> | quantity | §1 ASSUMED | **MEASURED** |
+> |---|---|---|
+> | square-cluster estimate `C` = √(area·2.5) | ~50 mm | **~42 mm** |
+> | actual placed cluster height | ~39 mm | **37.9 mm** ✓ |
+> | recoverable over-estimate (`C − cluster`) | ~8–12 mm | **~4 mm** |
+>
+> And that ~4 mm is **not free** — it is the slack the bottom terminal band needs. Empirically, across
+> the whole margin range: margin ≥ 2 mm → recomputed board ≥ original → **no-op guard declines**;
+> margin 0–1 mm → 2–4 mm tighter → pass-2 placement trips **`terminal_edge_crowded`** → **fit-fallback
+> reverts**. *No margin value yields a smaller, seating board.* The board was already minimal for its
+> terminals + corner holes; the "21 mm empty band" of §1 is **structural** (corner-hole reserve +
+> terminal depth + padding), not a recoverable cluster over-estimate.
+>
+> **Decision (Brian):** KEEP Part A — the mechanism is sound and would help a *denser-interior /
+> lighter-terminal* board where `C` genuinely over-estimates; on the current goldens it correctly
+> declines and ships a byte-identical board. The integration test
+> (`test_audio_remote_board_refit`) forces the pass-2 path (margin→0) and pins the **safety contract**
+> (every bridge step runs clean; fallback restores a valid routed board), NOT a shrink. Default margin
+> `_CLUSTER_ROUTING_MARGIN_MM = 2.0` (clean-decline on the goldens).
+>
+> A real bug was found + fixed en route: `_step_remove_mounting_holes` crashed on
+> `list(board.Zones())` (SWIG yields raw pointers) — fixed to the collect-then-remove pattern that
+> `pcb_autoroute._export_dsn` uses.
+>
+> Everything below is the original spec, preserved for the design rationale. Read §1's numbers as the
+> (wrong) hypothesis that motivated the work, corrected by this section.
+
 > **TWO independent, composing features** that together tighten + balance the auto-placed board:
 > **Part A — Board Re-Fit** (size the board to the *measured* cluster, not the over-estimate) and
 > **Part B — Terminal Centering** (center each edge's terminal group instead of packing it at one
