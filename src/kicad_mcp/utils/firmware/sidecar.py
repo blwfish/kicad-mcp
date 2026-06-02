@@ -103,6 +103,10 @@ class BoardSidecar:
     # the pipeline default (4 × M3). Defaults are resolved in pcb_pipeline, not
     # here — this layer only validates + carries the user's overrides.
     mounting_holes: Optional[dict[str, Any]] = None
+    # part-resolution overrides, keyed by bus stem (e.g. CMCA_MIC): the user
+    # DECLARES the bus's part {part: "INMP441"} when firmware doesn't name it (or
+    # to correct an assumption/ambiguity). Provenance "user" — wins over corpus.
+    bus_part_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
@@ -111,8 +115,10 @@ class BoardSidecar:
 # in load_sidecar — test_known_keys_all_accepted guards that all three agree.
 _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
-    "placement", "placement_hints", "mounting_holes",
+    "placement", "placement_hints", "mounting_holes", "bus_part_overrides",
 })
+
+_KNOWN_BUS_OVERRIDE_KEYS = frozenset({"part", "footprint"})
 
 _KNOWN_MOUNTING_HOLES_KEYS = frozenset({"count", "drill_mm", "inset_mm", "keepout_mm"})
 
@@ -237,7 +243,36 @@ def _validate(d: dict[str, Any]) -> list[str]:
     _validate_placement(d, errs)
     _validate_hints(d, errs)
     _validate_mounting_holes(d, errs)
+    _validate_bus_part_overrides(d, errs)
     return errs
+
+
+def _validate_bus_part_overrides(d: dict[str, Any], errs: list[str]) -> None:
+    """``bus_part_overrides`` is optional: a mapping of bus stem → ``{part?,
+    footprint?}`` (both strings). Whether ``part`` names a recognized device is
+    NOT checked here (that needs the card registry); an unrealizable part surfaces
+    as a ``part_unavailable`` gap at realization — consistent with the honest-gap
+    model, not a silent drop."""
+    ov = d.get("bus_part_overrides")
+    if ov is None:
+        return
+    if not isinstance(ov, dict):
+        errs.append("bus_part_overrides must be a mapping of bus-stem -> {part?, footprint?}")
+        return
+    for stem, spec in ov.items():
+        where = f"bus_part_overrides[{stem!r}]"
+        if not isinstance(spec, dict):
+            errs.append(f"{where}: must be a mapping")
+            continue
+        unknown = set(spec) - _KNOWN_BUS_OVERRIDE_KEYS
+        if unknown:
+            errs.append(f"{where}: unknown key(s) {sorted(unknown)} — "
+                        f"valid: {sorted(_KNOWN_BUS_OVERRIDE_KEYS)}")
+        if not spec:
+            errs.append(f"{where}: empty — give a part and/or footprint")
+        for k in ("part", "footprint"):
+            if k in spec and not (isinstance(spec[k], str) and spec[k].strip()):
+                errs.append(f"{where}: {k} must be a non-empty string")
 
 
 def load_sidecar(path: str) -> BoardSidecar:
@@ -261,6 +296,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         placement_hints=dict(data.get("placement_hints", {}) or {}),
         mounting_holes=(dict(data["mounting_holes"])
                         if data.get("mounting_holes") is not None else None),
+        bus_part_overrides=dict(data.get("bus_part_overrides", {}) or {}),
     )
 
 
@@ -344,6 +380,24 @@ def apply_sidecar(
     # Stored raw; normalized + warned-on at build time (build_pcb_from_schematic).
     for ref, hint in sidecar.placement_hints.items():
         intent.placement_hints[ref] = dict(hint)
+
+    # Part overrides (C7): the user DECLARES a bus's part. Stamps provenance
+    # "user" so the resolver (which runs after this) leaves it untouched. Applied
+    # before resolution, so the human's choice wins over corpus evidence. A stem
+    # matching no bus is surfaced as a gap, never silently ignored.
+    bus_by_name = {b.name: b for b in intent.buses}
+    for stem, spec in sidecar.bus_part_overrides.items():
+        bus = bus_by_name.get(stem)
+        if bus is None:
+            intent.gaps.append(Gap(
+                "bus_part_override_unknown",
+                f"board.yaml bus_part_overrides key {stem!r} matches no bus "
+                f"{sorted(bus_by_name)}; ignored."))
+            continue
+        if spec.get("part"):
+            bus.resolved_part = str(spec["part"])
+            bus.part_provenance = "user"
+            bus.part_is_assumption = False
 
     return intent
 
