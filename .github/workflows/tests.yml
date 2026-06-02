@@ -5,6 +5,10 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Run on the merge queue's temp refs so this workflow's required checks
+  # (pytest, check-mypy) gate queued PRs — without this the queue would wait
+  # forever for a check that never runs.
+  merge_group:
 
 permissions:
   contents: read
