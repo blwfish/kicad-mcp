@@ -190,10 +190,14 @@ def _step_create_pcb_and_outline(
         if not fp_specs:
             return {"error": "No footprints to estimate board size from"}
 
-        # Reserve the FULL corner clearance (center inset + keepout), not just the
-        # hole-center inset, so terminals laid out past the corner holes still fit.
+        # Axis-aware corner reservation (RFE #1): the FULL corner clearance along
+        # the terminal edge (so terminals laid out past the corner holes still
+        # fit), but only the hole-CENTER inset on the perpendicular depth axis
+        # (the holes sit in the empty corner columns there) — full clearance on
+        # both axes made the board taller than its content.
         size_result = _estimate_board_size(
-            fp_specs, corner_inset_mm=_hole_corner_clear(holes))
+            fp_specs, corner_inset_mm=_hole_corner_clear(holes),
+            corner_center_inset_mm=_hole_center_inset(holes))
         if "error" in size_result:
             return size_result
 
@@ -298,12 +302,25 @@ def _hole_corner_clear(holes: Optional[Dict[str, Any]]) -> float:
     """Along-edge distance from a board corner that a mounting hole occupies: the
     hole CENTER is ``inset`` in, and its keepout extends ``drill/2 + keepout``
     further, so the corner is occupied out to their sum. 0 when holes are off.
-    SINGLE SOURCE for both board sizing (reserve this much at each corner) and
-    terminal layout (start the run past it) — so the two never disagree and a
-    terminal can't land on a hole."""
+    SINGLE SOURCE for the ALONG-the-terminal-edge sizing reserve (a corner hole
+    eats the seating span) AND terminal layout (start the run past it) — so the
+    two never disagree and a terminal can't land on a hole. The PERPENDICULAR
+    (depth) sizing axis uses :func:`_hole_center_inset` instead (RFE #1)."""
     if not holes or holes.get("count", 0) <= 0:
         return 0.0
     return float(holes["inset_mm"] + holes["drill_mm"] / 2.0 + holes["keepout_mm"])
+
+
+def _hole_center_inset(holes: Optional[Dict[str, Any]]) -> float:
+    """Hole-CENTER inset from each edge — the depth-axis sizing reserve (RFE #1).
+    Perpendicular to the terminal edge the holes sit in the empty corner columns,
+    away from the centered cluster and the terminal band, so only the center inset
+    (not the full keepout clearance :func:`_hole_corner_clear` gives) needs
+    reserving; the full clearance there made the board taller than its content.
+    0 when holes are off (mirrors ``_hole_corner_clear`` so both vanish together)."""
+    if not holes or holes.get("count", 0) <= 0:
+        return 0.0
+    return float(holes["inset_mm"])
 
 
 def _step_add_mounting_holes(pcb_path: str, holes: Dict[str, Any]) -> Dict[str, Any]:
@@ -391,6 +408,7 @@ def _content_aware_size(
     padding: float = 2.0,
     spacing: float = 1.0,
     corner_inset_mm: float = 0.0,
+    corner_center_inset_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Content-aware board size (spec §4) — pure, unit-tested without KiCad.
 
@@ -413,11 +431,16 @@ def _content_aware_size(
     # Terminals: total span ALONG their shared edge, and their inward DEPTH.
     term_along = sum(max(c["w"], c["h"]) + spacing for c in terminals)
     term_depth = max((min(c["w"], c["h"]) for c in terminals), default=0.0)
-    # Corner mounting holes reserve real estate on every side (a hole sits inset
-    # from each edge with its own keepout), so both dimensions grow by 2×inset.
-    pad2 = 2 * padding + 2 * corner_inset_mm
-    along = max(cluster, term_along) + pad2             # edge must seat all terminals
-    depth = cluster + term_depth + pad2                 # cluster + one terminal band
+    # Corner mounting holes reserve real estate ASYMMETRICALLY (RFE #1). ALONG the
+    # terminal edge a corner hole's full keepout footprint eats into the seating
+    # span, so the edge grows by the FULL corner clearance at each end
+    # (``corner_inset_mm`` = inset + drill/2 + keepout). On the PERPENDICULAR depth
+    # axis the holes sit in the empty corner columns — clear of the centered cluster
+    # and the terminal band — so only the hole-CENTER inset is reserved
+    # (``corner_center_inset_mm`` = inset). Reserving the full clearance on BOTH
+    # axes (the old behaviour) made the board taller than its content needed.
+    along = max(cluster, term_along) + 2 * padding + 2 * corner_inset_mm
+    depth = cluster + term_depth + 2 * padding + 2 * corner_center_inset_mm
     if terminal_edge_horizontal:
         w, h = along, depth
     else:
@@ -427,6 +450,7 @@ def _content_aware_size(
 
 def _estimate_board_size(
     fp_specs: List[Dict[str, str]], corner_inset_mm: float = 0.0,
+    corner_center_inset_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Estimate board dimensions from footprint specs. The bridge script only
     MEASURES (body w/h + whether the ref is an edge terminal); the content-aware
@@ -508,7 +532,8 @@ print(json.dumps({"components": components, "errors": errors}))
     return {
         "status": "ok",
         "size": _content_aware_size(comps, terminal_edge_horizontal,
-                                    corner_inset_mm=corner_inset_mm),
+                                    corner_inset_mm=corner_inset_mm,
+                                    corner_center_inset_mm=corner_center_inset_mm),
         "antenna_side": antenna_side,
         "errors": result.get("errors", []),
         "error_count": len(result.get("errors", [])),

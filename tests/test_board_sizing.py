@@ -9,7 +9,11 @@ vertical axis swap, and the keepout-exclusion contract.
 """
 import math
 
-from kicad_mcp.tools.pcb_pipeline import _content_aware_size
+from kicad_mcp.tools.pcb_pipeline import (
+    _content_aware_size,
+    _hole_center_inset,
+    _hole_corner_clear,
+)
 
 
 def _wh(size):
@@ -86,15 +90,62 @@ def test_returns_single_size_not_a_list():
 # --- corner mounting-hole inset (Phase 5) ------------------------------------
 
 def test_corner_inset_zero_is_noop():
-    # inset=0 must equal the no-inset baseline — this is what keeps every other
-    # sizing test valid (the param defaults to 0.0).
+    # Both corner params default to 0.0 — that baseline must equal the no-inset
+    # case, which is what keeps every other sizing test valid.
     comp = [{"w": 10.0, "h": 10.0, "is_terminal": False}]
     assert _content_aware_size(comp, padding=2.0) == \
-        _content_aware_size(comp, padding=2.0, corner_inset_mm=0.0)
+        _content_aware_size(comp, padding=2.0, corner_inset_mm=0.0,
+                            corner_center_inset_mm=0.0)
 
 
-def test_corner_inset_grows_both_dims_by_2x():
+def test_corner_full_clearance_grows_only_the_terminal_edge_axis():
+    # RFE #1: corner_inset_mm (full keepout clearance) is reserved ALONG the
+    # terminal edge only. terminal_edge_horizontal=True -> along = WIDTH, so width
+    # grows by 2*3.5 and height is untouched. (2*3.5 is integral, so it survives
+    # the ceil() exactly.)
     comp = [{"w": 10.0, "h": 10.0, "is_terminal": False}]
     w0, h0 = _wh(_content_aware_size(comp, padding=2.0))
     w1, h1 = _wh(_content_aware_size(comp, padding=2.0, corner_inset_mm=3.5))
-    assert (w1, h1) == (w0 + 7, h0 + 7)   # 2 * 3.5 on each axis
+    assert (w1, h1) == (w0 + 7, h0)
+
+
+def test_corner_center_inset_grows_only_the_depth_axis():
+    # RFE #1: corner_center_inset_mm (hole-center inset) is reserved on the
+    # PERPENDICULAR depth axis only. horizontal -> depth = HEIGHT.
+    comp = [{"w": 10.0, "h": 10.0, "is_terminal": False}]
+    w0, h0 = _wh(_content_aware_size(comp, padding=2.0))
+    w1, h1 = _wh(_content_aware_size(comp, padding=2.0, corner_center_inset_mm=3.5))
+    assert (w1, h1) == (w0, h0 + 7)
+
+
+def test_corner_reservation_follows_the_terminal_edge_axis_on_swap():
+    # The seam that matters: full-clearance tracks the terminal edge, center-inset
+    # tracks the perpendicular — so on a VERTICAL terminal edge they swap onto the
+    # other dimensions (full -> HEIGHT, center -> WIDTH). Pins the axis mapping so
+    # a future edit can't silently transpose the two reservations.
+    comp = [{"w": 10.0, "h": 10.0, "is_terminal": False}]
+    w0, h0 = _wh(_content_aware_size(comp, padding=2.0,
+                                     terminal_edge_horizontal=False))
+    w1, h1 = _wh(_content_aware_size(comp, padding=2.0,
+                                     terminal_edge_horizontal=False,
+                                     corner_inset_mm=3.5, corner_center_inset_mm=1.5))
+    assert (w1, h1) == (w0 + 3, h0 + 7)   # center 2*1.5 -> width, full 2*3.5 -> height
+
+
+def test_hole_reserves_vanish_together_when_holes_off():
+    # Both reserves are 0 when there are no holes, so a no-holes board sizes
+    # exactly as if the params were never passed (mirrors each other's guard).
+    assert _hole_corner_clear(None) == 0.0
+    assert _hole_center_inset(None) == 0.0
+    off = {"count": 0, "inset_mm": 3.5, "drill_mm": 3.2, "keepout_mm": 1.5}
+    assert _hole_corner_clear(off) == 0.0
+    assert _hole_center_inset(off) == 0.0
+
+
+def test_center_inset_is_strictly_less_than_full_corner_clear():
+    # The whole point of RFE #1: the depth reserve (center inset) is smaller than
+    # the along reserve (full keepout clearance) — that gap is the height saved.
+    holes = {"count": 4, "inset_mm": 3.5, "drill_mm": 3.2, "keepout_mm": 1.5}
+    assert _hole_center_inset(holes) == 3.5
+    assert _hole_corner_clear(holes) == 3.5 + 1.6 + 1.5      # 6.6
+    assert _hole_center_inset(holes) < _hole_corner_clear(holes)
