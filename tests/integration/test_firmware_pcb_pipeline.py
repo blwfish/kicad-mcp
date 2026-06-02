@@ -779,6 +779,90 @@ def test_audio_remote_terminal_centering(mcp_server, tmp_path):
     assert not {o.get("silk_text") for o in ov.get("overlaps", [])} & {"SCL", "SDA", "BCLK"}
 
 
+def test_audio_remote_board_refit(mcp_server, tmp_path, monkeypatch):
+    """board.yaml ``board_refit: true`` runs the post-placement re-fit pass
+    (SPEC_Post_Placement_Board_Refit Part A). On audio-remote the board is already
+    minimal for its terminals (the square-cluster over-estimate is ~4mm and the
+    terminals need it), so re-fit is a VERIFIED NO-OP — it must NEVER ship a worse
+    board. This test FORCES the full pass-2 path (margin→0 makes the no-op guard
+    pass so the second placement actually runs) and pins the safety contract:
+
+    - every pass-2 bridge step (redraw outline, remove+re-add holes, re-place) runs
+      CLEAN on real KiCad — the re-fit declines only on the *placement-fit* check,
+      not a bridge error (this is the regression guard for the SWIG ``Zones()``
+      crash + the CreateEmptyBoard-wipe blocker);
+    - the board that SHIPS is the valid pass-1 board, restored byte-for-dims from
+      the .pass1 backup — routes, seats, pads on-board, holes at the 88x72 corners.
+
+    With the default margin the re-fit declines at the no-op guard instead; that
+    cheaper path is covered by the pure no-op-guard tests."""
+    import shutil
+
+    from kicad_mcp.tools import pcb_pipeline
+
+    # Force the pass-2 path: a 0 routing margin lets the recomputed board pass the
+    # no-op guard, so the second placement runs (then trips the terminal-crowding
+    # fallback — exactly the path that exercises every bridge step).
+    monkeypatch.setattr(pcb_pipeline, "_CLUSTER_ROUTING_MARGIN_MM", 0.0)
+
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+
+    fw = tmp_path / "fw"
+    fw.mkdir()
+    shutil.copy(AUDIO_CONFIG_H, fw / "config.h")
+    shutil.copy(AUDIO_CONFIG_H.parent / "platformio.ini", fw / "platformio.ini")
+    (fw / "board.yaml").write_text(
+        "terminal_distribution: multi_edge\n"
+        "board_refit: true\n"
+        "placement:\n"
+        "  CMCA_MIC: {locus: remote, device: INMP441}\n"
+        "  CMCA_PRESENCE: {locus: remote, device: LD2410}\n"
+        "  CMCA_I2S: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+        "  CMCA_I2S2: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+    )
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "ar.kicad_sch"
+    pro = tmp_path / "ar.kicad_pro"
+
+    assert design(operation="import_firmware", firmware_path=str(fw / "config.h"),
+                  out_path=str(intent))["status"] == "ok"
+    assert design(operation="expand_templates", intent_path=str(intent))["status"] == "ok"
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    r4 = build(project_path=str(pro), board_width_mm=0, board_height_mm=0,
+               autoroute_passes=4, export_gerbers=False, intent_path=str(intent))
+    assert r4["status"] == "ok"
+
+    refit = r4["steps"].get("board_refit")
+    assert refit is not None, "board_refit step did not run with the flag on"
+    # The pass-2 bridge steps must have run CLEAN — a decline here would mean either
+    # the no-op guard didn't pass (margin patch ineffective) or a bridge step crashed.
+    assert refit["status"] in {"fallback", "ok"}, f"unexpected re-fit status: {refit}"
+    if refit["status"] == "fallback":
+        # Reverted on the PLACEMENT-fit check, NOT a bridge error → every bridge step
+        # (redraw / remove+re-add holes / re-place) completed on real KiCad.
+        assert "fit regression" in refit["reason"], \
+            f"re-fit fell back on a bridge error, not a fit check: {refit['reason']}"
+
+    # Whatever re-fit decided, the SHIPPED board is valid + minimal-or-smaller.
+    _assert_mostly_routed(r4, max_unrouted=4)
+    assert not _refs_with_pads_off_board(r4["pcb_path"]), "pads off the board outline"
+    assert not r4["steps"]["smart_placement"].get("failed_placements"), \
+        "shipped board has failed placements — re-fit broke the fallback contract"
+    bw, bh = r4["board_width_mm"], r4["board_height_mm"]
+    if refit["status"] == "fallback":
+        assert (bw, bh) == (88, 72), f"fallback did not restore the pass-1 board: {bw}x{bh}"
+    else:  # committed (a future board where the cluster genuinely over-estimates)
+        assert bw * bh <= 88 * 72, f"committed re-fit grew the board: {bw}x{bh}"
+
+    # The .pass1 backup must be cleaned up on both paths (no litter next to the board).
+    assert not list(tmp_path.rglob("*.pass1")), "leftover .pass1 backup not cleaned up"
+
+
 def test_approval_gate_audio_remote(mcp_server, tmp_path):
     """Phase 7 approval gate: build with approved=False returns a proposal of the
     PLACED (unrouted) board — real terminal edges, holes, a tweakable board.yaml,

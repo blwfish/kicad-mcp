@@ -322,7 +322,7 @@ _HOLE_DEFAULTS = {"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.
 # routing channels at the cluster boundary. Empirical — tuned against the golden
 # routing counts at the eyeball/integration gate; bump it (less shrink) if routing
 # starves, never loosen the unrouted bound.
-_CLUSTER_ROUTING_MARGIN_MM = 3.0
+_CLUSTER_ROUTING_MARGIN_MM = 2.0
 
 
 class _RefitDecline(Exception):
@@ -554,19 +554,26 @@ def _ref_class(ref):
             return ref[:i]
     return ref
 
-removed_fps = []
-for fp in list(board.GetFootprints()):
+# Collect-then-remove (a SWIG container must NOT be mutated while iterating, and
+# wrapping it in list() yields raw SwigPyObjects with no typed methods — so iterate
+# cleanly first, gather, then Remove). Mirrors pcb_autoroute._export_dsn's zone loop.
+fps_to_remove = []
+for fp in board.GetFootprints():
     if _ref_class(fp.GetReference()) == "H":
-        removed_fps.append(fp.GetReference())
-        board.Remove(fp)
+        fps_to_remove.append(fp)
+removed_fps = [fp.GetReference() for fp in fps_to_remove]
+for fp in fps_to_remove:
+    board.Remove(fp)
 
 # Anonymous board-level rule-area keepouts (the hole keepouts). The antenna keepout
 # is a FOOTPRINT child zone, not board-level, so it is untouched here.
-removed_zones = 0
-for z in list(board.Zones()):
+zones_to_remove = []
+for z in board.Zones():
     if z.GetIsRuleArea():
-        board.Remove(z)
-        removed_zones += 1
+        zones_to_remove.append(z)
+removed_zones = len(zones_to_remove)
+for z in zones_to_remove:
+    board.Remove(z)
 
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "removed_footprints": removed_fps,
@@ -2331,6 +2338,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         if _refit and auto_sized and measured_comps:
             _backup = pcb_path + ".pass1"
             _old_w, _old_h = actual_width, actual_height
+            _refit_tel: Dict[str, Any] = {}   # telemetry, merged into every outcome
             try:
                 # Cluster = everything NOT edge-placed and NOT a mounting hole (§2:
                 # includes interior J6, excludes H* + the edge-anchored terminals).
@@ -2353,6 +2361,14 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     raise _RefitDecline("re-estimate failed: %s" % _resize.get("error"))
                 _new_w = _resize["size"]["width_mm"]
                 _new_h = _resize["size"]["height_mm"]
+                # Telemetry (data-capture rule: never drop the measurement) — merged
+                # into EVERY outcome record so a decline is diagnosable without a rebuild.
+                _refit_tel = {
+                    "cluster_w": _cw, "cluster_h": _ch, "margin_mm": _m,
+                    "from_width_mm": _old_w, "from_height_mm": _old_h,
+                    "recomputed_width_mm": _new_w, "recomputed_height_mm": _new_h,
+                    "recomputed_edge_of": _resize.get("edge_of"),
+                }
                 # No-op guard: meaningfully smaller on ≥1 axis, growing on neither.
                 _TOL = 1.0
                 _dw, _dh = _old_w - _new_w, _old_h - _new_h
@@ -2399,6 +2415,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
                 # Pass 2 won — adopt its board, dims, holes, placement, hints.
                 step = _step2
+                _record("smart_placement", _step2)   # returned telemetry = shipped board
                 actual_width, actual_height = _new_w, _new_h
                 hole_positions = _hole_positions2
                 clean_hints, hint_warnings = _clean2, _warns2
@@ -2416,7 +2433,8 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 except OSError:
                     pass
             except _RefitDecline as _decl:
-                _record("board_refit", {"status": "declined", "reason": str(_decl)})
+                _record("board_refit", {"status": "declined",
+                                        "reason": str(_decl), **_refit_tel})
             except Exception as _f:  # noqa: BLE001 — re-fit is an optimization, never fatal
                 # Restore the pass-1 board if we had committed, so disk matches `step`.
                 try:
