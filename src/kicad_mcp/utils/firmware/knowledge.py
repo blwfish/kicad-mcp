@@ -104,12 +104,8 @@ SPH0645 = {
     "ws": "WS", "bclk": "BCLK", "data": "DATA", "sel": "SEL",
     "vdd": "VDD", "gnd": "GND",
 }
-# Generic module headers (lib_id, footprint). Pin numbers are "1".."N".
-# (1x02 speaker headers are now synthesized via connectors.synthesize_connector.)
-HDR_1X4 = ("Connector_Generic:Conn_01x04",
-           "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical")
-HDR_1X5 = ("Connector_Generic:Conn_01x05",
-           "Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical")
+# (Module headers — 1x02 speaker / 1x04 I2C+UART — are now synthesized via
+# connectors.synthesize_connector, which owns symbol+footprint selection.)
 
 # --- verified footprints (speed-cal v5 BOM) for template-placed passives ---
 LIB_C = "Device:C"

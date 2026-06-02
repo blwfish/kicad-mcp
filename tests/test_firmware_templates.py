@@ -11,6 +11,7 @@ import pytest
 
 from kicad_mcp.utils.firmware import knowledge as K
 from kicad_mcp.utils.firmware.intent import (
+    Endpoint,
     build_intent,
     from_dict,
     to_dict,
@@ -284,14 +285,39 @@ def test_i2s_mic_instantiated():
 def test_i2c_device_header_with_pullups():
     i = _audio()
     ex = i2c_device_header(i, RefAllocator(i))
-    assert any(c.value.startswith("I2C") for c in ex.components)   # the header
+    hdr = next(c for c in ex.components if c.value.startswith("I2C"))   # the header
     assert len([c for c in ex.components if c.value == "4.7k"]) == 2
+    # Pad→net mapping is unchanged by the §4-helper rewrite (GND/+3V3 are taps on
+    # pads 1/2; SCL/SDA land on pads 3/4) — the identity property the rewrite must
+    # preserve so any built board / fixture stays valid.
+    assert ("GND", Endpoint(ref=hdr.ref, pin="1")) in ex.power
+    assert ("+3V3", Endpoint(ref=hdr.ref, pin="2")) in ex.power
+    scl = next(n for n in ex.new_nets if n.name == "I2C0_SCL")
+    sda = next(n for n in ex.new_nets if n.name == "I2C0_SDA")
+    assert Endpoint(ref=hdr.ref, pin="3") in scl.endpoints
+    assert Endpoint(ref=hdr.ref, pin="4") in sda.endpoints
+    # Item #4: module header now carries a per-pad silk legend (was the last
+    # connector class bypassing the legend path). positions[i] labels pad i+1.
+    legend = next(lg for lg in ex.legends if lg.ref == hdr.ref)
+    assert legend.positions == ["GND", "+3V3", "SCL", "SDA"]
+    assert legend.device == "I2C0"
 
 def test_uart_device_header():
     i = _audio()
     ex = uart_device_header(i, RefAllocator(i))
-    assert any(c.value.startswith("UART") for c in ex.components)
+    hdr = next(c for c in ex.components if c.value.startswith("UART"))
     assert {n.name for n in ex.new_nets} == {"UART0_RX", "UART0_TX"}
+    # Same pad→net identity check as the I2C header (pads 1/2 = GND/+3V3 taps,
+    # 3/4 = RX/TX).
+    assert ("GND", Endpoint(ref=hdr.ref, pin="1")) in ex.power
+    assert ("+3V3", Endpoint(ref=hdr.ref, pin="2")) in ex.power
+    rx = next(n for n in ex.new_nets if n.name == "UART0_RX")
+    tx = next(n for n in ex.new_nets if n.name == "UART0_TX")
+    assert Endpoint(ref=hdr.ref, pin="3") in rx.endpoints
+    assert Endpoint(ref=hdr.ref, pin="4") in tx.endpoints
+    legend = next(lg for lg in ex.legends if lg.ref == hdr.ref)
+    assert legend.positions == ["GND", "+3V3", "RX", "TX"]
+    assert legend.device == "UART0"
 
 def test_usb_programming_skipped_for_native_usb():
     # ESP32-S3 has native USB -> no CP2102 bridge.

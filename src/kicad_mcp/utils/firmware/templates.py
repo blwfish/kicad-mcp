@@ -377,11 +377,6 @@ def usb_programming(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
-def _header(alloc: RefAllocator, hdr: tuple[str, str], value: str) -> Peripheral:
-    return Peripheral(ref=alloc.next("J"), type="HDR", lib_id=hdr[0], value=value,
-                      footprint=hdr[1], origin="template")
-
-
 def _decide_part(bus: Bus, template_part: str, ex: Expansion) -> tuple[bool, str]:
     """Part-resolution decision (C6) for a bus whose on-board template builds
     ``template_part``. Returns ``(place, origin)`` and stamps the bus + emits the
@@ -569,8 +564,10 @@ def _emit_remote_mic(
 
 def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     """Each I2C bus with no recognized IC -> a 4-pin module header
-    (GND/VCC/SCL/SDA) + 4.7k pull-ups. Covers the OLED and any unknown I2C
-    module."""
+    (GND/+3V3/SCL/SDA) + 4.7k pull-ups. Covers the OLED and any unknown I2C
+    module. Routed through the §4 ``_emit_connector`` helper so the header carries
+    a per-pad silk legend like every other synthesized connector — the module
+    header was the last connector class still bypassing the legend path."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
@@ -582,22 +579,29 @@ def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         sda_g, scl_g = bus.signals.get("SDA"), bus.signals.get("SCL")
         if sda_g is None or scl_g is None:
             continue
-        j = _header(alloc, K.HDR_1X4, f"I2C{n}")
-        r_sda, r_scl = _res(alloc, "4.7k", K.FP_R_0603), _res(alloc, "4.7k", K.FP_R_0603)
-        ex.components += [j, r_sda, r_scl]
-        # OLED / I2C breakout module header → keep interior near its bus, not
-        # forced to a board edge by the connector heuristic.
-        ex.placement_hints[j.ref] = {"edge": "none"}
-        ex.power += [("GND", Endpoint(ref=j.ref, pin="1")),
-                     ("+3V3", Endpoint(ref=j.ref, pin="2")),
-                     ("+3V3", Endpoint(ref=r_sda.ref, pin="2")),
-                     ("+3V3", Endpoint(ref=r_scl.ref, pin="2"))]
         scl_net, sda_net = f"I2C{n}_SCL", f"I2C{n}_SDA"
+        # Positions in pad order 1..4 (GND, +3V3, SCL, SDA) — same pinout the bare
+        # header used. The rails route to ``ex.power`` as taps; the signal pads come
+        # back in ``sig`` for the passive nets below. ``_emit_connector`` also adds
+        # the connector to ``ex.components``, stamps the interior ``edge:none`` hint,
+        # and appends the silk legend. OLED / I2C breakout → interior, near its bus.
+        positions = [
+            ConnectorPosition("GND", "GND"),
+            ConnectorPosition("+3V3", "+3V3"),
+            ConnectorPosition(scl_net, "SCL"),
+            ConnectorPosition(sda_net, "SDA"),
+        ]
+        j, sig = _emit_connector(ex, alloc, positions, device=f"I2C{n}",
+                                 connector_type="pin_header")
+        r_sda, r_scl = _res(alloc, "4.7k", K.FP_R_0603), _res(alloc, "4.7k", K.FP_R_0603)
+        ex.components += [r_sda, r_scl]
+        ex.power += [("+3V3", Endpoint(ref=r_sda.ref, pin="2")),
+                     ("+3V3", Endpoint(ref=r_scl.ref, pin="2"))]
         ex.new_nets += [
             _passive_net(scl_net, Endpoint(ref=mcu, gpio=scl_g),
-                         Endpoint(ref=j.ref, pin="3"), Endpoint(ref=r_scl.ref, pin="1")),
+                         sig[scl_net], Endpoint(ref=r_scl.ref, pin="1")),
             _passive_net(sda_net, Endpoint(ref=mcu, gpio=sda_g),
-                         Endpoint(ref=j.ref, pin="4"), Endpoint(ref=r_sda.ref, pin="1")),
+                         sig[sda_net], Endpoint(ref=r_sda.ref, pin="1")),
         ]
         n += 1
     return ex
@@ -625,19 +629,26 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
             _emit_remote_uart(ex, alloc, mcu, n, rx_g, tx_g, pl)
             n += 1
             continue
-        j = _header(alloc, K.HDR_1X4, f"UART{n}")
+        rx_net, tx_net = f"UART{n}_RX", f"UART{n}_TX"
+        # Positions in pad order 1..4 (GND, +3V3, RX, TX) — same pinout the bare
+        # header used. ``_emit_connector`` adds the connector, taps the rails to
+        # power, stamps the interior ``edge:none`` hint, and emits the silk legend
+        # (matches i2c_device_header and _emit_remote_uart's RX/TX labels).
+        positions = [
+            ConnectorPosition("GND", "GND"),
+            ConnectorPosition("+3V3", "+3V3"),
+            ConnectorPosition(rx_net, "RX"),
+            ConnectorPosition(tx_net, "TX"),
+        ]
+        j, sig = _emit_connector(ex, alloc, positions, device=f"UART{n}",
+                                 connector_type="pin_header")
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
-        ex.components += [j, c]
-        # UART breakout module header → keep interior near its IC, not forced to a
-        # board edge by the connector heuristic (matches i2c_device_header).
-        ex.placement_hints[j.ref] = {"edge": "none"}
-        ex.power += [("GND", Endpoint(ref=j.ref, pin="1")),
-                     ("+3V3", Endpoint(ref=j.ref, pin="2")),
-                     ("+3V3", Endpoint(ref=c.ref, pin="1")),
+        ex.components += [c]
+        ex.power += [("+3V3", Endpoint(ref=c.ref, pin="1")),
                      ("GND", Endpoint(ref=c.ref, pin="2"))]
         ex.new_nets += [
-            _passive_net(f"UART{n}_RX", Endpoint(ref=mcu, gpio=rx_g), Endpoint(ref=j.ref, pin="3")),
-            _passive_net(f"UART{n}_TX", Endpoint(ref=mcu, gpio=tx_g), Endpoint(ref=j.ref, pin="4")),
+            _passive_net(rx_net, Endpoint(ref=mcu, gpio=rx_g), sig[rx_net]),
+            _passive_net(tx_net, Endpoint(ref=mcu, gpio=tx_g), sig[tx_net]),
         ]
         n += 1
     return ex
