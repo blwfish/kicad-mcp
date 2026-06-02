@@ -17,6 +17,7 @@ from kicad_mcp.utils.firmware.cards import (
     CardError,
     compute_address_straps,
     load_cards,
+    recognized_part_names,
     validate_mcu_card,
     validate_peripheral_card,
 )
@@ -104,6 +105,63 @@ def test_address_strap_validation(strap, ok):
     card = dict(_GOOD_PERIPHERAL, config={"address_strap": strap})
     errs = validate_peripheral_card(card)
     assert (errs == []) is ok
+
+
+# --- aliases / serves (part-resolution registry fields) ----------------------
+
+@pytest.mark.parametrize("aliases,ok", [
+    (None, True),                       # optional — absent is fine
+    ([], True),                         # empty list is fine
+    (["SPH0645LM4H"], True),            # one alias
+    (["A", "B"], True),                 # several
+    ("SPH0645LM4H", False),             # a bare string is not a list
+    ([""], False),                      # empty-string alias
+    ([1], False),                       # non-string alias
+])
+def test_aliases_validation(aliases, ok):
+    card = dict(_GOOD_PERIPHERAL, aliases=aliases)
+    assert (validate_peripheral_card(card) == []) is ok
+
+
+@pytest.mark.parametrize("serves,ok", [
+    (None, True),                       # optional
+    ("I2C", True),
+    ("I2S_IN", True),                   # directional — the finer vocabulary
+    ("I2S_OUT", True),
+    ("I2S", False),                     # coarse bus name is NOT a valid serves
+    ("SDIO", False),                    # unknown
+])
+def test_serves_validation(serves, ok):
+    card = dict(_GOOD_PERIPHERAL, serves=serves)
+    assert (validate_peripheral_card(card) == []) is ok
+
+
+def test_recognized_part_names_maps_raw_to_canonical():
+    peripherals = {
+        "INMP441": dict(_GOOD_PERIPHERAL, type="INMP441"),
+        "SPH0645": dict(_GOOD_PERIPHERAL, type="SPH0645",
+                        aliases=["SPH0645LM4H"]),
+    }
+    names = recognized_part_names(peripherals)
+    # raw type names are present as keys, mapping to their canonical lookup key
+    assert names["INMP441"] == "INMP441"
+    assert names["SPH0645"] == "SPH0645"
+    # aliases are recognized too, mapping to the card's canonical key
+    assert names["SPH0645LM4H"] == "SPH0645"
+
+
+def test_recognized_part_names_hyphenated_raw_preserved_I1():
+    # I1: the regex must match the RAW hyphenated name in firmware text, while
+    # the canonical key (hyphen stripped) is what the resolver looks up. Both the
+    # hyphenated raw and its de-hyphenated alias must collide to one card key.
+    peripherals = {
+        "ICS43434": dict(_GOOD_PERIPHERAL, type="ICS-43434",
+                         aliases=["ICS43434"]),
+    }
+    names = recognized_part_names(peripherals)
+    assert "ICS-43434" in names                 # raw, hyphen intact for matching
+    assert names["ICS-43434"] == "ICS43434"      # canonical lookup key
+    assert names["ICS43434"] == "ICS43434"       # alias → same canonical key
 
 
 # --- packaged library loads + the migrated 6 entries are present --------------
