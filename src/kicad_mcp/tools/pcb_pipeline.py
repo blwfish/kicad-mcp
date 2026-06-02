@@ -19,7 +19,11 @@ from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
-from kicad_mcp.utils.placement.edge_terminal import EDGE_TERMINAL_HELPER, normalize_hint
+from kicad_mcp.utils.placement.edge_terminal import (
+    EDGE_TERMINAL_HELPER,
+    distribute_terminals,
+    normalize_hint,
+)
 from kicad_mcp.utils.placement.wire_entry import WIRE_ENTRY, WIRE_ENTRY_HELPER
 
 logger = logging.getLogger(__name__)
@@ -171,15 +175,21 @@ def _step_create_pcb_and_outline(
     height_mm: float,
     components: Dict[str, Dict],
     holes: Optional[Dict[str, Any]] = None,
+    terminal_distribution: str = "single_edge",
 ) -> Dict[str, Any]:
     """Step 2: Create PCB file and add board outline.
 
     If width/height are 0, auto-estimates from component footprints. When
     ``holes`` requests corner mounting holes, the estimate reserves a
     per-side inset so the holes don't crowd the content (spec §3 / Phase 5).
+    ``terminal_distribution`` ("single_edge"/"multi_edge") chooses whether the
+    auto-size spreads field terminals across the side edges; the resulting
+    per-terminal ``edge_of`` is returned for the caller to feed to placement.
     """
     # Build footprint list for size estimation if needed
     auto_sized = False
+    edge_of: Dict[str, str] = {}
+    antenna_side: Optional[str] = None
     if width_mm <= 0 or height_mm <= 0:
         fp_specs = []
         for ref, info in components.items():
@@ -197,13 +207,16 @@ def _step_create_pcb_and_outline(
         # both axes made the board taller than its content.
         size_result = _estimate_board_size(
             fp_specs, corner_inset_mm=_hole_corner_clear(holes),
-            corner_center_inset_mm=_hole_center_inset(holes))
+            corner_center_inset_mm=_hole_center_inset(holes),
+            terminal_distribution=terminal_distribution)
         if "error" in size_result:
             return size_result
 
         chosen = size_result["size"]   # content-aware (layout fixes the aspect)
         width_mm = chosen["width_mm"]
         height_mm = chosen["height_mm"]
+        edge_of = size_result.get("edge_of", {})        # per-terminal edge → hints
+        antenna_side = size_result.get("antenna_side")  # for the frame-mismatch guard
         auto_sized = True
 
     # Create the PCB file
@@ -270,6 +283,8 @@ print(json.dumps({"status": "ok"}))
         "width_mm": width_mm,
         "height_mm": height_mm,
         "auto_sized": auto_sized,
+        "edge_of": edge_of,          # {} unless auto-sized; multi_edge → spans 2-3 edges
+        "antenna_side": antenna_side,
     }
 
 
@@ -450,7 +465,8 @@ def _content_aware_size(
 
 def _estimate_board_size(
     fp_specs: List[Dict[str, str]], corner_inset_mm: float = 0.0,
-    corner_center_inset_mm: float = 0.0,
+    corner_center_inset_mm: float = 0.0, terminal_distribution: str = "single_edge",
+    side_silk_gap_mm: float = 2.5,
 ) -> Dict[str, Any]:
     """Estimate board dimensions from footprint specs. The bridge script only
     MEASURES (body w/h + whether the ref is an edge terminal); the content-aware
@@ -513,6 +529,7 @@ for spec in fp_specs:
         em = {"left": abs(dxn), "right": abs(dxp), "top": abs(dyn), "bottom": abs(dyp)}
         keepout_side = max(em, key=em.get)
     components.append({"footprint": fp_name, "w": w, "h": h,
+                       "ref": spec.get("ref", ""),
                        "is_terminal": _is_terminal(spec.get("ref", "")),
                        "keepout_side": keepout_side})
 
@@ -525,15 +542,22 @@ print(json.dumps({"components": components, "errors": errors}))
     comps = result.get("components", [])
     if not comps:
         return {"error": "No valid footprints found", "details": result.get("errors", [])}
-    # Terminal edge = opposite the antenna, on the SAME axis. Antenna top/bottom
-    # -> terminals on a horizontal (top/bottom) edge -> they fit along WIDTH.
+    # Distribute terminals across edge(s) — the SINGLE source for BOTH the board
+    # size and the per-terminal edge assignment (single_edge collapses to today's
+    # _content_aware_size; the regression-lock test pins this). The returned
+    # ``edge_of`` is threaded to placement as {"edge": E} hints (parent-side, so it
+    # never re-encodes the rule in the embedded script — Rule 3).
     antenna_side = next((c["keepout_side"] for c in comps if c.get("keepout_side")), None)
-    terminal_edge_horizontal = antenna_side in ("top", "bottom") if antenna_side else True
+    dist = distribute_terminals(
+        comps, antenna_side, mode=terminal_distribution,
+        corner_inset_mm=corner_inset_mm,
+        corner_center_inset_mm=corner_center_inset_mm,
+        side_silk_gap_mm=side_silk_gap_mm)
     return {
         "status": "ok",
-        "size": _content_aware_size(comps, terminal_edge_horizontal,
-                                    corner_inset_mm=corner_inset_mm,
-                                    corner_center_inset_mm=corner_center_inset_mm),
+        "size": dist["size"],
+        "edge_of": dist["edge_of"],
+        "primary_edge": dist["primary_edge"],
         "antenna_side": antenna_side,
         "errors": result.get("errors", []),
         "error_count": len(result.get("errors", [])),
@@ -2016,15 +2040,25 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 f"Board sized to {eff_width_mm}x{eff_height_mm}mm from design intent"
             )
 
-        # Step 2: Create PCB + board outline (sizing reserves the hole inset)
+        # Step 2: Create PCB + board outline (sizing reserves the hole inset).
+        # terminal_distribution (board.yaml, default single_edge) decides whether the
+        # auto-size spreads field terminals across the side edges.
+        _term_dist = "single_edge"
+        if design_intent is not None:
+            _term_dist = design_intent.source.get("terminal_distribution", "single_edge")
         step = _step_create_pcb_and_outline(
             pcb_path, eff_width_mm, eff_height_mm, components, holes=holes,
+            terminal_distribution=_term_dist,
         )
         if not _record("create_pcb", step):
             return pipeline_result
 
         actual_width = step["width_mm"]
         actual_height = step["height_mm"]
+        # Per-terminal edge assignment from the distributor (empty unless auto-sized).
+        # Passed to placement as the LOWEST-priority {"edge": E} hints below.
+        terminal_edge_of = step.get("edge_of") or {}
+        antenna_side_est = step.get("antenna_side")
         pipeline_result["board_width_mm"] = actual_width
         pipeline_result["board_height_mm"] = actual_height
         if step.get("auto_sized"):
@@ -2060,11 +2094,18 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         pipeline_result["pads_assigned"] = step.get("pads_assigned", 0)
 
-        # Merge placement hints: intent-carried first, explicit param wins.
-        # normalize_hint (via _merge_placement_hints) is the single validation
-        # source — invalid keys/values are dropped + surfaced, never substituted.
+        # Merge placement hints, lowest → highest priority:
+        #   auto terminal distribution  <  intent-carried  <  explicit param.
+        # The distributor's {ref: edge} is the BASE so an explicit user/intent hint
+        # on a terminal still wins; terminals with no hint fall to the script's
+        # antenna-opposite rule (single_edge boards pass NO distribution hints, so
+        # they stay byte-identical). normalize_hint validates every directive.
+        _dist_hints = {ref: {"edge": e} for ref, e in terminal_edge_of.items()}
+        _base_hints = dict(_dist_hints)
+        if design_intent is not None and design_intent.placement_hints:
+            _base_hints.update(design_intent.placement_hints)
         clean_hints, hint_warnings = _merge_placement_hints(
-            design_intent.placement_hints if design_intent is not None else None,
+            _base_hints,
             placement_hints,
         )
         # Mounting holes are physical fixtures we already placed — pin them at the
@@ -2093,6 +2134,22 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             for d in (step.get("placement_decisions") or [])
             if d.get("event") == "rotation_chosen" and d.get("edge")
         }
+
+        # antenna_frame_mismatch guard (SPEC §3.1): the distributor assigned side
+        # edges relative to the antenna it derived in the FOOTPRINT 0° frame
+        # (antenna_side_est); the placer overhangs the antenna on some board edge in
+        # the POST-ROTATION frame (the keepout_overhang decision). They agree on
+        # every golden — if they ever diverge the distribution is relative to the
+        # wrong axis, so surface it loudly rather than silently mis-placing.
+        if antenna_side_est:
+            _placed_antenna = next(
+                (d["edge"] for d in (step.get("placement_decisions") or [])
+                 if d.get("event") == "keepout_overhang" and d.get("edge")), None)
+            if _placed_antenna and _placed_antenna != antenna_side_est:
+                pipeline_result.setdefault("warnings", []).append(
+                    f"antenna_frame_mismatch: distributor sized for antenna on "
+                    f"{antenna_side_est!r} but the placer overhung it on "
+                    f"{_placed_antenna!r} — terminal distribution may be off-axis")
 
         def _run_silk_legends() -> None:
             """Silk-legend pass (single source — used by the approval gate AND the
