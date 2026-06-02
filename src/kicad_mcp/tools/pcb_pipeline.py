@@ -170,10 +170,13 @@ def _step_create_pcb_and_outline(
     width_mm: float,
     height_mm: float,
     components: Dict[str, Dict],
+    holes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Step 2: Create PCB file and add board outline.
 
-    If width/height are 0, auto-estimates from component footprints.
+    If width/height are 0, auto-estimates from component footprints. When
+    ``holes`` requests corner mounting holes, the estimate reserves a
+    per-side inset so the holes don't crowd the content (spec §3 / Phase 5).
     """
     # Build footprint list for size estimation if needed
     auto_sized = False
@@ -187,7 +190,9 @@ def _step_create_pcb_and_outline(
         if not fp_specs:
             return {"error": "No footprints to estimate board size from"}
 
-        size_result = _estimate_board_size(fp_specs)
+        inset = (holes["inset_mm"]
+                 if holes and holes.get("count", 0) > 0 else 0.0)
+        size_result = _estimate_board_size(fp_specs, corner_inset_mm=inset)
         if "error" in size_result:
             return size_result
 
@@ -266,7 +271,104 @@ print(json.dumps({"status": "ok"}))
 # Designator classes that get EDGE placement (so they reserve perimeter, not
 # interior area). SINGLE SOURCE — passed into both embedded scripts (the size
 # estimator and the smart-placement loop) as a param so the two can't drift.
-_EDGE_DESIGNATOR_CLASSES = ("J", "SW", "H", "USB")
+# NOTE: "H" (mounting holes) is intentionally NOT here as of v1.1 — holes are
+# corner FIXTURES placed by _step_add_mounting_holes and pinned with `fixed`
+# hints, not edge-placed connectors. (A stray H from a schematic symbol falls to
+# the interior tier; the firmware front end never emits one.)
+_EDGE_DESIGNATOR_CLASSES = ("J", "SW", "USB")
+
+
+# Corner mounting-hole defaults (board.yaml `mounting_holes:` overrides these;
+# see sidecar._validate_mounting_holes). count=0 disables holes entirely.
+_HOLE_DEFAULTS = {"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5}
+
+
+def _resolve_mounting_holes(mh_source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge a board.yaml ``mounting_holes`` block over the defaults → one
+    canonical dict. Pure (no pcbnew). ``None`` (no sidecar / no key) yields the
+    full default (4 × M3); ``{}`` likewise; ``count: 0`` disables holes."""
+    holes = dict(_HOLE_DEFAULTS)
+    if mh_source:
+        holes.update({k: mh_source[k] for k in _HOLE_DEFAULTS if k in mh_source})
+    return holes
+
+
+def _step_add_mounting_holes(pcb_path: str, holes: Dict[str, Any]) -> Dict[str, Any]:
+    """Add corner M3 mounting holes + a no-copper keepout per hole.
+
+    Runs after the outline, before placement, so the placer (fed the holes as
+    ``fixed`` hints by the caller) keeps clear of the corners. Holes are
+    ``MountingHole_3.2mm_M3`` footprints (no net); each gets a square rule-area
+    keepout (no tracks/vias/pads) of half-extent ``drill/2 + keepout_mm`` on both
+    copper layers. ``count`` 4 = all corners, 2 = TL+BR diagonal, 0 = skip.
+
+    All pcbnew calls here were verified on KiCad 9.0.9 AND 10.0.3: the plain M3
+    footprint name, ``LSET().AddLayer`` (the ``&`` operator and 2-arg ctor both
+    fail), and the ``Outline().NewOutline()/Append`` zone build.
+    """
+    count = holes.get("count", 0)
+    if count == 0:
+        return {"status": "ok", "holes_added": 0, "skipped": "count=0"}
+
+    script = """
+import pcbnew, json, os, sys
+
+params = json.loads(open(sys.argv[1]).read())
+""" + LIB_SEARCH_HELPER + """
+board = pcbnew.LoadBoard(params["pcb_path"])
+lib = find_lib("MountingHole")
+if not lib:
+    print(json.dumps({"error": "MountingHole footprint library not found"}))
+    sys.exit(0)
+
+bb = board.GetBoardEdgesBoundingBox()
+inset = pcbnew.FromMM(params["inset_mm"])
+x0, y0, x1, y1 = bb.GetX(), bb.GetY(), bb.GetRight(), bb.GetBottom()
+# TL, TR, BR, BL — clockwise from top-left.
+all_corners = [(x0 + inset, y0 + inset), (x1 - inset, y0 + inset),
+               (x1 - inset, y1 - inset), (x0 + inset, y1 - inset)]
+corners = all_corners if params["count"] == 4 else [all_corners[0], all_corners[2]]
+
+half = pcbnew.FromMM(params["drill_mm"] / 2.0 + params["keepout_mm"])
+positions = []
+for i, (cx, cy) in enumerate(corners):
+    fp = pcbnew.FootprintLoad(lib, "MountingHole_3.2mm_M3")
+    if fp is None:
+        print(json.dumps({"error": "MountingHole_3.2mm_M3 not found"}))
+        sys.exit(0)
+    board.Add(fp)
+    fp.SetReference("H%d" % (i + 1))
+    fp.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
+    # No-copper keepout (square) so routing leaves the screw-head annulus clear.
+    z = pcbnew.ZONE(board)
+    z.SetIsRuleArea(True)
+    z.SetDoNotAllowTracks(True)
+    z.SetDoNotAllowVias(True)
+    z.SetDoNotAllowPads(True)
+    ls = pcbnew.LSET()
+    ls.AddLayer(pcbnew.F_Cu)
+    ls.AddLayer(pcbnew.B_Cu)
+    z.SetLayerSet(ls)
+    outline = z.Outline()
+    outline.NewOutline()
+    for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half)):
+        outline.Append(int(cx + dx), int(cy + dy))
+    board.Add(z)
+    positions.append({"ref": "H%d" % (i + 1),
+                      "x_mm": round(pcbnew.ToMM(int(cx)), 3),
+                      "y_mm": round(pcbnew.ToMM(int(cy)), 3)})
+
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok", "holes_added": len(positions),
+                  "positions": positions}))
+"""
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "count": count,
+        "drill_mm": holes["drill_mm"],
+        "inset_mm": holes["inset_mm"],
+        "keepout_mm": holes["keepout_mm"],
+    }, timeout=60.0)
 
 
 def _content_aware_size(
@@ -275,6 +377,7 @@ def _content_aware_size(
     routing_factor: float = 2.5,
     padding: float = 2.0,
     spacing: float = 1.0,
+    corner_inset_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Content-aware board size (spec §4) — pure, unit-tested without KiCad.
 
@@ -297,8 +400,11 @@ def _content_aware_size(
     # Terminals: total span ALONG their shared edge, and their inward DEPTH.
     term_along = sum(max(c["w"], c["h"]) + spacing for c in terminals)
     term_depth = max((min(c["w"], c["h"]) for c in terminals), default=0.0)
-    along = max(cluster, term_along) + 2 * padding      # edge must seat all terminals
-    depth = cluster + term_depth + 2 * padding          # cluster + one terminal band
+    # Corner mounting holes reserve real estate on every side (a hole sits inset
+    # from each edge with its own keepout), so both dimensions grow by 2×inset.
+    pad2 = 2 * padding + 2 * corner_inset_mm
+    along = max(cluster, term_along) + pad2             # edge must seat all terminals
+    depth = cluster + term_depth + pad2                 # cluster + one terminal band
     if terminal_edge_horizontal:
         w, h = along, depth
     else:
@@ -306,7 +412,9 @@ def _content_aware_size(
     return {"width_mm": math.ceil(w), "height_mm": math.ceil(h)}
 
 
-def _estimate_board_size(fp_specs: List[Dict[str, str]]) -> Dict[str, Any]:
+def _estimate_board_size(
+    fp_specs: List[Dict[str, str]], corner_inset_mm: float = 0.0,
+) -> Dict[str, Any]:
     """Estimate board dimensions from footprint specs. The bridge script only
     MEASURES (body w/h + whether the ref is an edge terminal); the content-aware
     math lives in the pure :func:`_content_aware_size` so it is testable and
@@ -386,7 +494,8 @@ print(json.dumps({"components": components, "errors": errors}))
     terminal_edge_horizontal = antenna_side in ("top", "bottom") if antenna_side else True
     return {
         "status": "ok",
-        "size": _content_aware_size(comps, terminal_edge_horizontal),
+        "size": _content_aware_size(comps, terminal_edge_horizontal,
+                                    corner_inset_mm=corner_inset_mm),
         "antenna_side": antenna_side,
         "errors": result.get("errors", []),
         "error_count": len(result.get("errors", [])),
@@ -1604,6 +1713,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         export_gerbers: bool = False,
         intent_path: str = "",
         placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
+        add_mounting_holes: bool = True,
     ) -> Dict[str, Any]:
         """Build a complete routed PCB from a KiCad schematic in one step.
 
@@ -1635,6 +1745,11 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 Its ``source.board_size_mm`` (if any) sizes the board when no
                 explicit dimensions are given, and its ``placement_hints`` feed
                 the per-ref placement overrides below.
+            add_mounting_holes: Add corner M3 mounting holes (default True). The
+                count/drill/inset/keepout come from the design intent's
+                ``source.mounting_holes`` (board.yaml) or default to 4 × M3; pass
+                False to suppress holes without a board.yaml (or set
+                ``mounting_holes.count: 0`` there).
             placement_hints: Per-ref PCB placement overrides, keyed by KiCad
                 reference. Each value is a subset of ``{edge, rotation, fixed}``
                 — ``edge`` ∈ {top,bottom,left,right,none}, ``rotation`` ∈
@@ -1697,6 +1812,16 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                     f"Could not load intent {intent_path} (non-fatal): {e}"
                 )
 
+        # Corner mounting holes (firmware-blind; board.yaml `mounting_holes:` →
+        # intent.source). Resolved before sizing so the auto-estimate can reserve
+        # the corner inset, and before placement so the holes are fixtures.
+        holes = _resolve_mounting_holes(
+            design_intent.source.get("mounting_holes")
+            if design_intent is not None else None
+        )
+        if not add_mounting_holes:        # caller escape hatch (no board.yaml needed)
+            holes = {**holes, "count": 0}
+
         # Board size precedence: explicit args (>0) > intent source.board_size_mm
         # > auto-estimate (resolved per axis; see _resolve_board_size).
         eff_width_mm, eff_height_mm, _bsz_from_intent = _resolve_board_size(
@@ -1708,9 +1833,9 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 f"Board sized to {eff_width_mm}x{eff_height_mm}mm from design intent"
             )
 
-        # Step 2: Create PCB + board outline
+        # Step 2: Create PCB + board outline (sizing reserves the hole inset)
         step = _step_create_pcb_and_outline(
-            pcb_path, eff_width_mm, eff_height_mm, components,
+            pcb_path, eff_width_mm, eff_height_mm, components, holes=holes,
         )
         if not _record("create_pcb", step):
             return pipeline_result
@@ -1723,6 +1848,18 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             pipeline_result.setdefault("warnings", []).append(
                 f"Board auto-sized to {actual_width}x{actual_height}mm"
             )
+
+        # Step 2b: Corner mounting holes (fixtures). Added to the board now; the
+        # placer is told to pin them (fixed hints below) so they stay at the
+        # corners and their keepout boxes are reserved against other parts.
+        hole_hints: Dict[str, Dict[str, Any]] = {}
+        if holes.get("count", 0) > 0:
+            step_holes = _step_add_mounting_holes(pcb_path, holes)
+            _record("mounting_holes", step_holes)   # non-fatal
+            hole_hints = {
+                r["ref"]: {"fixed": [r["x_mm"], r["y_mm"]], "rotation": 0}
+                for r in (step_holes.get("positions") or [])
+            }
 
         # Step 3: Load footprints onto board (temporary positions)
         step = _step_load_footprints(pcb_path, components)
@@ -1745,6 +1882,13 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             design_intent.placement_hints if design_intent is not None else None,
             placement_hints,
         )
+        # Mounting holes are physical fixtures we already placed — pin them at the
+        # corners at HIGHEST priority (else the placer, which no longer edge-places
+        # "H", would shove them into the interior). Normalized via the same path.
+        if hole_hints:
+            norm_holes, hole_ws = _merge_placement_hints(None, hole_hints)
+            clean_hints.update(norm_holes)
+            hint_warnings.extend(hole_ws)
 
         # Step 5: Smart placement (tiered, connectivity-aware)
         step = _step_smart_placement(pcb_path, nets, placement_hints=clean_hints)

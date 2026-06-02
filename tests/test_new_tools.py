@@ -642,6 +642,7 @@ class TestBuildPcbFromSchematic:
         assert "error" in result
         assert "Schematic not found" in result["error"]
 
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
@@ -652,7 +653,7 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_full_pipeline_happy_path(
         self, mock_netlist, mock_create, mock_place, mock_nets,
-        mock_optimize, mock_route, mock_zones, mock_gerbers,
+        mock_optimize, mock_route, mock_zones, mock_gerbers, mock_holes,
         mcp_server, tmp_path,
     ):
         """Full pipeline with all steps succeeding."""
@@ -682,6 +683,7 @@ class TestBuildPcbFromSchematic:
         mock_optimize.return_value = {"status": "ok", "components_placed": 2}
         mock_route.return_value = {"status": "ok", "tracks_after": 20, "vias_after": 2, "unconnected_after_routing": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
+        mock_holes.return_value = {"status": "ok", "holes_added": 0, "positions": []}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
         result = fn(str(pro))
@@ -693,6 +695,7 @@ class TestBuildPcbFromSchematic:
         assert result["incomplete_nets"] == 0
         assert "export_gerbers" not in result["steps"]
 
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
@@ -703,7 +706,7 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_explicit_board_size(
         self, mock_netlist, mock_create, mock_place, mock_nets,
-        mock_optimize, mock_route, mock_zones, mock_gerbers,
+        mock_optimize, mock_route, mock_zones, mock_gerbers, mock_holes,
         mcp_server, tmp_path,
     ):
         """Explicit board dimensions are passed through to create step."""
@@ -725,17 +728,20 @@ class TestBuildPcbFromSchematic:
         mock_optimize.return_value = {"status": "ok", "components_placed": 1}
         mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "unconnected_after_routing": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
+        mock_holes.return_value = {"status": "ok", "holes_added": 0, "positions": []}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
         result = fn(str(pro), board_width_mm=22, board_height_mm=69)
 
         assert result["status"] == "ok"
-        # Verify explicit dimensions were passed
+        # Verify explicit dimensions were passed (with the default mounting-holes spec).
         mock_create.assert_called_once_with(
             str(tmp_path / "test.kicad_pcb"), 22, 69,
             mock_netlist.return_value["components"],
+            holes={"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5},
         )
 
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
     @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
@@ -745,7 +751,7 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_autoroute_failure_stops_pipeline(
         self, mock_netlist, mock_create, mock_place, mock_nets,
-        mock_optimize, mock_route, mock_zones,
+        mock_optimize, mock_route, mock_zones, mock_holes,
         mcp_server, tmp_path,
     ):
         """Autoroute error stops pipeline — no zones step."""
@@ -766,6 +772,7 @@ class TestBuildPcbFromSchematic:
         mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
         mock_optimize.return_value = {"status": "ok", "components_placed": 1}
         mock_route.return_value = {"error": "FreeRouter JAR not found"}
+        mock_holes.return_value = {"status": "ok", "holes_added": 0, "positions": []}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
         result = fn(str(pro))
@@ -798,6 +805,7 @@ class TestBuildPcbFromSchematic:
         assert "No components with footprints" in result["error"]
         assert any("2 component(s) skipped" in w for w in result.get("warnings", []))
 
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
     @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
@@ -808,7 +816,7 @@ class TestBuildPcbFromSchematic:
     @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
     def test_gerber_export_when_requested(
         self, mock_netlist, mock_create, mock_place, mock_nets,
-        mock_optimize, mock_route, mock_zones, mock_gerbers,
+        mock_optimize, mock_route, mock_zones, mock_gerbers, mock_holes,
         mcp_server, tmp_path,
     ):
         """Gerber export runs only when export_gerbers=True."""
@@ -831,6 +839,7 @@ class TestBuildPcbFromSchematic:
         mock_route.return_value = {"status": "ok", "tracks_after": 5, "vias_after": 0, "unconnected_after_routing": 0}
         mock_zones.return_value = {"status": "ok", "zones_added": 2}
         mock_gerbers.return_value = {"status": "ok", "zip_path": "/tmp/test-gerbers.zip", "total_files": 12}
+        mock_holes.return_value = {"status": "ok", "holes_added": 0, "positions": []}
 
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
         result = fn(str(pro), export_gerbers=True)

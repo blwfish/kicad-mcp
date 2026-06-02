@@ -250,8 +250,11 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
 
     # 4) build a routed PCB from it — the core gate
     pro.write_text(json.dumps(_MINIMAL_PRO))
+    # add_mounting_holes=False: this explicit size was calibrated pre-Phase-5 and
+    # is tight; the test gates nets + routing, not holes (holes-on is gated by the
+    # roomy audio_s3 and the auto-sized audio-remote boards).
     r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
-               autoroute_passes=2, export_gerbers=False)
+               autoroute_passes=2, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=2)
@@ -409,6 +412,18 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     assert not r4["steps"]["smart_placement"].get("failed_placements"), \
         "content-aware size left parts unplaced (under-estimate)"
 
+    # §3 mounting holes (Phase 5): 4 corner M3 fixtures, each inset ~3.5mm from a
+    # corner (within line-width tolerance), pinned (not floating mid-board). The
+    # board still routes within bound above, so the corner keepouts didn't break it.
+    mh = r4["steps"]["mounting_holes"]
+    assert mh["holes_added"] == 4
+    assert {p["ref"] for p in mh["positions"]} == {"H1", "H2", "H3", "H4"}
+    for p in mh["positions"]:
+        near_x = abs(p["x_mm"] - 3.5) < 1.0 or abs(p["x_mm"] - (bw - 3.5)) < 1.0
+        near_y = abs(p["y_mm"] - 3.5) < 1.0 or abs(p["y_mm"] - (bh - 3.5)) < 1.0
+        assert near_x and near_y, \
+            f"{p['ref']} at ({p['x_mm']},{p['y_mm']}) not near a corner of {bw}x{bh}"
+
     # §1 RFI: ALL field-wiring terminals share the SINGLE edge opposite the antenna
     # (the MCU antenna overhangs the top, so terminals are on the bottom) — none
     # buried interior, none on the antenna edge.
@@ -551,8 +566,10 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     # Placement is unchanged (the silk step runs AFTER routing), so this is pure
     # router nondeterminism: more passes keeps the tight bound non-flaky rather
     # than loosening it (matches the dense audio_s3 board, also best-of-6).
+    # add_mounting_holes=False: explicit pre-Phase-5 size, tight; gates nets +
+    # routing (holes-on gated by audio_s3 + audio-remote).
     r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
-               autoroute_passes=6, export_gerbers=False)
+               autoroute_passes=6, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=2)            # buzzer orphan must not break routing
@@ -599,8 +616,10 @@ def test_sidecar_to_routed_pcb(mcp_server, tmp_path):
     assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
 
     pro.write_text(json.dumps(_MINIMAL_PRO))
+    # add_mounting_holes=False: explicit pre-Phase-5 size, tight; gates the sidecar
+    # connector route, not holes (holes-on gated by audio_s3 + audio-remote).
     r4 = build(project_path=str(pro), board_width_mm=70, board_height_mm=55,
-               autoroute_passes=2, export_gerbers=False)
+               autoroute_passes=2, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     _assert_mostly_routed(r4, max_unrouted=2)            # connector routes
 
