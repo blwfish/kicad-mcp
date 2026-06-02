@@ -42,3 +42,34 @@ returns `dict[str, str]` mapping `raw_name → canonical_key` (covers `type` + e
 
 ## Build order
 C8 (xfail) → C2 registry (+I1 fix) → C1 extractor → C4 resolver → C5 gap → C6 templates → C7 sidecar → C9 golden. All but A are no-symbol-needed.
+
+## STATUS (this session) — C1–C9 software arc DONE, gated on real KiCad
+Branch `feat/firmware-part-resolution-2`. Done + green (no-KiCad 2042, integration
+23/23 on KiCad 9 & 10):
+- **C1** part-name extractor, **C2** registry (serves/aliases/recognized_part_names),
+  **C2b** MAX98357A + SPH0645 cards — on `main` (PR #66) / this branch.
+- **C4** Bus schema + pure resolver + part_serves_map; **C4-wire** runs it in
+  import_firmware (reports `resolved_parts`).
+- **C6** templates consume resolved_part (imported / assumed+gap / refuse-with-
+  part_unavailable) — resolution is now LOAD-BEARING.
+- **C7** board.yaml `bus_part_overrides` (user declares a bus's part, provenance
+  "user", wins over corpus).
+- **C8** part-identity guardrail (no silent substitution).
+- **C9** golden gate on audio_s3 (MAX98357A imported via corpus; unnamed mic =
+  disclosed assumed_part); expand_templates surfaces open gaps.
+
+Demonstrated: the audio firmware NAMES MAX98357A → both amp buses bind it from the
+corpus (not invented); the unnamed mic is a disclosed SPH0645 assumption.
+
+### DEFERRED (blocked or future)
+- **INMP441 symbol + card (workstream A)** — BLOCKED on datasheet (pin names incl.
+  CHIPEN-must-not-float; bare-LGA vs module footprint). Until then an INMP441
+  mention resolves to a `part_unavailable` gap (refuse-to-substitute, unit-covered)
+  rather than a placed part. The `audio_inmp441` C9 fixture lands with it.
+- **C5 generate-level part_unavailable** (symbol-absent-at-generate gap) — not
+  needed by any current path: shipped cards all have symbols, and a declared part
+  with no realizing template is already refused by C6's _decide_part BEFORE
+  placement. It becomes a useful safety net when a card exists whose symbol is
+  absent in a given KiCad install (e.g. the INMP441 card pre-symbol). Add then.
+- **C7 footprint-only override** parsed/validated but not applied (the INMP441
+  bare-LGA-vs-module case, blocked on the symbol).
