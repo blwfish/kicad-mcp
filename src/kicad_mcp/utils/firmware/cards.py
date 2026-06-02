@@ -245,6 +245,17 @@ def recognized_part_names(
     return out
 
 
+def part_serves_map(
+    peripherals: dict[str, dict[str, Any]]
+) -> dict[str, str]:
+    """Map canonical part key → the directional bus type its card declares it
+    ``serves`` (cards without ``serves`` are omitted). Feeds the bus→part
+    resolver (C4): a recognized part is a candidate for a bus iff its ``serves``
+    matches the bus's ``type``. ``peripherals`` is already canonical-keyed."""
+    return {key: card["serves"]
+            for key, card in peripherals.items() if card.get("serves")}
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text())

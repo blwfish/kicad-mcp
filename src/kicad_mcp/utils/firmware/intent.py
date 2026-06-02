@@ -26,7 +26,7 @@ from kicad_mcp.utils.firmware.parse import (
     address_base,
 )
 
-SCHEMA_VERSION = 5  # v5: per-ref PCB placement_hints (edge/rotation/fixed override channel)
+SCHEMA_VERSION = 6  # v6: Bus part resolution (resolved_part/part_provenance/part_is_assumption)
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -129,6 +129,15 @@ class Bus:
     signals: dict[str, int] = field(default_factory=dict)  # role -> gpio
     address: Optional[int] = None   # I2C devices
     origin: str = "imported"
+    # Part resolution (C4): the SPECIFIC part the user declared for this bus,
+    # determined from the firmware corpus — NEVER invented. ``resolved_part`` is a
+    # canonical key (e.g. "INMP441"); None = unresolved (no/ambiguous evidence).
+    # ``part_provenance``: "corpus" (found in firmware) | "user" (board.yaml).
+    # ``part_is_assumption``: set True only when a template falls back to a default
+    # part because the resolved one is absent (then a gap discloses it).
+    resolved_part: Optional[str] = None
+    part_provenance: Optional[str] = None
+    part_is_assumption: bool = False
 
 
 @dataclass
