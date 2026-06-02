@@ -529,6 +529,56 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
         f"beyond the block on the inboard side)")
 
 
+def test_approval_gate_audio_remote(mcp_server, tmp_path):
+    """Phase 7 approval gate: build with approved=False returns a proposal of the
+    PLACED (unrouted) board — real terminal edges, holes, a tweakable board.yaml,
+    and (best-effort) a render — WITHOUT the expensive autoroute. Cheap (no route),
+    so it gates the gate on real KiCad without the 3-4 min FreeRouter pass."""
+    import shutil
+
+    import yaml
+
+    from kicad_mcp.utils.firmware.sidecar import load_sidecar
+
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+
+    fw = tmp_path / "fw"
+    fw.mkdir()
+    shutil.copy(AUDIO_CONFIG_H, fw / "config.h")
+    shutil.copy(AUDIO_CONFIG_H.parent / "platformio.ini", fw / "platformio.ini")
+    (fw / "board.yaml").write_text(
+        "placement:\n"
+        "  CMCA_MIC: {locus: remote, device: INMP441}\n"
+        "  CMCA_PRESENCE: {locus: remote, device: LD2410}\n"
+        "  CMCA_I2S: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+        "  CMCA_I2S2: {locus: on_board_with_remote_io, device: MAX98357A, external_io: [outp, outn]}\n"
+    )
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "ar.kicad_sch"
+    pro = tmp_path / "ar.kicad_pro"
+    design(operation="import_firmware", firmware_path=str(fw / "config.h"), out_path=str(intent))
+    design(operation="expand_templates", intent_path=str(intent))
+    design(operation="generate_schematic", intent_path=str(intent), schematic_path=str(sch))
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+
+    r = build(project_path=str(pro), board_width_mm=0, board_height_mm=0,
+              export_gerbers=False, intent_path=str(intent), approved=False)
+
+    assert r["status"] == "pending_approval"
+    assert "autoroute" not in r["steps"]          # the expensive pass was skipped
+    prop = r["proposal"]
+    assert prop["antenna_edge"] == "top"          # S3 antenna overhangs the top
+    assert prop["terminal_table"], "no terminals in the proposal"
+    assert {t["edge"] for t in prop["terminal_table"]} == {"bottom"}   # antenna-opposite
+    assert len(prop["mounting_holes"]) == 4       # default corner holes proposed
+    # the proposed board.yaml is valid and round-trips through the sidecar loader
+    yp = tmp_path / "proposed.yaml"
+    yp.write_text(yaml.dump(prop["proposed_board_yaml"]))
+    sc = load_sidecar(str(yp))
+    assert sc.board_size_mm is not None and sc.mounting_holes is not None
+
+
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     """The THIRD board shape: an I2C sensor-hub (track-geometry car). Exercises
     the generalization that matters here — MULTIPLE address-declared devices,

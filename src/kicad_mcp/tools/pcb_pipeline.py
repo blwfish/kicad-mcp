@@ -1621,6 +1621,66 @@ print(json.dumps({"status": "ok", "labels_added": labels_added,
     return res
 
 
+def _render_board_svg(pcb_path: str) -> Optional[str]:
+    """Best-effort flat SVG of the board (copper + silk + edge) for the approval
+    proposal. Returns the path, or None if kicad-cli is unavailable or the export
+    fails — NEVER raises: the proposal's value is its data; the picture is a bonus."""
+    try:
+        cli = get_kicad_cli_path(required=True)
+    except KiCadCLIError:
+        return None
+    assert cli is not None
+    out = os.path.splitext(pcb_path)[0] + "_proposal.svg"
+    try:
+        r = subprocess.run(
+            [cli, "pcb", "export", "svg", pcb_path, "-o", out,
+             "--layers", "F.Cu,B.Cu,F.SilkS,Edge.Cuts", "--page-size-mode", "2"],
+            capture_output=True, text=True, timeout=60,
+        )
+        return out if (r.returncode == 0 and os.path.exists(out)) else None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def _build_placement_proposal(
+    pcb_path: str,
+    width_mm: float,
+    height_mm: float,
+    antenna_edge: Optional[str],
+    terminal_edges: Dict[str, str],
+    hole_positions: List[Dict[str, Any]],
+    legends: List[Dict[str, Any]],
+    holes: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Assemble the approval-gate proposal for the PLACED (unrouted) board: board
+    size, antenna edge, the per-terminal edge+device+positions table, the corner
+    hole positions, a machine-readable ``proposed_board_yaml`` the user can tweak
+    in natural language (Claude translates), and a best-effort SVG render. All
+    derived from the REAL placement decisions — no re-derivation, no seam."""
+    legend_by_ref = {L["ref"]: L for L in legends}
+    terminal_table = [
+        {"ref": ref, "edge": edge,
+         "device": (legend_by_ref.get(ref) or {}).get("device"),
+         "positions": (legend_by_ref.get(ref) or {}).get("positions", [])}
+        for ref, edge in sorted(terminal_edges.items())
+    ]
+    proposed_board_yaml: Dict[str, Any] = {
+        "board_size_mm": [width_mm, height_mm],
+        "mounting_holes": {k: holes[k]
+                           for k in ("count", "drill_mm", "inset_mm", "keepout_mm")},
+        "placement_hints": {ref: {"edge": edge}
+                            for ref, edge in sorted(terminal_edges.items())},
+    }
+    return {
+        "board_size_mm": [width_mm, height_mm],
+        "antenna_edge": antenna_edge,
+        "terminal_table": terminal_table,
+        "mounting_holes": hole_positions,
+        "render_path": _render_board_svg(pcb_path),
+        "proposed_board_yaml": proposed_board_yaml,
+    }
+
+
 def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
     """Step 8 (optional): Export Gerber + drill files and create ZIP."""
     try:
@@ -1714,6 +1774,7 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         intent_path: str = "",
         placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
         add_mounting_holes: bool = True,
+        approved: bool = True,
     ) -> Dict[str, Any]:
         """Build a complete routed PCB from a KiCad schematic in one step.
 
@@ -1745,6 +1806,13 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 Its ``source.board_size_mm`` (if any) sizes the board when no
                 explicit dimensions are given, and its ``placement_hints`` feed
                 the per-ref placement overrides below.
+            approved: When False, the APPROVAL GATE (spec §7): run the pipeline
+                through placement (which produces the real terminal-edge layout)
+                but STOP before the expensive autoroute, returning
+                ``status="pending_approval"`` and a ``proposal`` (board size,
+                antenna edge, per-terminal edge/positions table, hole positions,
+                a tweakable ``proposed_board_yaml``, and a best-effort SVG render).
+                Re-run with ``approved=True`` once the layout looks right.
             add_mounting_holes: Add corner M3 mounting holes (default True). The
                 count/drill/inset/keepout come from the design intent's
                 ``source.mounting_holes`` (board.yaml) or default to 4 × M3; pass
@@ -1853,12 +1921,14 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # placer is told to pin them (fixed hints below) so they stay at the
         # corners and their keepout boxes are reserved against other parts.
         hole_hints: Dict[str, Dict[str, Any]] = {}
+        hole_positions: List[Dict[str, Any]] = []
         if holes.get("count", 0) > 0:
             step_holes = _step_add_mounting_holes(pcb_path, holes)
             _record("mounting_holes", step_holes)   # non-fatal
+            hole_positions = step_holes.get("positions") or []
             hole_hints = {
                 r["ref"]: {"fixed": [r["x_mm"], r["y_mm"]], "rotation": 0}
-                for r in (step_holes.get("positions") or [])
+                for r in hole_positions
             }
 
         # Step 3: Load footprints onto board (temporary positions)
@@ -1905,6 +1975,24 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             if d.get("event") == "rotation_chosen" and d.get("edge")
         }
 
+        def _run_silk_legends() -> None:
+            """Silk-legend pass (single source — used by the approval gate AND the
+            post-route step). Strictly NON-FATAL: a bad intent or a pcbnew failure
+            (run_pcbnew_script RAISES) is recorded, never propagated."""
+            if design_intent is None:
+                return
+            try:
+                _legends = [
+                    {"ref": L.ref, "positions": L.positions, "device": L.device}
+                    for L in design_intent.connector_legends
+                ]
+                _record("silkscreen_legends",
+                        _step_silkscreen_legends(pcb_path, _legends,
+                                                 terminal_edges=terminal_edges))
+            except Exception as e:  # noqa: BLE001 — documentation step, never fatal
+                _record("silkscreen_legends",
+                        {"error": f"silk legend step failed (non-fatal): {e}"})
+
         # Surface placement decisions + hint diagnostics as an events envelope
         # (mcp-events). Info-level rotation/hint records included so the response
         # documents what the autoplacer chose; warnings for bad/unmatched hints.
@@ -1926,6 +2014,28 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             _env = _ev.to_envelope("info")
         if _env:
             pipeline_result["events"] = _env
+
+        # Approval gate (§7): stop BEFORE the expensive autoroute and return a
+        # proposal of the placed (unrouted) board. Placement is done, so the
+        # terminal edges/holes are REAL; only routing (the 3–4 min FreeRouter
+        # pass) is skipped. Run silk first so the render documents the terminals.
+        if not approved:
+            _run_silk_legends()
+            antenna_edge = next(
+                (d.get("edge") for d in (step.get("placement_decisions") or [])
+                 if d.get("event") == "keepout_overhang"), None)
+            legends = [
+                {"ref": L.ref, "positions": L.positions, "device": L.device}
+                for L in (design_intent.connector_legends if design_intent else [])
+            ]
+            pipeline_result["status"] = "pending_approval"
+            pipeline_result["proposal"] = _build_placement_proposal(
+                pcb_path, actual_width, actual_height, antenna_edge,
+                terminal_edges, hole_positions, legends, holes,
+            )
+            pipeline_result["pcb_path"] = pcb_path
+            pipeline_result["elapsed_seconds"] = round(time.time() - t0, 1)
+            return pipeline_result
 
         # Step 6: Autoroute
         step = _step_autoroute(pcb_path, passes=autoroute_passes)
@@ -1953,22 +2063,8 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
 
         # Step 7.5: Silk legends for synthesized terminals (firmware front end).
         # Field-wired terminals carry their wiring documentation on the silk.
-        # Strictly NON-FATAL: silk is documentation, never blocks fabrication —
-        # so a bad intent OR a pcbnew failure inside the step (run_pcbnew_script
-        # RAISES on subprocess error/timeout) is recorded, never propagated, so it
-        # cannot abort an already-routed board.
-        if design_intent is not None:
-            try:
-                _legends = [
-                    {"ref": L.ref, "positions": L.positions, "device": L.device}
-                    for L in design_intent.connector_legends
-                ]
-                step = _step_silkscreen_legends(pcb_path, _legends,
-                                                terminal_edges=terminal_edges)
-                _record("silkscreen_legends", step)
-            except Exception as e:  # noqa: BLE001 — documentation step, never fatal
-                _record("silkscreen_legends",
-                        {"error": f"silk legend step failed (non-fatal): {e}"})
+        # (Single source: same _run_silk_legends used by the approval gate above.)
+        _run_silk_legends()
 
         # Step 8: Export gerbers (optional)
         if export_gerbers:
