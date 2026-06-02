@@ -27,6 +27,7 @@ from kicad_mcp.utils.firmware.connectors import (
     synthesize_connector,
 )
 from kicad_mcp.utils.firmware.intent import (
+    Bus,
     ConnectorLegend,
     DesignIntent,
     Endpoint,
@@ -381,6 +382,42 @@ def _header(alloc: RefAllocator, hdr: tuple[str, str], value: str) -> Peripheral
                       footprint=hdr[1], origin="template")
 
 
+def _decide_part(bus: Bus, template_part: str, ex: Expansion) -> tuple[bool, str]:
+    """Part-resolution decision (C6) for a bus whose on-board template builds
+    ``template_part``. Returns ``(place, origin)`` and stamps the bus + emits the
+    honest gap. The three cases — the whole point of part resolution:
+
+      * ``resolved_part is None`` — firmware named no part for this bus → ASSUME
+        ``template_part`` (place it, origin ``template``, ``part_is_assumption``),
+        disclosed by an ``assumed_part`` gap.
+      * ``resolved_part == template_part`` — firmware named exactly this part →
+        place it as ``imported`` (provenance already ``corpus``/``user``).
+      * ``resolved_part != template_part`` — firmware declares a DIFFERENT part
+        this template can't build → DO NOT substitute ``template_part``; leave the
+        bus unrealized and disclose a ``part_unavailable`` gap. (This is the
+        SPH0645-for-INMP441 bug, refused.)
+    """
+    rp = bus.resolved_part
+    if rp is None:
+        bus.resolved_part = template_part
+        bus.part_provenance = "assumed"
+        bus.part_is_assumption = True
+        ex.gaps.append(Gap(
+            "assumed_part",
+            f"Bus {bus.name!r} ({bus.type}): firmware names no specific part; "
+            f"assumed {template_part}. Set a board.yaml bus_part_overrides entry "
+            f"if the real part differs."))
+        return True, "template"
+    if rp == template_part:
+        return True, "imported"
+    ex.gaps.append(Gap(
+        "part_unavailable",
+        f"Bus {bus.name!r} ({bus.type}): firmware declares {rp}, but no template "
+        f"or symbol realizes it yet — NOT substituting {template_part}. The bus is "
+        f"left unrealized until {rp} ships (add its device card + symbol)."))
+    return False, ""
+
+
 def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     """Each I2S-output bus -> a stereo MAX98357A pair (L/R) with shared BCLK/LRC,
     per-channel DIN via 1kΩ isolators, SD_MODE channel straps (L→GND, R→+3V3),
@@ -403,6 +440,9 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         din_g = bus.signals.get("DIN")
         if bclk_g is None or lrc_g is None or din_g is None:
             continue
+        place, amp_origin = _decide_part(bus, "MAX98357A", ex)
+        if not place:
+            continue   # firmware declares a different amp we can't realize (gapped)
         pl = intent.placements.get(bus.name)
         spk_type = ("screw_terminal"
                     if pl is not None and pl.locus == "on_board_with_remote_io"
@@ -414,7 +454,7 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                      (d_net, Endpoint(ref=mcu, gpio=din_g))]
         for side, sd_rail in (("L", "GND"), ("R", "+3V3")):
             amp = Peripheral(ref=alloc.next("U"), type="MAX98357A", lib_id=M["lib_id"],
-                             value="MAX98357A", footprint=M["footprint"], origin="template")
+                             value="MAX98357A", footprint=M["footprint"], origin=amp_origin)
             ex.components.append(amp)
             for p in K.MAX98357A_VDD_PINS:
                 ex.power.append(("+3V3", Endpoint(ref=amp.ref, pin=p)))
@@ -478,8 +518,11 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         if pl is not None and pl.locus == "remote":
             _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl)
             continue
+        place, mic_origin = _decide_part(bus, "SPH0645", ex)
+        if not place:
+            continue   # firmware declares a different mic we can't realize (gapped)
         mic = Peripheral(ref=alloc.next("MK"), type="SPH0645", lib_id=S["lib_id"],
-                         value="SPH0645LM4H", footprint=S["footprint"], origin="template")
+                         value="SPH0645LM4H", footprint=S["footprint"], origin=mic_origin)
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
         ex.components += [mic, c]
         ex.power += [("+3V3", Endpoint(ref=mic.ref, pin=S["vdd"])),
