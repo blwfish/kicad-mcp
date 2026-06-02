@@ -127,3 +127,100 @@ def test_vertical_antenna_transposes_axes():
     horiz = distribute_terminals(comps, "top", mode="single_edge")["size"]
     vert = distribute_terminals(comps, "left", mode="single_edge")["size"]
     assert (horiz["width_mm"], horiz["height_mm"]) == (vert["height_mm"], vert["width_mm"])
+
+
+# --- cluster_wh override (SPEC_Post_Placement_Board_Refit §4, §8.1) -------------
+#
+# A controlled roster where the terminal run dominates the ALONG axis (so width is
+# pinned by terminals, not the cluster) and the cluster sets the CROSS axis. Lets
+# us hand-compute the cross shrink and assert width is untouched.
+import math as _math
+
+_RF_INT = [{"ref": "U1", "w": 8.0, "h": 8.0, "is_terminal": False}]
+_RF_TERMS = [{"ref": f"J{i}", "w": 10.0, "h": 12.0, "is_terminal": True}
+             for i in range(1, 5)]
+# square-C for _RF_INT: sqrt(64 * 2.5) = 12.649… (> max_interior 8)
+_RF_SQUARE_C = _math.sqrt(64.0 * 2.5)
+
+
+@pytest.mark.parametrize("antenna,mode", [
+    ("top", "single_edge"), ("left", "single_edge"),
+    ("top", "multi_edge"), ("left", "multi_edge"), (None, "single_edge"),
+])
+@pytest.mark.parametrize("ci,cc", [(0.0, 0.0), (6.6, 3.5)])
+def test_cluster_wh_none_is_regression_lock(antenna, mode, ci, cc):
+    # Passing cluster_wh=None must be byte-identical to not passing it at all —
+    # the square-C path is preserved (the re-fit regression lock, SPEC §4/§8.1).
+    comps = _INT + _TERMS
+    default = distribute_terminals(comps, antenna, mode=mode,
+                                   corner_inset_mm=ci, corner_center_inset_mm=cc)
+    explicit_none = distribute_terminals(comps, antenna, mode=mode,
+                                         corner_inset_mm=ci, corner_center_inset_mm=cc,
+                                         cluster_wh=None)
+    assert default == explicit_none
+
+
+def test_cluster_wh_equal_to_square_is_noop():
+    # cluster_wh = (C, C) where C is the square-C reproduces the square path
+    # exactly — the pure-level no-op identity the orchestration guard relies on.
+    comps = _RF_INT + _RF_TERMS
+    base = distribute_terminals(comps, "top", mode="single_edge")["size"]
+    same = distribute_terminals(comps, "top", mode="single_edge",
+                                cluster_wh=(_RF_SQUARE_C, _RF_SQUARE_C))["size"]
+    assert same == base
+
+
+def test_cluster_wh_rectangle_shrinks_cross_dim_exact():
+    # ALONG (width, horizontal): 4 terminals → _along = 4·(12+1) = 52 dominates the
+    # cluster (10) → width = 52 + 2·padding(2) = 56, UNCHANGED by the measure.
+    # CROSS (height): cross_cluster = max(10, max_interior 8) = 10; depth(p)=min(10,12)=10
+    #   → height = 10 + 10 + 2·padding = 24.  Square path: 12.649 + 10 + 4 = 26.6 → 27.
+    comps = _RF_INT + _RF_TERMS
+    sq = distribute_terminals(comps, "top", mode="single_edge")["size"]
+    got = distribute_terminals(comps, "top", mode="single_edge",
+                               cluster_wh=(10.0, 10.0))["size"]
+    assert got == {"width_mm": 56, "height_mm": 24}
+    assert got["width_mm"] == sq["width_mm"], "width is terminal-bound, must not move"
+    assert got["height_mm"] < sq["height_mm"], "measured cluster must shrink the cross dim"
+
+
+def test_cluster_wh_transposes_with_vertical_antenna():
+    # ALONG is the primary-run axis: width when horizontal (top), height when
+    # vertical (left). So the same measured rectangle maps to transposed boards.
+    comps = _RF_INT + _RF_TERMS
+    horiz = distribute_terminals(comps, "top", mode="single_edge",
+                                 cluster_wh=(10.0, 14.0))["size"]
+    vert = distribute_terminals(comps, "left", mode="single_edge",
+                                cluster_wh=(14.0, 10.0))["size"]
+    # left board with (14,10) must transpose the top board with (10,14)
+    assert (horiz["width_mm"], horiz["height_mm"]) == (vert["height_mm"], vert["width_mm"])
+
+
+def test_cluster_wh_reduction_property_audio_remote_shape():
+    # The audio-remote-shaped roster: a measured cluster smaller than the square-C
+    # estimate must drive the board strictly smaller (the whole point of re-fit).
+    comps = _INT + _TERMS
+    sq = distribute_terminals(comps, "top", mode="single_edge")["size"]
+    # _INT square-C ≈ sqrt((18·18 + 6·5)·2.5) ≈ 30.2; measure it materially smaller.
+    refit = distribute_terminals(comps, "top", mode="single_edge",
+                                 cluster_wh=(20.0, 20.0))["size"]
+    assert refit["height_mm"] < sq["height_mm"]
+    assert refit["width_mm"] * refit["height_mm"] < sq["width_mm"] * sq["height_mm"]
+
+
+def test_cluster_wh_feeds_multi_edge_and_stays_valid():
+    # multi_edge must consume cluster_wh too: the peel re-runs against the measured
+    # cluster. The optimizer minimizes (max_dim, area) lexicographically, so the
+    # sound invariant is on the PRIMARY objective — for any fixed peel a smaller
+    # cluster gives a board ≤ on both axes, hence the refit's best max-dim ≤ the
+    # None best. Every terminal stays assigned to a non-antenna edge.
+    comps = _INT + _TERMS
+    multi_none = distribute_terminals(comps, "top", mode="multi_edge",
+                                      corner_inset_mm=6.6, corner_center_inset_mm=3.5)
+    multi_refit = distribute_terminals(comps, "top", mode="multi_edge",
+                                       corner_inset_mm=6.6, corner_center_inset_mm=3.5,
+                                       cluster_wh=(20.0, 20.0))
+    mn = multi_none["size"]; mr = multi_refit["size"]
+    assert max(mr["width_mm"], mr["height_mm"]) <= max(mn["width_mm"], mn["height_mm"])
+    assert set(multi_refit["edge_of"]) == {t["ref"] for t in _TERMS}
+    assert "top" not in set(multi_refit["edge_of"].values())

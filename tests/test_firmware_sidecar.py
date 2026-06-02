@@ -216,6 +216,9 @@ def test_known_keys_all_accepted(tmp_path):
         placement_hints: {}
         mounting_holes: {count: 4}
         bus_part_overrides: {}
+        terminal_distribution: multi_edge
+        terminal_centering: true
+        board_refit: true
     """))
     assert sc.power_source == "usb_c"
     assert sc.board_size_mm == [90, 75]
@@ -224,6 +227,30 @@ def test_known_keys_all_accepted(tmp_path):
     assert sc.placement_hints == {}
     assert sc.mounting_holes == {"count": 4}
     assert sc.bus_part_overrides == {}
+    assert sc.terminal_distribution == "multi_edge"
+    assert sc.terminal_centering is True
+    assert sc.board_refit is True
+
+
+# --- layout flags: terminal_centering / board_refit (bool) --------------------
+
+@pytest.mark.parametrize("key", ["terminal_centering", "board_refit"])
+@pytest.mark.parametrize("bad", ["1", "[]", "abc"])   # NB: YAML 'yes'/'on' ARE bools
+def test_layout_bool_flag_rejects_non_bool(tmp_path, key, bad):
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, f"{key}: {bad}\n"))
+    assert f"{key} must be true/false" in str(e.value)
+
+
+def test_board_refit_threads_into_intent_source():
+    # The orchestration reads design_intent.source["board_refit"]; apply_sidecar must
+    # populate it (and only when explicitly set, mirroring terminal_centering).
+    i = _intent()
+    apply_sidecar(i, BoardSidecar(board_refit=True))
+    assert i.source.get("board_refit") is True
+    j = _intent()
+    apply_sidecar(j, BoardSidecar())   # unset → absent (default off)
+    assert "board_refit" not in j.source
 
 
 # --- bus_part_overrides (C7) --------------------------------------------------

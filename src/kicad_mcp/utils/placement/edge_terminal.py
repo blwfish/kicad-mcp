@@ -342,17 +342,34 @@ _OPP_EDGE = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}
 def _size_from_assignment(
     interior, terminals, edge_of, primary, side_a, side_b, horizontal,
     routing_factor, padding, spacing, corner_inset_mm, corner_center_inset_mm,
-    side_silk_gap_mm,
+    side_silk_gap_mm, cluster_wh: Optional[tuple] = None,
 ):
     """Board ``{width_mm,height_mm}`` for a given edge assignment (SPEC §4,
     generalized). Canonical frame: ``primary`` terminals run along the ALONG axis;
     the two side edges run along the CROSS axis. Reduces EXACTLY to
     ``_content_aware_size`` when every terminal is on ``primary`` (the regression
-    lock) — verified by ``test_terminal_distribution``."""
+    lock) — verified by ``test_terminal_distribution``.
+
+    ``cluster_wh``: optional measured ``(cluster_w, cluster_h)`` rectangle (board
+    frame) from a placement pass — replaces the square-``C`` interior estimate with
+    axis-specific values (SPEC_Post_Placement_Board_Refit.md §4). ``None`` ⇒ the
+    square-``C`` path, byte-identical to today (the re-fit regression lock)."""
     interior_area = sum(c["w"] * c["h"] for c in interior)
     max_interior = max((max(c["w"], c["h"]) for c in interior), default=0.0)
-    cluster = math.sqrt(interior_area * routing_factor) if interior_area > 0 else 0.0
-    cluster = max(cluster, max_interior)
+    if cluster_wh is None:
+        cluster = math.sqrt(interior_area * routing_factor) if interior_area > 0 else 0.0
+        cluster = max(cluster, max_interior)
+        along_cluster = cross_cluster = cluster
+    else:
+        # Measured rectangle → axis-specific. ALONG is the primary-run axis: board
+        # WIDTH when horizontal (antenna top/bottom), HEIGHT otherwise. Keep the
+        # per-axis ``max_interior`` floor so a single oversized body still fits.
+        cluster_w, cluster_h = cluster_wh
+        along_cluster, cross_cluster = (
+            (cluster_w, cluster_h) if horizontal else (cluster_h, cluster_w)
+        )
+        along_cluster = max(along_cluster, max_interior)
+        cross_cluster = max(cross_cluster, max_interior)
 
     def _on(edge):
         return [t for t in terminals if edge_of.get(t["ref"]) == edge]
@@ -372,11 +389,11 @@ def _size_from_assignment(
     d_p = _depth(p_ts)
     # ALONG: the primary run / cluster sits BETWEEN the two side bands (so the
     # primary terminals never extend into a side band — §4.1 body-overlap guard).
-    along_dim = max(cluster, _along(p_ts)) + d_a + d_b + 2 * padding + 2 * corner_inset_mm
+    along_dim = max(along_cluster, _along(p_ts)) + d_a + d_b + 2 * padding + 2 * corner_inset_mm
     # CROSS: cluster / side runs sit ABOVE the primary band. Corner reserve is FULL
     # on this axis only when a terminal edge (a side) runs along it (RFE #1).
     cross_corner = corner_inset_mm if sides_used else corner_center_inset_mm
-    cross_dim = (max(cluster, _along(a_ts), _along(b_ts)) + d_p
+    cross_dim = (max(cross_cluster, _along(a_ts), _along(b_ts)) + d_p
                  + 2 * padding + 2 * cross_corner)
     w, h = (along_dim, cross_dim) if horizontal else (cross_dim, along_dim)
     return {"width_mm": math.ceil(w), "height_mm": math.ceil(h)}
@@ -394,6 +411,7 @@ def distribute_terminals(
     corner_center_inset_mm: float = 0.0,
     side_silk_gap_mm: float = 2.5,
     near_square_thresh: float = 1.35,
+    cluster_wh: Optional[tuple] = None,
 ) -> dict:
     """Decide each field-wiring terminal's board edge AND the board size — the
     single source for sizing + placement (SPEC §3-§5).
@@ -417,7 +435,7 @@ def distribute_terminals(
         return _size_from_assignment(
             interior, terminals, edge_of, primary, side_a, side_b, horizontal,
             routing_factor, padding, spacing, corner_inset_mm,
-            corner_center_inset_mm, side_silk_gap_mm)
+            corner_center_inset_mm, side_silk_gap_mm, cluster_wh)
 
     all_primary = {t["ref"]: primary for t in terminals}
     base_size = _size(all_primary)

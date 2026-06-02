@@ -114,6 +114,10 @@ class BoardSidecar:
     # centre each edge's field-terminal group within its edge (vs the default
     # pack-from-one-end). Layout balance only — does not change board size.
     terminal_centering: Optional[bool] = None
+    # re-fit the auto-sized board to the MEASURED interior cluster after placement
+    # (a tighter second pass). Size lever — only applies to auto-sized boards. See
+    # SPEC_Post_Placement_Board_Refit.md.
+    board_refit: Optional[bool] = None
 
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
@@ -123,7 +127,7 @@ class BoardSidecar:
 _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
     "placement", "placement_hints", "mounting_holes", "bus_part_overrides",
-    "terminal_distribution", "terminal_centering",
+    "terminal_distribution", "terminal_centering", "board_refit",
 })
 
 _TERMINAL_DISTRIBUTIONS = frozenset({"single_edge", "multi_edge"})
@@ -238,6 +242,9 @@ def _validate(d: dict[str, Any]) -> list[str]:
     tc = d.get("terminal_centering")
     if tc is not None and not isinstance(tc, bool):
         errs.append(f"terminal_centering must be true/false, got {tc!r}")
+    br = d.get("board_refit")
+    if br is not None and not isinstance(br, bool):
+        errs.append(f"board_refit must be true/false, got {br!r}")
     for i, c in enumerate(d.get("extra_connectors", []) or []):
         where = f"extra_connectors[{i}]"
         if not isinstance(c, dict):
@@ -316,6 +323,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         bus_part_overrides=dict(data.get("bus_part_overrides", {}) or {}),
         terminal_distribution=data.get("terminal_distribution"),
         terminal_centering=data.get("terminal_centering"),
+        board_refit=data.get("board_refit"),
     )
 
 
@@ -354,6 +362,8 @@ def apply_sidecar(
         intent.source["terminal_distribution"] = sidecar.terminal_distribution
     if sidecar.terminal_centering is not None:
         intent.source["terminal_centering"] = sidecar.terminal_centering
+    if sidecar.board_refit is not None:
+        intent.source["board_refit"] = sidecar.board_refit
 
     nets_by_name = {n.name: n for n in intent.nets}
     existing_refs = {p.ref for p in intent.peripherals}

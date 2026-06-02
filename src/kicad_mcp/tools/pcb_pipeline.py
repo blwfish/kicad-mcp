@@ -4,10 +4,11 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import time
 import zipfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastmcp import FastMCP
 from mcp_events import emit_event, event_context
@@ -169,72 +170,13 @@ def _step_extract_netlist(sch_path: str) -> Dict[str, Any]:
     }
 
 
-def _step_create_pcb_and_outline(
-    pcb_path: str,
-    width_mm: float,
-    height_mm: float,
-    components: Dict[str, Dict],
-    holes: Optional[Dict[str, Any]] = None,
-    terminal_distribution: str = "single_edge",
-) -> Dict[str, Any]:
-    """Step 2: Create PCB file and add board outline.
-
-    If width/height are 0, auto-estimates from component footprints. When
-    ``holes`` requests corner mounting holes, the estimate reserves a
-    per-side inset so the holes don't crowd the content (spec §3 / Phase 5).
-    ``terminal_distribution`` ("single_edge"/"multi_edge") chooses whether the
-    auto-size spreads field terminals across the side edges; the resulting
-    per-terminal ``edge_of`` is returned for the caller to feed to placement.
-    """
-    # Build footprint list for size estimation if needed
-    auto_sized = False
-    edge_of: Dict[str, str] = {}
-    antenna_side: Optional[str] = None
-    if width_mm <= 0 or height_mm <= 0:
-        fp_specs = []
-        for ref, info in components.items():
-            fp_str = info["footprint"]
-            lib, name = fp_str.split(":", 1)
-            fp_specs.append({"library": lib, "footprint_name": name, "ref": ref})
-
-        if not fp_specs:
-            return {"error": "No footprints to estimate board size from"}
-
-        # Axis-aware corner reservation (RFE #1): the FULL corner clearance along
-        # the terminal edge (so terminals laid out past the corner holes still
-        # fit), but only the hole-CENTER inset on the perpendicular depth axis
-        # (the holes sit in the empty corner columns there) — full clearance on
-        # both axes made the board taller than its content.
-        size_result = _estimate_board_size(
-            fp_specs, corner_inset_mm=_hole_corner_clear(holes),
-            corner_center_inset_mm=_hole_center_inset(holes),
-            terminal_distribution=terminal_distribution)
-        if "error" in size_result:
-            return size_result
-
-        chosen = size_result["size"]   # content-aware (layout fixes the aspect)
-        width_mm = chosen["width_mm"]
-        height_mm = chosen["height_mm"]
-        edge_of = size_result.get("edge_of", {})        # per-terminal edge → hints
-        antenna_side = size_result.get("antenna_side")  # for the frame-mismatch guard
-        auto_sized = True
-
-    # Create the PCB file
-    script = """
-import pcbnew, json, sys
-
-params = json.loads(open(sys.argv[1]).read())
-
-board = pcbnew.CreateEmptyBoard()
-board.Save(params["pcb_path"])
-print(json.dumps({"status": "ok"}))
-"""
-    result = run_pcbnew_script(script, params={"pcb_path": pcb_path})
-    if "error" in result:
-        return result
-
-    # Add board outline
-    script = """
+# The Edge.Cuts removal+redraw sub-script — SINGLE SOURCE. Used by pass 1
+# (_step_create_pcb_and_outline, after CreateEmptyBoard) AND by re-fit pass 2
+# (_step_redraw_outline, via LoadBoard with NO CreateEmptyBoard, so the placed
+# footprints + nets survive). It only touches Edge.Cuts drawings — footprint
+# positions and pad nets are untouched. Keeping it in one constant means the two
+# call sites can never drift (Rule 3: one source of truth for the outline geometry).
+_OUTLINE_REDRAW_SCRIPT = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -270,7 +212,78 @@ for i in range(4):
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok"}))
 """
-    result = run_pcbnew_script(script, params={
+
+
+def _step_create_pcb_and_outline(
+    pcb_path: str,
+    width_mm: float,
+    height_mm: float,
+    components: Dict[str, Dict],
+    holes: Optional[Dict[str, Any]] = None,
+    terminal_distribution: str = "single_edge",
+) -> Dict[str, Any]:
+    """Step 2: Create PCB file and add board outline.
+
+    If width/height are 0, auto-estimates from component footprints. When
+    ``holes`` requests corner mounting holes, the estimate reserves a
+    per-side inset so the holes don't crowd the content (spec §3 / Phase 5).
+    ``terminal_distribution`` ("single_edge"/"multi_edge") chooses whether the
+    auto-size spreads field terminals across the side edges; the resulting
+    per-terminal ``edge_of`` is returned for the caller to feed to placement.
+    """
+    # Build footprint list for size estimation if needed
+    auto_sized = False
+    edge_of: Dict[str, str] = {}
+    antenna_side: Optional[str] = None
+    measured_comps: List[Dict[str, Any]] = []   # re-fit pass 2 reuses these (§4)
+    if width_mm <= 0 or height_mm <= 0:
+        fp_specs = []
+        for ref, info in components.items():
+            fp_str = info["footprint"]
+            lib, name = fp_str.split(":", 1)
+            fp_specs.append({"library": lib, "footprint_name": name, "ref": ref})
+
+        if not fp_specs:
+            return {"error": "No footprints to estimate board size from"}
+
+        # Axis-aware corner reservation (RFE #1): the FULL corner clearance along
+        # the terminal edge (so terminals laid out past the corner holes still
+        # fit), but only the hole-CENTER inset on the perpendicular depth axis
+        # (the holes sit in the empty corner columns there) — full clearance on
+        # both axes made the board taller than its content.
+        size_result = _estimate_board_size(
+            fp_specs, corner_inset_mm=_hole_corner_clear(holes),
+            corner_center_inset_mm=_hole_center_inset(holes),
+            terminal_distribution=terminal_distribution)
+        if "error" in size_result:
+            return size_result
+
+        chosen = size_result["size"]   # content-aware (layout fixes the aspect)
+        width_mm = chosen["width_mm"]
+        height_mm = chosen["height_mm"]
+        edge_of = size_result.get("edge_of", {})        # per-terminal edge → hints
+        antenna_side = size_result.get("antenna_side")  # for the frame-mismatch guard
+        measured_comps = size_result.get("comps", [])   # cached body w/h for pass 2
+        auto_sized = True
+
+    # Create the PCB file
+    script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+
+board = pcbnew.CreateEmptyBoard()
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok"}))
+"""
+    result = run_pcbnew_script(script, params={"pcb_path": pcb_path})
+    if "error" in result:
+        return result
+
+    # Add board outline (Edge.Cuts redraw — SINGLE SOURCE, shared with pass-2
+    # re-fit via _OUTLINE_REDRAW_SCRIPT). Safe here: the board was just created
+    # empty, so there is nothing to preserve.
+    result = run_pcbnew_script(_OUTLINE_REDRAW_SCRIPT, params={
         "pcb_path": pcb_path,
         "width_mm": width_mm,
         "height_mm": height_mm,
@@ -285,6 +298,7 @@ print(json.dumps({"status": "ok"}))
         "auto_sized": auto_sized,
         "edge_of": edge_of,          # {} unless auto-sized; multi_edge → spans 2-3 edges
         "antenna_side": antenna_side,
+        "comps": measured_comps,     # [] unless auto-sized; re-fit pass 2 reuses these
     }
 
 
@@ -301,6 +315,20 @@ _EDGE_DESIGNATOR_CLASSES = ("J", "SW", "USB")
 # Corner mounting-hole defaults (board.yaml `mounting_holes:` overrides these;
 # see sidecar._validate_mounting_holes). count=0 disables holes entirely.
 _HOLE_DEFAULTS = {"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5}
+
+# Board re-fit routing slack (SPEC_Post_Placement_Board_Refit §4 / R1). The measured
+# interior-cluster bbox already reflects the spacing the placer used, so pass 2
+# inflates it by only this modest margin PER SIDE (not the 2.5× area factor) to leave
+# routing channels at the cluster boundary. Empirical — tuned against the golden
+# routing counts at the eyeball/integration gate; bump it (less shrink) if routing
+# starves, never loosen the unrouted bound.
+_CLUSTER_ROUTING_MARGIN_MM = 3.0
+
+
+class _RefitDecline(Exception):
+    """Re-fit declined BEFORE any board mutation (empty cluster / not meaningfully
+    smaller). No backup was taken, so there is nothing to restore — distinct from a
+    post-commit fallback (which restores the .pass1 backup)."""
 
 
 def _resolve_mounting_holes(mh_source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -416,6 +444,137 @@ print(json.dumps({"status": "ok", "holes_added": len(positions),
     }, timeout=60.0)
 
 
+# ---------------------------------------------------------------------------
+# Board re-fit pass-2 steps (SPEC_Post_Placement_Board_Refit §3, §6).
+# These run ONLY when board_refit is on, after a measured-smaller second size.
+# ---------------------------------------------------------------------------
+
+def _step_redraw_outline(pcb_path: str, width_mm: float, height_mm: float) -> Dict[str, Any]:
+    """Re-draw the Edge.Cuts rectangle to a NEW size on an EXISTING board (re-fit
+    pass 2, §3 step 4 / §9-A1).
+
+    Runs the shared :data:`_OUTLINE_REDRAW_SCRIPT` via ``LoadBoard`` — it NEVER
+    calls ``CreateEmptyBoard`` (which would wipe the placed footprints + nets), so
+    the cluster placed in pass 1 survives and only the board outline changes. The
+    subsequent placement pass re-anchors edge terminals + holes to this new outline
+    via ``GetBoardEdgesBoundingBox()``."""
+    return run_pcbnew_script(_OUTLINE_REDRAW_SCRIPT, params={
+        "pcb_path": pcb_path,
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+    })
+
+
+def _step_measure_cluster(
+    pcb_path: str, edge_placed_refs: List[str]
+) -> Dict[str, Any]:
+    """Measure the placed INTERIOR-cluster rectangle (re-fit §3 step 2).
+
+    Unions the body bboxes (antenna keepout EXCLUDED, same ``body_bbox`` the sizer
+    uses) of every footprint that is NEITHER an edge-placed terminal NOR a mounting
+    hole — the rectangle the tighter board must hug. The cluster is defined by
+    EXCLUSION, not by ``is_terminal`` (§2 blocker):
+
+    - ``edge_placed_refs`` — refs the pass-1 placer anchored to an edge (from its
+      ``rotation_chosen`` decisions). These march along the edges, so they are NOT
+      part of the interior cluster.
+    - ``_ref_class(ref) == "H"`` — corner mounting holes. H is NOT an edge-designator
+      class, so an ``is_terminal`` filter would KEEP them and inflate the bbox to the
+      full board → the no-op guard fires → the feature silently does nothing.
+
+    Everything else IS cluster — crucially INCLUDING interior module headers (J6 the
+    OLED, ``edge:"none"``, spiral-placed inside the cluster): they are ``is_terminal``
+    for sizing but physically sit in the cluster, so the measure must count them or
+    it under-sizes. Returns ``{cluster_w, cluster_h, counted:[refs]}`` in mm; an
+    empty cluster yields ``0×0`` (the caller's no-op guard then declines)."""
+    script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+""" + BODY_EXTENT_HELPER + """
+board = pcbnew.LoadBoard(params["pcb_path"])
+edge_refs = set(params["edge_placed_refs"])
+
+def _ref_class(ref):
+    for i, c in enumerate(ref):
+        if c.isdigit():
+            return ref[:i]
+    return ref
+
+bx0 = by0 = float("inf")
+bx1 = by1 = float("-inf")
+counted = []
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    if ref in edge_refs:
+        continue                  # edge-placed terminal — anchors to the edge band
+    if _ref_class(ref) == "H":
+        continue                  # corner hole — would inflate the bbox to full board
+    has_keepout = any(z.GetIsRuleArea() for z in fp.Zones()) if hasattr(fp, 'Zones') else False
+    fx0, fy0, fx1, fy1 = body_bbox(fp, has_keepout)
+    bx0 = min(bx0, fx0); by0 = min(by0, fy0)
+    bx1 = max(bx1, fx1); by1 = max(by1, fy1)
+    counted.append(ref)
+
+if bx0 == float("inf"):
+    print(json.dumps({"status": "ok", "cluster_w": 0.0, "cluster_h": 0.0, "counted": []}))
+else:
+    print(json.dumps({"status": "ok",
+                      "cluster_w": round(bx1 - bx0, 3),
+                      "cluster_h": round(by1 - by0, 3),
+                      "counted": counted}))
+"""
+    return run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "edge_placed_refs": list(edge_placed_refs),
+    })
+
+
+def _step_remove_mounting_holes(pcb_path: str) -> Dict[str, Any]:
+    """Delete every ``H*`` mounting-hole footprint AND its keepout zone, so re-fit
+    pass 2 can re-add them at the NEW corners via ``_step_add_mounting_holes``
+    without duplicating (H5–H8) or leaving stale keepouts (re-fit §6).
+
+    The hole keepouts are ANONYMOUS board-level rule-area ZONEs (no ref linkage to
+    their H* footprint, §6 blocker), so they are identified by type: every
+    board-level zone with ``GetIsRuleArea()``. This is safe because the only other
+    rule-area keepout — the MCU antenna — lives as a FOOTPRINT child zone
+    (``fp.Zones()``), not a board-level zone; and GND copper pours are NOT rule
+    areas and are added only AFTER autoroute, so none exist at pass-2 time. The
+    script asserts that invariant by reporting the removed zone count."""
+    script = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
+
+def _ref_class(ref):
+    for i, c in enumerate(ref):
+        if c.isdigit():
+            return ref[:i]
+    return ref
+
+removed_fps = []
+for fp in list(board.GetFootprints()):
+    if _ref_class(fp.GetReference()) == "H":
+        removed_fps.append(fp.GetReference())
+        board.Remove(fp)
+
+# Anonymous board-level rule-area keepouts (the hole keepouts). The antenna keepout
+# is a FOOTPRINT child zone, not board-level, so it is untouched here.
+removed_zones = 0
+for z in list(board.Zones()):
+    if z.GetIsRuleArea():
+        board.Remove(z)
+        removed_zones += 1
+
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok", "removed_footprints": removed_fps,
+                  "removed_zones": removed_zones}))
+"""
+    return run_pcbnew_script(script, params={"pcb_path": pcb_path}, timeout=60.0)
+
+
 def _content_aware_size(
     components: List[Dict[str, Any]],
     terminal_edge_horizontal: bool = True,
@@ -467,11 +626,20 @@ def _estimate_board_size(
     fp_specs: List[Dict[str, str]], corner_inset_mm: float = 0.0,
     corner_center_inset_mm: float = 0.0, terminal_distribution: str = "single_edge",
     side_silk_gap_mm: float = 2.5,
+    cluster_wh: Optional[Tuple[float, float]] = None,
+    comps: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Estimate board dimensions from footprint specs. The bridge script only
     MEASURES (body w/h + whether the ref is an edge terminal); the content-aware
     math lives in the pure :func:`_content_aware_size` so it is testable and
-    shared. ``fp_specs`` entries carry ``ref`` for the terminal classification."""
+    shared. ``fp_specs`` entries carry ``ref`` for the terminal classification.
+
+    Board re-fit (SPEC_Post_Placement_Board_Refit §4): when ``comps`` (the measured
+    footprint list returned by a prior call) is supplied, the bridge measurement
+    script is SKIPPED and those cached comps reused — pass 2 must not re-measure.
+    ``cluster_wh`` overrides the square-cluster interior estimate with a measured
+    ``(w, h)`` rectangle. The result ALWAYS includes ``comps`` so the caller can
+    hand them to a second pass."""
     script = """
 import pcbnew, json, os, sys
 
@@ -535,13 +703,20 @@ for spec in fp_specs:
 
 print(json.dumps({"components": components, "errors": errors}))
 """
-    result = run_pcbnew_script(script, params={
-        "fp_specs": fp_specs, "edge_classes": list(_EDGE_DESIGNATOR_CLASSES)})
-    if "error" in result:
-        return result
-    comps = result.get("components", [])
+    # Pass 1 measures via the bridge script; pass 2 (re-fit) supplies cached
+    # ``comps`` and SKIPS the measurement entirely — the measured body w/h +
+    # keepout_side are reused verbatim (only ``cluster_wh`` changes the math).
+    if comps is None:
+        result = run_pcbnew_script(script, params={
+            "fp_specs": fp_specs, "edge_classes": list(_EDGE_DESIGNATOR_CLASSES)})
+        if "error" in result:
+            return result
+        comps = result.get("components", [])
+        measure_errors = result.get("errors", [])
+    else:
+        measure_errors = []
     if not comps:
-        return {"error": "No valid footprints found", "details": result.get("errors", [])}
+        return {"error": "No valid footprints found", "details": measure_errors}
     # Distribute terminals across edge(s) — the SINGLE source for BOTH the board
     # size and the per-terminal edge assignment (single_edge collapses to today's
     # _content_aware_size; the regression-lock test pins this). The returned
@@ -552,15 +727,17 @@ print(json.dumps({"components": components, "errors": errors}))
         comps, antenna_side, mode=terminal_distribution,
         corner_inset_mm=corner_inset_mm,
         corner_center_inset_mm=corner_center_inset_mm,
-        side_silk_gap_mm=side_silk_gap_mm)
+        side_silk_gap_mm=side_silk_gap_mm,
+        cluster_wh=cluster_wh)
     return {
         "status": "ok",
         "size": dist["size"],
         "edge_of": dist["edge_of"],
         "primary_edge": dist["primary_edge"],
         "antenna_side": antenna_side,
-        "errors": result.get("errors", []),
-        "error_count": len(result.get("errors", [])),
+        "comps": comps,
+        "errors": measure_errors,
+        "error_count": len(measure_errors),
     }
 
 
@@ -2048,12 +2225,17 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # auto-size spreads field terminals across the side edges.
         _term_dist = "single_edge"
         _term_anchor = "start"
+        _refit = False
         if design_intent is not None:
             _term_dist = design_intent.source.get("terminal_distribution", "single_edge")
             # terminal_centering (board.yaml, default off) centres each edge's
             # terminal group instead of packing it at one end (layout balance only).
             _term_anchor = ("center" if design_intent.source.get("terminal_centering")
                             else "start")
+            # board_refit (board.yaml, default off) re-fits an AUTO-SIZED board to its
+            # measured cluster after placement (SPEC_Post_Placement_Board_Refit). The
+            # auto_sized gate (D2) is applied below — never re-fit user-dimensioned boards.
+            _refit = bool(design_intent.source.get("board_refit"))
         step = _step_create_pcb_and_outline(
             pcb_path, eff_width_mm, eff_height_mm, components, holes=holes,
             terminal_distribution=_term_dist,
@@ -2067,6 +2249,10 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         # Passed to placement as the LOWEST-priority {"edge": E} hints below.
         terminal_edge_of = step.get("edge_of") or {}
         antenna_side_est = step.get("antenna_side")
+        # Captured for re-fit (D2 gate + pass-2 reuse): whether the board was
+        # auto-sized, and the measured footprint bodies (so pass 2 skips re-measuring).
+        auto_sized = bool(step.get("auto_sized"))
+        measured_comps = step.get("comps") or []
         pipeline_result["board_width_mm"] = actual_width
         pipeline_result["board_height_mm"] = actual_height
         if step.get("auto_sized"):
@@ -2103,26 +2289,27 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         pipeline_result["pads_assigned"] = step.get("pads_assigned", 0)
 
         # Merge placement hints, lowest → highest priority:
-        #   auto terminal distribution  <  intent-carried  <  explicit param.
-        # The distributor's {ref: edge} is the BASE so an explicit user/intent hint
-        # on a terminal still wins; terminals with no hint fall to the script's
-        # antenna-opposite rule (single_edge boards pass NO distribution hints, so
-        # they stay byte-identical). normalize_hint validates every directive.
-        _dist_hints = {ref: {"edge": e} for ref, e in terminal_edge_of.items()}
-        _base_hints = dict(_dist_hints)
-        if design_intent is not None and design_intent.placement_hints:
-            _base_hints.update(design_intent.placement_hints)
-        clean_hints, hint_warnings = _merge_placement_hints(
-            _base_hints,
-            placement_hints,
-        )
-        # Mounting holes are physical fixtures we already placed — pin them at the
-        # corners at HIGHEST priority (else the placer, which no longer edge-places
-        # "H", would shove them into the interior). Normalized via the same path.
-        if hole_hints:
-            norm_holes, hole_ws = _merge_placement_hints(None, hole_hints)
-            clean_hints.update(norm_holes)
-            hint_warnings.extend(hole_ws)
+        #   auto terminal distribution  <  intent-carried  <  explicit param  <
+        #   mounting-hole fixtures (pinned at the corners). SINGLE SOURCE so pass 1
+        # AND a re-fit pass 2 compose hints identically. The distributor's {ref:edge}
+        # is the BASE so an explicit user/intent hint on a terminal still wins;
+        # terminals with no hint fall to the script's antenna-opposite rule.
+        # normalize_hint validates every directive.
+        def _compose_hints(edge_of, hole_hints_):
+            base = {ref: {"edge": e} for ref, e in edge_of.items()}
+            if design_intent is not None and design_intent.placement_hints:
+                base.update(design_intent.placement_hints)
+            clean, warns = _merge_placement_hints(base, placement_hints)
+            # Mounting holes are physical fixtures we already placed — pin them at the
+            # corners at HIGHEST priority (else the placer, which no longer edge-places
+            # "H", would shove them into the interior). Normalized via the same path.
+            if hole_hints_:
+                norm_holes, hole_ws = _merge_placement_hints(None, hole_hints_)
+                clean.update(norm_holes)
+                warns.extend(hole_ws)
+            return clean, warns
+
+        clean_hints, hint_warnings = _compose_hints(terminal_edge_of, hole_hints)
 
         # Step 5: Smart placement (tiered, connectivity-aware). corner_clear keeps
         # edge terminals clear of the corner mounting holes (single source with
@@ -2133,6 +2320,114 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             terminal_anchor=_term_anchor)
         _record("smart_placement", step)
         # Non-fatal — continue even if placement is imperfect
+
+        # ── Board re-fit pass 2 (SPEC_Post_Placement_Board_Refit §3) ───────────
+        # Measure the placed interior cluster; if the board can hug it more tightly,
+        # redraw a smaller outline and re-place onto it. Opt-in (board_refit) and
+        # ONLY for auto-sized boards (D1/D2) — the size lever that recovers the
+        # sizing over-estimate. ANY decline/failure/soft-regression keeps pass 1; a
+        # committed attempt that fails restores the .pass1 backup so the on-disk
+        # board always matches the in-memory `step`.
+        if _refit and auto_sized and measured_comps:
+            _backup = pcb_path + ".pass1"
+            _old_w, _old_h = actual_width, actual_height
+            try:
+                # Cluster = everything NOT edge-placed and NOT a mounting hole (§2:
+                # includes interior J6, excludes H* + the edge-anchored terminals).
+                _edge_placed = [
+                    d["ref"] for d in (step.get("placement_decisions") or [])
+                    if d.get("event") == "rotation_chosen" and d.get("edge")
+                ]
+                _meas = _step_measure_cluster(pcb_path, _edge_placed)
+                _cw, _ch = _meas.get("cluster_w", 0.0), _meas.get("cluster_h", 0.0)
+                if "error" in _meas or _cw <= 0 or _ch <= 0:
+                    raise _RefitDecline("cluster measure empty or failed")
+                # Inflate by the routing-slack margin per side (tunable, §4/R1).
+                _m = _CLUSTER_ROUTING_MARGIN_MM
+                _resize = _estimate_board_size(
+                    [], corner_inset_mm=_hole_corner_clear(holes),
+                    corner_center_inset_mm=_hole_center_inset(holes),
+                    terminal_distribution=_term_dist,
+                    cluster_wh=(_cw + 2 * _m, _ch + 2 * _m), comps=measured_comps)
+                if "error" in _resize:
+                    raise _RefitDecline("re-estimate failed: %s" % _resize.get("error"))
+                _new_w = _resize["size"]["width_mm"]
+                _new_h = _resize["size"]["height_mm"]
+                # No-op guard: meaningfully smaller on ≥1 axis, growing on neither.
+                _TOL = 1.0
+                _dw, _dh = _old_w - _new_w, _old_h - _new_h
+                if not ((_dw > _TOL or _dh > _TOL) and _dw >= -_TOL and _dh >= -_TOL):
+                    raise _RefitDecline(
+                        "not meaningfully smaller (%sx%s → %sx%s)"
+                        % (_old_w, _old_h, _new_w, _new_h))
+
+                # Commit: backup, redraw outline (footprints/nets survive), re-fixture
+                # the corner holes on the new outline, re-place. Any sub-step error
+                # below is a generic exception → the fallback handler restores .pass1.
+                shutil.copy2(pcb_path, _backup)
+                if "error" in _step_redraw_outline(pcb_path, _new_w, _new_h):
+                    raise RuntimeError("redraw_outline failed")
+                if "error" in _step_remove_mounting_holes(pcb_path):
+                    raise RuntimeError("remove_mounting_holes failed")
+                _hole_positions2: List[Dict[str, Any]] = []
+                _hole_hints2: Dict[str, Dict[str, Any]] = {}
+                if holes.get("count", 0) > 0:
+                    _ah = _step_add_mounting_holes(pcb_path, holes)
+                    if "error" in _ah:
+                        raise RuntimeError("add_mounting_holes failed")
+                    _hole_positions2 = _ah.get("positions") or []
+                    _hole_hints2 = {
+                        r["ref"]: {"fixed": [r["x_mm"], r["y_mm"]], "rotation": 0}
+                        for r in _hole_positions2
+                    }
+                _clean2, _warns2 = _compose_hints(_resize.get("edge_of") or {}, _hole_hints2)
+                _step2 = _step_smart_placement(
+                    pcb_path, nets, placement_hints=_clean2,
+                    corner_clear_mm=_hole_corner_clear(holes),
+                    terminal_anchor=_term_anchor)
+                if "error" in _step2:
+                    raise RuntimeError("pass-2 placement failed")
+                # Fit-fallback (§3 step 5): a hard miss OR a soft regression
+                # (terminal crowded / MCU dropped to interior so the antenna no longer
+                # overhangs) means the tighter board doesn't seat — restore pass 1.
+                _soft = {d.get("event") for d in (_step2.get("placement_decisions") or [])} & {
+                    "terminal_edge_crowded", "keepout_fallback_interior"}
+                if _step2.get("failed_placements") or _soft:
+                    raise RuntimeError(
+                        "fit regression (failed=%s soft=%s)"
+                        % (_step2.get("failed_placements"), sorted(_soft)))
+
+                # Pass 2 won — adopt its board, dims, holes, placement, hints.
+                step = _step2
+                actual_width, actual_height = _new_w, _new_h
+                hole_positions = _hole_positions2
+                clean_hints, hint_warnings = _clean2, _warns2
+                pipeline_result["board_width_mm"] = _new_w
+                pipeline_result["board_height_mm"] = _new_h
+                pipeline_result.setdefault("warnings", []).append(
+                    "Board re-fit %sx%s → %sx%smm (measured cluster %.1fx%.1f)"
+                    % (_old_w, _old_h, _new_w, _new_h, _cw, _ch))
+                _record("board_refit", {
+                    "status": "ok", "width_mm": _new_w, "height_mm": _new_h,
+                    "from_width_mm": _old_w, "from_height_mm": _old_h,
+                    "cluster_w": _cw, "cluster_h": _ch})
+                try:
+                    os.remove(_backup)
+                except OSError:
+                    pass
+            except _RefitDecline as _decl:
+                _record("board_refit", {"status": "declined", "reason": str(_decl)})
+            except Exception as _f:  # noqa: BLE001 — re-fit is an optimization, never fatal
+                # Restore the pass-1 board if we had committed, so disk matches `step`.
+                try:
+                    if os.path.exists(_backup):
+                        shutil.copy2(_backup, pcb_path)
+                        os.remove(_backup)
+                except OSError:
+                    pass
+                _record("board_refit", {"status": "fallback", "reason": str(_f)})
+                pipeline_result.setdefault("warnings", []).append(
+                    "Board re-fit fell back to pass 1: %s" % _f)
 
         # Which edge each terminal was placed on (from the rotation decisions) —
         # used by the silk-legend step to offset labels inboard, away from that
