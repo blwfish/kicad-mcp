@@ -32,14 +32,25 @@ import yaml
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.firmware.autodraft import draft_card, extract_whoami
+from kicad_mcp.utils.firmware.bus_part_resolver import resolve_bus_parts
+from kicad_mcp.utils.firmware.cards import (
+    load_cards,
+    part_serves_map,
+    recognized_part_names,
+)
 from kicad_mcp.utils.firmware.generate import generate_schematic as _generate
 from kicad_mcp.utils.firmware.intent import (
     DesignIntent,
+    Gap,
     build_intent,
     candidate_devices,
     find_board_id,
     load_intent,
     save_intent,
+)
+from kicad_mcp.utils.firmware.part_extractor import (
+    collect_corpus,
+    extract_part_names,
 )
 from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
 from kicad_mcp.utils.firmware.sidecar import (
@@ -180,6 +191,22 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
                     "message": f"Malformed {sidecar_path}: {e}"}
         sidecar_applied = sidecar_path
 
+    # Part resolution (C4): bind each bus to the SPECIFIC part the firmware NAMES
+    # (in the preprocessed config text + sibling source/docs), never invent. Runs
+    # after the sidecar so a board.yaml override (provenance "user") is honored.
+    # An ambiguous bus (>1 candidate) is disclosed as a gap, never auto-picked.
+    peripherals, _ = load_cards()
+    corpus = collect_corpus(str(cfg), text)
+    evidence = extract_part_names(corpus, recognized_part_names(peripherals))
+    for r in resolve_bus_parts(intent.buses, evidence, part_serves_map(peripherals)):
+        if r.reason == "ambiguous":
+            intent.gaps.append(Gap(
+                "part_ambiguous",
+                f"Bus {r.bus!r} ({r.type}) names multiple candidate parts "
+                f"{r.candidates} in the firmware — not auto-bound (no silent pick). "
+                f"Disambiguate with a board.yaml bus_part_overrides entry.",
+            ))
+
     # Nudge (don't assume): list commonly-field-wired buses with no locus set.
     advise_unspecified_placement(intent)
 
@@ -200,6 +227,12 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
         "sidecar": sidecar_applied,
         "board_size_mm": intent.source.get("board_size_mm"),
         "power_source": intent.source.get("power_source"),
+        # Which bus bound to which SPECIFIC part, and from where — so the caller
+        # sees the resolver isn't inventing (the SPH0645-for-INMP441 fix).
+        "resolved_parts": {
+            b.name: {"part": b.resolved_part, "via": b.part_provenance}
+            for b in intent.buses if b.resolved_part
+        },
     }
 
 
