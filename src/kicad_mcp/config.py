@@ -139,3 +139,11 @@ TIMEOUT_CONSTANTS = {
     "application_open": 10.0,
     "subprocess_default": 30.0,
 }
+
+# CLI startup-validation retry: on a cold/busy CI runner the first --version
+# invocation can transiently fail (timeout or nonzero exit) before the binary
+# warms up. Retry a few times with a short backoff so the CLI is not falsely
+# treated as absent (which would fail the firmware integration suite fast with
+# a downstream KeyError: 'status').
+KICAD_CLI_VALIDATE_ATTEMPTS = 3
+KICAD_CLI_VALIDATE_BACKOFF = 0.5  # seconds between attempts

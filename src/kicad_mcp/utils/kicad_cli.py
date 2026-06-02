@@ -10,8 +10,13 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 
-from kicad_mcp.config import TIMEOUT_CONSTANTS
+from kicad_mcp.config import (
+    KICAD_CLI_VALIDATE_ATTEMPTS,
+    KICAD_CLI_VALIDATE_BACKOFF,
+    TIMEOUT_CONSTANTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,22 +187,48 @@ class KiCadCLIManager:
         """
         Validate that a CLI path is working.
 
+        The ``--version`` probe is retried a few times with a short backoff:
+        on a cold/busy CI runner the first invocation can transiently fail
+        (subprocess timeout or a nonzero exit under load) before the binary
+        warms up. Without the retry the CLI is falsely treated as absent,
+        which fails the firmware integration suite downstream. Retry counts
+        and backoff come from config (KICAD_CLI_VALIDATE_ATTEMPTS / _BACKOFF).
+
         Args:
             cli_path: Path to validate
 
         Returns:
             True if CLI is working
         """
-        try:
-            result = subprocess.run(
-                [cli_path, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_CONSTANTS["kicad_cli_version_check"],
-            )
-            return result.returncode == 0
-        except (subprocess.SubprocessError, OSError, FileNotFoundError):
-            return False
+        attempts = max(1, KICAD_CLI_VALIDATE_ATTEMPTS)
+        for attempt in range(attempts):
+            try:
+                result = subprocess.run(
+                    [cli_path, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_CONSTANTS["kicad_cli_version_check"],
+                )
+                if result.returncode == 0:
+                    return True
+                logger.debug(
+                    "KiCad CLI validation attempt %d/%d for %s exited %s",
+                    attempt + 1,
+                    attempts,
+                    cli_path,
+                    result.returncode,
+                )
+            except (subprocess.SubprocessError, OSError) as e:
+                logger.debug(
+                    "KiCad CLI validation attempt %d/%d for %s failed: %s",
+                    attempt + 1,
+                    attempts,
+                    cli_path,
+                    e,
+                )
+            if attempt < attempts - 1:
+                time.sleep(KICAD_CLI_VALIDATE_BACKOFF)
+        return False
 
 
 # Global CLI manager instance
