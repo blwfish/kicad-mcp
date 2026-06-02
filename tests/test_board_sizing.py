@@ -81,3 +81,20 @@ def test_largest_interior_dim_is_a_floor():
 def test_returns_single_size_not_a_list():
     s = _content_aware_size([{"w": 10.0, "h": 10.0, "is_terminal": False}])
     assert set(s) == {"width_mm", "height_mm"}
+
+
+# --- corner mounting-hole inset (Phase 5) ------------------------------------
+
+def test_corner_inset_zero_is_noop():
+    # inset=0 must equal the no-inset baseline — this is what keeps every other
+    # sizing test valid (the param defaults to 0.0).
+    comp = [{"w": 10.0, "h": 10.0, "is_terminal": False}]
+    assert _content_aware_size(comp, padding=2.0) == \
+        _content_aware_size(comp, padding=2.0, corner_inset_mm=0.0)
+
+
+def test_corner_inset_grows_both_dims_by_2x():
+    comp = [{"w": 10.0, "h": 10.0, "is_terminal": False}]
+    w0, h0 = _wh(_content_aware_size(comp, padding=2.0))
+    w1, h1 = _wh(_content_aware_size(comp, padding=2.0, corner_inset_mm=3.5))
+    assert (w1, h1) == (w0 + 7, h0 + 7)   # 2 * 3.5 on each axis
