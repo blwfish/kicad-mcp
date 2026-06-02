@@ -5,6 +5,10 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Run on the merge queue's temp refs so "integration / kicad-10.0" can gate
+  # queued PRs. cancel-in-progress below is gated to pull_request, so a queue
+  # run is never cancelled.
+  merge_group:
 
 permissions:
   contents: read
