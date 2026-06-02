@@ -171,6 +171,8 @@ orientation, `estimate_board_size` = area×2.5 + keepout, keepout-merged-into-fi
 
 - **Scope note — mounting holes are not greenfield.** `H` is already in `EDGE_CLASSES` →
   tier-2 edge placement today; §3's corner-fixtures path is a *change* from that, not a new
-  capability. And new `board.yaml` keys (mounting_holes, per-terminal order) **silently no-op**
-  unless added to the dataclass + `_validate` + `load_sidecar` + `apply_sidecar` together —
-  the validator currently ignores unknown keys (worth fixing: reject/warn on unknown keys).
+  capability. A new `board.yaml` key must be added to the dataclass + `_validate` +
+  `load_sidecar` + `apply_sidecar` together. **As of v1.1 the sidecar validator REJECTS
+  unknown top-level keys (and unknown `mounting_holes` sub-keys) with a `SidecarError`** —
+  a typo like `board_size` for `board_size_mm` is loud, not a silent no-op. (Earlier drafts
+  of this spec said unknown keys silently no-op; that is no longer true.)

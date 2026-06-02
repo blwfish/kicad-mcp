@@ -206,7 +206,8 @@ def test_unknown_top_level_key_rejected(tmp_path):
 
 
 def test_known_keys_all_accepted(tmp_path):
-    # Every documented key loads clean together (guards the _KNOWN set drifting).
+    # Every documented key loads clean together AND populates — guards all three
+    # sources (BoardSidecar fields / _KNOWN_SIDECAR_KEYS / load_sidecar) from drift.
     sc = load_sidecar(_write(tmp_path, """\
         power_source: usb_c
         board_size_mm: [90, 75]
@@ -216,12 +217,26 @@ def test_known_keys_all_accepted(tmp_path):
         mounting_holes: {count: 4}
     """))
     assert sc.power_source == "usb_c"
+    assert sc.board_size_mm == [90, 75]
+    assert sc.extra_connectors == []
+    assert sc.placement == {}
+    assert sc.placement_hints == {}
+    assert sc.mounting_holes == {"count": 4}
 
 
 # --- mounting_holes -----------------------------------------------------------
 
 def test_mounting_holes_absent_is_none(tmp_path):
     assert load_sidecar(_write(tmp_path, "power_source: usb_c\n")).mounting_holes is None
+
+
+def test_mounting_holes_explicit_null_is_none(tmp_path):
+    assert load_sidecar(_write(tmp_path, "mounting_holes: null\n")).mounting_holes is None
+
+
+def test_mounting_holes_empty_mapping_loads_empty(tmp_path):
+    # all keys optional → an empty mapping is valid and falls back to pipeline defaults
+    assert load_sidecar(_write(tmp_path, "mounting_holes: {}\n")).mounting_holes == {}
 
 
 def test_mounting_holes_loads(tmp_path):
@@ -240,9 +255,11 @@ def test_mounting_holes_loads(tmp_path):
     ("mounting_holes: 4\n", "mounting_holes must be a mapping"),
     ("mounting_holes: {count: 3}\n", "count"),          # not in {0,2,4}
     ("mounting_holes: {count: 1}\n", "count"),          # boundary just below 2
+    ("mounting_holes: {count: false}\n", "count"),      # bool slips past `in (0,2,4)`
     ("mounting_holes: {drill_mm: 0}\n", "drill_mm"),    # not positive
     ("mounting_holes: {drill_mm: -1}\n", "drill_mm"),   # negative
     ("mounting_holes: {inset_mm: true}\n", "inset_mm"),  # bool is not a number
+    ("mounting_holes: {counnt: 4}\n", "unknown key"),   # typo'd sub-key not dropped
 ])
 def test_mounting_holes_rejected(tmp_path, body, needle):
     with pytest.raises(SidecarError) as e:

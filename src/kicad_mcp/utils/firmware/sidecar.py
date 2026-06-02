@@ -107,10 +107,14 @@ class BoardSidecar:
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
 # `board_size` for `board_size_mm` instead of silently ignoring the directive).
+# MUST stay in sync with the BoardSidecar fields above AND the data.get() calls
+# in load_sidecar — test_known_keys_all_accepted guards that all three agree.
 _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
     "placement", "placement_hints", "mounting_holes",
 })
+
+_KNOWN_MOUNTING_HOLES_KEYS = frozenset({"count", "drill_mm", "inset_mm", "keepout_mm"})
 
 
 def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
@@ -176,7 +180,17 @@ def _validate_mounting_holes(d: dict[str, Any], errs: list[str]) -> None:
     if not isinstance(mh, dict):
         errs.append("mounting_holes must be a mapping")
         return
-    if "count" in mh and mh["count"] not in (0, 2, 4):
+    # Reject unknown sub-keys too — consistency with the top-level rejection, so a
+    # typo like `counnt: 4` is loud, not silently dropped (and silently default).
+    unknown = set(mh) - _KNOWN_MOUNTING_HOLES_KEYS
+    if unknown:
+        errs.append(
+            f"mounting_holes: unknown key(s) {sorted(unknown)} — "
+            f"valid: {sorted(_KNOWN_MOUNTING_HOLES_KEYS)}"
+        )
+    # bool is an int subclass and False == 0, so `False in (0,2,4)` is True — guard
+    # explicitly or `count: false` would slip through as 0.
+    if "count" in mh and (isinstance(mh["count"], bool) or mh["count"] not in (0, 2, 4)):
         errs.append(f"mounting_holes.count {mh['count']!r} must be 0, 2, or 4")
     for key in ("drill_mm", "inset_mm", "keepout_mm"):
         if key in mh:
