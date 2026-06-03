@@ -266,13 +266,21 @@ def _step_create_pcb_and_outline(
         measured_comps = size_result.get("comps", [])   # cached body w/h for pass 2
         auto_sized = True
 
-    # Create the PCB file
+    # Create the PCB file. Set the minimum through-hole drill to 0.2 mm: an empty
+    # board inherits KiCad's 0.3 mm default, but standard ESP32/MCU module
+    # footprints carry 0.2 mm thermal-pad vias, so every generated board would
+    # otherwise trip `drill_out_of_range` on those vias. 0.2 mm is JLCPCB's
+    # standard PTH minimum and the smallest hole these footprints use, so the
+    # rule stays meaningful (a smaller user hole is still flagged) while the
+    # board is DRC-clean out of the box.
     script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.CreateEmptyBoard()
+ds = board.GetDesignSettings()
+ds.m_MinThroughDrill = pcbnew.FromMM(0.2)
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok"}))
 """
