@@ -142,17 +142,17 @@ All are optional. The server auto-detects sensible defaults for each platform.
 
 ## How to Use the Tools
 
-### Read CLAUDE.md First
+### Read AGENT-INSTRUCTIONS.md First
 
-The file `CLAUDE.md` in the repo root is your primary reference for **using** the tools. It contains:
+The file `AGENT-INSTRUCTIONS.md` in the repo root is your primary reference for **using** the tools, written for any agent (Claude, Gemini, Cursor, …). It contains:
 
 - **Mandatory rules** — three things you must never do (manual routing, guessing library names, parallel PCB writes)
-- **Complete workflow** — the 8-step process from schematic to verified board
+- **Complete workflow** — the step-by-step process from schematic to verified board
 - **Tool selection table** — which tool to use for each task
 - **Placement guidelines** — component grouping, spacing, pin numbering
 - **DRC interpretation** — which violations matter and which are cosmetic
 
-If you are registered as an MCP server for a project that does KiCad work, the project's claude configuration should include kicad-mcp's `CLAUDE.md` so you always have it in context.
+The critical rules are also delivered automatically to every MCP client through the server's `instructions` (no file-reading required), so you see them before opening any doc. (Claude Code users: the repo's local, git-ignored `CLAUDE.md` `@`-imports `AGENT-INSTRUCTIONS.md` and adds Claude-specific notes.)
 
 ### Client Compatibility
 
@@ -258,9 +258,9 @@ When filing an issue, include:
 ### Pull Requests
 
 - PRs for bug fixes, new platform support, and new tools are welcome
-- New operations fold into an existing router (schematic, pcb, audit, drc, autoroute, library, project, analyze, export) or add a new standalone tool if they don't fit any router's domain
+- New operations fold into an existing router (schematic, pcb, audit, drc, autoroute, library, project, analyze, export, lcsc, schematic_layout, design) or add a new standalone tool if they don't fit any router's domain
 - PCB tools use the subprocess bridge (`run_pcbnew_script`); schematic tools use kicad-sch-api in-process
-- Run `pytest` before submitting — all tests should pass (currently 1134 tests)
+- Run `pytest` before submitting — all tests should pass (2,000+ tests)
 - Tools return `{"status": "ok", ...}` on success or `{"error": "..."}` on failure — follow this convention
 
 ### Adding a New Operation to an Existing Router

@@ -5,10 +5,32 @@ from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
+# Delivered to EVERY MCP client over the protocol (Claude, Gemini, Cursor, …) —
+# the one cross-agent channel that needs no file-reading. Keep it short: the
+# few can't-miss rules plus pointers to the full docs. The complete operating
+# guide lives in AGENT-INSTRUCTIONS.md; the operation reference in TOOLS.md.
+SERVER_INSTRUCTIONS = """\
+KiCad EDA — design schematics and lay out PCBs. Most tools are routers that \
+dispatch on an `operation=` argument (e.g. pcb(operation="place_footprint"), \
+drc(operation="autofix"), library(operation="search")); the rest are standalone \
+(build_pcb_from_schematic, estimate_board_size, suggest_placement, panelize_pcb).
+
+Critical rules:
+- NEVER hand-route. Don't use pcb add_trace/add_via to route a board — use \
+autoroute(operation="run") (wraps FreeRouter). LLM-placed traces short and \
+violate clearances.
+- NEVER guess library/footprint names — they change between KiCad versions. \
+Search first with library(operation="search").
+- NEVER modify one PCB file with concurrent calls. PCB ops are \
+load/modify/save subprocesses; parallel writes corrupt the file. Serialize them.
+- Verify with drc(operation="run") and audit(operation="all") before finishing.
+
+See AGENT-INSTRUCTIONS.md for the full workflow, TOOLS.md for the operation reference."""
+
 
 def create_server() -> FastMCP:
     """Create and configure the KiCad MCP server."""
-    mcp = FastMCP("KiCad")
+    mcp = FastMCP("KiCad", instructions=SERVER_INSTRUCTIONS)
 
     # PCB domain router (phase 4: replaces 27 individual pcb_* tools)
     from kicad_mcp.tools.pcb import register_pcb_tools
