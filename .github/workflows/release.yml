@@ -39,8 +39,50 @@ jobs:
           KICAD_SYMBOL_DIR: /usr/share/kicad/symbols
         run: python -m pytest tests/ -q
 
+  # Gate the release on the SAME self-hosted KiCad integration matrix that runs
+  # on main, so a tag can never cut a release with the board pipeline red (the
+  # gap that let v0.11.0 publish over a red integration run). Mirrors
+  # .github/workflows/integration.yml: kicad-10.0 is the hard gate; kicad-9.0 is
+  # advisory (continue-on-error) — its FreeRouter is chronically marginal.
+  integration:
+    name: integration / kicad-${{ matrix.kicad }}
+    runs-on: [self-hosted, macOS]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kicad: "10.0"
+            continue_on_error: false
+          - kicad: "9.0"
+            continue_on_error: true
+    continue-on-error: ${{ matrix.continue_on_error }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify KiCad install
+        run: |
+          kicad_app="/Volumes/Files/claude/kicad-versions/${{ matrix.kicad }}/KiCad.app"
+          if [ ! -d "$kicad_app" ]; then
+            echo "KiCad ${{ matrix.kicad }} not found at $kicad_app"
+            exit 1
+          fi
+          echo "KICAD_APP_PATH=$kicad_app" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Run integration tests
+        # Isolate KiCad config/cache per runner (concurrent self-hosted runs must
+        # not race on shared config/lock files) — matches integration.yml.
+        env:
+          KICAD_CONFIG_HOME: ${{ runner.temp }}/kicad-config
+        run: |
+          KICAD_INTEGRATION=1 uv run pytest tests/integration/ -v \
+            --tb=short \
+            --timeout=120
+
   release:
-    needs: test
+    needs: [test, integration]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
