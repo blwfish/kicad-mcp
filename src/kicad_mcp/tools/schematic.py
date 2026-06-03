@@ -447,10 +447,13 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if len(position) != 2:
                 return {"error": "position must be [x, y]"}
             sch = _require_schematic()
-            matches = list(sch.components.filter(reference=reference))
-            if not matches:
+            # IMPORTANT: use components.get(ref), NOT components.filter(reference=ref).
+            # kicad-sch-api's filter() silently drops unrecognized kwargs (the valid
+            # key is reference_pattern, not reference) and returns ALL components —
+            # filter(reference=...)[0] would silently move the wrong component.
+            comp = sch.components.get(reference)
+            if comp is None:
                 return {"error": f"Component {reference!r} not found"}
-            comp = matches[0]
             old_pos = [comp.position.x, comp.position.y] if comp.position else None
             new_pos = list(_snap(position[0], position[1]))
             comp.position = tuple(new_pos)
