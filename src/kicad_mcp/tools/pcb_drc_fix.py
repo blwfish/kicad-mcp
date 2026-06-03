@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict
 
 
+from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.keepout_helpers import (
     COURTYARD_BBOX_TUPLE_HELPER,
     NUDGE_PLACEMENT_HELPER,
@@ -215,6 +216,7 @@ print(json.dumps({"status": "ok", "removed": removed}))
     if fix_silkscreen and groups["silkscreen"]:
         silk_result = run_pcbnew_script("""
 import pcbnew, json, sys
+""" + GEOMETRY_HELPER + """
 
 params = json.loads(open(sys.argv[1]).read())
 
