@@ -264,8 +264,9 @@ class TestConnectorEdge:
         )
         applied = _events_by_rule(events, RULE_CONNECTOR_EDGE)
         assert any(e.code == "convention_applied" for e in applied)
-        # J1's x should now be less than the original leftmost (50.0).
-        assert pack.positions["J1"][0] < 50.0
+        # Pin the exact target: 0.5 column left of the original leftmost (50.0).
+        # A relational `< 50.0` would pass even for a near-zero offset.
+        assert pack.positions["J1"][0] == 50.0 - 25.4 * 0.5
 
     def test_last_tier_connector_pushed_right(self):
         members = {"c0": ["U1"], "c1": ["J1"]}
@@ -279,8 +280,30 @@ class TestConnectorEdge:
         )
         applied = _events_by_rule(events, RULE_CONNECTOR_EDGE)
         assert any(e.code == "convention_applied" for e in applied)
-        # J1's x should now be greater than the original rightmost (100.0).
-        assert pack.positions["J1"][0] > 100.0
+        # Pin the exact target: 0.5 column right of the original rightmost (100.0).
+        assert pack.positions["J1"][0] == 100.0 + 25.4 * 0.5
+
+    def test_two_tier_0_connectors_do_not_cascade(self):
+        # Both tier-0 connectors must target the SAME column (0.5 left of the
+        # pre-convention leftmost). The old bug read the MUTATED pack per call,
+        # so the 2nd connector pushed off the 1st's already-moved position and
+        # cascaded further left.
+        members = {"c0": ["J1"], "c1": ["J2"], "c2": ["U1"]}
+        labels = {
+            "c0": _label(LABEL_CONNECTOR, "J1"),
+            "c1": _label(LABEL_CONNECTOR, "J2"),
+            "c2": _label(LABEL_MCU, "U1"),
+        }
+        pack = _pack({"J1": (50.0, 30.0), "J2": (60.0, 30.0), "U1": (100.0, 30.0)})
+        apply_conventions(
+            members_by_cluster=members, cluster_labels=labels,
+            netlist={"components": {r: _comp(r) for r in ["J1", "J2", "U1"]}, "nets": {}},
+            pack=pack, cluster_tier={"c0": 0, "c1": 0, "c2": 1},
+            column_pitch_mm=25.4, row_pitch_mm=12.7,
+        )
+        target = 50.0 - 25.4 * 0.5            # 0.5 col left of pre-convention leftmost
+        assert pack.positions["J1"][0] == target
+        assert pack.positions["J2"][0] == target   # NOT cascaded further left
 
     def test_middle_tier_connector_skipped(self):
         members = {"c0": ["U1"], "c1": ["J1"], "c2": ["U2"]}

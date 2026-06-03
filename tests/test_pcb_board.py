@@ -196,6 +196,27 @@ class TestSetDesignRules:
         assert result["design_rules"]["min_track_width_mm"] == 0.25
 
     @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
+    def test_script_applies_all_rules_and_preserves_layer_count(
+        self, mock_run, pcb_server, pcb_with_project
+    ):
+        # Mocks can't catch a rule that's reported-but-not-written, so inspect the
+        # generated pcbnew script directly. Regression for: min_through_hole_diameter
+        # + min_copper_edge_clearance were echoed but never applied to the board,
+        # and SetCopperLayerCount(2) silently demoted multi-layer boards.
+        mock_run.return_value = {"status": "ok", "design_rules": {}}
+        fn = _get_pcb_fn(pcb_server)
+        fn("set_design_rules", pcb_path=pcb_with_project["pcb_path"],
+           min_through_hole_diameter_mm=0.15, min_copper_edge_clearance_mm=0.35)
+        script = mock_run.call_args[0][0]
+        assert "m_MinThroughDrill" in script, "through-hole rule must be written to the board"
+        assert "m_CopperEdgeClearance" in script, "edge-clearance rule must be written to the board"
+        # the five always-applied rules are still there
+        for attr in ("m_TrackMinWidth", "m_MinClearance", "m_ViasMinSize",
+                     "m_ViasMinDrill", "m_HoleToHoleMin"):
+            assert attr in script
+        assert "SetCopperLayerCount" not in script, "must not clobber the board's layer count"
+
+    @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
     def test_updates_project_file(self, mock_run, pcb_server, pcb_with_project):
         pcb_path = pcb_with_project["pcb_path"]
         pro_path = pcb_with_project["pro_path"]

@@ -446,6 +446,27 @@ class TestAttributeLutHelpers:
         assert _package_from_attributes([], self.SAMPLE_LUT) == ""
         assert _tier_from_attributes([], self.SAMPLE_LUT) == "extended"
 
+    # --- malformed-index guards: one bad component must not abort the DB build ---
+
+    def test_tier_float_index_ignored(self):
+        # A float index passes a naive `>= len(lut)` check but raises TypeError on
+        # lut[idx]. Guard must skip it (not crash the whole build).
+        assert _tier_from_attributes([1.5], self.SAMPLE_LUT) == "extended"
+
+    def test_tier_negative_index_ignored(self):
+        # A negative index is a valid Python list index → silently reads the WRONG
+        # entry. Guard must reject it.
+        assert _tier_from_attributes([-1], self.SAMPLE_LUT) == "extended"
+
+    def test_tier_empty_value_list_ignored(self):
+        # values["default"] == [] : `values.get(primary, [None])[0]` IndexErrors
+        # (the [None] default only applies to a MISSING key, not an empty one) —
+        # one such JLCPCB component would abort the entire shard build.
+        lut = [["Basic/Extended", {"primary": "default", "values": {"default": []}}]]
+        assert _tier_from_attributes([0], lut) == "extended"
+        assert _package_from_attributes([0], [["Package", {"primary": "default",
+                                                           "values": {"default": []}}]]) == ""
+
 
 class TestParametricAttributeCapture:
     """m-resolved-attrs: parametric attributes must be captured end-to-end,

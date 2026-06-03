@@ -138,6 +138,68 @@ class TestAddAndListComponents:
         result = _call(fn, "remove_component", reference="R99")
         assert "error" in result
 
+    def test_remove_component_multi_removes_only_named(self, sch_server):
+        # Multi-component: a "remove first in list regardless of reference" bug
+        # (the move_component filter()-footgun class) would pass a 1-component
+        # test but fail here.
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
+        _call(fn, "add_component", lib_id="Device:R", reference="R2", value="22k",
+              position=[120, 100])
+        _call(fn, "add_component", lib_id="Device:C", reference="C1", value="100nF",
+              position=[140, 100])
+        result = _call(fn, "remove_component", reference="R2")
+        assert result["status"] == "ok"
+        refs = {c["reference"] for c in _call(fn, "list_components")["components"]}
+        assert refs == {"R1", "C1"}                 # only R2 gone, not "the first one"
+
+
+# -- move_component tests ----------------------------------------------------
+
+class TestMoveComponent:
+    """Regression coverage for the critical filter()-footgun: move_component used
+    `components.filter(reference=ref)` which silently returns ALL components, so
+    [0] moved the WRONG one while reporting status=ok. A single-component test
+    masks it (matches[0] is the only component); these use ≥2."""
+
+    @pytest.fixture(autouse=True)
+    def _create_schematic(self, sch_server):
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        _call(fn, "add_component", lib_id="Device:R", reference="R1", value="10k",
+              position=[100, 100])
+        _call(fn, "add_component", lib_id="Device:R", reference="R2", value="22k",
+              position=[120, 100])
+        _call(fn, "add_component", lib_id="Device:C", reference="C1", value="100nF",
+              position=[140, 100])
+        self._fn = fn
+
+    def _pos(self, ref):
+        comps = _call(self._fn, "list_components")["components"]
+        c = next(c for c in comps if c["reference"] == ref)
+        return c.get("position")
+
+    def test_moves_only_the_named_component(self, sch_server):
+        before_r1 = self._pos("R1")
+        before_c1 = self._pos("C1")
+        result = _call(self._fn, "move_component", reference="R2", position=[60, 60])
+        assert result["status"] == "ok"
+        assert result["reference"] == "R2"
+        # R2 actually moved to (snapped) ~(60,60)...
+        r2 = self._pos("R2")
+        assert abs(r2[0] - 60) < 1.0 and abs(r2[1] - 60) < 1.0
+        # ...and R1 / C1 did NOT move (the bug would have moved matches[0] = R1).
+        assert self._pos("R1") == before_r1
+        assert self._pos("C1") == before_c1
+
+    def test_unknown_reference_is_error_not_silent_move(self, sch_server):
+        before = {r: self._pos(r) for r in ("R1", "R2", "C1")}
+        result = _call(self._fn, "move_component", reference="R99", position=[60, 60])
+        assert "error" in result                    # not status=ok on a phantom ref
+        # nothing moved
+        assert {r: self._pos(r) for r in ("R1", "R2", "C1")} == before
+
 
 # -- add_wire tests ----------------------------------------------------------
 

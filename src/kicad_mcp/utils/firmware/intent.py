@@ -453,24 +453,28 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             "(fields may default-fill).", ver, SCHEMA_VERSION,
         )
     mcu_d = d.get("mcu")
+    # `d.get(k, [])` returns None when k is PRESENT with a null value (a
+    # hand-edited `buses: null`), and `[X(..) for x in None]` raises TypeError.
+    # Use `or []` like placements/placement_hints below so an explicit null
+    # degrades to empty rather than crashing load_intent.
     return DesignIntent(
         schema_version=d.get("schema_version", SCHEMA_VERSION),
         source=d.get("source", {}),
         mcu=Mcu(**_only_fields(Mcu, mcu_d)) if mcu_d else None,
-        peripherals=[Peripheral(**_only_fields(Peripheral, p)) for p in d.get("peripherals", [])],
-        buses=[Bus(**_only_fields(Bus, b)) for b in d.get("buses", [])],
+        peripherals=[Peripheral(**_only_fields(Peripheral, p)) for p in (d.get("peripherals") or [])],
+        buses=[Bus(**_only_fields(Bus, b)) for b in (d.get("buses") or [])],
         nets=[
             Net(
                 name=n["name"], kind=n["kind"], confidence=n["confidence"],
-                endpoints=[Endpoint(**_only_fields(Endpoint, e)) for e in n.get("endpoints", [])],
+                endpoints=[Endpoint(**_only_fields(Endpoint, e)) for e in (n.get("endpoints") or [])],
                 bus=n.get("bus"), origin=n.get("origin", "imported"),
             )
-            for n in d.get("nets", [])
+            for n in (d.get("nets") or [])
         ],
-        gaps=[Gap(**_only_fields(Gap, g)) for g in d.get("gaps", [])],
+        gaps=[Gap(**_only_fields(Gap, g)) for g in (d.get("gaps") or [])],
         connector_legends=[
             ConnectorLegend(**_only_fields(ConnectorLegend, c))
-            for c in d.get("connector_legends", [])
+            for c in (d.get("connector_legends") or [])
         ],
         placements={
             k: Placement(**_only_fields(Placement, v))
