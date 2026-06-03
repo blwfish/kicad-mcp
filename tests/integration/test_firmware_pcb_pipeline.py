@@ -955,16 +955,18 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
 
     pro.write_text(json.dumps(_MINIMAL_PRO))
-    # best-of-6 (not 2/4): this dense I2C board routes to 0–2 (a buzzer-orphan net +
-    # the odd structural one) but FreeRouter's tail occasionally leaves a 3rd —
-    # best-of-2 flaked, then best-of-4 still hit the tail once on CI's KiCad 9.
-    # Placement is unchanged (the silk step runs AFTER routing), so this is pure
-    # router nondeterminism: more passes keeps the tight bound non-flaky rather
-    # than loosening it (matches the dense audio_s3 board, also best-of-6).
+    # best-of-10 (was 2→4→6): this dense I2C board routes to 0–2 (a buzzer-orphan
+    # net + the odd structural one) but FreeRouter's tail occasionally leaves a 3rd.
+    # Each prior bound bump hit the tail again on CI's KiCad 9 (best-of-2, then -4,
+    # then -6 on 2026-06-02). best-of-N takes the best of N independent routing
+    # attempts, so raising N shrinks the all-attempts-fail tail exponentially; 10
+    # gives real headroom over the chronically-marginal 9.0 router. Placement is
+    # unchanged (the silk step runs AFTER routing), so this is pure router
+    # nondeterminism: bump passes, never loosen the tight bound (SPEC §9-A3).
     # add_mounting_holes=False: explicit pre-Phase-5 size, tight; gates nets +
     # routing (holes-on gated by audio_s3 + audio-remote).
     r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
-               autoroute_passes=6, export_gerbers=False, add_mounting_holes=False)
+               autoroute_passes=10, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=2)            # buzzer orphan must not break routing
