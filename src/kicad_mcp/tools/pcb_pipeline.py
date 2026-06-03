@@ -1319,12 +1319,16 @@ for ref in tier1:
             placed_t1 = True
             break
     if not placed_t1:
-        # No edge could seat the body — place interior at 0° (keepout still
-        # tracked via place_at) and FLAG it: the antenna does NOT overhang here.
-        placement_decisions.append({"event": "keepout_fallback_interior", "ref": ref})
+        # No edge could seat the body — try interior at 0° (keepout still tracked
+        # via place_at). The antenna does NOT overhang here. Only FLAG
+        # keepout_fallback_interior once the interior grid actually seats it; if
+        # the board is too full (fb is None) the component stays unplaced and is
+        # surfaced via failed_placements, not as a misleading "fallback" event for
+        # a part that never landed on the board.
         fb = fallback_grid(el0, er0, et0, eb0)
         if fb:
             place_at(ref, fb[0], fb[1])
+            placement_decisions.append({"event": "keepout_fallback_interior", "ref": ref})
 
 # --- Tier 2: Connectors → hint-aware, ordered, pad-inward edge placement ---
 # Three dispositions per connector (hint = validated {edge,rotation,fixed}):

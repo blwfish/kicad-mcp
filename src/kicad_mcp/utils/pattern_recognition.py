@@ -429,8 +429,11 @@ def identify_oscillators(
                 "has_load_capacitors": has_load_caps,
             })
 
-        # Oscillator ICs
-        if "OSC" in component_lib or "OSCILLATOR" in component_lib or re.search(
+        # Oscillator ICs. elif: a part is ONE kind of oscillator — an SMD
+        # crystal-oscillator module (lib_id has both "CRYSTAL" and "OSC", or
+        # ref X1 + "OSC") would otherwise be appended twice with conflicting
+        # types and double the oscillator count.
+        elif "OSC" in component_lib or "OSCILLATOR" in component_lib or re.search(
             r"OSC|OSCILLATOR", component_value, re.IGNORECASE
         ):
             oscillators.append({
@@ -440,8 +443,8 @@ def identify_oscillators(
                 "frequency": extract_frequency_from_value(component_value),
             })
 
-        # RC oscillators (555 timer, etc)
-        if re.search(
+        # RC oscillators (555 timer, etc) — elif for the same single-classification reason.
+        elif re.search(
             r"NE555|LM555|ICM7555|TLC555", component_value, re.IGNORECASE
         ) or "555" in component_lib:
             oscillators.append({

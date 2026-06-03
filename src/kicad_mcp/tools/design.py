@@ -25,8 +25,11 @@ Operations:
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 import yaml
 from fastmcp import FastMCP
@@ -79,6 +82,16 @@ def _find_config_header(firmware_path: str) -> Optional[Path]:
         if prefer.exists():
             return prefer
         matches = sorted(p.rglob("config.h"))
+        if len(matches) > 1:
+            # Monorepo with several projects each carrying a config.h, and no
+            # include/config.h to disambiguate — we pick the alphabetically-first,
+            # which may be the wrong firmware. Warn so a silently-wrong import is
+            # diagnosable; the user can pass the specific config.h path to override.
+            logger.warning(
+                "Multiple config.h found under %r; using %s. Pass a specific "
+                "config.h path to disambiguate. Candidates: %s",
+                firmware_path, matches[0], ", ".join(str(m) for m in matches),
+            )
         return matches[0] if matches else None
     return None
 
@@ -314,6 +327,7 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
     whoami = extract_whoami(intent.provenance)
 
     drafts: list[dict] = []
+    skipped: list[dict] = []
     for t, address in candidate_devices(parsed):
         if resolve_peripheral(t) is not None:
             continue  # already carded -> placed by import, nothing to draft
@@ -324,13 +338,23 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
         if d is not None:
             drafts.append({"confidence": d.confidence, "reasons": d.reasons,
                            "card": d.card})
+        else:
+            # Auto-draft only handles I2C-addressable identity today. A non-I2C
+            # uncarded peripheral (HX711, bit-bang device, …) can't be drafted —
+            # record it so the caller knows it was considered and needs a card
+            # written by hand, rather than silently omitting it.
+            skipped.append({"type": t, "address": address,
+                            "reason": "no I2C address — auto-draft heuristics do not apply"})
     return {
         "status": "ok",
         "drafts": drafts,
         "count": len(drafts),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
         "note": ("Drafts are proposals — review/confirm lib_id, footprint, roles, "
                  "supply/ground pins, then drop the card in a devices dir "
-                 "(KICAD_MCP_DEVICE_DIRS) and re-run import_firmware."),
+                 "(KICAD_MCP_DEVICE_DIRS) and re-run import_firmware. "
+                 "`skipped` peripherals need a device card written by hand."),
     }
 
 

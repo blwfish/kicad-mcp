@@ -426,8 +426,21 @@ def _only_fields(cls: type, d: dict[str, Any]) -> dict[str, Any]:
     extra fields loads (silently dropping the unknowns) instead of raising
     ``TypeError`` on ``cls(**d)`` — matching from_dict's documented forward-compat
     contract (a v4 schema or a typo'd hand-edited key must not crash load_intent)."""
-    known = {f.name for f in dataclasses.fields(cls)}
-    return {k: v for k, v in d.items() if k in known}
+    known = {f.name: f for f in dataclasses.fields(cls)}
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        f = known.get(k)
+        if f is None:
+            continue
+        # A hand-edited doc with `signals: null` (or any list/dict field set to
+        # null) would override the field's default_factory with None, so e.g.
+        # Bus(signals=None) then crashes on `bus.signals.get(...)`. Drop the key
+        # so the factory default (empty dict/list) applies. Optional scalar
+        # fields (resolved_part, etc.) keep their None.
+        if v is None and f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
+            continue
+        out[k] = v
+    return out
 
 
 def from_dict(d: dict[str, Any]) -> DesignIntent:

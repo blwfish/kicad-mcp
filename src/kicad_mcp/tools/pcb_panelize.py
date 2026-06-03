@@ -95,12 +95,15 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
         VALID_CUT_TYPES = {"vcuts", "mousebites"}
         VALID_FRAMING = {"none", "railstb", "railslr", "frame"}
         VALID_TOOLING = {"none", "3hole", "4hole"}
+        VALID_FIDUCIALS = {"none", "3fid", "4fid"}
         if cut_type not in VALID_CUT_TYPES:
             return {"error": f"Invalid cut_type {cut_type!r}. Must be one of: {', '.join(sorted(VALID_CUT_TYPES))}"}
         if framing not in VALID_FRAMING:
             return {"error": f"Invalid framing {framing!r}. Must be one of: {', '.join(sorted(VALID_FRAMING))}"}
         if tooling not in VALID_TOOLING:
             return {"error": f"Invalid tooling {tooling!r}. Must be one of: {', '.join(sorted(VALID_TOOLING))}"}
+        if fiducials not in VALID_FIDUCIALS:
+            return {"error": f"Invalid fiducials {fiducials!r}. Must be one of: {', '.join(sorted(VALID_FIDUCIALS))}"}
 
         # Validate numeric ranges
         if not (1 <= rows <= 100):

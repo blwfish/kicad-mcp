@@ -80,14 +80,24 @@ def apply_conventions(
 ) -> list[ConventionEvent]:
     """Run all v1 conventions over the labeled, packed state.
 
-    Mutates ``pack.positions`` and ``pack.bboxes`` in place. Returns a
-    list of ``ConventionEvent`` records.
+    Mutates ``pack.positions`` in place (NOT ``pack.bboxes`` — no rule updates
+    bboxes, so ``pack.bboxes`` reflects the pre-convention packing; don't drive
+    collision/re-fit decisions off it after this runs). Returns a list of
+    ``ConventionEvent`` records.
     """
     events: list[ConventionEvent] = []
     components = netlist.get("components") or {}
     nets = netlist.get("nets") or {}
 
     max_tier = max(cluster_tier.values(), default=0)
+
+    # Snapshot the pre-convention horizontal extent ONCE. _rule_connector_edge
+    # pushes tier-0 connectors left of this and max-tier connectors right of it;
+    # reading the live (already-mutated) pack inside each call would let a second
+    # tier-0 connector cascade further left than the first (and likewise right).
+    _orig_xs = [x for x, _ in pack.positions.values()]
+    orig_leftmost_x = min(_orig_xs, default=0.0)
+    orig_rightmost_x = max(_orig_xs, default=0.0)
 
     for cid, members in members_by_cluster.items():
         label_obj = cluster_labels.get(cid)
@@ -105,6 +115,7 @@ def apply_conventions(
         ))
         events.extend(_rule_connector_edge(
             cid, members, label_obj, pack, cluster_tier, max_tier, column_pitch_mm,
+            orig_leftmost_x, orig_rightmost_x,
         ))
         events.extend(_rule_power_symbols_top_bottom(
             cid, members, components, pack, row_pitch_mm,
@@ -245,9 +256,15 @@ def _rule_connector_edge(
     cluster_tier: dict[str, int],
     max_tier: int,
     column_pitch_mm: float,
+    orig_leftmost_x: float,
+    orig_rightmost_x: float,
 ) -> list[ConventionEvent]:
     """Push connector-anchored clusters to the leftmost or rightmost
-    column based on signal-flow position."""
+    column based on signal-flow position.
+
+    ``orig_leftmost_x``/``orig_rightmost_x`` are the PRE-convention pack extent
+    (snapshotted by the caller), so two tier-0 connectors both target the same
+    column instead of cascading off the prior one's already-pushed position."""
     rule = RULE_CONNECTOR_EDGE
     if label.label != LABEL_CONNECTOR:
         return []
@@ -264,14 +281,15 @@ def _rule_connector_edge(
 
     affected: list[str] = []
     if tier == 0:
-        # Find leftmost x in current pack and push 0.5 column further left.
+        # Push 0.5 column left of the pre-convention leftmost column.
         if not pack.positions:
             return [_skip(cid, rule, "empty pack", [])]
-        leftmost_x = min(x for x, _ in pack.positions.values())
-        target_x = leftmost_x - column_pitch_mm * 0.5
+        target_x = orig_leftmost_x - column_pitch_mm * 0.5
     else:
-        rightmost_x = max(x for x, _ in pack.positions.values())
-        target_x = rightmost_x + column_pitch_mm * 0.5
+        # Push 0.5 column right of the pre-convention rightmost column.
+        if not pack.positions:
+            return [_skip(cid, rule, "empty pack", [])]
+        target_x = orig_rightmost_x + column_pitch_mm * 0.5
 
     for ref in members:
         if ref in pack.positions:
