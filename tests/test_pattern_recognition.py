@@ -370,6 +370,18 @@ class TestIdentifyOscillators:
         osc_ic = [r for r in result if r["type"] == "oscillator_ic"]
         assert len(osc_ic) >= 1
 
+    def test_crystal_osc_module_classified_once(self):
+        # SMD crystal-oscillator module: lib_id contains BOTH "CRYSTAL" and "OSC"
+        # (and ref starts with X). The crystal branch and oscillator-IC branch are
+        # elif, so it must be classified exactly ONCE — separate `if`s would
+        # double-count it with conflicting types.
+        components = {"X1": _comp("16MHz", lib_id="Oscillator:SG8002_Crystal_OSC_SMD")}
+        result = identify_oscillators(components, {})
+        assert len(result) == 1, f"dual-match part double-classified: {result}"
+        assert result[0]["component"] == "X1"
+        # ref-prefix crystal branch wins (it's first).
+        assert result[0]["type"] == "crystal_oscillator"
+
 
 # ===========================================================================
 # identify_digital_interfaces

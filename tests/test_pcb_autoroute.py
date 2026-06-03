@@ -371,6 +371,20 @@ def test_nudge_separates_overlap_in_open_space():
     assert not _overlap(a.bbox(), b.bbox())
 
 
+def test_nudge_acts_on_touching_courtyards():
+    """gap == 0 (courtyards sharing exactly one edge) must count as overlapping —
+    KiCad DRC flags it as courtyards_overlap. The helper's AABB is non-strict
+    (<=); a strict `<` would treat touching as clear and never nudge (count 0).
+    half=5 → R1 bbox (45..55), R2 bbox (55..65): right edge of a == left edge of b."""
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 60, 50, nets=1)
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3)
+    assert count >= 1 and "R2" in moved, "touching courtyards must be nudged apart"
+    # strictly separated afterward (no longer even touching)
+    ax, bx = a.bbox(), b.bbox()
+    assert ax[2] < bx[0] or bx[2] < ax[0] or ax[3] < bx[1] or bx[3] < ax[1]
+
+
 def test_nudge_never_moves_a_footprint_off_board():
     """h-autoroute-nudge: R2 overlaps R1 at the board's right edge, so the
     separating move would go off-board. The shared helper keeps it inside the

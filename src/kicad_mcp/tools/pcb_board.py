@@ -166,9 +166,9 @@ pcb_path = params["pcb_path"]
 board = pcbnew.LoadBoard(pcb_path)
 ds = board.GetDesignSettings()
 
-# NOTE: do NOT set copper layer count here. Layer count is a board-structure
-# concern, not a design rule — an unconditional SetCopperLayerCount(2) silently
-# demoted 4-layer boards to 2 (dropping inner-layer routing from DRC's view).
+# NOTE: do NOT set the copper layer count here. Layer count is a
+# board-structure concern, not a design rule — forcing it to 2 silently
+# demoted 4-layer boards (dropping inner-layer routing from DRC's view).
 # Fresh boards already default to 2 copper layers (verified KiCad 9 + 10).
 ds.m_TrackMinWidth = pcbnew.FromMM(params["min_track_width_mm"])
 ds.m_MinClearance = pcbnew.FromMM(params["min_clearance_mm"])

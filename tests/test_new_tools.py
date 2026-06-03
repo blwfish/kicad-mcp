@@ -320,6 +320,10 @@ class TestPreRouteCheck:
         assert "pad.GetPosition()" in script or "fp.Pads()" in script
         # Route ready flag
         assert "route_ready" in script
+        # Pad-gap math must come from the spliced PAD_GAP_HELPER (single source of
+        # truth shared with pad_clearances), NOT a drifted inline copy — that
+        # divergence was the bug. The helper defines pad_signed_gap().
+        assert "pad_signed_gap" in script
 
 
 # -- set_design_rules project file tests ------------------------------------
@@ -621,6 +625,26 @@ class TestAutoroutePreflight:
         mock_fix.assert_not_called()  # No overlaps, so no fix attempted
         assert result["preflight"]["pad_violations"] == 3
 
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_preflight")
+    def test_async_worker_runs_preflight(self, mock_preflight, mock_route):
+        """The async start/worker path must run the SAME preflight the sync `run`
+        path does (it used to skip it). Call the worker directly to avoid thread
+        timing flakiness."""
+        from kicad_mcp.tools import pcb_autoroute as ar
+        mock_preflight.return_value = {"auto_fix_applied": True, "components_moved": 1}
+        mock_route.return_value = {"status": "ok", "tracks_after": 50, "vias_after": 5}
+        ar._autoroute_worker(
+            job_id="test-preflight-job",
+            pcb_path="/tmp/board.kicad_pcb",
+            jar_path="/fake.jar", java_path="/usr/bin/java",
+            passes=1, remove_zones=True,
+        )
+        mock_preflight.assert_called_once_with("/tmp/board.kicad_pcb")
+        # preflight info must be attached to the routed result
+        assert mock_route.return_value["preflight"] == {"auto_fix_applied": True,
+                                                         "components_moved": 1}
+
 
 # -- Pipeline tests ----------------------------------------------------------
 
@@ -894,6 +918,85 @@ class TestBuildPcbFromSchematic:
         mock_route.assert_not_called()
         mock_zones.assert_not_called()
         mock_gerbers.assert_not_called()
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_footprint_load_failure_is_fatal(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones, mock_gerbers, mock_holes,
+        mcp_server, tmp_path,
+    ):
+        """A footprint that fails to load is fatal: the pipeline must NOT proceed
+        to build a board silently missing components (the load step reports
+        error_count but no top-level 'error' key, so _record alone wouldn't halt)."""
+        (tmp_path / "test.kicad_pro").write_text("{}")
+        (tmp_path / "test.kicad_sch").write_text("(kicad_sch)")
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603"}},
+            "components_without_footprint": [],
+            "nets": {"SIG": [{"component": "R1", "pin": "1"}]},
+            "component_count": 1, "net_count": 1, "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
+        # No top-level "error" — only error_count / errors, the masking shape.
+        mock_place.return_value = {"status": "ok", "placed_count": 0,
+                                   "errors": ["Footprint 'R_0603' not found for R1"],
+                                   "error_count": 1}
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(tmp_path / "test.kicad_pro"))
+        assert "error" in result
+        assert "load" in result["error"].lower()
+        mock_nets.assert_not_called()       # halted right after the load step
+        mock_route.assert_not_called()      # never routed an incomplete board
+
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_autoroute")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_smart_placement")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_inject_nets_and_assign_pads")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_load_footprints")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_zone_fill_failure_does_not_discard_routed_board(
+        self, mock_netlist, mock_create, mock_place, mock_nets,
+        mock_optimize, mock_route, mock_zones, mock_gerbers, mock_holes,
+        mcp_server, tmp_path,
+    ):
+        """Zone fill is a finishing step: a RuntimeError there must be recorded,
+        not propagated — the already-routed board is the valuable result."""
+        (tmp_path / "test.kicad_pro").write_text("{}")
+        (tmp_path / "test.kicad_sch").write_text("(kicad_sch)")
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603"}},
+            "components_without_footprint": [],
+            "nets": {"SIG": [{"component": "R1", "pin": "1"}]},
+            "component_count": 1, "net_count": 1, "skipped_count": 0,
+        }
+        mock_create.return_value = {"status": "ok", "width_mm": 30, "height_mm": 20, "auto_sized": True}
+        mock_place.return_value = {"status": "ok", "placed_count": 1, "errors": [], "error_count": 0}
+        mock_nets.return_value = {"status": "ok", "pads_assigned": 1, "nets_created": 1, "total_nets": 1}
+        mock_optimize.return_value = {"status": "ok", "components_placed": 1}
+        mock_route.return_value = {"status": "ok", "tracks_after": 20, "vias_after": 2,
+                                   "unconnected_after_routing": 0}
+        mock_zones.side_effect = RuntimeError("zone fill boom")   # finishing step explodes
+        mock_holes.return_value = {"status": "ok", "holes_added": 0, "positions": []}
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(tmp_path / "test.kicad_pro"))
+        assert result["status"] == "ok"                 # routed board preserved
+        assert result["tracks"] == 20
+        assert "error" in result["steps"]["zones"]       # failure recorded
+        assert "non-fatal" in result["steps"]["zones"]["error"]
 
 
 class TestFinalizePadAssignment:

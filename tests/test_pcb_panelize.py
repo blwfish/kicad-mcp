@@ -321,6 +321,29 @@ class TestEnumValidation:
         assert "error" in result
         assert "tooling" in result["error"]
 
+    # -- fiducials (was unvalidated → bad value reached KiKit with an opaque error) --
+
+    def test_fiducials_invalid_rejected(self, panelize_server, pcb_file):
+        fn = _get_tool_fn(panelize_server, "panelize_pcb")
+        with (
+            patch("kicad_mcp.tools.pcb_panelize.platform.system", return_value="Linux"),
+            patch("kicad_mcp.tools.pcb_panelize.shutil.which", return_value="/usr/bin/kikit"),
+        ):
+            result = fn(pcb_file, fiducials="invalid")
+        assert "error" in result
+        assert "fiducials" in result["error"]
+
+    def test_fiducials_2fid_near_miss_rejected(self, panelize_server, pcb_file):
+        """'2fid' looks plausible (3fid/4fid exist) but is not valid."""
+        fn = _get_tool_fn(panelize_server, "panelize_pcb")
+        with (
+            patch("kicad_mcp.tools.pcb_panelize.platform.system", return_value="Linux"),
+            patch("kicad_mcp.tools.pcb_panelize.shutil.which", return_value="/usr/bin/kikit"),
+        ):
+            result = fn(pcb_file, fiducials="2fid")
+        assert "error" in result
+        assert "fiducials" in result["error"]
+
 
 # -- kikit discovery tests ---------------------------------------------------
 

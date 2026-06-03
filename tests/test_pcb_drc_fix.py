@@ -163,3 +163,42 @@ class TestGeometryHelperInjected:
 # is marked ``@pytest.mark.requires_kicad``.  The tests above exercise the
 # injected helper string at the same semantic level the subprocess uses,
 # which is the closest we can get without a KiCad install.
+
+
+# ---------------------------------------------------------------------------
+# _categorize_violations — pure, in-process classification (the silk-vs-routing
+# keyword-order seam). Regression for: silk_clearance / silk_mask_clearance
+# contain BOTH "silk" and "clearance"; a routing-first fallback misclassified
+# them as routing → needless clear-and-reroute. The fallback must be silk-first.
+# ---------------------------------------------------------------------------
+
+from kicad_mcp.tools.pcb_drc_fix import _categorize_violations  # noqa: E402
+
+
+def _group_of(violation_type):
+    groups = _categorize_violations({violation_type: 1})
+    for name, entries in groups.items():
+        if any(e["message"] == violation_type for e in entries):
+            return name
+    return None
+
+
+class TestCategorizeViolations:
+    def test_silk_clearance_is_silkscreen_not_routing(self):
+        # contains "clearance" (routing kw) AND "silk" (silk kw) — silk wins.
+        assert _group_of("silk_clearance") == "silkscreen"
+
+    def test_silk_mask_clearance_is_silkscreen_not_routing(self):
+        assert _group_of("silk_mask_clearance") == "silkscreen"
+
+    def test_plain_clearance_is_routing(self):
+        assert _group_of("clearance") == "routing"
+
+    def test_silk_over_copper_is_silkscreen(self):
+        assert _group_of("silk_over_copper") == "silkscreen"
+
+    def test_courtyard_overlap_is_placement(self):
+        assert _group_of("courtyards_overlap") == "placement"
+
+    def test_unknown_type_is_other(self):
+        assert _group_of("some_future_violation") == "other"

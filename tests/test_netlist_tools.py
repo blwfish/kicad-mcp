@@ -80,6 +80,30 @@ class TestExtractNetlistSchematic:
         result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
         assert result["success"] is False
 
+    @patch("kicad_mcp.tools.netlist.analyze_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_forwards_regex_fallback_incompleteness(
+        self, mock_extract, mock_analyze, analyze_server, sch_file
+    ):
+        # When kicad-cli is unavailable the parser falls back to regex, which
+        # can't trace connectivity → empty pin lists. The result MUST carry
+        # parser_path/incomplete/incomplete_reason so the caller doesn't trust a
+        # clean-looking success over silently-missing connectivity.
+        mock_extract.return_value = {
+            "component_count": 1, "net_count": 0,
+            "components": {}, "nets": {},
+            "parser_path": "regex",
+            "incomplete": True,
+            "incomplete_reason": "regex fallback: hierarchical sub-schematics not resolved",
+        }
+        mock_analyze.return_value = {"summary": "incomplete"}
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
+        assert result["success"] is True
+        assert result["parser_path"] == "regex"
+        assert result["incomplete"] is True
+        assert "hierarchical" in result["incomplete_reason"]
+
 
 # -- analyze.netlist — project input ----------------------------------------
 

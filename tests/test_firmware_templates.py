@@ -279,8 +279,44 @@ def test_i2s_mic_instantiated():
     i = _audio()
     ex = i2s_mic(i, RefAllocator(i))
     assert [c.type for c in ex.components].count("SPH0645") == 1
-    nets = {n.name for n in ex.new_nets}
-    assert {"MIC_BCLK", "MIC_WS", "MIC_SD"} <= nets
+    # Exact set (not subset): a duplicate-named net from a collision would not
+    # change the set, so pin both the names AND the list length.
+    assert {n.name for n in ex.new_nets} == {"MIC_BCLK", "MIC_WS", "MIC_SD"}
+    assert len(ex.new_nets) == 3
+
+
+# Two I2S-input (mic) buses — exercises the per-bus net-name prefix. With a
+# hardcoded "MIC" prefix the second mic's MIC_BCLK/WS/SD collide with the first's
+# and expand_intent's nets_by_name silently overwrites them, orphaning the first
+# mic's MCU-side endpoints. The single-mic _AUDIO fixture never reaches this path.
+_AUDIO_2MIC = """\
+#define CMCA_MIC_BCLK 8
+#define CMCA_MIC_WS 9
+#define CMCA_MIC_SD 10
+#define CMCA_MIC2_BCLK 11
+#define CMCA_MIC2_WS 12
+#define CMCA_MIC2_SD 13
+"""
+
+
+def test_i2s_two_mics_get_distinct_non_colliding_nets():
+    i = build_intent(partition(parse_defines(_AUDIO_2MIC)),
+                     firmware_path="a.h", board_id="esp32-s3-devkitc-1")
+    i2s_in = [b for b in i.buses if b.type == "I2S_IN"]
+    assert len(i2s_in) == 2, "fixture must produce two I2S-input buses"
+
+    ex = i2s_mic(i, RefAllocator(i))
+    assert [c.type for c in ex.components].count("SPH0645") == 2
+    names = [n.name for n in ex.new_nets]
+    # 6 nets, all distinct — first bus unindexed "MIC", second "MIC1".
+    assert len(names) == 6
+    assert set(names) == {
+        "MIC_BCLK", "MIC_WS", "MIC_SD", "MIC1_BCLK", "MIC1_WS", "MIC1_SD",
+    }
+    # Every net keeps BOTH endpoints (MCU gpio + chip pin) — a collision/overwrite
+    # would orphan the first mic's MCU-side endpoint, dropping it below 2.
+    for n in ex.new_nets:
+        assert len(n.endpoints) == 2, f"{n.name} lost an endpoint to a collision"
 
 def test_i2c_device_header_with_pullups():
     i = _audio()

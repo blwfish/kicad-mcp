@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kicad_mcp.utils.firmware.intent import (
+    SCHEMA_VERSION,
     Gap,
     Net,
     build_intent,
@@ -141,6 +142,36 @@ def test_from_dict_drops_unknown_fields():
         doc["nets"][0]["endpoints"][0]["alien"] = 9
     intent = from_dict(doc)                                  # raised TypeError before the fix
     assert "future_v4_field" not in to_dict(intent)["mcu"]   # unknown was dropped
+
+
+def test_from_dict_null_factory_field_coerced_to_empty():
+    """A hand-edited doc with a default_factory field (Bus.signals: dict) set to
+    null must NOT override the factory with None — templates then crash on
+    bus.signals.get(...). _only_fields drops the None so the factory applies."""
+    doc = to_dict(_audio_intent())
+    assert doc.get("buses"), "fixture must have buses with signals"
+    doc["buses"][0]["signals"] = None
+    intent = from_dict(doc)
+    assert intent.buses[0].signals == {}            # factory default, not None
+
+
+def test_from_dict_top_level_null_collections_become_empty():
+    """`buses: null` (etc.) in a hand-edited doc: dict.get returns None for a
+    present-but-null key, and the list comprehensions would TypeError without the
+    `or []` guard. Each top-level collection must degrade to empty."""
+    intent = from_dict({
+        "schema_version": SCHEMA_VERSION,
+        "buses": None, "peripherals": None, "nets": None,
+        "gaps": None, "connector_legends": None,
+        "placements": None, "placement_hints": None,
+    })
+    assert intent.buses == []
+    assert intent.peripherals == []
+    assert intent.nets == []
+    assert intent.gaps == []
+    assert intent.connector_legends == []
+    assert intent.placements == {}
+    assert intent.placement_hints == {}
 
 def test_merge_preserves_user_items_and_resolved_gaps():
     fresh = _intent()
