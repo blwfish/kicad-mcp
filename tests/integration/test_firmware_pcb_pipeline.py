@@ -361,6 +361,12 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     assert {"U1", "U3"} <= refs_on("I2C_SDA")
 
 
+# best-of-10 FreeRouter on the dense ESP32-S3 board (128 pads) runs past the
+# global --timeout=120 under concurrent CI load (it timed out post-merge on main
+# when the tag fired Release + Tests + Integration at once). Give the passes=10
+# routing tests a realistic per-test budget; the 120s default still guards the
+# fast tests against genuine hangs. (passes stays 10 / bound stays 6 per §9-A3.)
+@pytest.mark.timeout(360)
 def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
     """The SECOND board shape: an ESP32-S3 audio node (CMCA_* naming, I2S amp
     buses, #if target block). Exercises the generalized recognition +
@@ -924,6 +930,7 @@ def test_approval_gate_audio_remote(mcp_server, tmp_path):
     assert sc.board_size_mm is not None and sc.mounting_holes is not None
 
 
+@pytest.mark.timeout(360)  # passes=10 routing — same budget as audio_s3 (above)
 def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     """The THIRD board shape: an I2C sensor-hub (track-geometry car). Exercises
     the generalization that matters here — MULTIPLE address-declared devices,
