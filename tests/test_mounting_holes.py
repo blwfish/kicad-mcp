@@ -46,7 +46,10 @@ def test_keepout_allows_pads_blocks_pour(mock_run):
     assert "SetDoNotAllowTracks(True)" in script
     assert "SetDoNotAllowVias(True)" in script
     assert "SetDoNotAllowPads(False)" in script        # NPTH pad must not self-flag
-    assert "SetDoNotAllowZoneFills(True)" in script      # pour kept off the annulus
+    # pour kept off the annulus, version-robust: KiCad 10 ZoneFills / KiCad 9
+    # CopperPour (a 10-only call broke the 9.0 integration job).
+    assert "SetDoNotAllowZoneFills(True)" in script
+    assert "SetDoNotAllowCopperPour(True)" in script
     assert "SetDoNotAllowPads(True)" not in script
 
 

@@ -432,7 +432,13 @@ for i, (cx, cy) in enumerate(corners):
     z.SetDoNotAllowTracks(True)
     z.SetDoNotAllowVias(True)
     z.SetDoNotAllowPads(False)
-    z.SetDoNotAllowZoneFills(True)
+    # KiCad 10 renamed SetDoNotAllowCopperPour -> SetDoNotAllowZoneFills; mirror
+    # the version-robust getter guard used in pcb_footprints/keepout_helpers so
+    # this works on both 9 and 10 (was 10-only, broke the 9.0 integration job).
+    if hasattr(z, "SetDoNotAllowZoneFills"):
+        z.SetDoNotAllowZoneFills(True)
+    else:
+        z.SetDoNotAllowCopperPour(True)
     ls = pcbnew.LSET()
     ls.AddLayer(pcbnew.F_Cu)
     ls.AddLayer(pcbnew.B_Cu)
