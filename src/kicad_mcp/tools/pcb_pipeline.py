@@ -372,7 +372,8 @@ def _step_add_mounting_holes(pcb_path: str, holes: Dict[str, Any]) -> Dict[str, 
     Runs after the outline, before placement, so the placer (fed the holes as
     ``fixed`` hints by the caller) keeps clear of the corners. Holes are
     ``MountingHole_3.2mm_M3`` footprints (no net); each gets a square rule-area
-    keepout (no tracks/vias/pads) of half-extent ``drill/2 + keepout_mm`` on both
+    keepout (no tracks/vias/copper-pour — but pads ALLOWED, so the hole's own
+    NPTH pad doesn't self-flag) of half-extent ``drill/2 + keepout_mm`` on both
     copper layers. ``count`` 4 = all corners, 2 = TL+BR diagonal, 0 = skip.
 
     All pcbnew calls here were verified on KiCad 9.0.9 AND 10.0.3: the plain M3
@@ -412,12 +413,18 @@ for i, (cx, cy) in enumerate(corners):
     board.Add(fp)
     fp.SetReference("H%d" % (i + 1))
     fp.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
-    # No-copper keepout (square) so routing leaves the screw-head annulus clear.
+    # No-copper keepout (square) so routing leaves the screw-head annulus clear:
+    # disallow tracks, vias, and the copper POUR (zone fills). Do NOT disallow
+    # pads — the only pad in here is the mounting hole's OWN NPTH pad (a bare
+    # 3.2mm hole, no copper, no net), which would otherwise flag itself as an
+    # items_not_allowed DRC error. Disallowing zone fills (was missing) is what
+    # actually keeps the GND pour off the annulus — the stated intent.
     z = pcbnew.ZONE(board)
     z.SetIsRuleArea(True)
     z.SetDoNotAllowTracks(True)
     z.SetDoNotAllowVias(True)
-    z.SetDoNotAllowPads(True)
+    z.SetDoNotAllowPads(False)
+    z.SetDoNotAllowZoneFills(True)
     ls = pcbnew.LSET()
     ls.AddLayer(pcbnew.F_Cu)
     ls.AddLayer(pcbnew.B_Cu)
