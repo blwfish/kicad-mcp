@@ -30,7 +30,11 @@ def identify_power_supplies(
     regulator_patterns = {
         "78xx": r"78\d\d|LM78\d\d|MC78\d\d",
         "79xx": r"79\d\d|LM79\d\d|MC79\d\d",
-        "LDO": r"LM\d{3}|LD\d{3}|AMS\d{4}|LT\d{4}|TLV\d{3}|AP\d{4}|MIC\d{4}|NCP\d{3}|LP\d{4}|L\d{2}|TPS\d{5}",
+        # `LM\d{3}(?!\d)`: match exactly-3-digit LM LDOs (LM317) but NOT a 4-digit
+        # prefix — bare `LM\d{3}` matched "LM259" inside "LM2596", shadowing the
+        # 4-digit buck pattern below so the LM2596 buck converter was misclassified
+        # as a linear LDO (prefix-shadow seam bug).
+        "LDO": r"LM\d{3}(?!\d)|LD\d{3}|AMS\d{4}|LT\d{4}|TLV\d{3}|AP\d{4}|MIC\d{4}|NCP\d{3}|LP\d{4}|L\d{2}|TPS\d{5}",
     }
 
     # Track refs already classified so a single component doesn't appear
