@@ -185,14 +185,17 @@ def _op_suggest(
     with event_context() as events:
         netlist = extract_netlist_via_cli(str(sch_path))
         if netlist is None:
-            return {
+            # Inside event_context — use _with_events so any accumulated
+            # warnings ride along instead of being silently dropped on this
+            # early-return path (the documented _with_events invariant).
+            return _with_events({
                 "status": "error",
                 "code": "netlist_extraction_failed",
                 "message": (
                     "kicad-cli netlist export failed. Verify kicad-cli is on PATH "
                     "and the schematic is parseable."
                 ),
-            }
+            }, events)
 
         state = placement_state.new_state(
             schematic_path=str(sch_path),

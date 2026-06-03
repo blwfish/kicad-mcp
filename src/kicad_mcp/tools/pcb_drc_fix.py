@@ -71,12 +71,17 @@ def _categorize_violations(categories: Dict[str, int]) -> Dict[str, list]:
             silkscreen.append(entry)
         elif msg in PLACEMENT_VIOLATIONS or msg_lower in {v.lower() for v in PLACEMENT_VIOLATIONS}:
             placement.append(entry)
-        elif any(kw in msg_lower for kw in _ROUTING_KEYWORDS):
-            routing.append(entry)
+        # Keyword fallback, most-specific first. "silk" must beat the routing
+        # keywords: a type like `silk_clearance` / `silk_mask_clearance` contains
+        # both "silk" AND "clearance", and a routing-first order would
+        # misclassify it as routing — triggering a full clear-and-reroute instead
+        # of the silkscreen fix. "courtyard" (placement) doesn't overlap routing.
         elif any(kw in msg_lower for kw in _SILKSCREEN_KEYWORDS):
             silkscreen.append(entry)
         elif any(kw in msg_lower for kw in _PLACEMENT_KEYWORDS):
             placement.append(entry)
+        elif any(kw in msg_lower for kw in _ROUTING_KEYWORDS):
+            routing.append(entry)
         else:
             other.append(entry)
 

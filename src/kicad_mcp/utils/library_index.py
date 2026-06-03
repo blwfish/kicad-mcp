@@ -428,24 +428,25 @@ class LibraryIndex:
                     """,
                     (fts_query, limit),
                 ).fetchall()
+            results = [
+                {
+                    "library": r["library"],
+                    "name": r["name"],
+                    "full_name": f"{r['library']}:{r['name']}",
+                    "description": r["description"],
+                    "tags": r["tags"],
+                    "pad_count": r["pad_count"],
+                }
+                for r in rows
+            ]
+            return results
         except sqlite3.OperationalError as e:
             logger.warning("Footprint FTS query failed for %r: %s", query, e)
-            conn.close()
             return []
-
-        results = [
-            {
-                "library": r["library"],
-                "name": r["name"],
-                "full_name": f"{r['library']}:{r['name']}",
-                "description": r["description"],
-                "tags": r["tags"],
-                "pad_count": r["pad_count"],
-            }
-            for r in rows
-        ]
-        conn.close()
-        return results
+        finally:
+            # try/finally so a non-OperationalError (e.g. building results)
+            # can't leak the connection — repeated leaks exhaust the FD limit.
+            conn.close()
 
     # -------------------------------------------------------------------
     # Symbol index
@@ -566,24 +567,24 @@ class LibraryIndex:
                     """,
                     (fts_query, limit),
                 ).fetchall()
+            results = [
+                {
+                    "lib_id": r["lib_id"],
+                    "name": r["name"],
+                    "library": r["library"],
+                    "description": r["description"],
+                    "keywords": r["keywords"],
+                    "pin_count": r["pin_count"],
+                }
+                for r in rows
+            ]
+            return results
         except sqlite3.OperationalError as e:
             logger.warning("Symbol FTS query failed for %r: %s", query, e)
-            conn.close()
             return []
-
-        results = [
-            {
-                "lib_id": r["lib_id"],
-                "name": r["name"],
-                "library": r["library"],
-                "description": r["description"],
-                "keywords": r["keywords"],
-                "pin_count": r["pin_count"],
-            }
-            for r in rows
-        ]
-        conn.close()
-        return results
+        finally:
+            # try/finally so a non-OperationalError can't leak the connection.
+            conn.close()
 
     # -------------------------------------------------------------------
     # Shared helpers
@@ -599,6 +600,7 @@ class LibraryIndex:
         index stayed stale forever (h-library-stale)."""
         if not os.path.exists(self.db_path):
             return True
+        conn = None
         try:
             conn = self._connect()
             # Check table exists
@@ -675,6 +677,11 @@ class LibraryIndex:
         except (sqlite3.Error, ValueError) as e:
             # Corrupt metadata or DB-level error → force rebuild. Log so
             # repeated rebuilds (root cause: corruption) become diagnosable.
+            # Close the connection here too — this path runs on every staleness
+            # check against a corrupt DB, and a leak per check exhausts the FD
+            # limit. (conn may be None if _connect() itself raised.)
+            if conn is not None:
+                conn.close()
             logger.warning(
                 "Staleness check failed for %s (forcing rebuild): %s: %s",
                 lib_path, type(e).__name__, e,

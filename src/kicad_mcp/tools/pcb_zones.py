@@ -5,7 +5,7 @@ These are module-level _op_* helpers consumed by the pcb router (pcb.py).
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
@@ -16,15 +16,18 @@ def _op_add_zone(
     pcb_path: str,
     net_name: str,
     layer: str = "F.Cu",
-    corners: List[List[float]] = [],
+    corners: Optional[List[List[float]]] = None,
     clearance_mm: float = 0.3,
     min_width_mm: float = 0.2,
     connect_pads: str = "thermal",
     priority: int = 0,
 ) -> Dict[str, Any]:
-    """Add a copper zone (pour/fill) to the PCB."""
+    """Add a copper zone (pour/fill) to the PCB. An empty/None ``corners`` list
+    auto-derives the zone outline from the board edge."""
     if not os.path.exists(pcb_path):
         return {"error": f"PCB file not found: {pcb_path}"}
+    if corners is None:
+        corners = []
 
     script = """
 import pcbnew, json, sys

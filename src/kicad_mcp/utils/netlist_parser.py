@@ -343,7 +343,7 @@ class SchematicParser:
             if label_match:
                 self.labels.append({
                     "type": "local",
-                    "text": label_match.group(1),
+                    "text": _unescape_sexpr(label_match.group(1)),
                     "position": {
                         "x": float(label_match.group(2)),
                         "y": float(label_match.group(3)),
@@ -366,7 +366,7 @@ class SchematicParser:
             if label_match:
                 self.global_labels.append({
                     "type": "global",
-                    "text": label_match.group(1),
+                    "text": _unescape_sexpr(label_match.group(1)),
                     "shape": label_match.group(2),
                     "position": {
                         "x": float(label_match.group(3)),
@@ -390,7 +390,7 @@ class SchematicParser:
             if label_match:
                 self.hierarchical_labels.append({
                     "type": "hierarchical",
-                    "text": label_match.group(1),
+                    "text": _unescape_sexpr(label_match.group(1)),
                     "shape": label_match.group(2),
                     "position": {
                         "x": float(label_match.group(3)),
