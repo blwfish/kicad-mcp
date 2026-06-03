@@ -25,6 +25,7 @@ MARKDOWN_FILES = [
     ROOT / "README.md",
     ROOT / "TOOLS.md",
     ROOT / "AGENT-INSTALL.md",
+    ROOT / "AGENT-INSTRUCTIONS.md",
 ]
 TEST_FILE = ROOT / "tests" / "test_server.py"
 
