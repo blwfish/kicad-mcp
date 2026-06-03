@@ -111,15 +111,11 @@ class TestExtractVoltageRealBugs:
         assert extract_voltage_from_regulator("7800") == "unknown"
 
     def test_negative_voltage_string_preserves_sign(self):
-        """A description containing '-3V' should not silently strip the sign.
-
-        The current implementation has a `-(\\d+\\.?\\d*)V` pattern in its
-        list but the unsigned pattern matches first and discards the minus.
-        """
-        # We assert the consumer-visible behaviour: the sign survives.
-        result = extract_voltage_from_regulator("REG -3V output")
-        assert result.startswith("-") or result == "unknown", \
-            f"Expected sign-preserving or 'unknown', got {result!r}"
+        """A description containing '-3V' must not silently strip the sign. The
+        signed pattern `-(\\d+\\.?\\d*)V` is listed before the unsigned one so the
+        minus survives. Pin the EXACT value: `startswith("-") or "unknown"` would
+        pass even if the signed pattern were deleted (falling through to unknown)."""
+        assert extract_voltage_from_regulator("REG -3V output") == "-3V"
 
 
 # -- extract_frequency_from_value tests --------------------------------------
