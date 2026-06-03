@@ -2286,6 +2286,23 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         if not _record("load_footprints", step):
             return pipeline_result
 
+        # A footprint that fails to load is fatal: the board would silently be
+        # missing components, net assignment for them would no-op, and the final
+        # incomplete_nets count can read 0 (no ratsnest for absent pads) — fully
+        # masking the gap. Surface it as an error the caller must resolve (almost
+        # always a wrong/missing footprint mapping) rather than fabricating a
+        # board that doesn't match the schematic.
+        if step.get("error_count", 0) > 0:
+            _fp_errs = step.get("errors", [])
+            _more = len(_fp_errs) - 5
+            _tail = f" (and {_more} more)" if _more > 0 else ""
+            pipeline_result["error"] = (
+                f"{step['error_count']} footprint(s) failed to load — the board "
+                f"would be missing components: "
+                f"{'; '.join(_fp_errs[:5])}{_tail}"
+            )
+            return pipeline_result
+
         pipeline_result["footprints_placed"] = step.get("placed_count", 0)
 
         # Step 4: Inject nets + assign pads
@@ -2554,22 +2571,30 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 f"autoroute step result missing expected counts (keys: {sorted(step.keys())})"
             )
 
-        # Step 7: Copper zones + fill
-        step = _step_add_zones_and_fill(pcb_path, ground_net)
-        _record("zones", step)
-        # Non-fatal
+        # Step 7: Copper zones + fill. Strictly NON-FATAL: the board is already
+        # routed and that result is valuable — a zone-fill timeout or pcbnew
+        # failure (run_pcbnew_script RAISES) must be recorded, not allowed to
+        # propagate and discard the routed board.
+        try:
+            _record("zones", _step_add_zones_and_fill(pcb_path, ground_net))
+        except Exception as e:  # noqa: BLE001 — finishing step, never fatal
+            _record("zones", {"error": f"zone fill failed (non-fatal): {e}"})
 
         # Step 7.5: Silk legends for synthesized terminals (firmware front end).
         # Field-wired terminals carry their wiring documentation on the silk.
         # (Single source: same _run_silk_legends used by the approval gate above.)
         _run_silk_legends()
 
-        # Step 8: Export gerbers (optional)
+        # Step 8: Export gerbers (optional). Non-fatal for the same reason as
+        # zones — never lose the routed board to an export failure.
         if export_gerbers:
-            step = _step_export_gerbers(pcb_path)
-            _record("export_gerbers", step)
-            if step.get("zip_path"):
-                pipeline_result["gerber_zip"] = step["zip_path"]
+            try:
+                step = _step_export_gerbers(pcb_path)
+                _record("export_gerbers", step)
+                if step.get("zip_path"):
+                    pipeline_result["gerber_zip"] = step["zip_path"]
+            except Exception as e:  # noqa: BLE001 — optional step, never fatal
+                _record("export_gerbers", {"error": f"gerber export failed (non-fatal): {e}"})
 
         pipeline_result["status"] = "ok"
         pipeline_result["pcb_path"] = pcb_path

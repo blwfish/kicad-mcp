@@ -166,12 +166,20 @@ pcb_path = params["pcb_path"]
 board = pcbnew.LoadBoard(pcb_path)
 ds = board.GetDesignSettings()
 
-ds.SetCopperLayerCount(2)
+# NOTE: do NOT set copper layer count here. Layer count is a board-structure
+# concern, not a design rule — an unconditional SetCopperLayerCount(2) silently
+# demoted 4-layer boards to 2 (dropping inner-layer routing from DRC's view).
+# Fresh boards already default to 2 copper layers (verified KiCad 9 + 10).
 ds.m_TrackMinWidth = pcbnew.FromMM(params["min_track_width_mm"])
 ds.m_MinClearance = pcbnew.FromMM(params["min_clearance_mm"])
 ds.m_ViasMinSize = pcbnew.FromMM(params["min_via_diameter_mm"])
 ds.m_ViasMinDrill = pcbnew.FromMM(params["min_via_drill_mm"])
 ds.m_HoleToHoleMin = pcbnew.FromMM(params["min_hole_to_hole_mm"])
+# These two were reported in the return JSON but never applied to the board —
+# only to the .kicad_pro. A pcbnew-only DRC load (no project) used stale values.
+# Attribute names verified present + settable on KiCad 9 and 10.
+ds.m_MinThroughDrill = pcbnew.FromMM(params["min_through_hole_diameter_mm"])
+ds.m_CopperEdgeClearance = pcbnew.FromMM(params["min_copper_edge_clearance_mm"])
 
 board.Save(pcb_path)
 

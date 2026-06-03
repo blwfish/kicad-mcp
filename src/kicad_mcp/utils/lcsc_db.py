@@ -298,7 +298,10 @@ def _decode_attributes(attr_indices: list[int], lut: list[list]) -> dict[str, st
 def _tier_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
     """Derive assembly_tier from resolved LUT attributes."""
     for idx in attr_indices:
-        if idx >= len(lut):
+        # Same guards as _decode_attributes: a float index passes a bare
+        # `>= len(lut)` check but raises TypeError on lut[idx]; a negative index
+        # silently reads the wrong entry. Either aborts/poisons the DB build.
+        if not isinstance(idx, int) or idx < 0 or idx >= len(lut):
             continue
         entry = lut[idx]
         if not isinstance(entry, list) or len(entry) < 2:
@@ -309,7 +312,15 @@ def _tier_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
             continue
         values = data.get("values", {})
         primary = data.get("primary", "default")
-        val_entry = values.get(primary, [None])[0] if isinstance(values.get(primary), list) else None
+        # `values.get(primary, [None])[0]` IndexErrors when the value is an
+        # empty list `[]` (the [None] default only applies to a MISSING key, not
+        # an empty one) — one such component would abort the entire DB build.
+        val_entry_raw = values.get(primary)
+        val_entry = (
+            val_entry_raw[0]
+            if isinstance(val_entry_raw, list) and val_entry_raw and val_entry_raw[0] is not None
+            else None
+        )
         if name == "Basic/Extended":
             if isinstance(val_entry, str):
                 v = val_entry.lower()

@@ -548,7 +548,13 @@ def _run_full_autoroute(
 def _autoroute_worker(job_id: str, **kwargs: Any) -> None:
     """Background thread worker for async autorouting."""
     try:
+        # Match the synchronous `run` path: pre-flight placement check +
+        # courtyard auto-fix before launching FreeRouter, so async routing
+        # doesn't skip a correction `run` would have applied.
+        preflight_info = _run_preflight(kwargs["pcb_path"])
         result = _run_full_autoroute(job_id=job_id, **kwargs)
+        if preflight_info:
+            result["preflight"] = preflight_info
         with _autoroute_lock:
             job = _autoroute_jobs.get(job_id)
             if job and job.get("status") != "cancelled":
@@ -695,6 +701,52 @@ print(json.dumps({
     })
 
 
+def _run_preflight(pcb_path: str) -> Dict[str, Any]:
+    """Pre-flight placement check + courtyard auto-fix before FreeRouter.
+
+    Shared by the synchronous `run` path AND the async `start`/worker path so
+    both apply the same placement correction before routing. Returns a
+    `preflight_info` dict (possibly empty) for the caller to attach to its
+    result.
+    """
+    preflight = _run_pre_route_check(pcb_path)
+    preflight_info: Dict[str, Any] = {}
+
+    if preflight.get("status") == "ok" and not preflight.get("route_ready", True):
+        overlaps = preflight.get("courtyard_overlaps", 0)
+
+        if overlaps > 0:
+            # Auto-fix courtyard overlaps by nudging footprints apart
+            logger.info("Pre-route: %d courtyard overlap(s), auto-fixing", overlaps)
+            fix_result = _run_auto_fix_placement(pcb_path)
+            preflight_info["auto_fix_applied"] = True
+            preflight_info["components_moved"] = fix_result.get("components_moved", 0)
+
+            # Re-check after fix
+            recheck = _run_pre_route_check(pcb_path)
+            if recheck.get("status") == "ok" and not recheck.get("route_ready", True):
+                # Still have issues (likely pad clearance, not just courtyards)
+                _errors_raw = recheck.get("errors", [])
+                preflight_info["errors_after_fix"] = _errors_raw[:10]
+                preflight_info["errors_after_fix_truncated"] = len(_errors_raw) > 10
+                preflight_info["route_ready_after_fix"] = False
+                # Continue anyway — FreeRouter may still produce a usable result
+                logger.warning("Pre-route: still %d error(s) after fix, routing anyway",
+                               recheck.get("error_count", 0))
+            else:
+                preflight_info["route_ready_after_fix"] = True
+        else:
+            # Pad clearance issues only — can't auto-fix, but warn and continue
+            preflight_info["pad_violations"] = preflight.get("pad_violations", 0)
+            _errors_raw = preflight.get("errors", [])
+            preflight_info["errors"] = _errors_raw[:10]
+            preflight_info["errors_truncated"] = len(_errors_raw) > 10
+            logger.warning("Pre-route: %d error(s) (no courtyard overlaps to fix)",
+                           preflight.get("error_count", 0))
+
+    return preflight_info
+
+
 def _op_run(
     pcb_path: str,
     freerouter_jar: str = "",
@@ -800,40 +852,7 @@ def _op_run(
             f.write("\n")
 
     # Pre-flight placement check — catch issues before spending time on FreeRouter
-    preflight = _run_pre_route_check(pcb_path)
-    preflight_info = {}
-
-    if preflight.get("status") == "ok" and not preflight.get("route_ready", True):
-        overlaps = preflight.get("courtyard_overlaps", 0)
-
-        if overlaps > 0:
-            # Auto-fix courtyard overlaps by nudging footprints apart
-            logger.info("Pre-route: %d courtyard overlap(s), auto-fixing", overlaps)
-            fix_result = _run_auto_fix_placement(pcb_path)
-            preflight_info["auto_fix_applied"] = True
-            preflight_info["components_moved"] = fix_result.get("components_moved", 0)
-
-            # Re-check after fix
-            recheck = _run_pre_route_check(pcb_path)
-            if recheck.get("status") == "ok" and not recheck.get("route_ready", True):
-                # Still have issues (likely pad clearance, not just courtyards)
-                _errors_raw = recheck.get("errors", [])
-                preflight_info["errors_after_fix"] = _errors_raw[:10]
-                preflight_info["errors_after_fix_truncated"] = len(_errors_raw) > 10
-                preflight_info["route_ready_after_fix"] = False
-                # Continue anyway — FreeRouter may still produce a usable result
-                logger.warning("Pre-route: still %d error(s) after fix, routing anyway",
-                               recheck.get("error_count", 0))
-            else:
-                preflight_info["route_ready_after_fix"] = True
-        else:
-            # Pad clearance issues only — can't auto-fix, but warn and continue
-            preflight_info["pad_violations"] = preflight.get("pad_violations", 0)
-            _errors_raw = preflight.get("errors", [])
-            preflight_info["errors"] = _errors_raw[:10]
-            preflight_info["errors_truncated"] = len(_errors_raw) > 10
-            logger.warning("Pre-route: %d error(s) (no courtyard overlaps to fix)",
-                           preflight.get("error_count", 0))
+    preflight_info = _run_preflight(pcb_path)
 
     result = _run_full_autoroute(
         pcb_path=pcb_path,
