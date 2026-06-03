@@ -1056,3 +1056,19 @@ class TestRoutedIncompleteCount:
     def test_none_when_unreported(self):
         # autoroute errored before the import/measure step.
         assert self._c() is None
+
+
+class TestCreateStepMinThroughDrill:
+    """The create step must lower the board's min through-hole drill to 0.2mm so
+    standard ESP32/MCU module thermal vias (0.2mm) don't trip drill_out_of_range
+    against KiCad's 0.3mm default (finding A from the board-regen gate)."""
+
+    @patch("kicad_mcp.tools.pcb_pipeline.run_pcbnew_script")
+    def test_create_script_sets_min_through_drill(self, mock_run):
+        from kicad_mcp.tools.pcb_pipeline import _step_create_pcb_and_outline
+        mock_run.return_value = {"status": "ok"}
+        # explicit size (>0) skips estimation → first script call is board create
+        _step_create_pcb_and_outline("/tmp/x.kicad_pcb", 90, 75, components={})
+        create_script = mock_run.call_args_list[0][0][0]
+        assert "m_MinThroughDrill" in create_script
+        assert "pcbnew.FromMM(0.2)" in create_script
