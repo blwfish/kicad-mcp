@@ -945,6 +945,13 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     # Two MPU6050 instances + one OLED, all recognized off their *_ADDR macros.
     types = [p["type"] for p in r1["summary"]["peripherals"]]
     assert types.count("MPU6050") == 2 and types.count("OLED") == 1
+    # The undriven buzzer (declared BUZZER_PIN, no device card) MUST be surfaced
+    # as an unknown_peripheral gap, not silently dropped — that gap is the user's
+    # only signal it became a single-pad orphan net. Pin it so a refactor can't
+    # quietly stop emitting it (the orphan itself is invisible to the route count).
+    buzzer_gaps = [g for g in r1["gaps"]
+                   if g["kind"] == "unknown_peripheral" and "BUZZER" in g["detail"].upper()]
+    assert buzzer_gaps, f"undriven-buzzer gap not surfaced; gaps={r1['gaps']}"
 
     r2 = design(operation="expand_templates", intent_path=str(intent))
     assert r2["status"] == "ok"
