@@ -34,7 +34,7 @@ The agent knows the full workflow — schematic → board sizing → component p
 
 I built this because I need it. I'm not an electrical engineer — I build things for my model railroad that need custom PCBs, and I can't design circuits without this tool and Claude. This is how I actually get boards made: I describe what I need, Claude drives KiCad through this server, and I send the Gerbers to fab. It's not a demo or a hackathon project.
 
-That means reliability matters. The test suite (1134 tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
+That means reliability matters. The test suite (2,000+ tests) exists because I depend on this working correctly when I sit down to design a board. Bugs in PCB layout tools turn into real problems — wrong footprints, shorted traces, boards that don't work when they arrive from the manufacturer.
 
 I use Claude Code on a Mac. Other platforms *should* work — the code handles macOS, Windows, and Linux — but are untested. PRs for other agents and platforms will be considered.
 
@@ -42,7 +42,7 @@ If you hit a bug, [open an issue](https://github.com/blwfish/kicad-mcp/issues/ne
 
 ### What's Under the Hood
 
-The server provides <!-- tool-count -->17<!-- /tool-count --> tools — 11 domain routers and 5 standalones:
+The server provides <!-- tool-count -->17<!-- /tool-count --> tools — 12 domain routers and 5 standalones:
 
 - **`schematic`** — create and edit circuit schematics, place components, wire connections, labels, sheets
 - **`pcb`** — board layout, footprint placement, nets, routing, copper zones, silkscreen management
@@ -55,6 +55,7 @@ The server provides <!-- tool-count -->17<!-- /tool-count --> tools — 11 domai
 - **`export`** — manufacturing output: Gerbers, BOM CSV, PCB thumbnail
 - **`lcsc`** — LCSC/JLCPCB component search, footprint resolution, and part selection
 - **`schematic_layout`** — topology-aware schematic placement (see [docs/SPEC_Schematic_Placement.md](docs/SPEC_Schematic_Placement.md))
+- **`design`** — firmware-driven design: import firmware, expand templates, generate schematics, suggest device cards
 - **`build_pcb_from_schematic`** *(standalone)* — top-level schematic → board pipeline
 - **`panelize_pcb`** *(standalone)* — manufacturing panelization
 - **`estimate_board_size`** *(standalone)* — pre-PCB board size estimation
@@ -66,7 +67,7 @@ The server uses [FastMCP](https://github.com/jlowin/fastmcp) and delegates PCB o
 ### For Developers
 
 ```bash
-# 1134 tests, no KiCad installation required — runs in ~14 seconds
+# 2,000+ tests, no KiCad installation required — runs in ~30 seconds
 pytest
 
 # Lint

@@ -10,7 +10,7 @@ A useful bug report includes:
 
 - **What you tried to do.** The agent prompt or tool call, if applicable.
 - **What happened instead.** The error message or unexpected output, verbatim.
-- **DRC output, if relevant.** `run_drc_check` results are gold for layout bugs.
+- **DRC output, if relevant.** `drc(operation="run")` results are gold for layout bugs.
 - **The schematic or PCB file.** A minimal `.kicad_sch` or `.kicad_pcb` that reproduces the issue is the fastest path to a fix. Strip out anything proprietary.
 - **Versions:** KiCad (`kicad-cli --version`), kicad-sch-api (`pip show kicad-sch-api`), OS, agent (Claude Code, Cursor, etc.).
 
@@ -23,7 +23,7 @@ Welcome, but a couple of preflight things:
 1. **Open an issue first** if it's a non-trivial change. Saves both of us from wasted effort if I disagree on direction.
 2. **Run the tests** before pushing:
    ```bash
-   pytest   # 479+ tests, ~9 seconds, no KiCad install required
+   pytest   # 2,000+ tests, ~30 seconds, no KiCad install required
    ```
 3. **Match the commit style.** `git log --oneline` shows it. Lowercase prefix (`fix:`, `feat:`, `test:`, `docs:`), short imperative summary, body explains the *why*.
 4. **One concern per PR.** Bug fix and unrelated cleanup go in separate PRs.

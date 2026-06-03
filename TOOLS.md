@@ -1,6 +1,6 @@
 # Tool Summary
 
-This MCP server exposes <!-- tool-count -->17<!-- /tool-count --> MCP tools for KiCad EDA — 11 domain routers and 5 standalones.
+This MCP server exposes <!-- tool-count -->17<!-- /tool-count --> MCP tools for KiCad EDA — 12 domain routers and 5 standalones.
 
 Each router takes an `operation` parameter that selects the sub-operation.
 Unknown operations return an error listing valid choices.
@@ -17,8 +17,8 @@ Operations: `create`, `load`, `save`, `validate`, `info`, `clone`, `backup`,
 `add_wire`, `remove_wire`, `add_wire_between_pins`, `add_junction`,
 `add_label`, `remove_label`, `edit_label`, `add_label_to_pin`,
 `add_hierarchical_label`, `connect_pins_with_labels`,
-`add_text`, `add_text_box`, `edit_text`,
-`add_sheet`, `add_sheet_pin`, `add_net`
+`add_text`, `add_text_box`,
+`add_sheet`, `add_sheet_pin`
 
 ### `pcb` — PCB editing
 Operations: `create`, `load`, `finalize`,
@@ -35,7 +35,8 @@ Operations: `create`, `load`, `finalize`,
 
 ### `audit` — placement and clearance verification
 Operations: `all`, `placement`, `footprint_overlaps`, `pad_clearances`,
-`validate_one`, `auto_fix_placement`, `keepouts`, `pre_route_check`
+`validate_one`, `auto_fix_placement`, `keepouts`, `pre_route_check`,
+`constraints`, `check_silkscreen_overlaps`
 
 `all` accepts `detail="summary"` (default) or `detail="full"` for full bounding-box
 and gap data matching the standalone audit tools.
@@ -64,6 +65,11 @@ Operations: `search`, `resolve`, `assign`, `accept_tos`, `refresh_snapshot`
 ### `schematic_layout` — topology-aware schematic placement
 Operations: `suggest`, `apply`, `clear_cache`.
 See [docs/SPEC_Schematic_Placement.md](docs/SPEC_Schematic_Placement.md).
+
+### `design` — firmware-driven design + device cards
+Operations: `import_firmware`, `expand_templates`, `generate_schematic`,
+`show_intent`, `suggest_cards`.
+See [docs/SPEC_Firmware_Device_Cards.md](docs/SPEC_Firmware_Device_Cards.md).
 
 ## Standalone Tools
 
