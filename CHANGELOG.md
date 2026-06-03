@@ -2,7 +2,87 @@
 
 All notable changes to kicad-mcp are documented here.
 
-## [Unreleased] — 0.11.0.dev0
+## [0.11.0] — 2026-06-03
+
+A large release: the tool-surface consolidation (below), an entire firmware
+front end, a human-rational autoplacer, component intelligence, autoroute
+hardening, and a release-readiness review pass. Net tool count is **17** — the
+13 consolidated core routers/standalones plus the firmware/LCSC/placement domain
+tools added this release.
+
+### Added — Firmware front end (`design` router)
+
+Turn an ESP32-style `config.h` pin map into a partial, routed board:
+`import_firmware → expand_templates → generate_schematic`, consumed by
+`build_pcb_from_schematic`. MCU auto-detected from `platformio.ini`. Everything
+firmware can't know (power tree, decoupling, pull-ups, address straps,
+connectors, parts) is emitted as an explicit **gap manifest** — never invented.
+
+- **Part resolution (C1–C9):** binds each bus to the SPECIFIC part the firmware
+  names (corpus + sibling source/docs), never silently substitutes. An ambiguous
+  bus (>1 candidate) is disclosed and held unrealized; a `board.yaml`
+  `bus_part_overrides` entry lets the user declare the part.
+- **Placement locus (L1–L8):** `board.yaml` `placement:` declares per-bus locus
+  (`remote` → field-wired screw terminal, `on_board_with_remote_io`, …) with
+  per-pad silk legends so terminals are wireable by hand.
+- `board.yaml` sidecar for firmware-blind facts (connectors, power source, board
+  size, mounting holes); refuses silent part substitution (INMP441 EOL case).
+
+### Added — Human-rational autoplacer
+
+Topology-aware placement that lays out a board the way a person would, verified
+by eyeballing real boards (`suggest_placement` / `schematic_layout` / the build
+pipeline):
+
+- Antenna-keepout overhang (module RF keepout hangs off the board edge, copper
+  stays on-board); content-aware board sizing; WIRE_ENTRY-oriented terminals.
+- Corner M3 mounting holes + per-hole no-copper keepouts; an approval gate
+  (`build(approved=False)` returns a placement proposal + render before routing).
+- Opt-in board re-fit, terminal centering, and **multi-edge terminal
+  distribution** (spreads field terminals across 2–3 edges; ~−24% area on the
+  audio-remote board).
+
+### Added — Component intelligence (`lcsc` router)
+
+LCSC/JLCPCB part search + footprint resolution backed by a local indexed DB,
+with assembly-tier awareness.
+
+### Changed — Autoroute hardening
+
+- Rank passes by KiCad's measured ratsnest, not FreeRouter's log; report the
+  measured unconnected count so the routing gate is honest.
+- Run FreeRouter as a macOS background app (no Dock/focus steal); disable its
+  analytics phone-home (air-gap).
+
+### Fixed — Release-readiness pass (cold code + test review, board-regen gate)
+
+- **Critical:** `schematic move_component` used `filter(reference=…)`, which
+  silently returns ALL components → moved the wrong one and reported `ok`.
+- **High:** touching-courtyard detection in keepout auto-fix; pre-route pad-gap
+  drift → single-source `PAD_GAP_HELPER`; `set_design_rules` now actually writes
+  through-hole/edge-clearance and stops clobbering the copper layer count;
+  footprint-load failure made fatal (was silently building incomplete boards);
+  zones/gerber failures can't discard a routed board; `drc autofix` checks
+  FreeRouter availability BEFORE clearing routing; async autoroute runs the
+  shared preflight; I2S mic net-name collision on a 2nd bus; netlist
+  incompleteness forwarding; lcsc tier-attribute guards.
+- **Medium:** oscillator double-classification; silk-vs-routing keyword order;
+  fiducials validation; premature keepout event; mutable default; event-context
+  early return; `from_dict` null coercion (+ top-level null-list TypeError);
+  label unescaping; sqlite connection leaks; `suggest_cards` skipped list;
+  config.h ambiguity warning; connector-edge cascade.
+- **#7 LM2596** misclassified as a linear LDO (prefix-shadow: loose `LM\d{3}`
+  matched inside `LM2596`) → anchored the pattern.
+- **Board-regen gate (verified on real boards, KiCad 9 + 10):** mounting-hole
+  keepout self-flagged its own NPTH pad and never kept the copper pour off the
+  screw annulus → fixed; module thermal vias (0.2mm) tripped the default 0.3mm
+  min-hole → create step now sets a 0.2mm min through-hole. All five golden
+  boards regenerate, route fully (DRC `unconnected=0`), and carry zero must-fix
+  DRC violations.
+- Cross-agent operating instructions (`AGENT-INSTRUCTIONS.md` + server
+  `instructions`) so non-Claude agents get the operating guide; corrected stale
+  tool references/counts. Unit suite grown to **2143** with regression coverage
+  pinning every fix above.
 
 ### Breaking — Tool Surface Consolidation (97 → 13 tools)
 
