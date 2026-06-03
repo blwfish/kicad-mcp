@@ -398,17 +398,17 @@ def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
     assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
 
     pro.write_text(json.dumps(_MINIMAL_PRO))
-    # best-of-6 (not 4): the §2 antenna overhang seats the MCU flush at a board
+    # best-of-10 (was 6): the §2 antenna overhang seats the MCU flush at a board
     # edge, which concentrates this dense I2S board and widens FreeRouter's
-    # run-to-run spread. Placement is deterministic and routes to 1–3 on a good
-    # pass; passes=6 pulls the median to ~1–2. The bound is the convention's
-    # observed-max + 1 (observed max 5 over many passes=6 runs) — loosened from 4
-    # to 6 to reflect the denser overhang layout, NOT to mask breakage: a broken
-    # board leaves far more than 6, and exact correctness is pinned by the by-ref
-    # connectivity invariants below. (Tightening this back is a placement-quality
-    # follow-up: cluster the I2S amps closer to the MCU so the overhang costs less.)
+    # run-to-run spread. passes=6 occasionally landed at 7 unrouted on a bad CI
+    # pass (observed 2026-06-03) — pure router nondeterminism, not breakage.
+    # best-of-N keeps the best of N independent attempts, so raising N shrinks the
+    # all-attempts-fail tail; the bound STAYS 6 (SPEC §9-A3: bump passes, never
+    # loosen the bound). Exact correctness is pinned by the by-ref connectivity
+    # invariants below; a broken board leaves far more than 6. (Tightening the
+    # bound is a placement-quality follow-up: cluster the amps closer to the MCU.)
     r4 = build(project_path=str(pro), board_width_mm=110, board_height_mm=90,
-               autoroute_passes=6, export_gerbers=False)
+               autoroute_passes=10, export_gerbers=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=6)            # dense I2S board + overhang spread

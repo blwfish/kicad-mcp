@@ -137,6 +137,16 @@ def workspace(tmp_path):
     return tmp_path
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _warm_library_index(mcp_server):
+    """A cold/stale library index intermittently returns 0 search results on the
+    self-hosted runner — flaked test_search_symbols and test_place_footprint_and_audit
+    (2026-06-03), the same cold-index failure mode the silk integration test guards
+    against. Force one rebuild (symbols + footprints) before any search test runs so
+    every search in this module sees a populated index."""
+    _get_tool(mcp_server, "library")({"operation": "rebuild_index", "kind": "both"})
+
+
 # ---------------------------------------------------------------------------
 # Category: Library search
 # ---------------------------------------------------------------------------
