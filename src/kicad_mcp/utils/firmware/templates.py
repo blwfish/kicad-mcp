@@ -501,6 +501,7 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         return ex
     mcu = intent.mcu.ref
     S = K.SPH0645
+    mic_idx = 0
     for bus in intent.buses:
         if bus.type != "I2S_IN":
             continue
@@ -509,9 +510,16 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         sd_g = _first(bus.signals, "SD", "DOUT")
         if bclk_g is None or ws_g is None or sd_g is None:
             continue
+        # Net-name prefix: unindexed "MIC" for the first I2S-input bus (the common
+        # single-mic board), then "MIC1", "MIC2", … for any additional buses. With
+        # >1 I2S_IN bus, a shared "MIC_BCLK"/"MIC_WS"/"MIC_SD" would collide and
+        # expand_intent's nets_by_name map would silently overwrite the first mic's
+        # nets, orphaning its MCU-side endpoints. Mirrors i2s_output_amps' I2S{idx}.
+        prefix = "MIC" if mic_idx == 0 else f"MIC{mic_idx}"
+        mic_idx += 1
         pl = intent.placements.get(bus.name)
         if pl is not None and pl.locus == "remote":
-            _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl)
+            _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl, prefix)
             continue
         place, mic_origin = _decide_part(bus, "SPH0645", ex)
         if not place:
@@ -526,33 +534,35 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                      ("+3V3", Endpoint(ref=c.ref, pin="1")),
                      ("GND", Endpoint(ref=c.ref, pin="2"))]
         ex.new_nets += [
-            _passive_net("MIC_BCLK", Endpoint(ref=mcu, gpio=bclk_g), Endpoint(ref=mic.ref, pin=S["bclk"])),
-            _passive_net("MIC_WS", Endpoint(ref=mcu, gpio=ws_g), Endpoint(ref=mic.ref, pin=S["ws"])),
-            _passive_net("MIC_SD", Endpoint(ref=mcu, gpio=sd_g), Endpoint(ref=mic.ref, pin=S["data"])),
+            _passive_net(f"{prefix}_BCLK", Endpoint(ref=mcu, gpio=bclk_g), Endpoint(ref=mic.ref, pin=S["bclk"])),
+            _passive_net(f"{prefix}_WS", Endpoint(ref=mcu, gpio=ws_g), Endpoint(ref=mic.ref, pin=S["ws"])),
+            _passive_net(f"{prefix}_SD", Endpoint(ref=mcu, gpio=sd_g), Endpoint(ref=mic.ref, pin=S["data"])),
         ]
     return ex
 
 
 def _emit_remote_mic(
     ex: Expansion, alloc: RefAllocator, mcu: str,
-    bclk_g: int, ws_g: int, sd_g: int, pl: Placement,
+    bclk_g: int, ws_g: int, sd_g: int, pl: Placement, prefix: str = "MIC",
 ) -> None:
     """Field-wired I2S mic: a screw terminal carries the three I2S signals plus a
-    +3V3/GND tap (power delivered over the wire)."""
+    +3V3/GND tap (power delivered over the wire). ``prefix`` namespaces the I2S
+    nets per bus ("MIC", "MIC1", …) so multiple remote mics don't collide."""
     device = pl.device or "I2S mic"
+    bclk_net, ws_net, sd_net = f"{prefix}_BCLK", f"{prefix}_WS", f"{prefix}_SD"
     positions = [
-        ConnectorPosition("MIC_BCLK", "BCLK"),
-        ConnectorPosition("MIC_WS", "WS"),
-        ConnectorPosition("MIC_SD", "SD"),
+        ConnectorPosition(bclk_net, "BCLK"),
+        ConnectorPosition(ws_net, "WS"),
+        ConnectorPosition(sd_net, "SD"),
         ConnectorPosition("+3V3", "+3V3"),
         ConnectorPosition("GND", "GND"),
     ]
     conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
                                connector_type="screw_terminal")
     ex.new_nets += [
-        _passive_net("MIC_BCLK", Endpoint(ref=mcu, gpio=bclk_g), te["MIC_BCLK"]),
-        _passive_net("MIC_WS", Endpoint(ref=mcu, gpio=ws_g), te["MIC_WS"]),
-        _passive_net("MIC_SD", Endpoint(ref=mcu, gpio=sd_g), te["MIC_SD"]),
+        _passive_net(bclk_net, Endpoint(ref=mcu, gpio=bclk_g), te[bclk_net]),
+        _passive_net(ws_net, Endpoint(ref=mcu, gpio=ws_g), te[ws_net]),
+        _passive_net(sd_net, Endpoint(ref=mcu, gpio=sd_g), te[sd_net]),
     ]
     ex.gaps.append(Gap(
         "remote_device",

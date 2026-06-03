@@ -347,7 +347,14 @@ class TestApplyAndClearCache:
     ):
         """Real schematic with no U1; state targets U1; apply must report
         an error for that ref against the real ksa lookup, not via a
-        stub-induced AttributeError."""
+        stub-induced AttributeError.
+
+        Because U1 is the ONLY target, applied==0 and every target failed —
+        the save is a no-op, so apply must return status="error"
+        (code="no_components_applied") rather than a misleading "ok" that the
+        caller would trust as a successful placement. (Mirrors the
+        _finalize_pad_assignment "requested work, did nothing → hard error"
+        principle.)"""
         self._isolate_cache(tmp_path, monkeypatch)
         sch_path = _build_real_sch(tmp_path, [
             ("R1", "10k", (50, 50)),
@@ -362,7 +369,8 @@ class TestApplyAndClearCache:
         })
 
         result = schematic_layout_fn(operation="apply", state_id="eeee5555ffff6666")
-        assert result["status"] == "ok"
+        assert result["status"] == "error"
+        assert result["code"] == "no_components_applied"
         assert result["applied"] == 0
         assert len(result["errors"]) == 1
         assert result["errors"][0]["ref"] == "U1"

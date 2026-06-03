@@ -162,8 +162,27 @@ print(json.dumps({"status": "ok", "move_count": move_count}))
 
     # --- 2. Fix routing violations ---
     if fix_routing and groups["routing"]:
-        # Clear existing routing
-        clear_result = run_pcbnew_script("""
+        # FreeRouter/Java MUST be available BEFORE we touch anything. Clearing
+        # routing first and only then discovering we can't re-route would leave
+        # the board fully unrouted — strictly worse than the input — while still
+        # reporting status="ok". Check availability first; if it's missing, leave
+        # the existing routing untouched and record that the fix was skipped.
+        from kicad_mcp.tools.pcb_autoroute import (
+            _find_freerouter_jar,
+            _find_java,
+            _run_full_autoroute,
+        )
+
+        jar_path = _find_freerouter_jar(None)
+        java_path = _find_java()
+        if not (jar_path and java_path):
+            actions_taken.append(
+                "routing: skipped — FreeRouter/Java not available; left existing "
+                "routing intact (clearing it would leave the board unrouted)"
+            )
+        else:
+            # Clear existing routing, then re-autoroute.
+            clear_result = run_pcbnew_script("""
 import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
@@ -177,23 +196,13 @@ for item in to_remove:
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "removed": removed}))
 """, params={"pcb_path": pcb_path})
-        # Subprocess returned {"status": "ok", "removed": N} or {"error": ...}.
-        # Default-to-0 would silently re-autoroute an uncleared board, masking
-        # the failure with an optimistic action log entry.
-        if "error" in clear_result:
-            return {"error": f"Failed to clear existing routing: {clear_result['error']}"}
-        tracks_cleared = clear_result["removed"]
+            # Subprocess returned {"status": "ok", "removed": N} or {"error": ...}.
+            # Default-to-0 would silently re-autoroute an uncleared board, masking
+            # the failure with an optimistic action log entry.
+            if "error" in clear_result:
+                return {"error": f"Failed to clear existing routing: {clear_result['error']}"}
+            tracks_cleared = clear_result["removed"]
 
-        # Re-autoroute
-        from kicad_mcp.tools.pcb_autoroute import (
-            _find_freerouter_jar,
-            _find_java,
-            _run_full_autoroute,
-        )
-
-        jar_path = _find_freerouter_jar(None)
-        java_path = _find_java()
-        if jar_path and java_path:
             route_result = _run_full_autoroute(
                 pcb_path=pcb_path,
                 jar_path=jar_path,
@@ -205,11 +214,6 @@ print(json.dumps({"status": "ok", "removed": removed}))
             actions_taken.append(
                 f"routing: cleared {tracks_cleared} tracks/vias, "
                 f"re-autorouted ({autoroute_passes} passes, {incomplete} unconnected)"
-            )
-        else:
-            actions_taken.append(
-                f"routing: cleared {tracks_cleared} tracks/vias but "
-                "FreeRouter/Java not available for re-autoroute"
             )
 
     # --- 3. Fix silkscreen ---

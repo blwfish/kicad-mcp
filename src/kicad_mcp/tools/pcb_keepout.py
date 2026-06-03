@@ -619,7 +619,7 @@ def _op_pre_route_check(
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + _KEEPOUT_HELPER + """
+""" + _KEEPOUT_HELPER + PAD_GAP_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
 min_cl = params["min_clearance_mm"]
 
@@ -722,15 +722,9 @@ for i in range(n):
             continue
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
-        # Signed gap — see check_pad_clearances above for the convention.
-        gap_x = max(a["x0"], b["x0"]) - min(a["x1"], b["x1"])
-        gap_y = max(a["y0"], b["y0"]) - min(a["y1"], b["y1"])
-        if gap_x >= 0 and gap_y >= 0:
-            gap = min(gap_x, gap_y)
-        elif gap_x >= 0 or gap_y >= 0:
-            gap = max(gap_x, gap_y)
-        else:
-            gap = max(gap_x, gap_y)
+        # Signed gap via the single source of truth (PAD_GAP_HELPER), shared
+        # with _op_pad_clearances so the two checks can never disagree.
+        gap = pad_signed_gap(a, b)
         if gap < min_cl:
             pad_violations.append({
                 "pad_a": f"{a['ref']}:{a['pad']}",
@@ -846,7 +840,11 @@ for pass_num in range(1, max_passes + 1):
         a = fp_data[i]; ab = a["bbox"]
         for j in range(i + 1, len(fp_data)):
             b = fp_data[j]; bb_ = b["bbox"]
-            if ab[0] < bb_[2] and ab[2] > bb_[0] and ab[1] < bb_[3] and ab[3] > bb_[1]:
+            # Non-strict AABB: touching courtyards (gap exactly 0) count as
+            # overlapping, matching rects_overlap / nudge_overlapping_footprints
+            # and KiCad DRC. A strict test here would leave touching courtyards
+            # that DRC still flags as courtyards_overlap.
+            if ab[0] <= bb_[2] and ab[2] >= bb_[0] and ab[1] <= bb_[3] and ab[3] >= bb_[1]:
                 pairs.append((a, b))
 
     if not pairs:
@@ -865,8 +863,9 @@ for pass_num in range(1, max_passes + 1):
         ox = min(mb[2], ab_[2]) - max(mb[0], ab_[0])  # x overlap
         oy = min(mb[3], ab_[3]) - max(mb[1], ab_[1])  # y overlap
 
-        if ox <= 0 or oy <= 0:
-            continue  # No longer overlapping (fixed by earlier nudge)
+        if ox < 0 or oy < 0:
+            continue  # A prior nudge this pass already separated them on an axis.
+            # (ox/oy == 0 means touching — still nudge apart by `spacing`.)
 
         mover_fp = mover["fp"]
         old_pos = mover_fp.GetPosition()

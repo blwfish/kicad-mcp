@@ -99,6 +99,13 @@ async def _op_extract_netlist(
             "nets": netlist_data["nets"],
             "analysis": analysis_results,
         }
+        # Forward incompleteness signals from the parser. The regex fallback
+        # (kicad-cli unavailable) cannot resolve hierarchical sub-schematics and
+        # returns empty pin lists; without these fields the caller sees a clean
+        # success and trusts data that is silently missing connectivity.
+        for _k in ("parser_path", "incomplete", "incomplete_reason"):
+            if _k in netlist_data:
+                result[_k] = netlist_data[_k]
         if project_path is not None:
             result["project_path"] = project_path
 
@@ -208,6 +215,13 @@ async def _op_analyze_schematic_connections(
             "schematic_path": schematic_path,
             "analysis": analysis,
         }
+        # Forward incompleteness signals. When parser_path == "regex" the pin
+        # lists are empty, so EVERY signal net reads as floating (pin_count <= 1)
+        # — the floating_net "potential_issues" above are then unreliable and the
+        # caller needs to know connectivity wasn't actually traced.
+        for _k in ("parser_path", "incomplete", "incomplete_reason"):
+            if _k in netlist_data:
+                result[_k] = netlist_data[_k]
 
         if ctx:
             await ctx.report_progress(100, 100)

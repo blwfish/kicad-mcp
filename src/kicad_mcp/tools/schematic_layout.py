@@ -530,6 +530,23 @@ def _op_apply(
                     is_fresh_state=False,
                 )
 
+        # If nothing was applied but components failed, the placement did NOT
+        # take effect (e.g. stale state — every ref missing from the current
+        # schematic). The save above succeeds trivially (no mutations), so
+        # returning status="ok" would let the caller trust a silent no-op and
+        # proceed to route/validate an unchanged schematic.
+        if applied_count == 0 and errors:
+            return _with_events({
+                "status": "error",
+                "code": "no_components_applied",
+                "message": (
+                    f"No components were moved; all {len(errors)} target(s) "
+                    "failed (stale state — re-run suggest?)."
+                ),
+                "applied": 0,
+                "errors": errors,
+            }, events)
+
         return _with_events({
             "status": "ok",
             "applied": applied_count,
