@@ -604,8 +604,9 @@ class TestApplyMovesOnlyTargetedRefs:
         r1_after = sch_after.components.get("R1").position
         r2_after = sch_after.components.get("R2").position
         c1_after = sch_after.components.get("C1").position
-        # R1 moved to (or near) the requested (100, 100), grid-snapped.
-        assert abs(r1_after.x - 100) < 2 and abs(r1_after.y - 100) < 2
+        # R1 moved to the requested (100, 100), within half a 1.27mm grid step
+        # (< 2 was loose enough to pass a move to 99 — a wrong-place bug).
+        assert abs(r1_after.x - 100) < 0.7 and abs(r1_after.y - 100) < 0.7
         # R2 and C1 must NOT have moved — the bug used to overwrite them.
         assert (r2_after.x, r2_after.y) == (r2_pos_before.x, r2_pos_before.y)
         assert (c1_after.x, c1_after.y) == (c1_pos_before.x, c1_pos_before.y)

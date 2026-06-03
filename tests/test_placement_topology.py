@@ -177,6 +177,13 @@ class TestSparseClusterBoundary:
             _netlist(refs, nets), schematic_path=f"/tmp/n{n}.kicad_sch",
         )
 
+    def test_size_below_max_emits_sparse_warning(self):
+        # 2 members (SPARSE_CLUSTER_MAX - 1) → below the boundary, still sparse.
+        # Pins the `<=` (not `==`): a `< 3` regression would drop this case.
+        part = self._connected_cluster_of_size(SPARSE_CLUSTER_MAX - 1)
+        codes = [e["code"] for e in part.events]
+        assert "sparse_cluster" in codes
+
     def test_size_exactly_max_emits_sparse_warning(self):
         # 3 members (== SPARSE_CLUSTER_MAX) → warning per spec
         part = self._connected_cluster_of_size(SPARSE_CLUSTER_MAX)
