@@ -34,6 +34,9 @@ def test_ambiguous_two_candidates_does_not_pick():
     assert bus.resolved_part is None
     assert res[0].reason == "ambiguous"
     assert res[0].candidates == ["INMP441", "SPH0645"]   # sorted, for a stable gap message
+    # The bus is MARKED ambiguous (distinct from no-evidence) so a later template
+    # holds it unrealized instead of assuming a default.
+    assert bus.part_provenance == "ambiguous"
 
 
 def test_no_serving_part_in_corpus_resolves_none():
@@ -42,6 +45,8 @@ def test_no_serving_part_in_corpus_resolves_none():
     res = resolve_bus_parts([bus], [_ev("MAX98357A")], _SERVES)
     assert bus.resolved_part is None
     assert res[0].reason == "none"
+    # No-evidence is NOT marked ambiguous → a template may assume-with-disclosure.
+    assert bus.part_provenance != "ambiguous"
 
 
 def test_two_same_type_buses_both_resolve():

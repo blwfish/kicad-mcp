@@ -113,18 +113,31 @@ class TestIdentifyPowerSupplies:
             "LM7805 already classified as linear — should not also appear as switching"
 
     def test_switching_regulator_buck_first_match(self):
-        # LM2596 matches buck (LM\d{4}) — should be classified as buck, not
-        # also boost or buck_boost (break prevents further pattern checks).
+        # LM2596 is a buck converter. The loose LDO pattern `LM\d{3}` used to match
+        # "LM259" inside "LM2596" and (linear-runs-first) claim it as a linear LDO,
+        # so it appeared 0 times in switching. With the prefix anchored it now
+        # correctly classifies as exactly one buck switching regulator, and must
+        # NOT also appear as a linear regulator.
         components = {
             "U2": _comp("LM2596"),
             "L1": _comp("68uH"),
         }
         result = identify_power_supplies(components, {})
-        switching = [r for r in result if r["type"] == "switching_regulator"]
-        # If it fires, it must be exactly one entry for U2
-        u2_entries = [r for r in switching if r["main_component"] == "U2"]
-        assert len(u2_entries) <= 1, \
-            f"LM2596 should appear at most once in switching regulators, got: {u2_entries}"
+        u2_switching = [r for r in result
+                        if r["type"] == "switching_regulator" and r["main_component"] == "U2"]
+        u2_linear = [r for r in result
+                     if r["type"] == "linear_regulator" and r["main_component"] == "U2"]
+        assert len(u2_switching) == 1, f"LM2596 must be one buck entry, got: {u2_switching}"
+        assert u2_switching[0]["subtype"] == "buck"
+        assert u2_linear == [], f"LM2596 must NOT be classified linear, got: {u2_linear}"
+
+    def test_lm317_three_digit_ldo_still_linear(self):
+        # Guard the prefix-anchor fix doesn't break real 3-digit LM LDOs: LM317
+        # must still classify as a linear regulator.
+        result = identify_power_supplies({"U1": _comp("LM317")}, {})
+        u1_linear = [r for r in result
+                     if r["type"] == "linear_regulator" and r["main_component"] == "U1"]
+        assert len(u1_linear) == 1 and u1_linear[0]["subtype"] == "LDO"
 
 
 # ===========================================================================

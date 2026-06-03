@@ -382,6 +382,12 @@ def _decide_part(bus: Bus, template_part: str, ex: Expansion) -> tuple[bool, str
     ``template_part``. Returns ``(place, origin)`` and stamps the bus + emits the
     honest gap. The three cases — the whole point of part resolution:
 
+      * ``part_provenance == "ambiguous"`` — firmware named MORE THAN ONE
+        candidate part → hold the bus unrealized. import_firmware already disclosed
+        it with a ``part_ambiguous`` gap, so DO NOT assume a default here (the old
+        code fell into the ``resolved_part is None`` branch and emitted a
+        contradictory ``assumed_part`` gap — "firmware names no specific part" —
+        then placed the default despite the named candidates).
       * ``resolved_part is None`` — firmware named no part for this bus → ASSUME
         ``template_part`` (place it, origin ``template``, ``part_is_assumption``),
         disclosed by an ``assumed_part`` gap.
@@ -393,6 +399,11 @@ def _decide_part(bus: Bus, template_part: str, ex: Expansion) -> tuple[bool, str
         SPH0645-for-INMP441 bug, refused.)
     """
     rp = bus.resolved_part
+    if bus.part_provenance == "ambiguous":
+        # >1 candidate named: held unrealized, never assumed. The part_ambiguous
+        # gap from import_firmware is the disclosure; emitting another here would
+        # duplicate it. The user disambiguates via board.yaml bus_part_overrides.
+        return False, ""
     if rp is None:
         bus.resolved_part = template_part
         bus.part_provenance = "assumed"

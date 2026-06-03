@@ -318,6 +318,21 @@ def test_i2s_two_mics_get_distinct_non_colliding_nets():
     for n in ex.new_nets:
         assert len(n.endpoints) == 2, f"{n.name} lost an endpoint to a collision"
 
+def test_i2s_mic_ambiguous_bus_held_not_assumed():
+    """A bus the firmware names >1 candidate part for (part_provenance ==
+    'ambiguous') must be held UNREALIZED — no SPH0645 placed, and NO contradictory
+    'assumed_part' gap (which claims "firmware names no specific part"). The
+    part_ambiguous disclosure comes from import_firmware, not the template."""
+    i = _audio()
+    mic_bus = next(b for b in i.buses if b.type == "I2S_IN")
+    mic_bus.part_provenance = "ambiguous"      # as resolve_bus_parts marks it
+    ex = i2s_mic(i, RefAllocator(i))
+    assert [c.type for c in ex.components].count("SPH0645") == 0   # nothing assumed/placed
+    assert ex.new_nets == []                                      # bus left unrealized
+    assert not any(g.kind == "assumed_part" for g in ex.gaps), \
+        "must not emit a contradictory assumed_part gap for an ambiguous bus"
+
+
 def test_i2c_device_header_with_pullups():
     i = _audio()
     ex = i2c_device_header(i, RefAllocator(i))

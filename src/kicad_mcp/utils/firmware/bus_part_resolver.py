@@ -59,7 +59,12 @@ def resolve_bus_parts(
                                      candidates, "resolved"))
         else:
             # 0 → no evidence; >1 → ambiguous (NEVER pick one silently). Both leave
-            # the bus unresolved; >1 is gap-worthy so the caller can surface it.
+            # resolved_part None, but mark the AMBIGUOUS case on the bus so a later
+            # template (_decide_part) can tell it apart from no-evidence and hold
+            # the bus unrealized instead of assuming a default. (No-evidence keeps
+            # provenance None → assume-with-disclosure is correct there.)
+            if candidates:
+                bus.part_provenance = "ambiguous"
             out.append(BusResolution(bus.name, bus.type, None, candidates,
                                      "ambiguous" if candidates else "none"))
     return out
