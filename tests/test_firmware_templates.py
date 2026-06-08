@@ -535,13 +535,17 @@ def test_generate_expanded_speedcal(tmp_path):
     # the MCP_INT signal net is NOT polluted into a rail
     assert members("MCP23017_INT") == {"U1.16", "U3.20"}
 
-    # --- CP2102 programming block (U5=CP2102, J1=USB-C — deterministic refs) ---
-    assert {"J1.A4", "J1.A9", "J1.B4", "J1.B9", "U4.3"} <= p5  # +5V USB-sourced
-    assert "U5.6" not in p3                              # LANDMINE: CP2102 VDD not +3V3
-    assert "U5.6" in members("CP2102_VDD")              # ...it's on its own net
-    assert {"U5.3", "U5.29"} <= gnd                      # LANDMINE: both CP2102 GND pins
-    assert members("UART_RX") == {"U1.34", "U5.26"}     # CP2102 TXD -> ESP32 RX
-    assert members("UART_TX") == {"U1.35", "U5.25"}     # CP2102 RXD <- ESP32 TX
+    # --- CP2102 programming block (U7=CP2102, J1=USB-C — deterministic refs).
+    # U4=PIEZO, U5=TRACK (both terminal-only cards, remote), U6=AMS1117 (VI=pin3),
+    # so CP2102 is U7. U6.3 = AMS1117 VI (input) on +5V; J1 VBUS pins are the source.
+    assert {"J1.A4", "J1.A9", "J1.B4", "J1.B9", "U6.3"} <= p5  # +5V USB-sourced
+    # CP2102 VREGIN+VBUS are also on +5V (pin numbers vary by symbol version).
+    assert p5 & {f"U7.{n}" for n in range(1, 30)}        # CP2102 has at least one +5V pin
+    assert "U7.6" not in p3                              # LANDMINE: CP2102 VDD not +3V3
+    assert "U7.6" in members("CP2102_VDD")              # ...it's on its own net
+    assert {"U7.3", "U7.29"} <= gnd                      # LANDMINE: both CP2102 GND pins
+    assert members("UART_RX") == {"U1.34", "U7.26"}     # CP2102 TXD -> ESP32 RX
+    assert members("UART_TX") == {"U1.35", "U7.25"}     # CP2102 RXD <- ESP32 TX
 
 
 def test_first_preserves_gpio_zero():

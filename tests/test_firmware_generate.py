@@ -86,7 +86,11 @@ def test_generate_speedcal_end_to_end(tmp_path):
     res = generate_schematic(intent, str(out))
 
     assert res["status"] == "ok"
-    assert res["components_placed"] == 3        # ESP32 + MCP23017 + HX711
+    # PIEZO and TRACK are terminal-only cards (realize: terminal) — intrinsically
+    # off-board, so generate excludes them from schematic placement even on this
+    # raw (non-expanded) intent. Only the on-board ICs are placed; their terminal
+    # signals are not flagged unresolved (a screw terminal carries them at expand).
+    assert res["components_placed"] == 3        # ESP32 + HX711 + MCP23017
     assert not res["component_errors"] and not res["unresolved_endpoints"]
 
     nl = extract_netlist_via_cli(str(out))

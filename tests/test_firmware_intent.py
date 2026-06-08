@@ -57,7 +57,8 @@ def test_mcu_unknown_when_no_board():
 
 def test_peripherals_materialized():
     types = {p.type for p in _intent().peripherals}
-    assert types == {"HX711", "MCP23017"}  # PIEZO has no symbol -> not placed
+    # PIEZO now resolves via the terminal-only card (Connector_Generic:Conn_01x01).
+    assert types == {"HX711", "MCP23017", "PIEZO"}
 
 def test_bus_net_tier():
     n = _net(_intent(), "I2C_SDA")
@@ -73,8 +74,10 @@ def test_peripheral_net_tier():
 
 def test_orphan_net_tiers():
     i = _intent()
-    assert _net(i, "I2S_SCK").kind == "orphan"     # no I2S device declared
-    assert _net(i, "PIEZO_ADC").kind == "orphan"   # PIEZO has no symbol
+    assert _net(i, "I2S_SCK").kind == "orphan"          # no I2S device declared
+    # PIEZO is now a recognized terminal-only card, so PIEZO_ADC is a peripheral net
+    # (the card gives it a ref; remote_peripherals will route it to a terminal).
+    assert _net(i, "PIEZO_ADC").kind == "peripheral"    # resolved via piezo.yaml
 
 def test_always_gaps_present():
     assert {"power_tree", "decoupling", "pullups", "connectors", "parts"} <= _gap_kinds(_intent())
@@ -85,9 +88,12 @@ def test_invalid_pin_becomes_gap_not_net():
     assert all(n.name != "BAD" for n in i.nets)
 
 def test_unknown_peripheral_gaps():
-    # I2S (no device) and PIEZO (no symbol) each flag a gap.
-    details = " ".join(g.detail for g in _intent().gaps if g.kind == "unknown_peripheral")
-    assert "I2S" in details and "PIEZO" in details
+    # I2S (no device) still flags a gap. PIEZO is now a recognized terminal-only
+    # card — it is resolved (no unknown_peripheral gap) and its net is "peripheral".
+    gaps = _intent().gaps
+    details = " ".join(g.detail for g in gaps if g.kind == "unknown_peripheral")
+    assert "I2S" in details                             # I2S device still unknown
+    assert "PIEZO" not in details                       # PIEZO now recognized via card
 
 def test_provenance_retains_unmodeled_macros():
     prov = _intent().provenance
@@ -380,10 +386,14 @@ def test_hub_register_macro_is_not_a_device():
     assert "MPU6050_REG_PWR_MGMT_1" not in types and "MPU6050_REG" not in types
 
 
-def test_hub_buzzer_stays_flagged_orphan():
+def test_hub_buzzer_resolves_via_piezo_terminal_card():
+    # BUZZER_PIN resolves via the PIEZO terminal-only card (its BUZZER alias) — it
+    # is NOT a dropped orphan. Its net is a peripheral net; at expand time it
+    # becomes a labeled screw terminal. Guards the alias-resolution path for
+    # hint-matched cards (resolve_peripheral must honor aliases, not just types).
     i = _hub_intent()
-    assert _net(i, "BUZZER").kind == "orphan"
-    assert any(g.kind == "unknown_peripheral" and "BUZZER" in g.detail for g in i.gaps)
+    assert _net(i, "BUZZER").kind == "peripheral"
+    assert not any(g.kind == "unknown_peripheral" and "BUZZER" in g.detail for g in i.gaps)
 
 
 def test_hub_module_assumption_flagged():

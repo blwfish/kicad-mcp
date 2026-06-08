@@ -20,15 +20,20 @@ explicit gap rather than guessing.
 """
 from __future__ import annotations
 
-from typing import Any, Optional, TypedDict, cast
+from typing import Any, TypedDict, cast
 
-from kicad_mcp.utils.firmware.cards import compute_address_straps, load_cards
+from kicad_mcp.utils.firmware.cards import (
+    compute_address_straps,
+    load_cards,
+    recognized_part_names,
+)
 from kicad_mcp.utils.firmware.parse import canonical_type, idf_target_defines
 
 __all__ = [
     "McuInfo", "PeripheralInfo", "resolve_mcu", "resolve_mcu_by_part",
     "resolve_peripheral", "role_to_pin_name", "compute_address_straps",
     "mcp23017_address_straps", "mpu6050_ad0_strap",
+    "is_terminal_card_type",
 ]
 
 
@@ -52,7 +57,7 @@ class McuInfo(TypedDict):
 class _PeripheralInfoBase(TypedDict):
     lib_id: str
     value: str
-    bus: Optional[str]
+    bus: str | None
     footprint: str
     # firmware signal-role (upper-cased) -> symbol pin NAME or NUMBER
     roles: dict[str, str]
@@ -66,11 +71,12 @@ class _PeripheralInfoBase(TypedDict):
 class PeripheralInfo(_PeripheralInfoBase, total=False):
     config: dict[str, Any]            # address_strap + static_ties (device_config)
     decoupling: list[dict[str, Any]]  # optional per-IC bypass override
+    realize: str                      # "terminal" = always a screw-terminal wire-out
 
 
 # --- card cache (loaded once from the packaged + override dirs) ---------------
 
-_CACHE: Optional[tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]] = None
+_CACHE: tuple[dict[str, dict[str, Any]], list[dict[str, Any]]] | None = None
 
 
 def _cards() -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
@@ -167,7 +173,7 @@ MCP23017_RESET_PIN = "~{RESET}"
 MPU6050_AD0_PIN = "5"
 
 
-def mcp23017_address_straps(address: int) -> Optional[list[tuple[str, str]]]:
+def mcp23017_address_straps(address: int) -> list[tuple[str, str]] | None:
     """[(addr_pin, rail)] for an MCP23017 I2C address (0x20..0x27), else None.
     Thin wrapper over the MCP23017 card's address-strap spec."""
     info = resolve_peripheral("MCP23017")
@@ -176,7 +182,7 @@ def mcp23017_address_straps(address: int) -> Optional[list[tuple[str, str]]]:
     return compute_address_straps(info["config"]["address_strap"], address)
 
 
-def mpu6050_ad0_strap(address: int) -> Optional[tuple[str, str]]:
+def mpu6050_ad0_strap(address: int) -> tuple[str, str] | None:
     """(ad0_pin, rail) for an MPU-6050 I2C address (0x68/0x69), else None. Thin
     wrapper over the MPU6050 card; unpacks the single-bit list back to a tuple."""
     info = resolve_peripheral("MPU6050")
@@ -188,7 +194,7 @@ def mpu6050_ad0_strap(address: int) -> Optional[tuple[str, str]]:
 
 # --- resolution --------------------------------------------------------------
 
-def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
+def resolve_mcu(board_id: str | None) -> McuInfo | None:
     """Map a platformio ``board =`` id to an MCU card. Exact ``board_match`` /
     ``part`` first, then the card with the LONGEST ``board_match`` substring in
     the id (deterministic; no hand-ordered precedence — removes the Rule-3 seam
@@ -197,7 +203,7 @@ def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
         return None
     key = board_id.strip().lower()
     _, mcus = _cards()
-    best: Optional[dict[str, Any]] = None
+    best: dict[str, Any] | None = None
     best_len = -1
     for card in mcus:
         matches = [str(s).lower() for s in card["board_match"]] + [str(card["part"]).lower()]
@@ -222,7 +228,7 @@ def resolve_mcu(board_id: Optional[str]) -> Optional[McuInfo]:
     return cast(McuInfo, best)
 
 
-def resolve_mcu_by_part(part: Optional[str]) -> Optional[McuInfo]:
+def resolve_mcu_by_part(part: str | None) -> McuInfo | None:
     """Look up MCU facts by part string (templates have ``intent.mcu.part``)."""
     if not part:
         return None
@@ -233,17 +239,37 @@ def resolve_mcu_by_part(part: Optional[str]) -> Optional[McuInfo]:
     return None
 
 
-def resolve_peripheral(type_name: Optional[str]) -> Optional[PeripheralInfo]:
-    """Map a peripheral type (e.g. ``MCP23017``, derived from ``MCP23017_ADDR``
-    or a pin macro's name prefix) to its card."""
+def resolve_peripheral(type_name: str | None) -> PeripheralInfo | None:
+    """Map a peripheral type/hint (e.g. ``MCP23017`` from ``MCP23017_ADDR``, or a
+    pin-macro prefix like ``PIEZO``/``TRACK``) to its card. The name may be the
+    card's canonical ``type`` OR one of its ``aliases`` (e.g. hint ``TRACK`` ->
+    SWITCH card, ``BUZZER`` -> PIEZO) — alias resolution uses the same raw->canonical
+    registry as the free-text part extractor, so the hint path and the comment-scan
+    path can never disagree on what a name resolves to."""
     if not type_name:
         return None
     peris, _ = _cards()
-    card = peris.get(canonical_type(type_name))
+    canon = canonical_type(type_name)
+    card = peris.get(canon)
+    if card is None:
+        alias_to_canon = {
+            canonical_type(raw): ckey
+            for raw, ckey in recognized_part_names(peris).items()
+        }
+        ckey = alias_to_canon.get(canon)
+        card = peris.get(ckey) if ckey else None
     return cast(PeripheralInfo, card) if card is not None else None
 
 
-def role_to_pin_name(type_name: str, role: Optional[str]) -> Optional[str]:
+def is_terminal_card_type(type_name: str | None) -> bool:
+    """True if the peripheral card for ``type_name`` (canonical type OR alias)
+    declares ``realize: terminal`` — meaning it is ALWAYS a screw-terminal
+    wire-out and no board.yaml ``locus: remote`` directive is required."""
+    info = resolve_peripheral(type_name)
+    return info is not None and info.get("realize") == "terminal"
+
+
+def role_to_pin_name(type_name: str, role: str | None) -> str | None:
     """Translate a firmware signal-role to the device symbol's pin NAME/NUMBER,
     or None if unknown (caller flags it)."""
     info = resolve_peripheral(type_name)
