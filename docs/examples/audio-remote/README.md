@@ -12,6 +12,6 @@
 
 ![PCB top](pcb-top.png)
 
-> **Board size:** 110 × 90 mm  
+> **Board size:** 71 × 58 mm  
 > **Layer count:** 2  
-> **Components:** 31
+> **Components:** 29
