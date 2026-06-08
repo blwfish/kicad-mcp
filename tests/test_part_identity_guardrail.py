@@ -13,7 +13,7 @@ from kicad_mcp.utils.firmware.intent import Bus, load_intent
 from kicad_mcp.utils.firmware.templates import Expansion, _decide_part
 
 # The recognized device TYPES a template places (vs. generic R/C/HDR/CONN glue).
-_DEVICE_TYPES = {"MAX98357A", "SPH0645"}
+_DEVICE_TYPES = {"MAX98357A", "SPH0645", "ICS43434"}
 
 
 # --- _decide_part: the three honest cases, directly --------------------------

@@ -502,16 +502,27 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+# Buildable I2S-input mics, keyed by the canonical resolved-part string the bus
+# resolver produces (canonical_type: hyphen-stripped, upper — so "ICS-43434" → key
+# "ICS43434"). A firmware-named mic in this registry is placed as that exact part;
+# an EOL/unrecognized mic with no realization (e.g. INMP441 — no KiCad symbol) is
+# deliberately absent, so _decide_part refuses to substitute the default rather
+# than silently swapping parts.
+_MIC_REALIZATIONS = {"SPH0645": K.SPH0645, "ICS43434": K.ICS43434}
+_DEFAULT_MIC = "SPH0645"
+
+
 def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """Each I2S-input bus -> an SPH0645 MEMS mic (SEL→GND, VDD bypass), UNLESS the
-    bus is declared ``remote`` in board.yaml — then the mic is field-wired and the
-    bus crosses to a screw terminal instead of an on-board chip (no chip, no
-    bypass: the device's support glue lives at the device)."""
+    """Each I2S-input bus -> a MEMS mic (SEL/LR→GND, VDD bypass): the specific part
+    the firmware names when it's one we can realize (SPH0645 or ICS-43434), else the
+    SPH0645 default. A firmware-named mic with no realization (e.g. EOL INMP441) is
+    refused, not substituted. UNLESS the bus is declared ``remote`` in board.yaml —
+    then the mic is field-wired and the bus crosses to a screw terminal instead of an
+    on-board chip (no chip, no bypass: the device's support glue lives at the device)."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
     mcu = intent.mcu.ref
-    S = K.SPH0645
     mic_idx = 0
     for bus in intent.buses:
         if bus.type != "I2S_IN":
@@ -532,11 +543,16 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         if pl is not None and pl.locus == "remote":
             _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl, prefix)
             continue
-        place, mic_origin = _decide_part(bus, "SPH0645", ex)
+        # Build the firmware-named mic if we can realize it; else fall back to the
+        # default part so _decide_part either assumes it (rp is None) or refuses it
+        # (rp names a different, unrealizable part — the INMP441 case).
+        build_part = bus.resolved_part if bus.resolved_part in _MIC_REALIZATIONS else _DEFAULT_MIC
+        S = _MIC_REALIZATIONS[build_part]
+        place, mic_origin = _decide_part(bus, build_part, ex)
         if not place:
             continue   # firmware declares a different mic we can't realize (gapped)
-        mic = Peripheral(ref=alloc.next("MK"), type="SPH0645", lib_id=S["lib_id"],
-                         value="SPH0645LM4H", footprint=S["footprint"], origin=mic_origin)
+        mic = Peripheral(ref=alloc.next("MK"), type=build_part, lib_id=S["lib_id"],
+                         value=S["value"], footprint=S["footprint"], origin=mic_origin)
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
         ex.components += [mic, c]
         ex.power += [("+3V3", Endpoint(ref=mic.ref, pin=S["vdd"])),

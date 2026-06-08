@@ -333,6 +333,37 @@ def test_i2s_mic_ambiguous_bus_held_not_assumed():
         "must not emit a contradictory assumed_part gap for an ambiguous bus"
 
 
+def test_i2s_mic_builds_ics43434_when_declared():
+    """Firmware naming ICS-43434 (canonical 'ICS43434') gets THAT exact part placed
+    — not the SPH0645 default — wired to ITS pin names. The ICS-43434 symbol differs
+    from SPH0645 on three pins (bit clock SCK not BCLK, data SD not DATA, L/R select
+    LR not SEL), so a wrong realization would silently orphan BCLK/data/SEL."""
+    i = _audio()
+    mic_bus = next(b for b in i.buses if b.type == "I2S_IN")
+    mic_bus.resolved_part = "ICS43434"          # as resolve_bus_parts marks it
+    mic_bus.part_provenance = "corpus"
+    ex = i2s_mic(i, RefAllocator(i))
+
+    mics = [c for c in ex.components if c.type == "ICS43434"]
+    assert len(mics) == 1, "the declared ICS-43434 must be placed"
+    mic = mics[0]
+    assert mic.lib_id == "Sensor_Audio:ICS-43434"
+    assert mic.footprint == "Sensor_Audio:InvenSense_ICS-43434-6_3.5x2.65mm"
+    assert mic.origin == "imported"             # firmware-named, not assumed/substituted
+    assert not any(c.type == "SPH0645" for c in ex.components), \
+        "SPH0645 default must NOT be substituted when ICS-43434 is named"
+    # Realized → no honesty gap.
+    assert not any(g.kind in ("assumed_part", "part_unavailable") for g in ex.gaps)
+    # Signal nets land on the ICS-43434 pin NAMES (SCK/SD/WS), not SPH0645's.
+    pins_by_net = {n.name: [e.pin for e in n.endpoints if e.pin] for n in ex.new_nets}
+    assert pins_by_net["MIC_BCLK"] == ["SCK"]
+    assert pins_by_net["MIC_SD"] == ["SD"]
+    assert pins_by_net["MIC_WS"] == ["WS"]
+    # L/R-select pin "LR" strapped to GND (left); VDD to +3V3.
+    assert ("GND", Endpoint(ref=mic.ref, pin="LR")) in ex.power
+    assert ("+3V3", Endpoint(ref=mic.ref, pin="VDD")) in ex.power
+
+
 def test_i2c_device_header_with_pullups():
     i = _audio()
     ex = i2c_device_header(i, RefAllocator(i))
