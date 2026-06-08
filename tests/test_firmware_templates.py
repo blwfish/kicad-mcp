@@ -364,6 +364,22 @@ def test_i2s_mic_builds_ics43434_when_declared():
     assert ("+3V3", Endpoint(ref=mic.ref, pin="VDD")) in ex.power
 
 
+def test_i2s_mic_refuses_named_inmp441():
+    """A firmware-named mic with no realization (EOL INMP441 — no KiCad symbol) is
+    REFUSED at the TEMPLATE level: nothing placed, part_unavailable disclosed. Guards
+    the build_part fallback — INMP441 must route to the default/refuse path, never be
+    built (and never silently substituted with the SPH0645 default or ICS-43434)."""
+    i = _audio()
+    mic_bus = next(b for b in i.buses if b.type == "I2S_IN")
+    mic_bus.resolved_part = "INMP441"           # recognized name, no realization
+    mic_bus.part_provenance = "corpus"
+    ex = i2s_mic(i, RefAllocator(i))
+    assert ex.components == [], "no mic may be placed for the unrealizable INMP441"
+    assert ex.new_nets == []
+    assert any(g.kind == "part_unavailable" and "INMP441" in g.detail for g in ex.gaps)
+    assert mic_bus.resolved_part == "INMP441"   # declared part not overwritten
+
+
 def test_i2c_device_header_with_pullups():
     i = _audio()
     ex = i2c_device_header(i, RefAllocator(i))
