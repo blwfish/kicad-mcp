@@ -20,6 +20,7 @@ explicit gap rather than guessing.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, TypedDict, cast
 
 from kicad_mcp.utils.firmware.cards import (
@@ -72,6 +73,12 @@ class PeripheralInfo(_PeripheralInfoBase, total=False):
     config: dict[str, Any]            # address_strap + static_ties (device_config)
     decoupling: list[dict[str, Any]]  # optional per-IC bypass override
     realize: str                      # "terminal" = always a screw-terminal wire-out
+    # Older-KiCad names for the SAME symbol, tried in order when ``lib_id`` (the
+    # newest name) is absent from the running library. KiCad 10 renamed whole
+    # symbol families (MCP23017_SO -> MCP23017x-x-SO); listing the prior name here
+    # lets one card build on both versions. Resolved against the live library, so
+    # no KiCad-version detection is needed (see resolve_symbol).
+    alt_lib_ids: list[str]
 
 
 # --- card cache (loaded once from the packaged + override dirs) ---------------
@@ -259,6 +266,31 @@ def resolve_peripheral(type_name: str | None) -> PeripheralInfo | None:
         ckey = alias_to_canon.get(canon)
         card = peris.get(ckey) if ckey else None
     return cast(PeripheralInfo, card) if card is not None else None
+
+
+def resolve_symbol(
+    cache: Any, lib_id: str | None, alt_lib_ids: Iterable[str] = (),
+) -> tuple[str | None, Any]:
+    """Resolve a component to a real KiCad symbol, trying the primary ``lib_id``
+    then any cross-version alternates in order; return ``(resolved_lib_id, sym)``
+    or ``(None, None)``.
+
+    The alternates let a card name a symbol KiCad RENAMED across versions
+    (``MCP23017_SO`` in KiCad 9 -> ``MCP23017x-x-SO`` in KiCad 10): the first
+    candidate that actually exists in the running library wins. Resolving against
+    the live library — not a version string — means no KiCad-version detection is
+    needed and a future rename only adds a name to the card.
+
+    Single source of truth for cross-version symbol resolution (CLAUDE.md Rule 3):
+    consumed by the generator (placement) and the card integration validator (pin
+    existence), so neither re-encodes the candidate rule.
+    """
+    for candidate in (lib_id, *alt_lib_ids):
+        if candidate:
+            sym = cache.get_symbol(candidate)
+            if sym is not None:
+                return candidate, sym
+    return None, None
 
 
 def is_terminal_card_type(type_name: str | None) -> bool:

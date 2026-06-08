@@ -11,7 +11,11 @@ from __future__ import annotations
 from typing import Any
 
 from kicad_mcp.utils.firmware.intent import DesignIntent, is_remote
-from kicad_mcp.utils.firmware.knowledge import is_terminal_card_type, role_to_pin_name
+from kicad_mcp.utils.firmware.knowledge import (
+    is_terminal_card_type,
+    resolve_symbol,
+    role_to_pin_name,
+)
 from kicad_mcp.utils.firmware.mcu_pinmap import (
     gpio_to_pin_number,
     resolve_pin_token,
@@ -58,8 +62,10 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     sch = ksa.create_schematic("firmware_gen")
 
     # --- place components (MCU first, then peripherals) ---
-    to_place: list[tuple[str, str | None, str, str | None]] = [
-        (intent.mcu.ref, intent.mcu.lib_id, intent.mcu.part, intent.mcu.footprint)
+    # Tuple: (ref, lib_id, alt_lib_ids, value, footprint). alt_lib_ids carries
+    # older-KiCad names for a renamed symbol; the MCU never needs them ([]).
+    to_place: list[tuple[str, str | None, list[str], str, str | None]] = [
+        (intent.mcu.ref, intent.mcu.lib_id, [], intent.mcu.part, intent.mcu.footprint)
     ]
     # Off-board peripherals are field-wired (a terminal carries their nets), so
     # they are documented in the BOM but never placed as a symbol — their original
@@ -73,25 +79,29 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         if is_remote(intent, p.ref) or is_terminal_card_type(p.type)
     }
     to_place += [
-        (p.ref, p.lib_id, p.value or p.type, p.footprint)
+        (p.ref, p.lib_id, list(p.alt_lib_ids), p.value or p.type, p.footprint)
         for p in intent.peripherals if p.ref not in offboard_refs
     ]
 
     placed: dict[str, Any] = {}
     symbols: dict[str, Any] = {}
     component_errors: list[dict[str, Any]] = []
-    for i, (ref, lib_id, value, footprint) in enumerate(to_place):
+    for i, (ref, lib_id, alts, value, footprint) in enumerate(to_place):
         if not lib_id:
             component_errors.append({"ref": ref, "error": "no lib_id in intent"})
             continue
-        sym = cache.get_symbol(lib_id)
+        # Try the primary lib_id then any cross-version alternates; use whichever
+        # name actually exists in the running library for the placement.
+        resolved_lib_id, sym = resolve_symbol(cache, lib_id, alts)
         if sym is None:
-            component_errors.append({"ref": ref, "error": f"symbol {lib_id!r} not found"})
+            tried = ", ".join(repr(c) for c in (lib_id, *alts))
+            component_errors.append({"ref": ref, "error": f"no symbol found (tried {tried})"})
             continue
+        assert resolved_lib_id is not None  # sym present => a candidate resolved
         col, row = i % _COLS, i // _COLS
         pos = (25.4 + col * _PITCH_MM, 25.4 + row * _PITCH_MM)
         try:
-            comp = sch.components.add(lib_id=lib_id, reference=ref, value=value,
+            comp = sch.components.add(lib_id=resolved_lib_id, reference=ref, value=value,
                                       position=pos, footprint=footprint)
         except Exception as e:  # noqa: BLE001 - record + continue, don't abort the build
             component_errors.append({"ref": ref, "error": f"add failed: {e}"})

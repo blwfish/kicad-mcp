@@ -47,10 +47,15 @@ def _all_cards():
 def test_card_pins_exist_on_symbol(kind, name, card, pins):
     from kicad_sch_api.library.cache import get_symbol_cache
 
+    from kicad_mcp.utils.firmware.knowledge import resolve_symbol
     from kicad_mcp.utils.firmware.mcu_pinmap import resolve_pin_token
 
-    sym = get_symbol_cache().get_symbol(card["lib_id"])
-    assert sym is not None, f"{kind} {name}: symbol {card['lib_id']!r} not found"
+    # Resolve via the same cross-version helper the generator uses, so a card
+    # whose symbol KiCad renamed (MCP23017_SO/MCP23017x-x-SO) validates on BOTH
+    # the KiCad 9 and KiCad 10 matrix legs.
+    candidates = [card["lib_id"], *card.get("alt_lib_ids", [])]
+    _, sym = resolve_symbol(get_symbol_cache(), card["lib_id"], card.get("alt_lib_ids", []))
+    assert sym is not None, f"{kind} {name}: no symbol resolved from {candidates}"
     missing = [p for p in pins if resolve_pin_token(sym, p) is None]
     assert not missing, (
         f"{kind} {name} ({card['lib_id']}): pins not on symbol: {missing}. "
