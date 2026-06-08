@@ -30,6 +30,8 @@ Your agent will handle the rest — installing prerequisites, cloning the repo, 
 
 The agent knows the full workflow — schematic → board sizing → component placement → routing → copper zones → verification — and will walk through it step by step.
 
+See [docs/examples/](docs/examples/) for real boards designed this way — prompt, schematic, and routed PCB.
+
 ## Background
 
 I built this because I need it. I'm not an electrical engineer — I build things for my model railroad that need custom PCBs, and I can't design circuits without this tool and Claude. This is how I actually get boards made: I describe what I need, Claude drives KiCad through this server, and I send the Gerbers to fab. It's not a demo or a hackathon project.
