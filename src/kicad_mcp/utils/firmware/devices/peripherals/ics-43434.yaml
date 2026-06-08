@@ -1,0 +1,21 @@
+# ICS-43434 I2S MEMS microphone (TDK InvenSense) — the IN-STOCK successor to the
+# EOL INMP441. Unlike INMP441 it has a real KiCad symbol (Sensor_Audio:ICS-43434),
+# so the i2s_mic template can actually PLACE it (not just resolve-and-refuse).
+# `serves: I2S_IN` lets the resolver bind it when firmware names it; the "ICS43434"
+# alias covers the un-hyphenated spelling (canonical key is ICS43434 either way).
+#
+# Pin names VERIFIED against the Sensor_Audio:ICS-43434 symbol and DIFFER from
+# SPH0645: bit clock = SCK (not BCLK), data out = SD (not DATA), L/R select = LR
+# (not SEL). The realization is mirrored in knowledge.py K.ICS43434 (which the
+# i2s_mic template actually consumes) — keep the two in sync.
+type: ICS-43434
+aliases: ["ICS43434"]
+lib_id: Sensor_Audio:ICS-43434
+value: ICS-43434
+bus: I2S
+serves: I2S_IN
+footprint: Sensor_Audio:InvenSense_ICS-43434-6_3.5x2.65mm
+roles: {WS: WS, BCLK: SCK, DATA: SD, SEL: LR}
+supply_pins: ["VDD"]
+ground_pins: ["GND"]
+module: false

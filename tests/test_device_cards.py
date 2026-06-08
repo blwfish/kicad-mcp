@@ -180,7 +180,7 @@ def test_recognized_part_names_hyphenated_raw_preserved_I1():
 
 def test_packaged_cards_load():
     peris, mcus = load_cards()
-    assert set(peris) >= {"MCP23017", "HX711", "MPU6050", "OLED"}
+    assert set(peris) >= {"MCP23017", "HX711", "MPU6050", "OLED", "ICS43434"}
     assert {m["part"] for m in mcus} >= {"ESP32-WROOM-32E", "ESP32-S3-WROOM-1"}
 
 

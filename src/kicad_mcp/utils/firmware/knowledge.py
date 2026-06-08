@@ -104,6 +104,17 @@ SPH0645 = {
     "ws": "WS", "bclk": "BCLK", "data": "DATA", "sel": "SEL",
     "vdd": "VDD", "gnd": "GND",
 }
+# ICS-43434 (TDK InvenSense) — in-stock I2S MEMS mic, the successor to the EOL
+# INMP441. Pin names VERIFIED against the KiCad Sensor_Audio:ICS-43434 symbol and
+# DIFFER from SPH0645 on three pins: bit clock is "SCK" (not BCLK), data is "SD"
+# (not DATA), L/R-select is "LR" (not SEL). Keep in sync with the resolution card
+# devices/peripherals/ics-43434.yaml.
+ICS43434 = {
+    "lib_id": "Sensor_Audio:ICS-43434", "value": "ICS-43434",
+    "footprint": "Sensor_Audio:InvenSense_ICS-43434-6_3.5x2.65mm",
+    "ws": "WS", "bclk": "SCK", "data": "SD", "sel": "LR",
+    "vdd": "VDD", "gnd": "GND",
+}
 # (Module headers — 1x02 speaker / 1x04 I2C+UART — are now synthesized via
 # connectors.synthesize_connector, which owns symbol+footprint selection.)
 
