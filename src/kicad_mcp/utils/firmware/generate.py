@@ -20,6 +20,21 @@ from kicad_mcp.utils.firmware.mcu_pinmap import (
 _PITCH_MM = 63.5
 _COLS = 4
 
+
+def _build_status(component_errors: list, unresolved: list, any_placed: bool) -> str:
+    """Three-state status for a (partial) schematic build.
+
+    ``ok`` only when nothing was dropped and every endpoint that should have
+    wired did. A dropped component or an unresolved endpoint means the saved
+    schematic is incomplete: ``partial`` if at least something was placed,
+    ``error`` if nothing was. Mirrors pcb_nets' ok/partial/error so callers see
+    one consistent contract — and so a version-renamed/typo'd lib_id surfaces
+    instead of silently reporting ``ok`` on a board missing a chip.
+    """
+    if not component_errors and not unresolved:
+        return "ok"
+    return "partial" if any_placed else "error"
+
 # Power-rail name -> KiCad power symbol lib_id (verified to resolve).
 _RAIL_LIB = {
     "+3V3": "power:+3V3", "+5V": "power:+5V",
@@ -175,7 +190,7 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
 
     sch.save(schematic_path)
     return {
-        "status": "ok",
+        "status": _build_status(component_errors, unresolved, bool(placed)),
         "schematic_path": schematic_path,
         "components_placed": len(placed),
         "component_errors": component_errors,
