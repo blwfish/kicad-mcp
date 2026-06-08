@@ -1,0 +1,23 @@
+# Generic GPIO switch / digital input (track switch, reed switch, limit switch,
+# push button, etc.).  Terminal-only: no chip-down symbol; the switch connects
+# via flying leads to a screw terminal on the main board.  `realize: terminal`
+# means the card itself IS the declaration that this part is always a wire-out.
+#
+# Aliases are HINT-STEMS (the macro prefix before the role), NOT full macro names:
+# `SWITCH_PIN`->"SWITCH", `TRACK_SW1_PIN`->"TRACK", `LIMIT_HOME_PIN`->"LIMIT".
+# `TRACK` is the mr-esp32 speed-cal stem (TRACK_SW1/SW2 polarity switches) and
+# is safe — no other board defines a TRACK_*_PIN. (Avoid 2-letter stems like
+# "SW": too generic.) For an unlisted project stem, add a project-local card.
+#
+# lib_id / footprint are placeholder BOM entries only — never placed as a symbol.
+type: SWITCH
+aliases: ["TRACK", "LIMIT", "REED"]
+lib_id: Connector_Generic:Conn_01x01
+value: Switch (terminal)
+bus: null
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical
+roles: {SW: "1", PIN: "1", SIGNAL: "1", STATE: "1"}
+supply_pins: []
+ground_pins: []
+module: false
+realize: terminal

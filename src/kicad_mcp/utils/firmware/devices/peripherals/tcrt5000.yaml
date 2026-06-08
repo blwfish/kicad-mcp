@@ -1,0 +1,22 @@
+# TCRT5000 reflective optical sensor (single discrete, MCU-side GPIO).
+# This card is for the SINGLE-SENSOR case where firmware names one GPIO directly
+# (`TCRT5000_DOUT_PIN 5` -> peripheral_hint="TCRT5000", role="DOUT").
+#
+# NOT for the 16×TCRT5000 array wired through a MCP23017 expander — that case has
+# no MCU-side GPIO signals at all, so it can't be handled by any firmware-visible
+# card; it requires explicit board.yaml `expander_terminals:` (v2 scope).
+#
+# Terminal-only: no chip-down symbol (the TCRT5000 is a through-hole sensor
+# on flying leads).  `realize: terminal` means the card IS the wire-out declaration.
+#
+# lib_id / footprint are placeholder BOM entries only — never placed as a symbol.
+type: TCRT5000
+lib_id: Connector_Generic:Conn_01x01
+value: TCRT5000 (terminal)
+bus: null
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical
+roles: {DOUT: "1", OUT: "1", SIGNAL: "1", ADC: "1"}
+supply_pins: ["1"]
+ground_pins: []
+module: false
+realize: terminal

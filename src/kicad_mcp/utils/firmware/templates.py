@@ -40,6 +40,30 @@ from kicad_mcp.utils.firmware.intent import (
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 
+def _inject_terminal_loci(intent: DesignIntent) -> None:
+    """For every carded peripheral whose card declares ``realize: terminal``,
+    inject a synthetic ``Placement(locus="remote")`` into ``intent.placements``
+    (if no explicit user directive already exists for that ref).  Also stamps
+    ``p.locus = "remote"`` on the ``Peripheral`` record.
+
+    This MUST run before any template that inspects ``is_remote`` / ``_peripheral_is_remote``
+    (i.e. before power_tree, device_config, etc.) so that glue suppression and
+    placement exclusion work correctly for terminal-only devices — they are
+    treated exactly like an explicitly-remote carded peripheral from this point.
+
+    The honesty contract: the card itself IS the explicit declaration that this
+    part is always a wire-out (G3 satisfied).  No board.yaml directive is
+    required (and no ``placement_unsupported`` gap is raised) because the locus
+    is injected here, not validated by _apply_placement."""
+    for p in intent.peripherals:
+        if p.ref in intent.placements:
+            continue   # user override takes precedence — honor it
+        if K.is_terminal_card_type(p.type):
+            pl = Placement(locus="remote", device=p.value or p.type)
+            intent.placements[p.ref] = pl
+            p.locus = "remote"
+
+
 def _first(signals: dict[str, int], *roles: str) -> Optional[int]:
     """First present role's GPIO, else None — preserving a GPIO of 0.
     ``signals.get(a) or signals.get(b)`` wrongly falls through when a maps to
@@ -785,6 +809,10 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
 
 def expand_intent(intent: DesignIntent) -> DesignIntent:
     """Run all templates over ``intent`` (mutated in place and returned)."""
+    # Inject synthetic remote placements for terminal-only cards BEFORE any
+    # template runs, so is_remote() / _peripheral_is_remote() returns True for
+    # them and glue suppression (power_tree, device_config) fires correctly.
+    _inject_terminal_loci(intent)
     alloc = RefAllocator(intent)
     rail_endpoints: dict[str, list[Endpoint]] = {}
     nets_by_name = {n.name: n for n in intent.nets}

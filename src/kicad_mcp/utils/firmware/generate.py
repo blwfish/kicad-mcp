@@ -8,10 +8,10 @@ their MCU pin labeled — the far end is left open, matching the intent's gap.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from kicad_mcp.utils.firmware.intent import DesignIntent, is_remote
-from kicad_mcp.utils.firmware.knowledge import role_to_pin_name
+from kicad_mcp.utils.firmware.knowledge import is_terminal_card_type, role_to_pin_name
 from kicad_mcp.utils.firmware.mcu_pinmap import (
     gpio_to_pin_number,
     resolve_pin_token,
@@ -43,16 +43,23 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     sch = ksa.create_schematic("firmware_gen")
 
     # --- place components (MCU first, then peripherals) ---
-    to_place: list[tuple[str, Optional[str], str, Optional[str]]] = [
+    to_place: list[tuple[str, str | None, str, str | None]] = [
         (intent.mcu.ref, intent.mcu.lib_id, intent.mcu.part, intent.mcu.footprint)
     ]
-    # Remote peripherals are field-wired (a terminal carries their nets), so they
-    # are documented in the BOM but never placed as a symbol — their original pin
-    # endpoints then drop out of the wiring loop (ref not in ``placed``), leaving
-    # only the synthesized terminal wired. (See remote_peripherals template.)
+    # Off-board peripherals are field-wired (a terminal carries their nets), so
+    # they are documented in the BOM but never placed as a symbol — their original
+    # pin endpoints then drop out of the wiring loop (ref not in ``placed``),
+    # leaving only the synthesized terminal wired (see remote_peripherals). A
+    # peripheral is off-board if it's declared remote OR its card is
+    # ``realize: terminal`` — the latter is intrinsically remote even on a raw
+    # (non-expanded) intent, before _inject_terminal_loci has run.
+    offboard_refs = {
+        p.ref for p in intent.peripherals
+        if is_remote(intent, p.ref) or is_terminal_card_type(p.type)
+    }
     to_place += [
         (p.ref, p.lib_id, p.value or p.type, p.footprint)
-        for p in intent.peripherals if not is_remote(intent, p.ref)
+        for p in intent.peripherals if p.ref not in offboard_refs
     ]
 
     placed: dict[str, Any] = {}
@@ -117,6 +124,11 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     for net in intent.nets:
         for ep in net.endpoints:
             if ep.ref not in placed:
+                # Off-board peripherals are intentionally excluded from placement
+                # (a terminal connector handles their signals); their original
+                # endpoints are not wired and must not be flagged as unresolved.
+                if ep.ref in offboard_refs:
+                    continue
                 unresolved.append({"net": net.name, "ref": ep.ref,
                                    "reason": "component not placed"})
                 continue

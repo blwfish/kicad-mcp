@@ -43,6 +43,12 @@ _PROJECT_DIR = Path("firmware-devices")
 
 _BUSES = frozenset({"I2C", "SPI", "I2S", "UART", None})
 
+# Valid values for the optional ``realize`` field on a peripheral card.
+# ``terminal`` = the device is ALWAYS realized as a screw terminal (no chip
+# symbol is placed); the card IS the wire-out declaration and no board.yaml
+# ``locus: remote`` directive is needed.  Absence = default chip-down behavior.
+_REALIZE_VALUES = frozenset({"terminal"})
+
 # What a card may declare it ``serves`` — the bus a part can be RESOLVED onto.
 # Deliberately FINER than ``_BUSES``: a bus is directional at resolution time
 # (``Bus.type`` is ``I2S_IN`` / ``I2S_OUT``), so a mic card serves ``I2S_IN`` and
@@ -153,6 +159,7 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
     _validate_aliases(card.get("aliases"), where, errs)
     _validate_serves(card.get("serves"), where, errs)
     _validate_config(card.get("config"), where, errs)
+    _validate_realize(card.get("realize"), where, errs)
     return errs
 
 
@@ -177,6 +184,19 @@ def _validate_serves(serves: Any, where: str, errs: list[str]) -> None:
     if serves not in _SERVES_BUS_TYPES:
         errs.append(
             f"{where}: serves {serves!r} not in {sorted(_SERVES_BUS_TYPES)}"
+        )
+
+
+def _validate_realize(realize: Any, where: str, errs: list[str]) -> None:
+    """``realize`` is optional; when present it declares how this peripheral is
+    always realized, overriding the default chip-down path.  Only ``"terminal"``
+    is a valid value (v1) — the device is ALWAYS a screw-terminal wire-out and
+    no board.yaml ``locus: remote`` directive is required."""
+    if realize is None:
+        return
+    if realize not in _REALIZE_VALUES:
+        errs.append(
+            f"{where}: realize {realize!r} not in {sorted(_REALIZE_VALUES)}"
         )
 
 
@@ -243,6 +263,23 @@ def recognized_part_names(
                 )
             out[raw] = canonical
     return out
+
+
+def terminal_card_types(
+    peripherals: dict[str, dict[str, Any]]
+) -> frozenset[str]:
+    """Return the set of canonical type keys whose cards declare ``realize:
+    terminal`` — devices that are ALWAYS realized as screw terminals (no
+    chip-down placement, no board.yaml ``locus: remote`` required).
+
+    Consumed by ``templates.py:_inject_terminal_loci`` to auto-assign a remote
+    placement before any template runs, so power_tree / device_config skip
+    their glue for these devices (same path as an explicitly-remote carded
+    peripheral)."""
+    return frozenset(
+        key for key, card in peripherals.items()
+        if card.get("realize") == "terminal"
+    )
 
 
 def part_serves_map(

@@ -1,0 +1,28 @@
+# Piezo transducer / buzzer wired from a single ADC or GPIO.
+# Terminal-only: no chip-down symbol; the device connects via flying leads to a
+# screw terminal on the main board.  `realize: terminal` means the card itself IS
+# the declaration that this part is always a wire-out — no board.yaml
+# `locus: remote` directive required.
+#
+# Firmware hint: `PIEZO_ADC_PIN 34` -> peripheral_hint="PIEZO", role="ADC".
+# One signal pin in the terminal (the GPIO/ADC line), plus +3V3 and GND taps.
+#
+# lib_id / footprint are placeholder BOM entries only — this peripheral is never
+# placed as a schematic symbol (always excluded via locus=remote).  The actual
+# screw terminal is synthesized at expand_intent time by the remote_peripherals
+# template via synthesize_connector.
+# `PIEZO` matches PIEZO_*_PIN (speed-cal); `BUZZER` matches BUZZER_PIN
+# (track-geometry's LEDC buzzer — intentionally treated as an off-board wire-out).
+# Aliases are hint-stems; PIEZO_*_PIN already yields hint "PIEZO" so no PIEZO_*
+# alias is needed.
+type: PIEZO
+aliases: ["BUZZER"]
+lib_id: Connector_Generic:Conn_01x01
+value: Piezo (terminal)
+bus: null
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical
+roles: {ADC: "1", SIGNAL: "1", OUT: "1", PIN: "1"}
+supply_pins: []
+ground_pins: []
+module: false
+realize: terminal
