@@ -157,6 +157,7 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
     if not isinstance(card["module"], bool):
         errs.append(f"{where}: module must be a bool")
     _validate_aliases(card.get("aliases"), where, errs)
+    _validate_alt_lib_ids(card.get("alt_lib_ids"), where, errs)
     _validate_serves(card.get("serves"), where, errs)
     _validate_config(card.get("config"), where, errs)
     _validate_realize(card.get("realize"), where, errs)
@@ -173,6 +174,18 @@ def _validate_aliases(aliases: Any, where: str, errs: list[str]) -> None:
         isinstance(a, str) and a.strip() for a in aliases
     ):
         errs.append(f"{where}: aliases must be a list of non-empty strings")
+
+
+def _validate_alt_lib_ids(alts: Any, where: str, errs: list[str]) -> None:
+    """``alt_lib_ids`` is optional; when present it must be a list of well-formed
+    ``Library:Symbol`` ids — older-KiCad names for the SAME symbol the card's
+    ``lib_id`` names on the newest version (resolve_symbol tries them in order).
+    Distinct from ``aliases`` (alternate firmware part-NAME spellings); each entry
+    here is a lib_id, so it is validated by the same ``valid_lib_id`` rule (Rule 3)."""
+    if alts is None:
+        return
+    if not isinstance(alts, list) or not all(valid_lib_id(a) for a in alts):
+        errs.append(f"{where}: alt_lib_ids must be a list of 'Library:Symbol' ids")
 
 
 def _validate_serves(serves: Any, where: str, errs: list[str]) -> None:

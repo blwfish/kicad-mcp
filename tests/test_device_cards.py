@@ -136,6 +136,47 @@ def test_serves_validation(serves, ok):
     assert (validate_peripheral_card(card) == []) is ok
 
 
+# --- alt_lib_ids + cross-version symbol resolution ---------------------------
+
+@pytest.mark.parametrize("alts,ok", [
+    (None, True),                                  # optional — absent is fine
+    ([], True),                                    # empty list is fine
+    (["Interface_Expansion:MCP23017_SO"], True),   # one older-KiCad name
+    (["Lib:A", "Lib:B"], True),                    # several
+    ("Lib:A", False),                              # a bare string is not a list
+    (["NoColon"], False),                          # entry not a Library:Symbol
+    ([""], False),                                 # empty entry
+    ([1], False),                                  # non-string entry
+])
+def test_alt_lib_ids_validation(alts, ok):
+    card = dict(_GOOD_PERIPHERAL, alt_lib_ids=alts)
+    assert (validate_peripheral_card(card) == []) is ok
+
+
+class _FakeCache:
+    """Minimal symbol cache: a name resolves iff it is in ``known``."""
+    def __init__(self, known):
+        self.known = set(known)
+
+    def get_symbol(self, name):
+        return object() if name in self.known else None
+
+
+@pytest.mark.parametrize("known,lib_id,alts,expected", [
+    ({"Lib:New", "Lib:Old"}, "Lib:New", ["Lib:Old"], "Lib:New"),   # primary preferred
+    ({"Lib:Old"},            "Lib:New", ["Lib:Old"], "Lib:Old"),   # MCP23017-on-KiCad-9: use the alt
+    ({"Lib:Older"}, "Lib:New", ["Lib:Old", "Lib:Older"], "Lib:Older"),  # alts tried in order
+    (set(),                  "Lib:New", ["Lib:Old"], None),        # nothing resolves
+    ({"Lib:Old"},            None,      ["Lib:Old"], "Lib:Old"),   # None primary skipped
+    ({"Lib:Old"},            "",        ["Lib:Old"], "Lib:Old"),   # empty primary skipped
+    (set(),                  None,      [],          None),        # nothing to try
+])
+def test_resolve_symbol(known, lib_id, alts, expected):
+    name, sym = K.resolve_symbol(_FakeCache(known), lib_id, alts)
+    assert name == expected
+    assert (sym is not None) == (expected is not None)
+
+
 def test_recognized_part_names_maps_raw_to_canonical():
     peripherals = {
         "INMP441": dict(_GOOD_PERIPHERAL, type="INMP441"),
@@ -192,9 +233,13 @@ def test_packaged_cards_load():
 _EXPECTED = {
     "MCP23017": {
         "lib_id": "Interface_Expansion:MCP23017x-x-SO", "value": "MCP23017",
+        # KiCad-9 fallback name (symbol family was renamed in KiCad 10).
+        "alt_lib_ids": ["Interface_Expansion:MCP23017_SO"],
         "bus": "I2C", "footprint": "Package_SO:SOIC-28W_7.5x17.9mm_P1.27mm",
         "roles": {"SDA": "SDA", "SCL": "SCK", "INT": "INTA", "INTA": "INTA"},
-        "supply_pins": ["V_{DD}"], "ground_pins": ["V_{SS}"], "module": False,
+        # Power pins by pad NUMBER (V_{DD}/V_{SS} in KiCad 10 are VDD/VSS in
+        # KiCad 9; pads 9/10 are identical) so they resolve on both versions.
+        "supply_pins": ["9"], "ground_pins": ["10"], "module": False,
     },
     "HX711": {
         "lib_id": "Analog_ADC:HX711", "value": "HX711", "bus": None,

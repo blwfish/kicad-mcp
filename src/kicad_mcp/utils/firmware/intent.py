@@ -26,7 +26,7 @@ from kicad_mcp.utils.firmware.parse import (
     address_base,
 )
 
-SCHEMA_VERSION = 6  # v6: Bus part resolution (resolved_part/part_provenance/part_is_assumption)
+SCHEMA_VERSION = 7  # v7: Peripheral.alt_lib_ids (cross-version symbol names)
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -63,6 +63,11 @@ class Peripheral:
     ref: str
     type: str
     lib_id: Optional[str] = None
+    # Older-KiCad names for the same symbol (KiCad 10 renamed MCP23017_SO ->
+    # MCP23017x-x-SO); the generator tries these in order when lib_id is absent
+    # from the running library. Carried on the intent (not baked at build time)
+    # so resolution happens against the live library at generate time.
+    alt_lib_ids: list[str] = field(default_factory=list)
     value: Optional[str] = None
     footprint: Optional[str] = None
     bus: Optional[str] = None
@@ -311,8 +316,10 @@ def build_intent(
             continue
         placed_module = placed_module or info["module"]
         p = Peripheral(
-            ref=f"U{next_ref}", type=t, lib_id=info["lib_id"], value=info["value"],
-            footprint=info["footprint"], bus=info["bus"], address=address,
+            ref=f"U{next_ref}", type=t, lib_id=info["lib_id"],
+            alt_lib_ids=list(info.get("alt_lib_ids", []) or []),
+            value=info["value"], footprint=info["footprint"], bus=info["bus"],
+            address=address,
         )
         next_ref += 1
         peripherals.append(p)
