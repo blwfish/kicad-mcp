@@ -26,7 +26,7 @@ from kicad_mcp.utils.firmware.parse import (
     address_base,
 )
 
-SCHEMA_VERSION = 7  # v7: Peripheral.alt_lib_ids (cross-version symbol names)
+SCHEMA_VERSION = 8  # v8: DesignIntent.expander_terminals (GPA/GPB -> labeled terminals)
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -109,6 +109,23 @@ class Placement:
 
 
 @dataclass
+class ExpanderSpec:
+    """A board.yaml ``expander_terminals`` entry (keyed by expander peripheral ref
+    in ``DesignIntent.expander_terminals``): tap an I/O-expander's floating GPA/GPB
+    port pins out to labeled screw terminal(s).
+
+    Honest-by-construction — firmware can't know this (the sensors are
+    register-addressed at runtime, no per-sensor #define), so it must be declared.
+    The ``ports: int`` board.yaml shorthand is expanded to a concrete pin-name list
+    at sidecar-apply time, so templates only ever see resolved pin names."""
+    device: str                        # silk label + connector value (e.g. TCRT5000)
+    ports: list[str] = field(default_factory=list)   # resolved pin names: [GPA0, GPA1, ...]
+    group: str = "per_sensor"          # per_sensor | per_bank | single
+    power: str = "3v3"                 # 3v3 | 5v | none
+    net_prefix: str = ""               # net base name; filled from device at apply if empty
+
+
+@dataclass
 class Mcu:
     ref: str
     part: str
@@ -161,6 +178,10 @@ class DesignIntent:
     # PCB-layer concern, distinct from `placements` (the firmware-semantic locus
     # channel).  Validated by edge_terminal.normalize_hint before use.
     placement_hints: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # board.yaml expander_terminals: tap an I/O-expander's GPA/GPB port pins out to
+    # labeled terminals. Keyed by the expander's peripheral ref. Set by
+    # apply_sidecar, consumed by the expander_terminals template.
+    expander_terminals: dict[str, "ExpanderSpec"] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -488,6 +509,10 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             for k, v in (d.get("placements", {}) or {}).items()
         },
         placement_hints=d.get("placement_hints", {}) or {},
+        expander_terminals={
+            k: ExpanderSpec(**_only_fields(ExpanderSpec, v))
+            for k, v in (d.get("expander_terminals", {}) or {}).items()
+        },
         provenance=d.get("provenance", {}),
     )
 

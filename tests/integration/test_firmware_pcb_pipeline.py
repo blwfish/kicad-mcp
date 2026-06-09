@@ -28,6 +28,7 @@ CONFIG_H = FIXTURE / "config.h"
 AUDIO_CONFIG_H = FIXTURE / "audio_s3" / "config.h"
 TRACK_GEOM_CONFIG_H = FIXTURE / "track_geometry" / "config.h"
 SIDECAR_CONFIG_H = FIXTURE / "sidecar_demo" / "config.h"
+EXPANDER_CONFIG_H = FIXTURE / "expander_demo" / "config.h"
 
 _MINIMAL_PRO = {
     "board": {"design_settings": {}},
@@ -1069,3 +1070,62 @@ def test_sidecar_to_routed_pcb(mcp_server, tmp_path):
                    for x in nl["nets"].get(net, []))
 
     assert has_pwr_in("+5V") and has_pwr_in("GND")
+
+
+@pytest.mark.timeout(360)  # 6 sensor terminals -> dense; passes=10 like the others
+def test_expander_terminals_to_routed_pcb(mcp_server, tmp_path):
+    """v2: a board.yaml expander_terminals block taps a placed MCP23017's floating
+    GPA0..GPA5 pins out to 6 labeled TCRT5000 screw terminals → full
+    import→expand→generate→routed PCB. THIS is where the KiCad 9-vs-10 MCP23017
+    symbol rename surfaces (the chip must place + its port pins wire on BOTH), so
+    it runs on the whole matrix — the regression gate for cross-version resolution
+    feeding a real port-pin-dependent feature."""
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "exp.kicad_sch"
+    pro = tmp_path / "exp.kicad_pro"
+
+    r1 = design(operation="import_firmware", firmware_path=str(EXPANDER_CONFIG_H),
+                out_path=str(intent))
+    assert r1["status"] == "ok"
+    assert r1["sidecar"] is not None                       # board.yaml auto-detected
+    # HX711 -> U2, MCP23017 -> U3 (alphabetical); the expander is the chip we tap.
+    assert {p["type"] for p in r1["summary"]["peripherals"]} == {"HX711", "MCP23017"}
+
+    r2 = design(operation="expand_templates", intent_path=str(intent))
+    assert r2["status"] == "ok"
+
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    # On KiCad 9 the MCP23017 resolves via alt_lib_ids and its GPA pins wire out;
+    # a regression there would leave the sensor nets unresolved (caught here).
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    # Generous board: 6 three-pos terminals + core is roomy at 130x100 (the test
+    # gates the feature + cross-version wiring, not tight packing). passes=10 for
+    # the marginal KiCad-9 router (SPEC §9-A3: bump passes, hold the bound).
+    r4 = build(project_path=str(pro), board_width_mm=130, board_height_mm=100,
+               autoroute_passes=10, export_gerbers=False, add_mounting_holes=False)
+    assert r4["status"] == "ok"
+    assert r4["pads_assigned"] > 0
+    _assert_mostly_routed(r4, max_unrouted=2)
+    assert r4["steps"]["zones"]["zones_added"] >= 1
+
+    from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+    nl = extract_netlist_via_cli(str(sch))
+    assert nl is not None
+    comps = nl["components"]
+    # 6 TCRT5000 screw terminals placed (value carries the device).
+    terms = {ref for ref, c in comps.items() if c.get("value") == "TCRT5000"}
+    assert len(terms) == 6
+
+    def refs_on(net):
+        return {x["component"] for x in nl["nets"].get(net, [])}
+    # Each formerly-floating GPA0..GPA5 pin now wires the expander (U3) to a sensor
+    # terminal — the core invariant of the feature, proven on the real netlist.
+    for i in range(6):
+        members = refs_on(f"TCRT5000_{i}")
+        assert "U3" in members, f"TCRT5000_{i} missing the expander pin: {members}"
+        assert members & terms, f"TCRT5000_{i} not landed on a terminal: {members}"
