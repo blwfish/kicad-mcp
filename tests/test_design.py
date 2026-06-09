@@ -145,3 +145,67 @@ def test_suggest_cards_works_on_ino_sketch():
     from kicad_mcp.tools.design import _op_suggest_cards
     r = _op_suggest_cards(firmware_path=str(_SKETCH))
     assert r["status"] == "ok"
+
+
+# --- Phase 1b: import_intent + intent_template (the AI producer path) ----------
+
+def test_intent_template_example_is_valid():
+    from kicad_mcp.tools.design import _op_intent_template
+    from kicad_mcp.utils.firmware.intent import from_dict, validate_intent
+    r = _op_intent_template()
+    assert r["status"] == "ok"
+    assert r["recognized_mcus"] and r["recognized_peripherals"]
+    assert "required_gaps" in r["valid_values"]
+    # the published example must pass the validator it points the AI at
+    assert validate_intent(from_dict(r["example"])) == []
+
+
+def test_import_intent_accepts_valid(tmp_path):
+    from kicad_mcp.tools.design import _op_import_intent
+    from kicad_mcp.utils.firmware.intent import example_intent, save_intent
+    src = tmp_path / "ai_intent.yaml"
+    save_intent(example_intent(), str(src))
+    out = tmp_path / "design_intent.yaml"
+    r = _op_import_intent(intent_path=str(src), out_path=str(out))
+    assert r["status"] == "ok" and Path(r["intent_path"]) == out
+    assert r["producer"] == "ai"          # example sets provenance.producer
+
+
+def test_import_intent_rejects_missing_gap(tmp_path):
+    from kicad_mcp.tools.design import _op_import_intent
+    from kicad_mcp.utils.firmware.intent import example_intent, save_intent
+    it = example_intent()
+    it.gaps = [g for g in it.gaps if g.kind != "pullups"]   # drop a required honesty gap
+    src = tmp_path / "bad.yaml"
+    save_intent(it, str(src))
+    out = tmp_path / "o.yaml"
+    r = _op_import_intent(intent_path=str(src), out_path=str(out))
+    assert r["status"] == "error" and r["code"] == "invalid_intent"
+    assert any("pullups" in e for e in r["errors"])
+    assert not out.exists()                # nothing written on rejection
+
+
+def test_import_intent_stamps_producer_default(tmp_path):
+    from kicad_mcp.tools.design import _op_import_intent
+    from kicad_mcp.utils.firmware.intent import example_intent, load_intent, save_intent
+    it = example_intent()
+    it.provenance = {}                     # no producer declared
+    src = tmp_path / "x.yaml"
+    save_intent(it, str(src))
+    out = tmp_path / "o.yaml"
+    r = _op_import_intent(intent_path=str(src), out_path=str(out))
+    assert r["status"] == "ok" and r["producer"] == "external"
+    assert load_intent(str(out)).provenance["ingested_via"] == "import_intent"
+
+
+def test_show_intent_reports_validation(tmp_path):
+    from kicad_mcp.tools.design import _op_show
+    from kicad_mcp.utils.firmware.intent import example_intent, save_intent
+    it = example_intent()
+    ok = tmp_path / "ok.yaml"
+    save_intent(it, str(ok))
+    assert _op_show(intent_path=str(ok))["validation"] == []
+    it.nets[0].kind = "Bus"                # invalid kind
+    bad = tmp_path / "bad.yaml"
+    save_intent(it, str(bad))
+    assert _op_show(intent_path=str(bad))["validation"]   # non-empty

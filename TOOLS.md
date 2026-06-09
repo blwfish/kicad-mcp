@@ -66,12 +66,16 @@ Operations: `search`, `resolve`, `assign`, `accept_tos`, `refresh_snapshot`
 Operations: `suggest`, `apply`, `clear_cache`.
 
 ### `design` — firmware-driven design + device cards
-Operations: `import_firmware`, `expand_templates`, `generate_schematic`,
-`show_intent`, `suggest_cards`.
-Works within a **narrow, explicit envelope** (2 ESP32 MCUs; a PlatformIO
-`config.h` or an Arduino `.ino` sketch; `#define` or `const`/`constexpr` pins;
-board from `platformio.ini` or a `board.yaml` `board_id`; a fixed set of
-recognized chips); outside it, it emits loud gaps rather than a wrong board. See
+Operations: `import_firmware`, `import_intent`, `intent_template`,
+`expand_templates`, `generate_schematic`, `show_intent`, `suggest_cards`.
+The deterministic `import_firmware` works within a **narrow, explicit envelope**
+(2 ESP32 MCUs; a PlatformIO `config.h` or an Arduino `.ino` sketch; `#define` or
+`const`/`constexpr` pins; board from `platformio.ini` or a `board.yaml`
+`board_id`; a fixed set of recognized chips). For firmware OUTSIDE that envelope
+(MicroPython, Rust, runtime-call pins) there's a second producer: an AI reads the
+firmware and authors a design-intent against the `intent_template` contract, then
+`import_intent` **validates it to the same honesty bar** before the pipeline runs
+— it never lets a malformed intent become a wrong board. See
 [docs/FIRMWARE_FRONTEND_SCOPE.md](docs/FIRMWARE_FRONTEND_SCOPE.md).
 
 ## Standalone Tools

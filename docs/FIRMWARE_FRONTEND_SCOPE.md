@@ -67,17 +67,28 @@ Recognized devices are placed and wired; anything else becomes a labeled gap.
 Facts firmware structurally can't declare — power source, board size, connectors,
 placement — are supplied via a `board.yaml` sidecar.
 
-## What it CANNOT handle today — and what happens
+## What the DETERMINISTIC parser can't read — and the second producer
 
-| Out of envelope | What the tool does |
-|-----------------|--------------------|
-| Any MCU other than the two above (ESP32-C3/C6/S2, RP2040/Pico, AVR/Arduino, STM32, …) | `mcu_unknown` gap; no MCU placed (peripheral nets still emitted) |
-| A board with **no `platformio.ini` and no `board.yaml` `board_id`** | board id not found → `mcu_unknown` (declare it in `board.yaml`) |
-| Firmware that's neither a `config.h` nor an Arduino `.ino` sketch (Pico-SDK `main.c`, bare Makefile, …) | `config_not_found` — nothing imported |
-| Pins assigned by **runtime calls** — `pinMode(5, OUTPUT)`, `Wire.begin(21,22)`, constructor args — instead of a `#define` / `const` | pins not extracted (the value isn't bound to a pin-named symbol) |
-| **MicroPython / CircuitPython** (`machine.Pin(5)`, `board.GP5`) | not C/C++ → pins are not extracted |
-| **Rust** firmware | same — pins not extracted |
-| A peripheral chip with no card | `unknown_peripheral` gap; its signals become orphan nets (far end left open) |
+The deterministic `import_firmware` reads only `#define` / `const` pins in C/C++.
+The cases below are out of *its* reach — but most now have a path through the
+**second producer** (`intent_template` → author intent → `import_intent`): an AI
+reads the firmware in any language and authors a design-intent, which is then held
+to the *same* honesty bar by `validate_intent`. The trust basis differs — the
+deterministic parser is exact; the AI path depends on the AI's reading plus the
+validator — but the failure mode stays loud, never a silently-wrong board.
+
+| Out of the deterministic envelope | Deterministic result | Second producer |
+|-----------------|--------------------|-----------------|
+| Any MCU other than the two above (ESP32-C3/C6/S2, RP2040/Pico, AVR, STM32, …) | `mcu_unknown` gap; no MCU placed | only if a card for that MCU exists (Phase 2) |
+| A board with **no `platformio.ini` and no `board.yaml` `board_id`** | board id not found → `mcu_unknown` | declare `mcu` in the authored intent |
+| Pins assigned by **runtime calls** — `pinMode(5)`, `Wire.begin(21,22)`, constructor args | pins not extracted | ✅ AI reads them → `import_intent` |
+| **MicroPython / CircuitPython** (`machine.Pin(5)`, `board.GP5`) | not C/C++ → not extracted | ✅ AI reads them → `import_intent` |
+| **Rust** firmware | not extracted | ✅ AI reads them → `import_intent` |
+| Firmware that's neither a `config.h` nor an Arduino `.ino` (Pico-SDK `main.c`, …) | `config_not_found` | ✅ AI reads it → `import_intent` |
+| A peripheral chip with no card | `unknown_peripheral` gap; orphan nets | needs a device card either way |
+
+Both producers converge on the same DesignIntent and are held to the same
+validator; a *gap-parity* check pins that they agree on firmware both can read.
 
 ## The guarantee: honest-by-construction
 

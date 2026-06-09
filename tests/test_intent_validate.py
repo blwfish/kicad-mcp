@@ -139,3 +139,17 @@ def test_mcu_with_mcu_unknown_is_contradictory():
     it = _valid()
     it.gaps.append(Gap("mcu_unknown", "x"))
     assert any("contradictory" in e for e in validate_intent(it))
+
+
+def test_example_intent_passes_validator():
+    # the published template's example must itself be valid (an AI copying it starts clean)
+    from kicad_mcp.utils.firmware.intent import example_intent
+    assert validate_intent(example_intent()) == []
+
+
+def test_contract_value_sets_match_validator_constants():
+    from kicad_mcp.utils.firmware.intent import NET_KINDS, contract_value_sets
+    c = contract_value_sets()
+    assert set(c["net_kind"]) == set(NET_KINDS)
+    assert set(c["required_gaps"]) == set(_ALWAYS)
+    assert "I2C" in c["bus_type"] and "I2S_IN" in c["bus_type"]

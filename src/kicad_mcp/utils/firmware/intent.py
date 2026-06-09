@@ -548,6 +548,89 @@ def load_intent(path: str) -> DesignIntent:
         return from_dict(yaml.safe_load(f))
 
 
+def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[str]:
+    """Structural differences between the deterministic producer's intent and another
+    producer's (an AI/hand) for the SAME firmware — the gap-parity check that the two
+    producers converge. REF-INDEPENDENT (a ref is an assignment artifact): compares
+    MCU part+lib_id; peripherals as a (type, address) multiset; buses as
+    (name, type, signals); nets by name -> (kind, the set of (gpio, role, pin)
+    endpoint signatures); and gap KINDS as a set. Ignores inherently fuzzy parts —
+    gap detail text, confidence, alt_lib_ids, resolved_part, ref names, endpoint
+    order. Empty list == parity."""
+    diffs: list[str] = []
+    a, b = deterministic, other
+
+    a_mcu = (a.mcu.part, a.mcu.lib_id) if a.mcu else None
+    b_mcu = (b.mcu.part, b.mcu.lib_id) if b.mcu else None
+    if a_mcu != b_mcu:
+        diffs.append(f"mcu: {a_mcu} != {b_mcu}")
+
+    def _periph(ps: list) -> list:
+        return sorted((p.type, p.address) for p in ps)
+    if _periph(a.peripherals) != _periph(b.peripherals):
+        diffs.append(f"peripherals(type,address): {_periph(a.peripherals)} != "
+                     f"{_periph(b.peripherals)}")
+
+    def _buses(bs: list) -> list:
+        return sorted((x.name, x.type, tuple(sorted((x.signals or {}).items()))) for x in bs)
+    if _buses(a.buses) != _buses(b.buses):
+        diffs.append(f"buses: {_buses(a.buses)} != {_buses(b.buses)}")
+
+    def _nets(ns: list) -> dict:
+        return {n.name: (n.kind, frozenset((e.gpio, e.role, e.pin) for e in n.endpoints))
+                for n in ns}
+    an, bn = _nets(a.nets), _nets(b.nets)
+    if set(an) != set(bn):
+        diffs.append(f"net names differ: {sorted(set(an) ^ set(bn))}")
+    else:
+        for name in sorted(an):
+            if an[name] != bn[name]:
+                diffs.append(f"net {name!r}: kind/endpoints differ")
+
+    ag, bg = {g.kind for g in a.gaps}, {g.kind for g in b.gaps}
+    if ag != bg:
+        diffs.append(f"gap kinds differ: {sorted(ag ^ bg)}")
+    return diffs
+
+
+def contract_value_sets() -> dict[str, Any]:
+    """The closed value sets ``validate_intent`` enforces — the published contract a
+    producer (an AI reading non-C firmware, a human) builds an intent against. Drawn
+    from the same constants the validator uses, so the contract can't drift from it."""
+    return {
+        "net_kind": sorted(NET_KINDS),
+        "modeled_net_kind": sorted(MODELED_NET_KINDS),
+        "net_confidence": sorted(_NET_CONFIDENCE),
+        "bus_type": sorted(_BUS_TYPES),
+        "required_gaps": sorted(_ALWAYS_GAP_KINDS),
+        "peripheral_locus": ["on_board", "remote", "on_board_with_remote_io"],
+    }
+
+
+def example_intent() -> DesignIntent:
+    """A minimal VALID intent — the canonical shape a hand/AI producer fills in
+    (passes validate_intent). Built from the REAL ESP32 + HX711 cards so the lib_ids
+    are copy-pasteable. Published via the intent_template operation."""
+    mcu_info = resolve_mcu("esp32dev")
+    hx = resolve_peripheral("HX711")
+    mcu = (Mcu(ref=MCU_REF, part=mcu_info["part"], lib_id=mcu_info["lib_id"],
+               footprint=mcu_info.get("footprint")) if mcu_info else None)
+    peripherals = ([Peripheral(ref="U2", type="HX711", lib_id=hx["lib_id"],
+                               value=hx.get("value"), footprint=hx.get("footprint"),
+                               alt_lib_ids=list(hx.get("alt_lib_ids", []) or []))]
+                   if hx else [])
+    return DesignIntent(
+        mcu=mcu,
+        peripherals=peripherals,
+        nets=[Net(name="HX711_DOUT", kind="peripheral", confidence="high",
+                  endpoints=[Endpoint(ref=MCU_REF, gpio=16),
+                             Endpoint(ref="U2", role="DOUT")])],
+        gaps=[Gap(k, d) for k, d in _ALWAYS_GAPS],
+        provenance={"producer": "ai",
+                    "source_file": "firmware/main.py (e.g. MicroPython / Rust)"},
+    )
+
+
 def _is_int(v: Any) -> bool:
     # bool is an int subclass; a strap/gpio of True is not a pin number.
     return isinstance(v, int) and not isinstance(v, bool)

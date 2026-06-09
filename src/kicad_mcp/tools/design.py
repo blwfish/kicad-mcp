@@ -12,6 +12,14 @@ Operations:
       file, or a directory containing one (config.h, or an Arduino sketch folder
       whose .ino tabs are concatenated). The MCU is detected from platformio.ini,
       or declared via a board.yaml ``board_id`` (the escape hatch for sketches).
+  intent_template() -> {valid_values, recognized_*, honesty_rules, example, how_to}
+      Publish the DesignIntent contract — for firmware the deterministic parser
+      CAN'T read (MicroPython, Rust, pinMode-literal C). An AI reads the firmware,
+      authors an intent YAML matching `example`, then ingests it via import_intent.
+  import_intent(intent_path, out_path?) -> {status, intent_path, summary, gaps}
+      Ingest + VALIDATE an externally-authored intent (the second producer) to the
+      same bar a parsed one meets; rejects on any honesty/structural error rather
+      than letting a malformed intent become a wrong board.
   expand_templates(intent_path, out_path?) -> {status, components_added, gaps_resolved}
       Expand recognized components into support circuitry (power tree, decoupling,
       pull-ups, address strapping). Writes the richer intent (in place unless
@@ -45,13 +53,18 @@ from kicad_mcp.utils.firmware.cards import (
 )
 from kicad_mcp.utils.firmware.generate import generate_schematic as _generate
 from kicad_mcp.utils.firmware.intent import (
+    MCU_REF,
     DesignIntent,
     Gap,
     build_intent,
     candidate_devices,
+    contract_value_sets,
+    example_intent,
     find_board_id,
     load_intent,
     save_intent,
+    to_dict,
+    validate_intent,
 )
 from kicad_mcp.utils.firmware.part_extractor import (
     collect_corpus,
@@ -197,6 +210,8 @@ def register_design_tools(mcp: FastMCP) -> None:
         """
         if operation == "import_firmware":
             return _op_import(firmware_path=firmware_path, out_path=out_path)
+        if operation == "import_intent":
+            return _op_import_intent(intent_path=intent_path, out_path=out_path)
         if operation == "expand_templates":
             return _op_expand(intent_path=intent_path, out_path=out_path)
         if operation == "generate_schematic":
@@ -205,11 +220,13 @@ def register_design_tools(mcp: FastMCP) -> None:
             return _op_show(intent_path=intent_path)
         if operation == "suggest_cards":
             return _op_suggest_cards(firmware_path=firmware_path)
+        if operation == "intent_template":
+            return _op_intent_template()
         return {
             "status": "error", "code": "unknown_operation",
             "message": (f"Unknown operation: {operation!r}. Valid: import_firmware, "
-                        "expand_templates, generate_schematic, show_intent, "
-                        "suggest_cards."),
+                        "import_intent, expand_templates, generate_schematic, "
+                        "show_intent, suggest_cards, intent_template."),
         }
 
 
@@ -449,4 +466,87 @@ def _op_show(*, intent_path: Optional[str]) -> dict:
     if intent is None:
         assert err is not None
         return err
-    return {"status": "ok", "summary": _summary(intent), "gaps": _gaps_list(intent)}
+    # Report validation alongside the summary (non-fatal here — show is read-only)
+    # so an author can see what import_intent would reject without writing anything.
+    return {"status": "ok", "summary": _summary(intent), "gaps": _gaps_list(intent),
+            "validation": validate_intent(intent)}
+
+
+def _op_import_intent(*, intent_path: Optional[str], out_path: Optional[str]) -> dict:
+    """Ingest an externally-authored intent (an AI reading non-C firmware, or a hand
+    edit), VALIDATING it to the same bar as a parsed one before it enters the
+    pipeline. Rejects on any validation error rather than letting a malformed intent
+    silently become a wrong board. The canonical, validated intent is written ready
+    for expand_templates / generate_schematic."""
+    if not intent_path:
+        return {"status": "error", "code": "missing_parameter",
+                "message": "intent_path is required."}
+    if not Path(intent_path).exists():
+        return {"status": "error", "code": "intent_not_found",
+                "message": f"Intent doc not found: {intent_path}"}
+    intent, err = _load_intent_or_error(intent_path)
+    if intent is None:
+        assert err is not None
+        return err
+    errors = validate_intent(intent)
+    if errors:
+        return {"status": "error", "code": "invalid_intent",
+                "message": f"Intent failed validation ({len(errors)} issue(s)); "
+                           "fix these before it can enter the pipeline.",
+                "errors": errors}
+    # Mark provenance so an ingested (non-parsed) intent is distinguishable from a
+    # deterministically-parsed one (which carries source_file/unparsed, no producer).
+    intent.provenance.setdefault("producer", "external")
+    intent.provenance["ingested_via"] = "import_intent"
+    dest = Path(out_path) if out_path else Path(intent_path).parent / "design_intent.yaml"
+    try:
+        save_intent(intent, str(dest))
+    except OSError as e:
+        return {"status": "error", "code": "write_failed",
+                "message": f"Could not write intent doc: {e}"}
+    return {"status": "ok", "intent_path": str(dest),
+            "producer": intent.provenance.get("producer"),
+            "summary": _summary(intent), "gaps": _gaps_list(intent)}
+
+
+def _op_intent_template() -> dict:
+    """Publish the DesignIntent contract for a producer building an intent by hand —
+    an AI reading firmware the deterministic parser can't (MicroPython, Rust,
+    pinMode-literal C). Returns the valid value sets, the recognized parts (with real
+    lib_ids), the honesty rules, and a copy-pasteable example. Generated from the
+    code, so it can't drift from what import_intent will accept."""
+    peris, mcus = load_cards()
+    return {
+        "status": "ok",
+        "how_to": [
+            "1. Read the firmware: identify the MCU/board, each peripheral chip (by a "
+            "recognized type), and each signal net (an MCU gpio <-> a peripheral role).",
+            "2. Write an intent YAML shaped like `example`. Use ONLY a recognized "
+            "mcu/peripheral type + its lib_id from `recognized_*`; a lib_id must exist "
+            "in KiCad or generate_schematic will drop that part.",
+            "3. Emit all of `valid_values.required_gaps` — firmware is structurally "
+            "blind to power/decoupling/pullups/connectors/parts.",
+            "4. design(operation='import_intent', intent_path=..., out_path=...) — it "
+            "validates and rejects with a specific error list if anything is off.",
+            "5. Then expand_templates -> generate_schematic on the validated doc.",
+        ],
+        "valid_values": contract_value_sets(),
+        "honesty_rules": [
+            "All required_gaps MUST be present (the firmware-blind manifest).",
+            "If you can't resolve the MCU: set mcu to null AND add an 'mcu_unknown' gap.",
+            f"Every net endpoint ref must be the MCU ('{MCU_REF}') or a declared "
+            "peripheral ref.",
+            "Anything firmware can't express that you DROPPED goes in "
+            "provenance.unparsed — never silently lose it.",
+        ],
+        "recognized_mcus": [
+            {"part": c["part"], "lib_id": c["lib_id"],
+             "board_match": list(c.get("board_match", []) or [])}
+            for c in mcus
+        ],
+        "recognized_peripherals": [
+            {"type": t, "lib_id": c.get("lib_id"), "bus": c.get("bus")}
+            for t, c in sorted(peris.items())
+        ],
+        "example": to_dict(example_intent()),
+    }
