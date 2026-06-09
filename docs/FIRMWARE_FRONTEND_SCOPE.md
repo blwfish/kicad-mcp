@@ -18,27 +18,31 @@ the authoritative scope statement; if the tool surprises you, check it here firs
 Any other board id — including ESP32-**C3 / C6 / S2**, and every non-ESP32 chip —
 resolves to an `mcu_unknown` gap (no MCU placed).
 
-### Project layout — PlatformIO only
+### Project layout — PlatformIO `config.h` or Arduino sketch
 
-- The **board** is read from `platformio.ini` (`board = ...`).
-- **Pin and address definitions** are read from a file named **`config.h`**.
+- The **board** is read from `platformio.ini` (`board = ...`), or — when there's
+  no `platformio.ini`, or its board isn't recognized — from a `board.yaml`
+  **`board_id`** (a board id like `esp32dev` or an Arduino FQBN like
+  `esp32:esp32:esp32`). The sidecar `board_id` wins over platformio.
+- **Pin and address definitions** are read from a `config.h`, **or** from an
+  Arduino **`.ino` sketch** — point the tool at the sketch folder and all its
+  `.ino` tabs are concatenated the way the IDE builds them.
 
-No other project layout is recognized (see "cannot handle" below).
+### Firmware language — C/C++ `#define` and `const`/`constexpr`
 
-### Firmware language — C/C++ preprocessor macros only
-
-A pin is recognized when its `#define` **name** ends in `_PIN` / `_GPIO`, is a
-known bare alias (`I2C_SDA` / `I2C_SCL`), or ends in a role token (`SDA`, `SCL`,
-`BCLK`, `WS`, `LRCK`, `MOSI`, `MISO`, `DIN`, `DOUT`, `SCK`, `CS`, …). An I2C
-device is recognized from a `<TYPE>_ADDR` / `_ADDRESS` macro. The macro's *value*
-never classifies it — only the name does.
+A pin is recognized when its **name** ends in `_PIN` / `_GPIO`, is a known bare
+alias (`I2C_SDA` / `I2C_SCL`), or ends in a role token (`SDA`, `SCL`, `BCLK`,
+`WS`, `LRCK`, `MOSI`, `MISO`, `DIN`, `DOUT`, `SCK`, `CS`, …) — whether declared
+with a `#define` or a `const` / `constexpr` integer (how Arduino sketches name
+pins). An I2C device is recognized from a `<TYPE>_ADDR` / `_ADDRESS` name. The
+*value* never classifies it — only the name does.
 
 ```c
-// understood:
-#define I2C_SDA_PIN     21
-#define I2C_SCL_PIN     22
-#define MPU6050_ADDR    0x68
-#define HX711_DOUT_PIN  16
+// understood (config.h or .ino):
+#define I2C_SDA_PIN       21
+const int HX711_DOUT_PIN = 16;
+constexpr uint8_t I2C_SCL = 22;
+#define MPU6050_ADDR      0x68
 ```
 
 ### Recognized peripheral chips (11 cards)
@@ -67,11 +71,11 @@ placement — are supplied via a `board.yaml` sidecar.
 | Out of envelope | What the tool does |
 |-----------------|--------------------|
 | Any MCU other than the two above (ESP32-C3/C6/S2, RP2040/Pico, AVR/Arduino, STM32, …) | `mcu_unknown` gap; no MCU placed (peripheral nets still emitted) |
-| **Arduino IDE** sketches (`.ino`; board chosen in the GUI; no `platformio.ini`) | board id not found → the MCU can't be determined |
-| **Pico SDK / CMake**, bare Makefile, or any non-PlatformIO layout | same — no `platformio.ini` to read the board from |
-| Pins/addresses in a file **not named `config.h`** (the `.ino` itself, `main.cpp`, …) | `config_not_found` — nothing imported |
-| **MicroPython / CircuitPython** (Python: `machine.Pin(5)`, `board.GP5`) | not a C `#define` → pins are not extracted |
-| **Rust**, or C that assigns pins via **runtime calls** (`gpio_init(5)`) instead of `#define` | same — pins not extracted |
+| A board with **no `platformio.ini` and no `board.yaml` `board_id`** | board id not found → `mcu_unknown` (declare it in `board.yaml`) |
+| Firmware that's neither a `config.h` nor an Arduino `.ino` sketch (Pico-SDK `main.c`, bare Makefile, …) | `config_not_found` — nothing imported |
+| Pins assigned by **runtime calls** — `pinMode(5, OUTPUT)`, `Wire.begin(21,22)`, constructor args — instead of a `#define` / `const` | pins not extracted (the value isn't bound to a pin-named symbol) |
+| **MicroPython / CircuitPython** (`machine.Pin(5)`, `board.GP5`) | not C/C++ → pins are not extracted |
+| **Rust** firmware | same — pins not extracted |
 | A peripheral chip with no card | `unknown_peripheral` gap; its signals become orphan nets (far end left open) |
 
 ## The guarantee: honest-by-construction
@@ -82,5 +86,6 @@ to-do list.** A human or agent then supplies the missing facts (a new device
 card, a `board.yaml` entry, a part override) or knowingly accepts the gap.
 
 The point: the envelope is narrow, but the failure mode is *loud and recoverable*,
-not a silently-wrong board. Expanding the envelope (more MCUs, Arduino-IDE and
-non-C firmware, more chips) is planned but not yet shipped.
+not a silently-wrong board. Arduino-IDE sketches (`.ino` + `const`, board via
+`board.yaml`) now import; further expansion — more MCUs, runtime-call/non-C pin
+extraction, more chips — is planned but not yet shipped.

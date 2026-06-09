@@ -1,15 +1,17 @@
 """``design`` router — firmware-spec front end.
 
-Turns a firmware spec (ESP32-style ``config.h`` ``#define`` pin map) into a
-canonical design-intent doc, and generates a partial ``.kicad_sch`` from it.
-Recovers the MCU-side signal nets deterministically; everything firmware can't
-know (power, passives, connectors, parts) is emitted as an explicit gap manifest
-— never invented.
+Turns a firmware spec — an ESP32 ``config.h`` or an Arduino ``.ino`` sketch, with
+pins as ``#define`` or ``const``/``constexpr`` — into a canonical design-intent
+doc, and generates a partial ``.kicad_sch`` from it. Recovers the MCU-side signal
+nets deterministically; everything firmware can't know (power, passives,
+connectors, parts) is emitted as an explicit gap manifest — never invented.
 
 Operations:
   import_firmware(firmware_path, out_path?) -> {status, intent_path, summary, gaps}
-      Parse firmware -> design-intent YAML. firmware_path is a config.h file or a
-      directory containing one. Auto-detects the MCU from platformio.ini.
+      Parse firmware -> design-intent YAML. firmware_path is a config.h or .ino
+      file, or a directory containing one (config.h, or an Arduino sketch folder
+      whose .ino tabs are concatenated). The MCU is detected from platformio.ini,
+      or declared via a board.yaml ``board_id`` (the escape hatch for sketches).
   expand_templates(intent_path, out_path?) -> {status, components_added, gaps_resolved}
       Expand recognized components into support circuitry (power tree, decoupling,
       pull-ups, address strapping). Writes the richer intent (in place unless
@@ -27,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -73,27 +75,56 @@ from kicad_mcp.utils.firmware.parse import (
 from kicad_mcp.utils.firmware.templates import expand_intent
 
 
-def _find_config_header(firmware_path: str) -> Optional[Path]:
-    """Resolve the config.h to parse from a file or directory path."""
+class FirmwareSource(NamedTuple):
+    """A located firmware source: an ``anchor`` path (used for sidecar/board lookup,
+    naming and the corpus scan) and the ``text`` to parse. For an Arduino sketch the
+    text is all the folder's ``.ino`` tabs concatenated the way the IDE builds them."""
+    anchor: Path
+    text: str
+
+
+def _gather_sketch(sketch_dir: Path) -> Optional[FirmwareSource]:
+    """Build a FirmwareSource from a folder's ``.ino`` tabs, or None if it has none.
+    The Arduino IDE compiles one translation unit: the folder-named main sketch
+    first, then the remaining tabs alphabetically — replicated here so pins defined
+    in a secondary tab (``pins.ino``) are seen."""
+    inos = sorted(sketch_dir.glob("*.ino"))
+    if not inos:
+        return None
+    main = sketch_dir / f"{sketch_dir.name}.ino"
+    ordered = ([main] if main in inos else []) + [p for p in inos if p != main]
+    text = "\n".join(p.read_text(errors="replace") for p in ordered)
+    return FirmwareSource(anchor=(main if main in inos else ordered[0]), text=text)
+
+
+def _find_firmware(firmware_path: str) -> Optional[FirmwareSource]:
+    """Locate the firmware to parse from a file or directory path. Supports a
+    PlatformIO/ESP-IDF ``config.h`` and an Arduino ``.ino`` sketch (multi-tab). In a
+    folder that has both, ``config.h`` wins (the PlatformIO layout). Returns the
+    source text plus an anchor path for sidecar/board lookup."""
     p = Path(firmware_path)
     if p.is_file():
-        return p
+        if p.suffix == ".ino":   # one tab -> build the whole sketch from its folder
+            return _gather_sketch(p.parent) or FirmwareSource(p, p.read_text(errors="replace"))
+        return FirmwareSource(p, p.read_text(errors="replace"))
     if p.is_dir():
         prefer = p / "include" / "config.h"
         if prefer.exists():
-            return prefer
+            return FirmwareSource(prefer, prefer.read_text(errors="replace"))
         matches = sorted(p.rglob("config.h"))
-        if len(matches) > 1:
-            # Monorepo with several projects each carrying a config.h, and no
-            # include/config.h to disambiguate — we pick the alphabetically-first,
-            # which may be the wrong firmware. Warn so a silently-wrong import is
-            # diagnosable; the user can pass the specific config.h path to override.
-            logger.warning(
-                "Multiple config.h found under %r; using %s. Pass a specific "
-                "config.h path to disambiguate. Candidates: %s",
-                firmware_path, matches[0], ", ".join(str(m) for m in matches),
-            )
-        return matches[0] if matches else None
+        if matches:
+            if len(matches) > 1:
+                # Monorepo with several projects each carrying a config.h, and no
+                # include/config.h to disambiguate — we pick the alphabetically-first,
+                # which may be the wrong firmware. Warn so a silently-wrong import is
+                # diagnosable; the user can pass the specific config.h path to override.
+                logger.warning(
+                    "Multiple config.h found under %r; using %s. Pass a specific "
+                    "config.h path to disambiguate. Candidates: %s",
+                    firmware_path, matches[0], ", ".join(str(m) for m in matches),
+                )
+            return FirmwareSource(matches[0], matches[0].read_text(errors="replace"))
+        return _gather_sketch(p)   # no config.h — try an Arduino sketch folder
     return None
 
 
@@ -205,10 +236,12 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     if not firmware_path:
         return {"status": "error", "code": "missing_parameter",
                 "message": "firmware_path is required."}
-    cfg = _find_config_header(firmware_path)
-    if cfg is None:
+    src = _find_firmware(firmware_path)
+    if src is None:
         return {"status": "error", "code": "config_not_found",
-                "message": f"No config.h found at or under {firmware_path!r}."}
+                "message": f"No firmware source (config.h or .ino sketch) found "
+                           f"at or under {firmware_path!r}."}
+    cfg = src.anchor
 
     # Load the board.yaml sidecar FIRST: its board_id (if any) is the escape hatch
     # for projects with no/unrecognized platformio.ini, and must reach the steps
@@ -220,8 +253,7 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
 
     # Select the active #if branch for this MCU target before extracting macros
     # (firmware wraps per-target pin maps in `#if CONFIG_IDF_TARGET_*`).
-    text = select_active_branches(cfg.read_text(errors="replace"),
-                                  idf_target_defines(board))
+    text = select_active_branches(src.text, idf_target_defines(board))
     parsed = partition(parse_macros(text))
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
 
@@ -350,18 +382,19 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
     if not firmware_path:
         return {"status": "error", "code": "missing_parameter",
                 "message": "firmware_path is required."}
-    cfg = _find_config_header(firmware_path)
-    if cfg is None:
+    src = _find_firmware(firmware_path)
+    if src is None:
         return {"status": "error", "code": "config_not_found",
-                "message": f"No config.h found at or under {firmware_path!r}."}
+                "message": f"No firmware source (config.h or .ino sketch) found "
+                           f"at or under {firmware_path!r}."}
+    cfg = src.anchor
     # Honor a sidecar board_id (escape hatch) so suggest_cards resolves the same MCU
     # and #if branches as import would; the sidecar's other keys don't affect drafting.
     sidecar, _, sidecar_err = _load_sidecar_for(cfg)
     if sidecar_err is not None:
         return sidecar_err
     board, _ = _resolve_board(cfg, sidecar)
-    text = select_active_branches(cfg.read_text(errors="replace"),
-                                  idf_target_defines(board))
+    text = select_active_branches(src.text, idf_target_defines(board))
     parsed = partition(parse_macros(text))
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
     whoami = extract_whoami(intent.provenance)

@@ -68,9 +68,10 @@ Operations: `suggest`, `apply`, `clear_cache`.
 ### `design` — firmware-driven design + device cards
 Operations: `import_firmware`, `expand_templates`, `generate_schematic`,
 `show_intent`, `suggest_cards`.
-Works within a **narrow, explicit envelope** (2 ESP32 MCUs, PlatformIO layout,
-C `#define` pins, a fixed set of recognized chips); outside it, it emits loud
-gaps rather than a wrong board. See
+Works within a **narrow, explicit envelope** (2 ESP32 MCUs; a PlatformIO
+`config.h` or an Arduino `.ino` sketch; `#define` or `const`/`constexpr` pins;
+board from `platformio.ini` or a `board.yaml` `board_id`; a fixed set of
+recognized chips); outside it, it emits loud gaps rather than a wrong board. See
 [docs/FIRMWARE_FRONTEND_SCOPE.md](docs/FIRMWARE_FRONTEND_SCOPE.md).
 
 ## Standalone Tools

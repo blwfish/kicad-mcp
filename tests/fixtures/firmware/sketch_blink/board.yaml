@@ -1,0 +1,2 @@
+# No platformio.ini in an Arduino-IDE sketch — declare the board here.
+board_id: esp32dev
