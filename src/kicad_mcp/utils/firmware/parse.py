@@ -138,6 +138,9 @@ class Macro:
     # "pin" but the value isn't a plausible GPIO (kept + flagged).
     gpio: Optional[int] = None
     pin_value_valid: bool = True
+    # Populated for an ANALOG PIN (Arduino A0..A7): the symbol pin NAME the value
+    # names directly (resolved by name, not as a GPIO number). gpio stays None.
+    analog_pin: Optional[str] = None
     # Populated for ADDRESS: the integer address (hex or decimal source).
     address: Optional[int] = None
     # Populated for PIN: parsed (peripheral_hint, signal_role, bus) from the name.
@@ -150,6 +153,10 @@ class Macro:
 
 _GPIO_NUM_RE = re.compile(r"^GPIO_NUM_(\d+)$")
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+# An Arduino analog-pin literal (``A0``..``A7``/``A15``) — the value IS the symbol
+# pin name. Distinct from a GPIO number: it can't be _as_int'd, so without this it
+# would demote a clearly-pin-named macro to OTHER (silent analog-pin loss).
+_ANALOG_PIN_RE = re.compile(r"^A(\d+)$")
 
 
 def _as_int(raw: str) -> Optional[int]:
@@ -280,6 +287,14 @@ def classify(name: str, value: str, args: Optional[str]) -> Macro:
         ival = _as_int(value)
         peripheral, role, bus = parse_pin_name(name)
         if ival is None:
+            am = _ANALOG_PIN_RE.match(value.strip())
+            if am is not None:
+                # Arduino analog pin: the value names the symbol pin (A0..A7)
+                # directly — resolved by name downstream, not as a GPIO number.
+                return Macro(name=name, raw_value=value, line_no=0,
+                             kind=MacroKind.PIN, analog_pin=f"A{int(am.group(1))}",
+                             pin_value_valid=True, peripheral_hint=peripheral,
+                             signal_role=role, bus=bus)
             return Macro(name=name, raw_value=value, line_no=0,
                          kind=MacroKind.OTHER, peripheral_hint=peripheral,
                          signal_role=role, bus=bus,

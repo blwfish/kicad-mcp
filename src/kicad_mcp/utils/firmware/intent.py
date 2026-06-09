@@ -417,7 +417,11 @@ def build_intent(
             ))
             continue
         seen_names.add(name)
-        mcu_ep = Endpoint(ref=mcu_ref, gpio=m.gpio)
+        # Digital pins carry a GPIO number; an Arduino analog pin (A0..A7) carries
+        # the symbol pin NAME instead, resolved by name downstream.
+        mcu_ep = (Endpoint(ref=mcu_ref, gpio=m.gpio) if m.gpio is not None
+                  else Endpoint(ref=mcu_ref, pin=m.analog_pin))
+        pin_label = f"GPIO{m.gpio}" if m.gpio is not None else m.analog_pin
 
         if m.bus is not None:
             devices = by_bus.get(m.bus, [])
@@ -428,7 +432,7 @@ def build_intent(
                 intent.nets.append(Net(name, "orphan", "low", [mcu_ep], bus=m.bus))
                 intent.gaps.append(Gap(
                     "unknown_peripheral",
-                    f"{m.bus} signal {name!r} on GPIO{m.gpio}: no {m.bus} device "
+                    f"{m.bus} signal {name!r} on {pin_label}: no {m.bus} device "
                     f"declared in firmware — far end unknown.",
                 ))
         elif m.peripheral_hint and m.peripheral_hint in periph_by_type:
@@ -439,7 +443,7 @@ def build_intent(
             intent.nets.append(Net(name, "orphan", "low", [mcu_ep]))
             intent.gaps.append(Gap(
                 "unknown_peripheral",
-                f"Signal {name!r} on GPIO{m.gpio}: peripheral "
+                f"Signal {name!r} on {pin_label}: peripheral "
                 f"{m.peripheral_hint or '?'!r} has no known symbol — far end unknown.",
             ))
 

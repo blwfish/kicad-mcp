@@ -14,6 +14,10 @@
 // --- status LED (orphan: no declared peripheral) ---
 #define LED_PIN           13
 
+// --- analog sensor input: an Arduino A-pin (resolves to the symbol's A0 pin,
+//     not a GPIO number). Was silently dropped before analog-pin support. ---
+#define LDR_PIN           A0
+
 // --- counts/config (seam guards: must NOT classify as pins) ---
 #define SAMPLE_RATE       80
 #define NUM_READINGS      10

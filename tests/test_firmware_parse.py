@@ -464,3 +464,21 @@ def test_idf_target_unknown_variant_fails_closed(board_id):
     # an unrecognized esp32 variant must NOT alias to classic ESP32 (empty set ->
     # resolve_mcu guard returns mcu_unknown, not a silently-wrong board)
     assert idf_target_defines(board_id) == set()
+
+
+# --- Arduino analog pins: value "A0" names a symbol pin, not a GPIO number -------
+
+@pytest.mark.parametrize("name,value,analog", [
+    ("LDR_PIN", "A0", "A0"),       # analog pin -> carried as analog_pin
+    ("SENSOR_PIN", "A7", "A7"),
+    ("X_PIN", "A10", "A10"),       # Mega-range; the symbol validates it downstream
+    ("X_PIN", "A00", "A0"),        # normalized via int()
+    ("X_PIN", "0xA0", None),       # hex int 160 -> a (bad) GPIO, NOT an analog pin
+    ("X_PIN", "A", None),          # no digit -> not an analog pin
+    ("MODE", "A1", None),          # not pin-named -> OTHER (the name gate protects)
+])
+def test_analog_pin_classification(name, value, analog):
+    m = classify(name, value, None)
+    assert m.analog_pin == analog
+    if analog is not None:
+        assert m.kind is MacroKind.PIN and m.gpio is None and m.pin_value_valid

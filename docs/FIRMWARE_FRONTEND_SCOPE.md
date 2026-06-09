@@ -15,7 +15,7 @@ the authoritative scope statement; if the tool surprises you, check it here firs
 | `ESP32-WROOM-32E` | `esp32dev`, `esp32` | classic ESP32; 3V3 logic; USB-serial programming via CP2102 |
 | `ESP32-S3-WROOM-1` | `esp32-s3-devkitc-1`, `esp32-s3`, `esp32s3` | 3V3 logic; native USB |
 | `RaspberryPi-Pico` (RP2040) | `pico`, `rpipico`, `rp2040:rp2040:rpipico` | first non-ESP32 MCU; 3V3 logic; pins `GPIO{n}`, on-board 3V3 regulator (no external LDO), native USB, no EN/BOOT straps |
-| `Arduino-Nano-v3` (ATmega328P) | `nanoatmega328` | first **5V** MCU; **+5V** logic rail (sourced from the module's +5V pin, no external LDO); pins `D{n}` (digital only — analog `A0`–`A7` not yet); on-board USB-serial |
+| `Arduino-Nano-v3` (ATmega328P) | `nanoatmega328` | first **5V** MCU; **+5V** logic rail (sourced from the module's +5V pin, no external LDO); pins `D{n}` (digital) and `A{n}` (analog — `#define X A0` resolves to the symbol's `A0` pin); on-board USB-serial |
 
 Any other board id — including ESP32-**C3 / C6 / S2**, bare **`rp2040`**, the other
 Nano variants (**Nano Every / ESP32 / RP2040 Connect** — different silicon), and every

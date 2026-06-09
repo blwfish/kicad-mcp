@@ -154,3 +154,28 @@ def test_esp32_i2s_mic_has_no_voltage_gap():
     ex = expand_intent(it)
     assert not any(g.kind == "mic_supply_voltage" for g in ex.gaps)
     assert "+3V3" in {n.name for n in ex.nets if n.kind == "power"}
+
+
+# --- Arduino analog pins (A0..A7): resolved by symbol pin NAME, not a GPIO number --
+
+def _intent(fw):
+    return build_intent(partition(parse_macros(fw)),
+                        firmware_path="c.h", board_id="nanoatmega328")
+
+
+def test_analog_pin_resolves_to_symbol_a_pin_not_dropped():
+    # #define LDR_PIN A0 -> an orphan net whose MCU endpoint is the symbol "A0" pin
+    # (by name). Before analog support it was silently demoted to provenance.unparsed.
+    it = _intent("#define LDR_PIN A0\n#define POT_PIN A3\n")
+    eps = {n.name: n.endpoints[0] for n in it.nets}
+    assert eps["LDR"].pin == "A0" and eps["LDR"].gpio is None
+    assert eps["POT"].pin == "A3"
+    unparsed = {u["name"] for u in it.provenance.get("unparsed", [])}
+    assert "LDR_PIN" not in unparsed and "POT_PIN" not in unparsed   # no silent loss
+
+
+def test_analog_and_digital_pins_coexist():
+    it = _intent("#define LED_PIN 13\n#define LDR_PIN A0\n")
+    by_name = {n.name: n.endpoints[0] for n in it.nets}
+    assert by_name["LED"].gpio == 13 and by_name["LED"].pin is None    # digital -> gpio
+    assert by_name["LDR"].pin == "A0" and by_name["LDR"].gpio is None  # analog -> pin name
