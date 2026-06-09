@@ -137,6 +137,77 @@ def test_import_op_catches_malformed_sidecar(tmp_path):
     assert r["status"] == "error" and r["code"] == "invalid_sidecar"
 
 
+# --- board_id escape hatch (Phase 1a) ----------------------------------------
+
+def test_board_id_loads_and_strips(tmp_path):
+    assert load_sidecar(_write(tmp_path, "board_id: esp32dev\n")).board_id == "esp32dev"
+    assert load_sidecar(_write(tmp_path, 'board_id: "  esp32dev  "\n')).board_id == "esp32dev"
+
+
+def test_board_id_absent_is_none(tmp_path):
+    assert load_sidecar(_write(tmp_path, "power_source: usb_c\n")).board_id is None
+
+
+@pytest.mark.parametrize("body", [
+    "board_id: ''\n",          # empty string
+    'board_id: "   "\n',       # whitespace-only -> empty after strip
+    "board_id: 42\n",          # non-string scalar
+    "board_id: [a, b]\n",      # non-string sequence
+])
+def test_board_id_invalid_rejected(tmp_path, body):
+    with pytest.raises(SidecarError, match="board_id"):
+        load_sidecar(_write(tmp_path, body))
+
+
+def test_sidecar_board_id_resolves_mcu_without_platformio(tmp_path):
+    """No platformio.ini at all: the sidecar board_id is the escape hatch — it must
+    resolve the MCU (no mcu_unknown gap) and be reported as the board source."""
+    from kicad_mcp.tools.design import _op_import
+    from kicad_mcp.utils.firmware.intent import load_intent
+    (tmp_path / "config.h").write_text("#define I2C_SDA 21\n#define I2C_SCL 22\n")
+    (tmp_path / "board.yaml").write_text("board_id: esp32dev\n")
+    r = _op_import(firmware_path=str(tmp_path / "config.h"),
+                   out_path=str(tmp_path / "i.yaml"))
+    assert r["status"] == "ok"
+    assert r["board"] == "esp32dev" and r["board_source"] == "sidecar"
+    intent = load_intent(r["intent_path"])
+    assert intent.mcu is not None                          # MCU resolved via the sidecar
+    assert not any(g.kind == "mcu_unknown" for g in intent.gaps)
+
+
+def test_sidecar_board_id_overrides_platformio_and_reaches_branch_select(tmp_path):
+    """A sidecar board_id wins over platformio.ini AND reaches #if branch-selection
+    (the early-plumbing point), not just MCU resolution: the S3 branch's pin is
+    chosen, proving the override happened BEFORE the preprocessor ran."""
+    from kicad_mcp.tools.design import _op_import
+    from kicad_mcp.utils.firmware.intent import load_intent
+    (tmp_path / "config.h").write_text(
+        "#define I2C_SDA 21\n#define I2C_SCL 22\n"
+        "#if CONFIG_IDF_TARGET_ESP32S3\n#define MIC_PIN 15\n"
+        "#else\n#define MIC_PIN 4\n#endif\n")
+    (tmp_path / "platformio.ini").write_text("[env:esp32dev]\nboard = esp32dev\n")
+    (tmp_path / "board.yaml").write_text("board_id: esp32-s3-devkitc-1\n")
+    r = _op_import(firmware_path=str(tmp_path / "config.h"),
+                   out_path=str(tmp_path / "i.yaml"))
+    assert r["board"] == "esp32-s3-devkitc-1" and r["board_source"] == "sidecar"
+    intent = load_intent(r["intent_path"])
+    mic = next((n for n in intent.nets if n.name == "MIC"), None)
+    assert mic is not None
+    assert any(ep.gpio == 15 for ep in mic.endpoints)      # S3 branch taken
+    assert not any(ep.gpio == 4 for ep in mic.endpoints)   # not the #else
+
+
+def test_board_source_none_when_no_platformio_and_no_sidecar_board_id(tmp_path):
+    from kicad_mcp.tools.design import _op_import
+    from kicad_mcp.utils.firmware.intent import load_intent
+    (tmp_path / "config.h").write_text("#define I2C_SDA 21\n#define I2C_SCL 22\n")
+    r = _op_import(firmware_path=str(tmp_path / "config.h"),
+                   out_path=str(tmp_path / "i.yaml"))
+    assert r["board"] is None and r["board_source"] == "none"
+    intent = load_intent(r["intent_path"])
+    assert any(g.kind == "mcu_unknown" for g in intent.gaps)
+
+
 def test_apply_joins_existing_rail_else_creates():
     i = _intent()
     # pre-seed a +5V net so the connector JOINS it instead of duplicating

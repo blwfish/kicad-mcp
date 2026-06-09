@@ -130,6 +130,12 @@ class BoardSidecar:
     # keyed by the expander's peripheral ref (e.g. U3). Firmware-blind (sensors are
     # register-addressed at runtime). See ExpanderSpec / SPEC_expander_terminals.md.
     expander_terminals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # board-identity escape hatch: a board id (``esp32dev``) or Arduino FQBN
+    # (``esp32:esp32:esp32``) for projects with no platformio.ini, or whose board it
+    # doesn't recognize (e.g. an Arduino-IDE sketch). UNLIKE every key above, this is
+    # read EARLY — before #if branch-selection and MCU resolution — so it sets the
+    # per-target pin block and the MCU. Wins over any platformio.ini board.
+    board_id: Optional[str] = None
 
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
@@ -140,7 +146,7 @@ _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
     "placement", "placement_hints", "mounting_holes", "bus_part_overrides",
     "terminal_distribution", "terminal_centering", "board_refit",
-    "expander_terminals",
+    "expander_terminals", "board_id",
 })
 
 _TERMINAL_DISTRIBUTIONS = frozenset({"single_edge", "multi_edge"})
@@ -263,6 +269,10 @@ def _validate(d: dict[str, Any]) -> list[str]:
     br = d.get("board_refit")
     if br is not None and not isinstance(br, bool):
         errs.append(f"board_refit must be true/false, got {br!r}")
+    bid = d.get("board_id")
+    if bid is not None and not (isinstance(bid, str) and bid.strip()):
+        errs.append("board_id must be a non-empty string (a board id like "
+                    f"'esp32dev' or an FQBN like 'esp32:esp32:esp32'), got {bid!r}")
     for i, c in enumerate(d.get("extra_connectors", []) or []):
         where = f"extra_connectors[{i}]"
         if not isinstance(c, dict):
@@ -428,6 +438,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         terminal_centering=data.get("terminal_centering"),
         board_refit=data.get("board_refit"),
         expander_terminals=dict(data.get("expander_terminals", {}) or {}),
+        board_id=(data.get("board_id") or "").strip() or None,
     )
 
 

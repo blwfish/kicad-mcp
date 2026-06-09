@@ -57,6 +57,7 @@ from kicad_mcp.utils.firmware.part_extractor import (
 )
 from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
 from kicad_mcp.utils.firmware.sidecar import (
+    BoardSidecar,
     SidecarError,
     advise_unspecified_placement,
     apply_sidecar,
@@ -174,6 +175,32 @@ def register_design_tools(mcp: FastMCP) -> None:
         }
 
 
+def _load_sidecar_for(cfg: Path) -> tuple[Optional[BoardSidecar], Optional[str], Optional[dict]]:
+    """Locate + load the board.yaml sidecar (if any), EARLY. Returns
+    ``(sidecar, path, error)`` — ``error`` is a ready-to-return dict on malformed
+    YAML, else None. Loaded up front (not post-build) so its ``board_id`` escape
+    hatch can reach #if branch-selection and MCU resolution, not just the post-build
+    keys."""
+    sidecar_path = find_sidecar(str(cfg))
+    if sidecar_path is None:
+        return None, None, None
+    try:
+        return load_sidecar(sidecar_path), sidecar_path, None
+    except SidecarError as e:
+        return None, sidecar_path, {"status": "error", "code": "invalid_sidecar",
+                                    "message": f"Malformed {sidecar_path}: {e}"}
+
+
+def _resolve_board(cfg: Path, sidecar: Optional[BoardSidecar]) -> tuple[Optional[str], str]:
+    """Board id for branch-selection + MCU resolution, with its source. A sidecar
+    ``board_id`` (the escape hatch for projects with no/unrecognized platformio.ini,
+    e.g. an Arduino-IDE sketch) overrides platformio detection."""
+    if sidecar is not None and sidecar.board_id:
+        return sidecar.board_id, "sidecar"
+    board = find_board_id(str(cfg))
+    return board, "platformio" if board else "none"
+
+
 def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict:
     if not firmware_path:
         return {"status": "error", "code": "missing_parameter",
@@ -183,7 +210,14 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
         return {"status": "error", "code": "config_not_found",
                 "message": f"No config.h found at or under {firmware_path!r}."}
 
-    board = find_board_id(str(cfg))
+    # Load the board.yaml sidecar FIRST: its board_id (if any) is the escape hatch
+    # for projects with no/unrecognized platformio.ini, and must reach the steps
+    # below — not just the post-build apply.
+    sidecar, sidecar_path, sidecar_err = _load_sidecar_for(cfg)
+    if sidecar_err is not None:
+        return sidecar_err
+    board, board_source = _resolve_board(cfg, sidecar)
+
     # Select the active #if branch for this MCU target before extracting macros
     # (firmware wraps per-target pin maps in `#if CONFIG_IDF_TARGET_*`).
     text = select_active_branches(cfg.read_text(errors="replace"),
@@ -192,13 +226,13 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
 
     # board.yaml sidecar (Phase 6b): firmware-blind facts (connectors, power
-    # source, board size) supplied as data next to config.h. Applied AFTER
-    # build_intent so the importer core stays untouched.
-    sidecar_path = find_sidecar(str(cfg))
+    # source, board size). Applied AFTER build_intent so the importer core stays
+    # untouched. The intent-level checks (a placement key must exist in the intent)
+    # raise here, so the apply is guarded even though load already succeeded.
     sidecar_applied = None
-    if sidecar_path is not None:
+    if sidecar is not None:
         try:
-            intent = apply_sidecar(intent, load_sidecar(sidecar_path))
+            intent = apply_sidecar(intent, sidecar)
         except SidecarError as e:
             return {"status": "error", "code": "invalid_sidecar",
                     "message": f"Malformed {sidecar_path}: {e}"}
@@ -236,7 +270,8 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     # still win); power_source remains advisory.
     return {
         "status": "ok", "intent_path": str(dest),
-        "board": board, "summary": _summary(intent), "gaps": _gaps_list(intent),
+        "board": board, "board_source": board_source,
+        "summary": _summary(intent), "gaps": _gaps_list(intent),
         "sidecar": sidecar_applied,
         "board_size_mm": intent.source.get("board_size_mm"),
         "power_source": intent.source.get("power_source"),
@@ -319,7 +354,12 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
     if cfg is None:
         return {"status": "error", "code": "config_not_found",
                 "message": f"No config.h found at or under {firmware_path!r}."}
-    board = find_board_id(str(cfg))
+    # Honor a sidecar board_id (escape hatch) so suggest_cards resolves the same MCU
+    # and #if branches as import would; the sidecar's other keys don't affect drafting.
+    sidecar, _, sidecar_err = _load_sidecar_for(cfg)
+    if sidecar_err is not None:
+        return sidecar_err
+    board, _ = _resolve_board(cfg, sidecar)
     text = select_active_branches(cfg.read_text(errors="replace"),
                                   idf_target_defines(board))
     parsed = partition(parse_defines(text))
