@@ -69,7 +69,7 @@ Operations: `suggest`, `apply`, `clear_cache`.
 Operations: `import_firmware`, `import_intent`, `intent_template`,
 `expand_templates`, `generate_schematic`, `show_intent`, `suggest_cards`.
 The deterministic `import_firmware` works within a **narrow, explicit envelope**
-(2 ESP32 MCUs; a PlatformIO `config.h` or an Arduino `.ino` sketch; `#define` or
+(3 MCUs — 2 ESP32 + the RP2040/Pico; a PlatformIO `config.h` or an Arduino `.ino` sketch; `#define` or
 `const`/`constexpr` pins; board from `platformio.ini` or a `board.yaml`
 `board_id`; a fixed set of recognized chips). For firmware OUTSIDE that envelope
 (MicroPython, Rust, runtime-call pins) there's a second producer: an AI reads the

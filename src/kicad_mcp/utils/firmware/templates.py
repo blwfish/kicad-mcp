@@ -350,7 +350,8 @@ def _passive_net(name: str, *endpoints: Endpoint) -> Net:
 def usb_programming(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     """USB-C + CP2102 programming block — makes the board flashable. Powers it
     from USB (VBUS→+5V, giving the +5V rail its source), and gives the MCU a
-    UART console + auto-reset + boot/reset buttons. Fires for an ESP32.
+    UART console + auto-reset + boot/reset buttons. Fires only for a non-native-USB
+    MCU (the WROOM-32E); a native-USB MCU (ESP32-S3/C3, the Pico) needs no bridge.
 
     Landmines (verified): CP2102 VDD (pin 6) is the chip's LDO OUTPUT — it gets a
     bypass cap on its OWN net, never tied to +3V3. GND is on TWO pins (3 + EP 29)
@@ -361,7 +362,7 @@ def usb_programming(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         return ex
     mi = K.resolve_mcu_by_part(intent.mcu.part)
     if mi is None or mi["native_usb"]:
-        return ex  # native-USB MCUs (ESP32-S3/C3) need no CP2102 bridge
+        return ex  # native-USB MCUs (ESP32-S3/C3, Pico) need no CP2102 bridge
     mcu = intent.mcu.ref
 
     cp = Peripheral(ref=alloc.next("U"), type="CP2102", lib_id=K.CP2102_LIB,

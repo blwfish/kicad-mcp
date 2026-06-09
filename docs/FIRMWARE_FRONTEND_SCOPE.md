@@ -8,15 +8,17 @@ the authoritative scope statement; if the tool surprises you, check it here firs
 
 ## What it CAN handle today
 
-### MCUs (exactly two)
+### MCUs (three)
 
-| Part | Matches PlatformIO board ids | Notes |
+| Part | Matches PlatformIO board ids / FQBNs | Notes |
 |------|------------------------------|-------|
 | `ESP32-WROOM-32E` | `esp32dev`, `esp32` | classic ESP32; USB-serial programming via CP2102 |
 | `ESP32-S3-WROOM-1` | `esp32-s3-devkitc-1`, `esp32-s3`, `esp32s3` | native USB |
+| `RaspberryPi-Pico` (RP2040) | `pico`, `rpipico`, `rp2040:rp2040:rpipico` | first non-ESP32 MCU; pins `GPIO{n}`, on-board 3V3 regulator (no external LDO), native USB, no EN/BOOT straps |
 
-Any other board id — including ESP32-**C3 / C6 / S2**, and every non-ESP32 chip —
-resolves to an `mcu_unknown` gap (no MCU placed).
+Any other board id — including ESP32-**C3 / C6 / S2**, bare **`rp2040`** (a non-Pico
+RP2040 board — modules-only), and every other non-ESP32 chip — resolves to an
+`mcu_unknown` gap (no MCU placed).
 
 ### Project layout — PlatformIO `config.h` or Arduino sketch
 
@@ -79,7 +81,7 @@ validator — but the failure mode stays loud, never a silently-wrong board.
 
 | Out of the deterministic envelope | Deterministic result | Second producer |
 |-----------------|--------------------|-----------------|
-| Any MCU other than the two above (ESP32-C3/C6/S2, RP2040/Pico, AVR, STM32, …) | `mcu_unknown` gap; no MCU placed | only if a card for that MCU exists (Phase 2) |
+| Any MCU other than the three above (ESP32-C3/C6/S2, bare RP2040, AVR, STM32, …) | `mcu_unknown` gap; no MCU placed | only if a card for that MCU exists (add a card) |
 | A board with **no `platformio.ini` and no `board.yaml` `board_id`** | board id not found → `mcu_unknown` | declare `mcu` in the authored intent |
 | Pins assigned by **runtime calls** — `pinMode(5)`, `Wire.begin(21,22)`, constructor args | pins not extracted | ✅ AI reads them → `import_intent` |
 | **MicroPython / CircuitPython** (`machine.Pin(5)`, `board.GP5`) | not C/C++ → not extracted | ✅ AI reads them → `import_intent` |

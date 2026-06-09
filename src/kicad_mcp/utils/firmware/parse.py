@@ -447,9 +447,13 @@ _ESP32_VARIANT_RE = re.compile(r"esp32[-_]?[cshp]\d")
 
 
 def idf_target_defines(board_id: Optional[str]) -> set[str]:
-    """Map a platformio board id / Arduino FQBN to the ESP-IDF target macro it
-    defines, so the preprocessor selects the matching pin block (and so
-    ``resolve_mcu``'s target guard rejects a variant that isn't classic/S3)."""
+    """Map a platformio board id / Arduino FQBN to the preprocessor TARGET macros
+    its firmware uses to select a pin block, so ``select_active_branches`` keeps the
+    matching ``#if`` branch (and so ``resolve_mcu``'s target guard rejects a board
+    whose target disagrees with the resolved card). ESP-IDF targets
+    (CONFIG_IDF_TARGET_*) for ESP32; the Arduino-core arch macros for the RP2040 so
+    a Pico firmware that guards its pins with ``#ifdef ARDUINO_ARCH_RP2040`` is not
+    silently emptied."""
     b = (board_id or "").lower()
     for key, target in (("s3", "ESP32S3"), ("c3", "ESP32C3"), ("c6", "ESP32C6"),
                         ("s2", "ESP32S2"), ("h2", "ESP32H2"), ("p4", "ESP32P4")):
@@ -462,6 +466,11 @@ def idf_target_defines(board_id: Optional[str]) -> set[str]:
         return set()
     if "esp32" in b:
         return {"CONFIG_IDF_TARGET_ESP32"}
+    # Non-ESP32 archs — AFTER the esp32 check so an "esp32-pico" board (a real ESP32)
+    # lands above, never here. RP2040/Pico firmware commonly guards pins under
+    # ARDUINO_ARCH_RP2040 / PICO_RP2040.
+    if "rp2040" in b or "pico" in b:
+        return {"ARDUINO_ARCH_RP2040", "PICO_RP2040"}
     return set()
 
 

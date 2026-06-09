@@ -118,3 +118,53 @@ def test_pico_has_no_mcu_straps_esp32_does():
     # ESP32 still straps EN + boot
     assert "MCU_EN" in esp_nets and "MCU_BOOT" in esp_nets
     assert pico_refs  # sanity: the Pico board still expanded peripherals
+
+
+# --- #ifdef-guarded pins: a Pico firmware must not be silently emptied -----------
+
+def test_pico_ifdef_arch_branch_is_kept():
+    # A Pico firmware that guards its pins under #ifdef ARDUINO_ARCH_RP2040 must keep
+    # the block — idf_target_defines("pico") now emits the arch macro. Before the fix
+    # it returned set() and select_active_branches dropped the block -> 0 pins.
+    from kicad_mcp.utils.firmware.parse import (
+        idf_target_defines,
+        select_active_branches,
+    )
+    text = ("#ifdef ARDUINO_ARCH_RP2040\n#define I2C_SDA 4\n#endif\n"
+            "#ifdef ESP32\n#define I2C_SDA 21\n#endif\n")
+    out = select_active_branches(text, idf_target_defines("pico"))
+    assert "#define I2C_SDA 4" in out          # the RP2040 block is kept
+    assert "21" not in out                      # the ESP32 block is dropped
+
+
+def test_idf_target_defines_pico_vs_esp32_pico():
+    # boundary: a real ESP32 board whose id contains "pico" (esp32-pico-d4) must NOT
+    # be classified as RP2040 — the esp32 check runs first.
+    from kicad_mcp.utils.firmware.parse import idf_target_defines
+    assert idf_target_defines("pico") == {"ARDUINO_ARCH_RP2040", "PICO_RP2040"}
+    assert idf_target_defines("rpipico") == {"ARDUINO_ARCH_RP2040", "PICO_RP2040"}
+    assert idf_target_defines("esp32-pico-d4") == {"CONFIG_IDF_TARGET_ESP32"}
+
+
+# --- MCU card validation (the cold-review hardening) ----------------------------
+
+def test_validate_mcu_card_rejects_non_string_gpio_prefix():
+    mi = dict(resolve_mcu("pico"))
+    mi["gpio_pin_prefix"] = 123                          # an int -> would f-string to "1234"
+    assert any("gpio_pin_prefix" in e for e in validate_mcu_card(mi))
+
+
+def test_validate_mcu_card_rejects_missing_required_field():
+    mi = dict(resolve_mcu("pico"))
+    del mi["supply_pin"]                                 # still required
+    assert any("supply_pin" in e for e in validate_mcu_card(mi))
+
+
+def test_pico2_resolves_to_pico_card_known_approximation():
+    # DOCUMENTED boundary: "pico2" (RP2350 / Pico 2) currently resolves to the RP2040
+    # Pico card via the "pico" substring. The Pico 2 is pin-compatible with the Pico
+    # (same module footprint/pinout), so this is a safe approximation today; when an
+    # RP2350 card is added its more-specific board_match will take precedence. Pinned
+    # so the behavior is a conscious choice, not a silent surprise.
+    mi = resolve_mcu("pico2")
+    assert mi is not None and mi["part"] == "RaspberryPi-Pico"

@@ -294,11 +294,18 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
     if errs:
         return errs
     _validate_lib_id(card["lib_id"], where, errs)
+    _validate_alt_lib_ids(card.get("alt_lib_ids"), where, errs)
     bm = card["board_match"]
     if not isinstance(bm, list) or not bm or not all(isinstance(s, str) for s in bm):
         errs.append(f"{where}: board_match must be a non-empty list of strings")
     if not isinstance(card["native_usb"], bool) or not isinstance(card["needs_3v3"], bool):
         errs.append(f"{where}: needs_3v3 and native_usb must be bools")
+    # gpio_pin_prefix is optional, but when present it feeds an f-string in
+    # gpio_to_pin_number — a non-string (or empty) would silently match no pin and
+    # drop EVERY GPIO connection to a gap. Reject it here instead.
+    pfx = card.get("gpio_pin_prefix")
+    if pfx is not None and not (isinstance(pfx, str) and pfx.strip()):
+        errs.append(f"{where}: gpio_pin_prefix must be a non-empty string when present")
     return errs
 
 

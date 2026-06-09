@@ -72,11 +72,17 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     cache = get_symbol_cache()
     sch = ksa.create_schematic("firmware_gen")
 
+    # MCU card facts (resolved once): the GPIO pin-name prefix (ESP32 "IO", Pico
+    # "GPIO") for gpio resolution below, and any cross-version symbol alternates.
+    _mcu_info = resolve_mcu_by_part(intent.mcu.part)
+    gpio_prefix = _mcu_info.get("gpio_pin_prefix", "IO") if _mcu_info else "IO"
+    mcu_alts = list(_mcu_info.get("alt_lib_ids", []) or []) if _mcu_info else []
+
     # --- place components (MCU first, then peripherals) ---
     # Tuple: (ref, lib_id, alt_lib_ids, value, footprint). alt_lib_ids carries
-    # older-KiCad names for a renamed symbol; the MCU never needs them ([]).
+    # older-KiCad names for a renamed symbol (from the card, when present).
     to_place: list[tuple[str, str | None, list[str], str, str | None]] = [
-        (intent.mcu.ref, intent.mcu.lib_id, [], intent.mcu.part, intent.mcu.footprint)
+        (intent.mcu.ref, intent.mcu.lib_id, mcu_alts, intent.mcu.part, intent.mcu.footprint)
     ]
     # Off-board peripherals are field-wired (a terminal carries their nets), so
     # they are documented in the BOM but never placed as a symbol — their original
@@ -127,12 +133,8 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
 
     type_by_ref = {p.ref: p.type for p in intent.peripherals}
 
-    # The MCU's GPIO pin-name token prefix is per-MCU data (ESP32 "IO", Pico
-    # "GPIO"). Resolved once from the card; an endpoint carrying a gpio is always
-    # MCU-side, so this single prefix covers every gpio resolution below.
-    _mcu_info = resolve_mcu_by_part(intent.mcu.part) if intent.mcu else None
-    gpio_prefix = _mcu_info.get("gpio_pin_prefix", "IO") if _mcu_info else "IO"
-
+    # gpio_prefix (resolved above) covers every gpio resolution below — an endpoint
+    # carrying a gpio is always MCU-side.
     def resolve_pin(ref: str, gpio: Any, role: Any, pin: Any) -> Any:
         sym = symbols.get(ref)
         if sym is None:

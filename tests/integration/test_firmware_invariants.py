@@ -164,3 +164,23 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
     assert checked > 0, (
         f"{config_path.parent.name}: generate realized NO multi-pin connection from "
         "an expanded intent with a resolved MCU — net wiring regression")
+
+
+def test_pico_non_broken_out_gpio_is_honest_partial(tmp_path):
+    """A Pico firmware using GP25 (the on-board LED — NOT broken out on the module
+    symbol) must produce an HONEST partial, not a crash or a silent drop: the
+    generalized GPIO{n} resolver returns None for a pin the symbol doesn't expose,
+    so the endpoint lands in unresolved_endpoints and status is 'partial'. Proves
+    the caller handles the None all the way through (cold-review MT-2)."""
+    from kicad_mcp.utils.firmware.generate import generate_schematic
+    from kicad_mcp.utils.firmware.intent import build_intent
+    from kicad_mcp.utils.firmware.parse import parse_macros, partition
+    from kicad_mcp.utils.firmware.templates import expand_intent
+
+    fw = "#define LED_PIN 25\n#define HX711_DOUT_PIN 2\n#define HX711_SCK_PIN 3\n"
+    intent = expand_intent(build_intent(partition(parse_macros(fw)),
+                                        firmware_path="c.h", board_id="pico"))
+    res = generate_schematic(intent, str(tmp_path / "g.kicad_sch"))
+    assert 25 in {u.get("gpio") for u in res["unresolved_endpoints"]}   # GP25 honest gap
+    assert res["status"] == "partial"          # not "ok" (hid it), not "error", not a crash
+    assert res["components_placed"] > 0        # the rest of the board still placed
