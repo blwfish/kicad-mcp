@@ -482,3 +482,11 @@ def test_analog_pin_classification(name, value, analog):
     assert m.analog_pin == analog
     if analog is not None:
         assert m.kind is MacroKind.PIN and m.gpio is None and m.pin_value_valid
+
+
+def test_const_analog_pin_uses_same_classifier():
+    # Rule 3: the const/constexpr feeder routes through the SAME classify(), so an
+    # analog const (`const int LDR = A0;`) is recognized exactly like the #define form.
+    from kicad_mcp.utils.firmware.parse import parse_const_decls
+    ms = parse_const_decls("const int LDR_PIN = A0;\n")
+    assert len(ms) == 1 and ms[0].analog_pin == "A0" and ms[0].kind is MacroKind.PIN

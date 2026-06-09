@@ -118,7 +118,8 @@ _block = st.one_of(
 )
 _firmware_text = st.lists(_block, max_size=20).map(
     lambda blocks: "\n".join(line for b in blocks for line in b))
-_boards = st.sampled_from(["esp32dev", "esp32-s3-devkitc-1", "uno", None, "zzz"])
+_boards = st.sampled_from(["esp32dev", "esp32-s3-devkitc-1", "nanoatmega328",
+                           "uno", None, "zzz"])
 
 
 # --- 1. no-silent-loss / no-crash -------------------------------------------
@@ -163,11 +164,13 @@ def test_build_intent_no_crash_and_no_silent_loss(text, board):
 
     # Pin conservation law: every net in intent.nets comes 1:1 from the pin loop,
     # so every valid pin became exactly one net, OR was consumed by a typed bus
-    # (bus-stem), OR — if not bus-stem — was dropped as a duplicate WITH a gap.
+    # (bus-stem — DIGITAL pins only; an analog pin can't be a bus signal and is wired
+    # as its own net), OR — if not bus-stem — was dropped as a duplicate WITH a gap.
     # Nothing vanishes: a stray `continue` that skips a pin without recording it
     # breaks this equality.
     bus_stems = {b.name for b in intent.buses}
-    bus_stem_pins = sum(1 for m in pf.pins if m.peripheral_hint in bus_stems)
+    bus_stem_pins = sum(1 for m in pf.pins
+                        if m.peripheral_hint in bus_stems and m.gpio is not None)
     dup_gaps = sum(1 for g in intent.gaps if g.kind == "duplicate_signal")
     assert len(intent.nets) + bus_stem_pins + dup_gaps == len(pf.pins)
 
@@ -183,11 +186,28 @@ def test_typed_bus_pins_conserved_as_bus_stem(defs, stem, btype):
     pf = partition(parse_defines("\n".join(f"#define {d}" for d in defs)))
     intent = build_intent(pf, firmware_path="config.h", board_id="esp32dev")
     assert any(b.name == stem and b.type == btype for b in intent.buses)
+    _bs = {b.name for b in intent.buses}
     bus_stem_pins = sum(1 for m in pf.pins
-                        if m.peripheral_hint in {b.name for b in intent.buses})
+                        if m.peripheral_hint in _bs and m.gpio is not None)
     assert bus_stem_pins == len(pf.pins) > 0
     dup_gaps = sum(1 for g in intent.gaps if g.kind == "duplicate_signal")
     assert len(intent.nets) + bus_stem_pins + dup_gaps == len(pf.pins)
+
+
+def test_analog_pin_in_bus_stem_is_wired_not_dropped():
+    # An analog pin whose name shares a typed bus's stem can't be a bus signal (bus
+    # signals are gpio ints), so the bus-stem `continue` must NOT swallow it — it is
+    # wired as its own net. The cold review found it vanished (no net, no gap) while
+    # the conservation MATH still balanced (bus_stem_pins wrongly counted it).
+    pf = partition(parse_defines("#define SENSOR_SDA 4\n#define SENSOR_SCL 5\n"
+                                 "#define SENSOR_DATA_PIN A0\n"))
+    it = build_intent(pf, firmware_path="config.h", board_id="nanoatmega328")
+    assert any(n.name == "SENSOR_DATA" for n in it.nets)   # wired, not vanished
+    bus_stems = {b.name for b in it.buses}
+    bus_stem_pins = sum(1 for m in pf.pins
+                        if m.peripheral_hint in bus_stems and m.gpio is not None)
+    dup = sum(1 for g in it.gaps if g.kind == "duplicate_signal")
+    assert len(it.nets) + bus_stem_pins + dup == len(pf.pins)   # conservation holds
 
 
 @pytest.mark.parametrize("defs,expected_dups", [

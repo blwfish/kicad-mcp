@@ -179,3 +179,10 @@ def test_analog_and_digital_pins_coexist():
     by_name = {n.name: n.endpoints[0] for n in it.nets}
     assert by_name["LED"].gpio == 13 and by_name["LED"].pin is None    # digital -> gpio
     assert by_name["LDR"].pin == "A0" and by_name["LDR"].gpio is None  # analog -> pin name
+
+
+def test_two_macros_on_same_analog_pin_flagged_as_conflict():
+    # two firmware names on the same A-pin would short on one pad — must be flagged.
+    # The GPIO conflict check skips analog (gpio None), so analog needs its own check.
+    it = _intent("#define LDR_PIN A0\n#define POT_PIN A0\n")
+    assert any(g.kind == "pin_conflict" and "A0" in g.detail for g in it.gaps)

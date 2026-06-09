@@ -56,8 +56,10 @@ class Endpoint:
     ref: str
     gpio: Optional[int] = None   # set on the MCU side (resolved via IO{n})
     role: Optional[str] = None   # firmware signal-role on the peripheral side
-    pin: Optional[str] = None    # direct pin NAME/number — for passives & power
-                                 # pins that are neither a GPIO nor a known role
+    pin: Optional[str] = None    # direct pin NAME/number, resolved by name — for
+                                 # passives/power pins, AND an MCU analog pin "A0"
+                                 # (an Arduino A-pin names the symbol pin directly,
+                                 # not a GPIO number)
 
 
 @dataclass
@@ -391,9 +393,12 @@ def build_intent(
     # --- pin conflicts: one GPIO claimed by two different signals (flag, never
     # silently merge — e.g. I2S-bus-1 and the presence UART both on GPIO 5/6) ---
     by_gpio: dict[int, list[str]] = {}
+    by_analog: dict[str, list[str]] = {}   # analog pins key on their pin NAME, not gpio
     for m in parsed.pins:
         if m.gpio is not None:
             by_gpio.setdefault(m.gpio, []).append(m.name)
+        elif m.analog_pin is not None:
+            by_analog.setdefault(m.analog_pin, []).append(m.name)
     for gpio, names in sorted(by_gpio.items()):
         if len(set(names)) > 1:
             intent.gaps.append(Gap(
@@ -401,13 +406,23 @@ def build_intent(
                 f"GPIO{gpio} is claimed by multiple signals {sorted(set(names))} "
                 "(mutually exclusive at runtime); resolve before fabrication.",
             ))
+    for ap, names in sorted(by_analog.items()):
+        if len(set(names)) > 1:
+            intent.gaps.append(Gap(
+                "pin_conflict",
+                f"analog pin {ap} is claimed by multiple signals {sorted(set(names))} "
+                "(would short on one pad); resolve before fabrication.",
+            ))
 
     # --- nets, with first-wins on duplicate net names ---
     mcu_ref = intent.mcu.ref if intent.mcu else MCU_REF
     seen_names: set[str] = set()
     for m in parsed.pins:
-        # Bus pins are wired by their bus-driven template, not as orphan nets.
-        if m.peripheral_hint in bus_stems:
+        # A DIGITAL bus pin is wired by its bus-driven template, not as an orphan net.
+        # An analog pin (gpio None) can't be a typed-bus signal (bus signals are gpio
+        # ints), so even when its name shares a bus stem it is NOT consumed by the bus
+        # — it must fall through and be wired here, else it vanishes (no net, no gap).
+        if m.peripheral_hint in bus_stems and m.gpio is not None:
             continue
         name = _strip_pin_suffix(m.name)
         if name in seen_names:
@@ -417,11 +432,15 @@ def build_intent(
             ))
             continue
         seen_names.add(name)
-        # Digital pins carry a GPIO number; an Arduino analog pin (A0..A7) carries
-        # the symbol pin NAME instead, resolved by name downstream.
-        mcu_ep = (Endpoint(ref=mcu_ref, gpio=m.gpio) if m.gpio is not None
-                  else Endpoint(ref=mcu_ref, pin=m.analog_pin))
-        pin_label = f"GPIO{m.gpio}" if m.gpio is not None else m.analog_pin
+        # A digital pin carries a GPIO number; an Arduino analog pin carries the symbol
+        # pin NAME instead (resolved by name). classify() guarantees a valid PIN has
+        # exactly one of the two, so these are the only two endpoint shapes.
+        if m.gpio is not None:
+            mcu_ep = Endpoint(ref=mcu_ref, gpio=m.gpio)
+            pin_label = f"GPIO{m.gpio}"
+        else:
+            mcu_ep = Endpoint(ref=mcu_ref, pin=m.analog_pin)
+            pin_label = m.analog_pin or "?"
 
         if m.bus is not None:
             devices = by_bus.get(m.bus, [])
