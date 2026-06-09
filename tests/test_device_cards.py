@@ -177,6 +177,83 @@ def test_resolve_symbol(known, lib_id, alts, expected):
     assert (sym is not None) == (expected is not None)
 
 
+# --- pin-field registry completeness (meta-gate; no KiCad) -------------------
+# The integration gate (test_card_pins_exist_on_symbol) only validates pins it is
+# TOLD about — via cards.peripheral_pin_refs, driven by the *_PIN_FIELDS registry.
+# These meta-gates keep that registry honest so a new pin-bearing field can't slip
+# past the symbol check the way `port_pins` did before it was wired in.
+
+def test_pin_field_registries_are_disjoint():
+    from kicad_mcp.utils.firmware.cards import (
+        MCU_NONPIN_FIELDS,
+        MCU_PIN_FIELDS,
+        PERIPHERAL_NONPIN_FIELDS,
+        PERIPHERAL_PIN_FIELDS,
+    )
+    assert not (set(PERIPHERAL_PIN_FIELDS) & set(PERIPHERAL_NONPIN_FIELDS))
+    assert not (set(MCU_PIN_FIELDS) & set(MCU_NONPIN_FIELDS))
+
+
+def test_every_card_field_is_classified_pin_or_nonpin():
+    """A field on any real card that's in NEITHER registry fails here — forcing
+    whoever adds a card field to decide: pin-bearing (→ PERIPHERAL_PIN_FIELDS, and
+    the symbol gate then validates it) or not. This is the meta-gate that would
+    have caught the port_pins omission."""
+    from kicad_mcp.utils.firmware.cards import (
+        CONFIG_SUBKEYS,
+        MCU_NONPIN_FIELDS,
+        MCU_PIN_FIELDS,
+        PERIPHERAL_NONPIN_FIELDS,
+        PERIPHERAL_PIN_FIELDS,
+    )
+    peris, mcus = load_cards()
+    p_known = set(PERIPHERAL_PIN_FIELDS) | set(PERIPHERAL_NONPIN_FIELDS) | {"config"}
+    for t, c in peris.items():
+        extra = set(c) - p_known
+        assert not extra, (
+            f"peripheral card {t!r}: unclassified field(s) {sorted(extra)}. If they "
+            f"reference symbol pins add them to PERIPHERAL_PIN_FIELDS (the symbol "
+            f"gate then validates them); otherwise to PERIPHERAL_NONPIN_FIELDS.")
+        extra_cfg = set(c.get("config") or {}) - set(CONFIG_SUBKEYS)
+        assert not extra_cfg, (
+            f"peripheral card {t!r}: config sub-key(s) {sorted(extra_cfg)} not "
+            f"handled — extend peripheral_pin_refs + CONFIG_SUBKEYS.")
+    m_known = set(MCU_PIN_FIELDS) | set(MCU_NONPIN_FIELDS)
+    for c in mcus:
+        extra = set(c) - m_known
+        assert not extra, (
+            f"mcu card {c.get('part')!r}: unclassified field(s) {sorted(extra)} — "
+            f"add to MCU_PIN_FIELDS or MCU_NONPIN_FIELDS.")
+
+
+def test_meta_gate_is_not_vacuous():
+    # An injected unknown field is in neither registry, so the meta-gate's
+    # set-difference is non-empty (it would fail). Guards against a gate that
+    # passes no matter what.
+    from kicad_mcp.utils.firmware.cards import (
+        PERIPHERAL_NONPIN_FIELDS,
+        PERIPHERAL_PIN_FIELDS,
+    )
+    known = set(PERIPHERAL_PIN_FIELDS) | set(PERIPHERAL_NONPIN_FIELDS) | {"config"}
+    assert set(dict(_GOOD_PERIPHERAL, mystery_pins=["X"])) - known == {"mystery_pins"}
+
+
+def test_port_pins_collected_regression():
+    """The original bug: port_pins was added to the card schema but omitted from
+    the integration collector, so its pins went unvalidated. Pin it: port_pins is
+    a classified pin field AND peripheral_pin_refs actually collects it."""
+    from kicad_mcp.utils.firmware.cards import (
+        PERIPHERAL_PIN_FIELDS,
+        peripheral_pin_refs,
+    )
+    assert "port_pins" in PERIPHERAL_PIN_FIELDS
+    refs = peripheral_pin_refs({"port_pins": ["GPA0", "GPB7"], "roles": {"SDA": "13"},
+                                "supply_pins": ["9"], "config": {
+                                    "address_strap": {"pin_bits": ["A0"]},
+                                    "static_ties": [{"pin": "~{RESET}", "rail": "+3V3"}]}})
+    assert {"GPA0", "GPB7", "13", "9", "A0", "~{RESET}"} <= set(refs)
+
+
 def test_recognized_part_names_maps_raw_to_canonical():
     peripherals = {
         "INMP441": dict(_GOOD_PERIPHERAL, type="INMP441"),

@@ -100,6 +100,54 @@ _MCU_REQUIRED = ("part", "lib_id", "value", "footprint", "board_match",
                  "uart_rx_pin", "uart_tx_pin", "native_usb")
 
 
+# --- which card fields reference symbol PIN names (single source of truth) -----
+# The card-pin integration gate validates every value of the PIN fields against
+# the real KiCad symbol; the completeness meta-gate (tests/test_device_cards)
+# asserts every field present on a card is classified here as pin-bearing or not.
+# Together they mean a NEW pin-bearing field cannot silently escape the symbol
+# gate — the port_pins lesson (a pin field was added but left out of the
+# collector for a release). CLAUDE.md Rule 3 (one source) + data-capture rule.
+PERIPHERAL_PIN_FIELDS = ("roles", "supply_pins", "ground_pins", "port_pins")
+PERIPHERAL_NONPIN_FIELDS = ("type", "lib_id", "alt_lib_ids", "value", "footprint",
+                            "bus", "module", "aliases", "serves", "realize", "decoupling")
+# ``config`` is a nested container; its pin-bearing sub-keys (address_strap ->
+# pin_bits, static_ties[] -> pin) are read below. A NEW config sub-key must be
+# classified too (extend the collector + this set), enforced by the meta-gate.
+CONFIG_SUBKEYS = ("address_strap", "static_ties")
+MCU_PIN_FIELDS = ("supply_pin", "ground_pin", "en_pin", "boot_pin",
+                  "uart_rx_pin", "uart_tx_pin")
+MCU_NONPIN_FIELDS = ("part", "lib_id", "alt_lib_ids", "value", "footprint",
+                     "board_match", "needs_3v3", "native_usb")
+
+
+def peripheral_pin_refs(card: dict[str, Any]) -> list[str]:
+    """Every symbol-pin name a peripheral card references — driven by
+    ``PERIPHERAL_PIN_FIELDS`` plus the ``config`` straps/ties. Falsy values are
+    skipped (an absent/optional pin is not a phantom symbol reference). Consumed
+    by the card-pin gate (validate vs the real symbol) and the completeness
+    meta-gate, so the two never drift."""
+    refs: list[str] = []
+    for f in PERIPHERAL_PIN_FIELDS:
+        v = card.get(f)
+        if isinstance(v, dict):
+            refs += [str(x) for x in v.values()]      # roles: role -> pin
+        elif isinstance(v, list):
+            refs += [str(x) for x in v]               # supply/ground/port pin lists
+    cfg = card.get("config") or {}
+    strap = cfg.get("address_strap")
+    if isinstance(strap, dict):
+        refs += [str(x) for x in strap.get("pin_bits", []) or []]
+    refs += [str(t["pin"]) for t in cfg.get("static_ties", []) or []
+             if isinstance(t, dict) and t.get("pin") is not None]
+    return [r for r in refs if r]
+
+
+def mcu_pin_refs(card: dict[str, Any]) -> list[str]:
+    """Every symbol-pin name an MCU card references (driven by ``MCU_PIN_FIELDS``;
+    falsy values skipped, anticipating optional straps for non-ESP32 MCUs)."""
+    return [str(card[f]) for f in MCU_PIN_FIELDS if card.get(f)]
+
+
 def valid_lib_id(val: Any) -> bool:
     """A well-formed ``Library:Symbol`` — non-empty on BOTH sides of a single
     colon (rejects ``":"``, ``"Lib:"``, ``":Sym"``). Shared by every card/sidecar

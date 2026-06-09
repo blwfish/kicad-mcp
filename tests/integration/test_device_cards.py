@@ -2,9 +2,14 @@
 
 The unit tier (tests/test_device_cards.py) checks structure with no KiCad. This
 tier loads each card's actual symbol and asserts every pin the card references
-(roles, supply/ground, address-strap bits, static ties; MCU supply/ground/strap/
-uart pins) exists on that symbol — the "verify pins against the real symbol"
-discipline, enforced mechanically. A wrong pin name in a card fails here.
+exists on that symbol — the "verify pins against the real symbol" discipline,
+enforced mechanically. A wrong pin name in a card fails here.
+
+The set of pin references is computed by ``cards.peripheral_pin_refs`` /
+``mcu_pin_refs``, driven by the ``*_PIN_FIELDS`` registry — the SAME registry the
+unit-tier meta-gate (``test_card_fields_all_classified``) keeps complete. So a new
+pin-bearing card field is both validated here AND can't escape classification: the
+two gates can never drift (the port_pins lesson).
 
 Gated by KICAD_INTEGRATION=1; runs on the self-hosted KiCad 9/10 matrix.
 """
@@ -18,30 +23,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _pins_for_peripheral(card):
-    pins = list(card["roles"].values()) + list(card["supply_pins"]) + list(card["ground_pins"])
-    cfg = card.get("config") or {}
-    strap = cfg.get("address_strap")
-    if strap:
-        pins += list(strap["pin_bits"])
-    pins += [t["pin"] for t in cfg.get("static_ties", []) or []]
-    # I/O-expander port pins (GPA0..GPB7) — the source of truth for
-    # expander_terminals; verify every one resolves on the real symbol (so a typo
-    # in a pin a `ports:` list could request is caught on BOTH KiCad versions).
-    pins += list(card.get("port_pins", []) or [])
-    return pins
-
-
-def _pins_for_mcu(card):
-    return [card[k] for k in ("supply_pin", "ground_pin", "en_pin", "boot_pin",
-                              "uart_rx_pin", "uart_tx_pin")]
-
-
 def _all_cards():
-    from kicad_mcp.utils.firmware.cards import load_cards
+    from kicad_mcp.utils.firmware.cards import (
+        load_cards,
+        mcu_pin_refs,
+        peripheral_pin_refs,
+    )
     peris, mcus = load_cards()
-    items = [("peripheral", t, c, _pins_for_peripheral(c)) for t, c in peris.items()]
-    items += [("mcu", c["part"], c, _pins_for_mcu(c)) for c in mcus]
+    items = [("peripheral", t, c, peripheral_pin_refs(c)) for t, c in peris.items()]
+    items += [("mcu", c["part"], c, mcu_pin_refs(c)) for c in mcus]
     return items
 
 
