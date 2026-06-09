@@ -44,11 +44,18 @@ def test_parity_identity(cfg):
 
 
 def test_parity_is_ref_independent():
-    # a producer may assign refs differently; parity must ignore them
+    # a producer may assign different ref NAMES; parity ignores the names (it keys
+    # endpoints on the target's TYPE). Rename CONSISTENTLY (ref + its endpoints), so
+    # `other` is itself a valid intent — not a dangling-ref one.
     it = _det(_FIX / "config.h")
     other = copy.deepcopy(it)
+    rename = {p.ref: "X" + p.ref for p in other.peripherals}
     for p in other.peripherals:
-        p.ref = "X" + p.ref          # rename refs (parity drops them)
+        p.ref = rename[p.ref]
+    for n in other.nets:
+        for e in n.endpoints:
+            e.ref = rename.get(e.ref, e.ref)   # MCU ref unchanged
+    assert validate_intent(other) == []        # the rename produced a valid intent
     assert intent_parity(it, other) == []
 
 
@@ -94,3 +101,37 @@ def test_independent_authoring_reaches_parity():
     )
     assert validate_intent(ai) == []
     assert intent_parity(det, ai) == []
+
+
+def test_parity_handles_mixed_addresses_without_crash():
+    # A3 regression: same-type peripherals, one addr=None one addr=int, must not raise
+    g = [Gap(k, "") for k in ("power_tree", "decoupling", "pullups", "connectors", "parts")]
+    a = DesignIntent(
+        mcu=Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E"),
+        peripherals=[Peripheral("U2", "HX711", "x:y", address=None),
+                     Peripheral("U3", "HX711", "x:y", address=1)], gaps=g)
+    assert intent_parity(a, copy.deepcopy(a)) == []
+
+
+def test_parity_catches_net_wired_to_wrong_chip():
+    # A2: identical peripheral sets, but the net targets a DIFFERENT chip type
+    g = [Gap(k, "") for k in ("power_tree", "decoupling", "pullups", "connectors", "parts")]
+    m = Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E")
+    a = DesignIntent(mcu=m,
+        peripherals=[Peripheral("U2", "HX711", "x:y"), Peripheral("U3", "MCP23017", "x:y")],
+        nets=[Net("N", "peripheral", "high", [Endpoint("U1", gpio=16), Endpoint("U2", role="DOUT")])],
+        gaps=g)
+    b = DesignIntent(mcu=m,
+        peripherals=[Peripheral("U2", "HX711", "x:y"), Peripheral("U3", "MCP23017", "x:y")],
+        nets=[Net("N", "peripheral", "high", [Endpoint("U1", gpio=16), Endpoint("U3", role="DOUT")])],
+        gaps=g)
+    assert intent_parity(a, b)   # net to HX711 vs MCP23017 -> not parity
+
+
+def test_parity_ignores_peripheral_lib_id_by_design():
+    # documented: lib_id is a symbol-library choice, not a firmware fact -> not compared
+    g = [Gap(k, "") for k in ("power_tree", "decoupling", "pullups", "connectors", "parts")]
+    m = Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E")
+    a = DesignIntent(mcu=m, peripherals=[Peripheral("U2", "HX711", "Analog_ADC:HX711")], gaps=g)
+    b = DesignIntent(mcu=m, peripherals=[Peripheral("U2", "HX711", "Wrong:Symbol")], gaps=g)
+    assert intent_parity(a, b) == []

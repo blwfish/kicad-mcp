@@ -60,6 +60,7 @@ from kicad_mcp.utils.firmware.intent import (
     candidate_devices,
     contract_value_sets,
     example_intent,
+    example_intent_i2s,
     find_board_id,
     load_intent,
     save_intent,
@@ -498,6 +499,9 @@ def _op_import_intent(*, intent_path: Optional[str], out_path: Optional[str]) ->
     # deterministically-parsed one (which carries source_file/unparsed, no producer).
     intent.provenance.setdefault("producer", "external")
     intent.provenance["ingested_via"] = "import_intent"
+    # Same nudge import_firmware emits: flag a commonly-remote bus with no locus set,
+    # so an AI that forgot `locus: remote` on an off-board sensor sees it.
+    advise_unspecified_placement(intent)
     dest = Path(out_path) if out_path else Path(intent_path).parent / "design_intent.yaml"
     try:
         save_intent(intent, str(dest))
@@ -533,9 +537,16 @@ def _op_intent_template() -> dict:
         "valid_values": contract_value_sets(),
         "honesty_rules": [
             "All required_gaps MUST be present (the firmware-blind manifest).",
-            "If you can't resolve the MCU: set mcu to null AND add an 'mcu_unknown' gap.",
+            "MCU rule (both directions): if you can't resolve the MCU, set mcu to null "
+            "AND add an 'mcu_unknown' gap; if you DO set an mcu, do NOT add that gap "
+            "(the two are contradictory).",
             f"Every net endpoint ref must be the MCU ('{MCU_REF}') or a declared "
-            "peripheral ref.",
+            "peripheral ref. A gpio must be a plain integer (not a YAML boolean or a "
+            "string) in range [0, 48]. A 'bus'/'peripheral' net needs >=2 endpoints "
+            "(use 'orphan' for a one-ended net).",
+            "A bus's signals must be the real roles for its type (I2C: SDA+SCL; "
+            "I2S_IN: BCLK+WS+SD/DOUT; I2S_OUT: BCLK+WS+DIN; UART: RX+TX; SPI: "
+            "MOSI+MISO) or it's rejected.",
             "Anything firmware can't express that you DROPPED goes in "
             "provenance.unparsed — never silently lose it.",
         ],
@@ -549,4 +560,5 @@ def _op_intent_template() -> dict:
             for t, c in sorted(peris.items())
         ],
         "example": to_dict(example_intent()),
+        "example_with_bus": to_dict(example_intent_i2s()),
     }

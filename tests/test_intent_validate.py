@@ -62,6 +62,18 @@ def test_unknown_board_intent_passes_validator():
     assert validate_intent(it) == []
 
 
+@pytest.mark.parametrize("cfg", sorted(_FIX.glob("**/config.h")),
+                         ids=lambda p: p.parent.name)
+def test_expanded_intent_passes_validator(cfg):
+    # the EXPANDED intent (template-synthesized peripherals + power/passive nets)
+    # must also pass — so the new structural rules don't reject a legit post-expand
+    # doc (which show_intent / a re-validate would see).
+    from kicad_mcp.utils.firmware.templates import expand_intent
+    it = build_intent(partition(parse_macros(cfg.read_text())),
+                      firmware_path=str(cfg), board_id=find_board_id(str(cfg)))
+    assert validate_intent(expand_intent(it)) == []
+
+
 # --- structural rejections ----------------------------------------------------
 
 def test_bad_net_kind_rejected():
@@ -153,3 +165,53 @@ def test_contract_value_sets_match_validator_constants():
     assert set(c["net_kind"]) == set(NET_KINDS)
     assert set(c["required_gaps"]) == set(_ALWAYS)
     assert "I2C" in c["bus_type"] and "I2S_IN" in c["bus_type"]
+
+
+# --- cold-review fixes: bus-type/signals, modeled-net arity, dup names, gpio range, locus ---
+
+def test_mistyped_bus_rejected():
+    it = _valid()
+    it.buses.append(Bus(name="MIC", type="I2S_IN", signals={"FOO": 1}))  # not BCLK/WS/SD
+    assert any("form a" in e for e in validate_intent(it))
+
+
+def test_well_typed_bus_passes():
+    it = _valid()
+    it.buses.append(Bus(name="MIC", type="I2S_IN", signals={"BCLK": 4, "WS": 5, "SD": 6}))
+    assert validate_intent(it) == []
+
+
+def test_modeled_net_needs_two_endpoints():
+    it = _valid()
+    it.nets.append(Net("SOLO", "peripheral", "high", [Endpoint(ref="U2", role="X")]))
+    assert any("endpoints" in e for e in validate_intent(it))
+
+
+def test_orphan_net_may_have_one_endpoint():
+    it = _valid()
+    it.nets.append(Net("ORPH", "orphan", "low", [Endpoint(ref="U1", gpio=5)]))
+    assert validate_intent(it) == []
+
+
+def test_duplicate_net_name_rejected():
+    it = _valid()
+    it.nets.append(Net("HX711_DOUT", "orphan", "low", [Endpoint(ref="U1", gpio=9)]))
+    assert any("duplicate net" in e for e in validate_intent(it))
+
+
+@pytest.mark.parametrize("gpio", [-1, 49, 999])
+def test_gpio_out_of_range_rejected(gpio):
+    it = _valid()
+    it.nets[0].endpoints[0].gpio = gpio
+    assert any("range" in e for e in validate_intent(it))
+
+
+def test_bad_peripheral_locus_rejected():
+    it = _valid()
+    it.peripherals[0].locus = "floor"
+    assert any("locus" in e for e in validate_intent(it))
+
+
+def test_example_i2s_passes_validator():
+    from kicad_mcp.utils.firmware.intent import example_intent_i2s
+    assert validate_intent(example_intent_i2s()) == []

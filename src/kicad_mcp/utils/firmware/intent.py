@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 from kicad_mcp.utils.firmware.knowledge import resolve_mcu, resolve_peripheral
 from kicad_mcp.utils.firmware.parse import (
+    GPIO_MAX,
+    GPIO_MIN,
     ParsedFirmware,
     _strip_pin_suffix,
     address_base,
@@ -77,6 +79,7 @@ MODELED_NET_KINDS = frozenset({"bus", "peripheral"})
 _NET_CONFIDENCE = frozenset({"high", "low"})
 # Typed-bus values _build_buses / _bus_type can produce (the validator's allow-list).
 _BUS_TYPES = frozenset({"I2C", "I2S_OUT", "I2S_IN", "UART", "SPI"})
+_PERIPHERAL_LOCI = frozenset({"on_board", "remote", "on_board_with_remote_io"})
 
 
 @dataclass
@@ -551,12 +554,13 @@ def load_intent(path: str) -> DesignIntent:
 def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[str]:
     """Structural differences between the deterministic producer's intent and another
     producer's (an AI/hand) for the SAME firmware — the gap-parity check that the two
-    producers converge. REF-INDEPENDENT (a ref is an assignment artifact): compares
-    MCU part+lib_id; peripherals as a (type, address) multiset; buses as
-    (name, type, signals); nets by name -> (kind, the set of (gpio, role, pin)
-    endpoint signatures); and gap KINDS as a set. Ignores inherently fuzzy parts —
-    gap detail text, confidence, alt_lib_ids, resolved_part, ref names, endpoint
-    order. Empty list == parity."""
+    producers converge. REF-INDEPENDENT (a ref name is an assignment artifact):
+    compares MCU part+lib_id; peripherals as a (type, address) multiset; buses as
+    (name, type, signals); nets by name -> (kind, the set of (gpio, role, pin,
+    TARGET-TYPE) endpoint signatures — the target's TYPE, not its ref, so a net
+    wired to the wrong CHIP is caught while a renamed ref is not); and gap KINDS as a
+    set. Ignores inherently fuzzy parts — gap detail text, confidence, lib_id choice,
+    alt_lib_ids, resolved_part, ref names, endpoint order. Empty list == parity."""
     diffs: list[str] = []
     a, b = deterministic, other
 
@@ -566,7 +570,9 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
         diffs.append(f"mcu: {a_mcu} != {b_mcu}")
 
     def _periph(ps: list) -> list:
-        return sorted((p.type, p.address) for p in ps)
+        # sort key tolerates address=None mixed with ints (same-type pin-hint + addr)
+        return sorted(((p.type, p.address) for p in ps),
+                      key=lambda t: (t[0], -1 if t[1] is None else t[1]))
     if _periph(a.peripherals) != _periph(b.peripherals):
         diffs.append(f"peripherals(type,address): {_periph(a.peripherals)} != "
                      f"{_periph(b.peripherals)}")
@@ -576,10 +582,20 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
     if _buses(a.buses) != _buses(b.buses):
         diffs.append(f"buses: {_buses(a.buses)} != {_buses(b.buses)}")
 
-    def _nets(ns: list) -> dict:
-        return {n.name: (n.kind, frozenset((e.gpio, e.role, e.pin) for e in n.endpoints))
-                for n in ns}
-    an, bn = _nets(a.nets), _nets(b.nets)
+    def _ref_type(intent: "DesignIntent") -> dict:
+        m = {MCU_REF: "MCU"}
+        if intent.mcu is not None:
+            m[intent.mcu.ref] = "MCU"
+        for p in intent.peripherals:
+            m[p.ref] = p.type            # endpoint identity is the TARGET's type
+        return m
+
+    def _nets(intent: "DesignIntent") -> dict:
+        rt = _ref_type(intent)
+        return {n.name: (n.kind, frozenset((e.gpio, e.role, e.pin, rt.get(e.ref))
+                                           for e in n.endpoints))
+                for n in intent.nets}
+    an, bn = _nets(a), _nets(b)
     if set(an) != set(bn):
         diffs.append(f"net names differ: {sorted(set(an) ^ set(bn))}")
     else:
@@ -603,7 +619,7 @@ def contract_value_sets() -> dict[str, Any]:
         "net_confidence": sorted(_NET_CONFIDENCE),
         "bus_type": sorted(_BUS_TYPES),
         "required_gaps": sorted(_ALWAYS_GAP_KINDS),
-        "peripheral_locus": ["on_board", "remote", "on_board_with_remote_io"],
+        "peripheral_locus": sorted(_PERIPHERAL_LOCI),
     }
 
 
@@ -628,6 +644,23 @@ def example_intent() -> DesignIntent:
         gaps=[Gap(k, d) for k, d in _ALWAYS_GAPS],
         provenance={"producer": "ai",
                     "source_file": "firmware/main.py (e.g. MicroPython / Rust)"},
+    )
+
+
+def example_intent_i2s() -> DesignIntent:
+    """A second worked example: a typed I2S_IN bus (a MEMS mic) — shows how to
+    express a Bus (signals = role->gpio) vs a per-pin Net, and the S3 MCU. Valid."""
+    mcu_info = resolve_mcu("esp32-s3-devkitc-1")
+    mic = resolve_peripheral("ICS43434")
+    return DesignIntent(
+        mcu=(Mcu(ref=MCU_REF, part=mcu_info["part"], lib_id=mcu_info["lib_id"],
+                 footprint=mcu_info.get("footprint")) if mcu_info else None),
+        peripherals=([Peripheral(ref="U2", type="ICS-43434", lib_id=mic["lib_id"],
+                                 bus="I2S")] if mic else []),
+        buses=[Bus(name="MIC", type="I2S_IN", signals={"BCLK": 4, "WS": 5, "SD": 6})],
+        gaps=[Gap(k, d) for k, d in _ALWAYS_GAPS],
+        provenance={"producer": "ai",
+                    "source_file": "firmware/mic.rs (e.g. Rust / embassy)"},
     )
 
 
@@ -662,6 +695,10 @@ def validate_intent(intent: DesignIntent) -> list[str]:
             errs.append("mcu: ref, part and lib_id are all required")
         if m.ref:
             known_refs.add(m.ref)
+    # NOTE (boundary): we check a lib_id/type is PRESENT, not that the type has a
+    # device card or that its lib_id resolves in KiCad — an unrecognized type is
+    # placed bare (no support glue) and an absent symbol surfaces in generate's
+    # component_errors. The contract steers producers to recognized types.
     for p in intent.peripherals:
         where = f"peripheral {p.ref!r}"
         if not p.ref:
@@ -672,34 +709,55 @@ def validate_intent(intent: DesignIntent) -> list[str]:
             errs.append(f"{where}: type is required")
         if not p.lib_id:
             errs.append(f"{where}: lib_id is required (to place the symbol)")
+        if p.locus not in _PERIPHERAL_LOCI:
+            errs.append(f"{where}: locus {p.locus!r} not in {sorted(_PERIPHERAL_LOCI)}")
         if p.ref:
             known_refs.add(p.ref)
 
-    # --- nets: valid kind/confidence; endpoints name a real component ---
+    # --- nets: unique name; valid kind/confidence; endpoints name a real component ---
+    seen_net_names: set[str] = set()
     for n in intent.nets:
         where = f"net {n.name!r}"
         if not n.name:
             errs.append("net: name is required")
+        elif n.name in seen_net_names:
+            errs.append(f"{where}: duplicate net name (each net name must be unique)")
+        seen_net_names.add(n.name)
         if n.kind not in NET_KINDS:
             errs.append(f"{where}: kind {n.kind!r} not in {sorted(NET_KINDS)}")
         if n.confidence not in _NET_CONFIDENCE:
             errs.append(f"{where}: confidence {n.confidence!r} not in {sorted(_NET_CONFIDENCE)}")
+        # A modeled net (bus/peripheral) is a CONNECTION — it needs >=2 endpoints;
+        # one endpoint is a dangling claim, not a wire (the deterministic path emits
+        # an 'orphan' for that, never a 1-ended bus/peripheral net).
+        if n.kind in MODELED_NET_KINDS and len(n.endpoints) < 2:
+            errs.append(f"{where}: a {n.kind} net is a connection — needs >=2 endpoints, "
+                        f"has {len(n.endpoints)} (use kind 'orphan' for a one-ended net)")
         for ep in n.endpoints:
             if not ep.ref:
                 errs.append(f"{where}: an endpoint has no ref")
             elif ep.ref not in known_refs:
                 errs.append(f"{where}: endpoint ref {ep.ref!r} is not a declared "
                             "component (an mcu or peripheral)")
-            if ep.gpio is not None and not _is_int(ep.gpio):
-                errs.append(f"{where}: endpoint gpio {ep.gpio!r} must be an integer")
+            if ep.gpio is not None:
+                if not _is_int(ep.gpio):
+                    errs.append(f"{where}: endpoint gpio {ep.gpio!r} must be an integer")
+                elif not (GPIO_MIN <= ep.gpio <= GPIO_MAX):
+                    errs.append(f"{where}: endpoint gpio {ep.gpio} out of range "
+                                f"[{GPIO_MIN},{GPIO_MAX}]")
 
-    # --- buses: valid type; signals are role -> int gpio ---
+    # --- buses: valid type; signals actually form that type; gpios are ints ---
     for b in intent.buses:
         where = f"bus {b.name!r}"
         if not b.name:
             errs.append("bus: name is required")
         if b.type not in _BUS_TYPES:
             errs.append(f"{where}: type {b.type!r} not in {sorted(_BUS_TYPES)}")
+        elif _bus_type(set(b.signals or {})) != b.type:
+            # signals must match the declared type, else expand silently produces
+            # nothing for this bus (a declared device vanishes from the board).
+            errs.append(f"{where}: signals {sorted(b.signals or {})} do not form a "
+                        f"{b.type} bus — its role set doesn't match the type")
         for role, gpio in (b.signals or {}).items():
             if not _is_int(gpio):
                 errs.append(f"{where}: signal {role!r} gpio {gpio!r} must be an integer")
