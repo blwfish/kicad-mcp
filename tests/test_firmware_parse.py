@@ -18,7 +18,9 @@ from kicad_mcp.utils.firmware.parse import (
     _as_int,
     classify,
     idf_target_defines,
+    parse_const_decls,
     parse_defines,
+    parse_macros,
     parse_pin_name,
     partition,
     select_active_branches,
@@ -327,3 +329,70 @@ def test_real_speedcal_config():
     assert any(m.name == "MCP23017_ADDR" and m.address == 0x27 for m in pf.addresses)
     # I2C_FREQ is config, not a pin.
     assert "I2C_FREQ" not in pin_names
+
+
+# --- const / constexpr pin declarations (Arduino) ----------------------------
+# A SECOND syntactic source feeding the ONE classifier (CLAUDE.md Rule 3). The
+# regex finds candidates; classify() still decides pin/address/other by NAME, so
+# the seam can't be load-bearing on its own.
+
+def _one_const(line):
+    decls = parse_const_decls(line)
+    assert len(decls) == 1, f"expected 1 decl, got {[d.name for d in decls]}"
+    return decls[0]
+
+
+@pytest.mark.parametrize("line,name,gpio", [
+    ("const int LED_PIN = 2;", "LED_PIN", 2),
+    ("constexpr uint8_t I2C_SDA = 21;", "I2C_SDA", 21),
+    ("static const int SCK_PIN = 18;", "SCK_PIN", 18),
+    ("const byte BUZZER_PIN = 13;", "BUZZER_PIN", 13),
+    ("static constexpr gpio_num_t MIC_SD = GPIO_NUM_15;", "MIC_SD", 15),
+    ("const unsigned int RST_PIN = 4;", "RST_PIN", 4),
+    ("const int LED_PIN = 2; // status led", "LED_PIN", 2),   # trailing comment past ;
+])
+def test_const_pin_decls_classified_as_pin(line, name, gpio):
+    m = _one_const(line)
+    assert m.kind is MacroKind.PIN and m.name == name and m.gpio == gpio
+    assert m.pin_value_valid
+
+
+def test_const_address_decl_is_address():
+    m = _one_const("const uint8_t MPU6050_ADDR = 0x68;")
+    assert m.kind is MacroKind.ADDRESS and m.address == 0x68
+
+
+def test_const_nonpin_name_stays_other():
+    # name-not-value decides: a GPIO-range value with a non-pin name is OTHER —
+    # the classifier is the safety net against the const regex over-matching.
+    assert _one_const("const int SAMPLE_COUNT = 16;").kind is MacroKind.OTHER
+    assert _one_const("constexpr int TIMEOUT_MS = 5000;").kind is MacroKind.OTHER
+
+
+def test_const_pin_named_bad_value_is_invalid_pin():
+    m = _one_const("const int BUZZER_PIN = -1;")   # unused sentinel, out of range
+    assert m.kind is MacroKind.PIN and not m.pin_value_valid
+
+
+@pytest.mark.parametrize("line", [
+    "int LED = 2;",                         # not const/constexpr -> mutable global, skip
+    'const char* WIFI_SSID = "net";',       # pointer/string, skip
+    'const char *HOST = "h";',              # pointer (space before *name), skip
+    "const int LED_PINS[] = {2, 3, 4};",    # array, skip
+    "led_pin = 2;",                         # bare assignment, no type, skip
+    "// const int LED_PIN = 2;",            # commented out, skip
+])
+def test_const_regex_skips_non_pin_constant_forms(line):
+    assert parse_const_decls(line) == []
+
+
+def test_parse_macros_combines_define_and_const():
+    macros = parse_macros("#define LED_PIN 2\nconst int BUZZER_PIN = 4;\n")
+    assert {m.name for m in macros} == {"LED_PIN", "BUZZER_PIN"}
+    assert all(m.kind is MacroKind.PIN for m in macros)
+
+
+def test_parse_macros_defines_first_then_const():
+    # ordering contract: #defines, then const-decls (regardless of source line order)
+    assert [m.name for m in parse_macros("const int B_PIN = 4;\n#define A_PIN 2\n")] \
+        == ["A_PIN", "B_PIN"]

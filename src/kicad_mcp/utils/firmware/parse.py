@@ -315,6 +315,49 @@ def parse_defines(text: str) -> list[Macro]:
     return out
 
 
+# A C++ const/constexpr integer declaration — how Arduino sketches name pins when
+# they don't use #define (``const int LED = 2;`` / ``constexpr uint8_t SDA = 21;``
+# / ``static const gpio_num_t MIC = GPIO_NUM_15;``). Captures the NAME and the
+# value up to the ``;``; the value is then value-validated by the SAME classifier
+# as #define. A pointer/string type (``const char* SSID``) has ``*`` where this
+# expects whitespace before the name, so it never matches — strings are skipped,
+# not misread. Arrays (``const int PINS[] = {..}``) have ``[`` after the name and
+# likewise don't match. ``int x = 2`` (no const/constexpr) is deliberately NOT
+# matched — a mutable global is not a pin constant.
+_CONST_DECL_RE = re.compile(
+    r"^\s*(?:static\s+)?(?:const|constexpr)\s+(?:unsigned\s+)?"
+    r"(?P<type>\w+)\s+(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;]+?)\s*;"
+)
+
+
+def parse_const_decls(text: str) -> list[Macro]:
+    """Extract C++ ``const``/``constexpr`` declarations and classify them with the
+    SAME name-primary classifier as ``#define`` (CLAUDE.md Rule 3 — one source of
+    truth for "is this a pin", two syntactic feeders). A const whose NAME says pin
+    and whose value is a plausible GPIO is a pin; ``const int TIMEOUT = 5000`` is
+    OTHER (name doesn't say pin), so the classifier is the safety net against
+    over-matching. Order-preserving; nothing dropped."""
+    out: list[Macro] = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        m = _CONST_DECL_RE.match(line)
+        if not m:
+            continue
+        value, comment = _split_comment(m.group("value"))
+        macro = classify(m.group("name"), value, None)
+        macro.line_no = i
+        macro.comment = comment
+        out.append(macro)
+    return out
+
+
+def parse_macros(text: str) -> list[Macro]:
+    """Every pin/address/config macro in firmware text — both ``#define`` and
+    ``const``/``constexpr`` declarations (the latter is how Arduino-IDE sketches
+    name pins). Both syntactic sources feed the one classifier; order is defines
+    then const-decls."""
+    return parse_defines(text) + parse_const_decls(text)
+
+
 # --- preprocessor: select active #if branches --------------------------------
 # Scoped to the dominant firmware pattern — target conditionals
 # (``#if CONFIG_IDF_TARGET_ESP32S3 / #else``) and simple ``#ifdef`` /

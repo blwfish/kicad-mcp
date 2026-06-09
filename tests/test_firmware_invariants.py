@@ -38,7 +38,13 @@ from kicad_mcp.utils.firmware.intent import (
     from_dict,
     to_dict,
 )
-from kicad_mcp.utils.firmware.parse import MacroKind, parse_defines, partition
+from kicad_mcp.utils.firmware.parse import (
+    MacroKind,
+    parse_const_decls,
+    parse_defines,
+    parse_macros,
+    partition,
+)
 
 # build_intent does device-card resolution (yaml-backed, no live KiCad) so it is
 # unit-safe but not free; drop the per-example deadline rather than chase timing.
@@ -120,7 +126,9 @@ _boards = st.sampled_from(["esp32dev", "esp32-s3-devkitc-1", "uno", None, "zzz"]
 @given(st.text())
 @_SETTINGS
 def test_parse_partition_never_crash_on_arbitrary_text(text):
-    partition(parse_defines(text))   # arbitrary unicode must not raise
+    partition(parse_defines(text))       # arbitrary unicode must not raise
+    partition(parse_const_decls(text))   # the const/constexpr feeder too
+    partition(parse_macros(text))        # and the combined source
 
 
 @given(_firmware_text)

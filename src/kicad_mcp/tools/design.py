@@ -66,7 +66,7 @@ from kicad_mcp.utils.firmware.sidecar import (
 )
 from kicad_mcp.utils.firmware.parse import (
     idf_target_defines,
-    parse_defines,
+    parse_macros,
     partition,
     select_active_branches,
 )
@@ -222,7 +222,7 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     # (firmware wraps per-target pin maps in `#if CONFIG_IDF_TARGET_*`).
     text = select_active_branches(cfg.read_text(errors="replace"),
                                   idf_target_defines(board))
-    parsed = partition(parse_defines(text))
+    parsed = partition(parse_macros(text))
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
 
     # board.yaml sidecar (Phase 6b): firmware-blind facts (connectors, power
@@ -362,7 +362,7 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
     board, _ = _resolve_board(cfg, sidecar)
     text = select_active_branches(cfg.read_text(errors="replace"),
                                   idf_target_defines(board))
-    parsed = partition(parse_defines(text))
+    parsed = partition(parse_macros(text))
     intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
     whoami = extract_whoami(intent.provenance)
 
