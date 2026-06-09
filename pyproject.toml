@@ -57,6 +57,7 @@ dev = [
     "mypy>=2.1.0",
     "pip-audit>=2.10.0",
     "pytest-timeout>=2.3.0",
+    "hypothesis>=6.0",
 ]
 
 [tool.ruff]
@@ -80,7 +81,7 @@ addopts = [
     "--tb=short",
 ]
 testpaths = ["tests"]
-norecursedirs = ["tests/integration"]
+norecursedirs = ["tests/integration", ".hypothesis"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
