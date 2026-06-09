@@ -560,8 +560,11 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
     TARGET-TYPE) endpoint signatures — the target's TYPE, not its ref, so a net
     wired to the wrong CHIP is caught while a renamed ref is not; bus is included
     because it selects template behaviour, e.g. i2c_pullups); and gap KINDS as a
-    set. Ignores inherently fuzzy parts — gap detail text, confidence, lib_id choice,
-    alt_lib_ids, resolved_part, ref names, endpoint order. Empty list == parity."""
+    set. Ignores inherently fuzzy parts — gap detail text, gap MULTIPLICITY (kinds
+    are a set, so one unknown_peripheral gap == six: a producer may legitimately
+    bundle "these N are unknown" into one disclosure, and a dropped CONNECTION is
+    caught by the net comparison regardless), confidence, lib_id choice, alt_lib_ids,
+    resolved_part, ref names, endpoint order. Empty list == parity."""
     diffs: list[str] = []
     a, b = deterministic, other
 

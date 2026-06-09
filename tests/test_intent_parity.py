@@ -174,6 +174,20 @@ def test_parity_detects_endpoint_role_mismatch():
     assert intent_parity(a, b)   # same chip/gpio, different role -> not parity
 
 
+def test_parity_compares_gap_kinds_as_a_set_not_a_multiset():
+    # DOCUMENTED, intentional (F7): parity compares the SET of gap kinds, not their
+    # multiplicity — one unknown_peripheral gap reaches parity with six. An AI may
+    # legitimately bundle "these N are unknown" into a single disclosure, and the
+    # board-affecting case (a dropped connection) is caught by the NET comparison,
+    # not the gap count. Pinned so a future reader doesn't assume counts are compared
+    # — switching to a Counter is then a conscious change, not an accident.
+    m = Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E")
+    one = DesignIntent(mcu=m, gaps=_BASE_GAPS + [Gap("unknown_peripheral", "SENSOR")])
+    six = DesignIntent(mcu=m, gaps=_BASE_GAPS + [Gap("unknown_peripheral", f"X{i}")
+                                                 for i in range(6)])
+    assert intent_parity(one, six) == []
+
+
 def test_parity_detects_net_bus_mismatch():
     # same kind + endpoints, different bus tag: an I2C-tagged net drives i2c_pullups,
     # an untagged one does not -> the two expand to DIFFERENT boards -> not parity.

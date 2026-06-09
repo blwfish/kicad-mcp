@@ -60,11 +60,20 @@ def _intent_for(config_path: Path):
 @pytest.mark.parametrize("config_path", _CORPUS, ids=lambda p: p.parent.name)
 def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
     from kicad_mcp.utils.firmware.generate import generate_schematic
-    from kicad_mcp.utils.firmware.intent import MODELED_NET_KINDS, is_remote
+    from kicad_mcp.utils.firmware.intent import is_remote
     from kicad_mcp.utils.firmware.knowledge import is_terminal_card_type
+    from kicad_mcp.utils.firmware.templates import expand_intent
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 
-    intent = _intent_for(config_path)
+    # Mirror the REAL pipeline: import -> expand_templates -> generate_schematic.
+    # generate_schematic wires intent.nets and does NOT expand, so a bare intent
+    # leaves every typed bus (I2C/I2S/UART) unrealized — its signals only become
+    # wired nets at expand. Testing the bare intent made the audio/mic fixtures
+    # (whose connections live entirely in buses) realize nothing modeled, so the
+    # connectivity check below skipped — hiding any bus-wiring regression behind a
+    # green skip. Expand first (mcu None -> generate errors anyway, leave it bare).
+    bare = _intent_for(config_path)
+    intent = expand_intent(bare) if bare.mcu is not None else bare
     out = tmp_path / "gen.kicad_sch"
     res = generate_schematic(intent, str(out))
 
@@ -124,9 +133,13 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
         f"{config_path.parent.name}: deferred_endpoints {reported_deferred} != "
         f"off-board endpoints {expected_deferred}")
 
+    # Over the EXPANDED intent, EVERY multi-endpoint net is a realized connection to
+    # verify — not just the kind in MODELED_NET_KINDS. The bus signals expand into
+    # 'passive' nets (e.g. I2S0_BCLK -> U1 + the mic), so filtering to bus/peripheral
+    # would walk right past exactly the wiring the audio/mic fixtures exist to prove.
     checked = 0
     for net in intent.nets:
-        if net.kind not in MODELED_NET_KINDS or len(net.endpoints) < 2:
+        if len(net.endpoints) < 2:
             continue
         # Every endpoint the intent declares that generate did NOT report as
         # unresolved (and that isn't a deferred off-board endpoint) must actually be
@@ -143,9 +156,11 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
             checked += 1
             assert len(got) >= 2
 
-    if checked == 0:
-        if config_path.parent.name == _KNOWN_GOOD:
-            pytest.fail(f"{_KNOWN_GOOD} fixture realized no modeled connection — a "
-                        "regression broke net wiring (it must always wire >=1)")
-        pytest.skip(f"{config_path.parent.name}: no realized modeled connections "
-                    "to check connectivity against")
+    # Post-expand, any board with a resolved MCU wires >=1 multi-pin net (a signal
+    # bus, or at minimum the power rails). checked==0 therefore means generate
+    # produced a board with NO realized connection — a wiring regression, for ANY
+    # fixture. No skip: a skip here is precisely how an I2S-realization regression
+    # would have hidden (the audio fixtures used to land in it).
+    assert checked > 0, (
+        f"{config_path.parent.name}: generate realized NO multi-pin connection from "
+        "an expanded intent with a resolved MCU — net wiring regression")
