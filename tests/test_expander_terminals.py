@@ -81,6 +81,34 @@ def test_single_over_16_falls_back_to_pin_header_with_gap():
     assert any(g.kind == "expander_terminals_single_overflow" for g in it.gaps)
 
 
+def test_single_at_16_positions_stays_a_screw_terminal():
+    # Boundary (< vs <=): 14 ports + 3V3 + GND = 16 = the screw-terminal max — NO
+    # overflow; 18 (the test above) does overflow. Pins the threshold side.
+    it = _mcp_intent(device="S", ports=14, group="single")
+    expand_intent(it)
+    terms = _terminals(it, "S")
+    assert len(terms) == 1 and terms[0].type == "TERM"       # screw block, not header
+    assert not any(g.kind == "expander_terminals_single_overflow" for g in it.gaps)
+
+
+def test_per_bank_gpa_only_is_one_terminal():
+    # GPA0-5 only -> one bank -> exactly one terminal (no empty GPB terminal).
+    it = _mcp_intent(device="S", ports=6, group="per_bank")
+    expand_intent(it)
+    assert len(_terminals(it, "S")) == 1
+
+
+def test_i2c_side_untouched_no_double_emit():
+    # Tapping GPA pins must not duplicate or retarget the MCP's existing I2C net,
+    # and the on-board MCP must not be pulled into a remote terminal.
+    it = _mcp_intent(device="S", ports=4)
+    expand_intent(it)
+    sda = [n for n in it.nets if n.name == "I2C_SDA"]
+    assert len(sda) == 1                                     # not duplicated
+    refs = {e.ref for e in sda[0].endpoints}
+    assert not any(r.startswith("J") for r in refs)          # no terminal tapped onto I2C
+
+
 def test_power_none_two_position_terminals():
     it = _mcp_intent(device="S", ports=2, group="per_sensor", power="none")
     expand_intent(it)
@@ -90,9 +118,26 @@ def test_power_none_two_position_terminals():
                for lg in it.connector_legends)
 
 
-def test_power_5v_without_rail_downgrades_with_gap():
+def test_power_5v_with_rail_emits_5v_position():
+    # ESP32 board -> power_tree adds the AMS1117 (+5V regulator input) BEFORE this
+    # template runs, so power: 5v is honored: a +5V terminal position is emitted.
     it = _mcp_intent(device="S", ports=2, group="per_sensor", power="5v")
-    expand_intent(it)                                        # minimal intent has no +5V rail
+    expand_intent(it)
+    assert not any(g.kind == "expander_terminals_power" for g in it.gaps)
+    assert any("+5V" in lg.positions for lg in it.connector_legends)
+
+
+def test_power_5v_without_rail_downgrades_with_gap():
+    # A board with no +5V source (no MCU -> power_tree never fires, no regulator/USB
+    # block) downgrades power: 5v to signal+GND with a disclosed gap — never a
+    # sourceless +5V pin on the terminal.
+    it = DesignIntent()
+    it.peripherals = [Peripheral(
+        ref="U3", type="MCP23017", lib_id="Interface_Expansion:MCP23017x-x-SO",
+        value="MCP23017", bus="I2C")]
+    apply_sidecar(it, BoardSidecar(
+        expander_terminals={"U3": {"device": "S", "ports": 2, "power": "5v"}}))
+    expand_intent(it)
     assert any(g.kind == "expander_terminals_power" for g in it.gaps)
     assert all("+5V" not in lg.positions for lg in it.connector_legends)
 

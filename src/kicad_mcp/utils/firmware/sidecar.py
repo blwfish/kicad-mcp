@@ -41,6 +41,7 @@ expander_terminals:            # tap an I/O-expander's GPA/GPB pins out to termi
     ports: 6                   # first N port pins (GPA0..7,GPB0..7), or a list [GPA0, GPB3]
     group: per_sensor          # per_sensor (default) | per_bank | single
     power: 3v3                 # 3v3 (default) | 5v | none
+    net_prefix: SENSOR         # net base name (default = device); unique across entries
 ```
 
 Unknown top-level keys are REJECTED (a typo like ``board_size`` for
@@ -346,6 +347,10 @@ def _validate_expander_terminals(d: dict[str, Any], errs: list[str]) -> None:
                 errs.append(f"{where}: ports list must be pin-name strings")
             elif valid_pins and (bad := [p for p in ports if p not in valid_pins]):
                 errs.append(f"{where}: unknown port pin(s) {bad} — valid: {valid_pins}")
+            elif len(set(ports)) != len(ports):
+                # each port maps to one terminal position; a repeat would short two
+                # positions onto one expander pad.
+                errs.append(f"{where}: ports has duplicate pin(s) {sorted(ports)}")
         else:
             errs.append(f"{where}: ports must be an int count or a list of pin names")
         grp = spec.get("group")

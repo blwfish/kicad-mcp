@@ -25,6 +25,10 @@ def _pins_for_peripheral(card):
     if strap:
         pins += list(strap["pin_bits"])
     pins += [t["pin"] for t in cfg.get("static_ties", []) or []]
+    # I/O-expander port pins (GPA0..GPB7) — the source of truth for
+    # expander_terminals; verify every one resolves on the real symbol (so a typo
+    # in a pin a `ports:` list could request is caught on BOTH KiCad versions).
+    pins += list(card.get("port_pins", []) or [])
     return pins
 
 
