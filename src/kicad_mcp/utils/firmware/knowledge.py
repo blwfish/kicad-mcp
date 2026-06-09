@@ -79,6 +79,10 @@ class PeripheralInfo(_PeripheralInfoBase, total=False):
     # lets one card build on both versions. Resolved against the live library, so
     # no KiCad-version detection is needed (see resolve_symbol).
     alt_lib_ids: list[str]
+    # For I/O expanders: the GPA/GPB port pins in hardware register order — the
+    # data-only validation source for board.yaml expander_terminals (no KiCad at
+    # unit-test time). See ExpanderSpec / _validate_expander_terminals.
+    port_pins: list[str]
 
 
 # --- card cache (loaded once from the packaged + override dirs) ---------------

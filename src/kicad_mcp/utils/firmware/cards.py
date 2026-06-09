@@ -158,6 +158,7 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
         errs.append(f"{where}: module must be a bool")
     _validate_aliases(card.get("aliases"), where, errs)
     _validate_alt_lib_ids(card.get("alt_lib_ids"), where, errs)
+    _validate_port_pins(card.get("port_pins"), where, errs)
     _validate_serves(card.get("serves"), where, errs)
     _validate_config(card.get("config"), where, errs)
     _validate_realize(card.get("realize"), where, errs)
@@ -186,6 +187,19 @@ def _validate_alt_lib_ids(alts: Any, where: str, errs: list[str]) -> None:
         return
     if not isinstance(alts, list) or not all(valid_lib_id(a) for a in alts):
         errs.append(f"{where}: alt_lib_ids must be a list of 'Library:Symbol' ids")
+
+
+def _validate_port_pins(pins: Any, where: str, errs: list[str]) -> None:
+    """``port_pins`` is optional (I/O expanders only); when present it must be a
+    non-empty list of non-empty pin-name strings — the GPA/GPB port pins that
+    board.yaml ``expander_terminals`` may tap. Integration tier checks they exist
+    on the real symbol; here we only pin the shape."""
+    if pins is None:
+        return
+    if not isinstance(pins, list) or not pins or not all(
+        isinstance(p, str) and p.strip() for p in pins
+    ):
+        errs.append(f"{where}: port_pins must be a non-empty list of pin-name strings")
 
 
 def _validate_serves(serves: Any, where: str, errs: list[str]) -> None:

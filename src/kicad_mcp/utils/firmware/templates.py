@@ -790,6 +790,127 @@ def remote_peripherals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+# Max positions for a Phoenix screw terminal (Connector:Screw_Terminal_01x{N});
+# beyond this `single` grouping falls back to a pin header. Mirrors
+# connectors._PHOENIX_RANGE (2..16).
+_SCREW_MAX = 16
+
+_RAIL_FOR_POWER = {"3v3": "+3V3", "5v": "+5V", "none": None}
+
+
+def _emit_expander_terminal(
+    ex: Expansion, alloc: RefAllocator, expander_ref: str,
+    signals: list[tuple[str, str]], *, rail: Optional[str], device: str,
+    value: str, force_header: bool = False,
+) -> None:
+    """Emit ONE terminal for ``signals`` (each ``(new_net_name, port_pin)``) plus
+    the power/GND rail positions, and wire each signal into a NEW net joining the
+    expander's port pin to the terminal position. Power rails are delivered as taps
+    (folded onto ``ex.power`` by ``_emit_connector``)."""
+    positions = [ConnectorPosition(net_name, pin) for net_name, pin in signals]
+    if rail is not None:
+        positions.append(ConnectorPosition(rail, rail))
+    positions.append(ConnectorPosition("GND", "GND"))
+    ctype = "pin_header" if (force_header or len(positions) > _SCREW_MAX) else "screw_terminal"
+    _conn, sig_eps = _emit_connector(ex, alloc, positions, device=device,
+                                     value=value, connector_type=ctype)
+    for net_name, pin in signals:
+        ex.new_nets.append(Net(
+            name=net_name, kind="passive", confidence="high", origin="template",
+            endpoints=[Endpoint(ref=expander_ref, pin=pin), sig_eps[net_name]],
+        ))
+
+
+def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Tap a placed I/O-expander's floating GPA/GPB pins out to labeled screw
+    terminal(s), per a board.yaml ``expander_terminals`` declaration. Each tapped
+    port pin gets a NEW net ``{prefix}_{i}`` joining the expander pin to a terminal
+    position; +power/GND are delivered over the terminal as rail taps. The
+    expander's I2C/INT side is untouched (only GPA/GPB are tapped), and the MCP is
+    a normally-placed peripheral so ``remote_peripherals`` never sees it.
+
+    Honest-by-construction: only fires for a user declaration, and only when the
+    named ref is actually a placed MCP23017 — otherwise a Gap, never a silent
+    no-op or a board missing its sensor terminals."""
+    ex = Expansion()
+    if not intent.expander_terminals:
+        return ex
+    periph_by_ref = {p.ref: p for p in intent.peripherals}
+    existing_net_names = {n.name for n in intent.nets}
+    rails_present = {n.name for n in intent.nets if n.kind == "power"}
+
+    for ref, spec in intent.expander_terminals.items():
+        p = periph_by_ref.get(ref)
+        if p is None or p.type != "MCP23017":
+            ex.gaps.append(Gap(
+                "expander_terminals_unresolved",
+                f"board.yaml expander_terminals[{ref!r}] is not a placed MCP23017 "
+                f"expander (got {p.type if p else 'no such ref'!r}); no terminals "
+                "synthesized."))
+            continue
+        if not spec.ports:
+            ex.gaps.append(Gap(
+                "expander_terminals_empty",
+                f"expander_terminals[{ref!r}]: no ports declared; nothing to tap."))
+            continue
+
+        # Power rail tap is declared topology (not a sensor inference). 5v needs the
+        # +5V rail to exist (USB/regulator block ran) — else disclose + drop to none.
+        rail = _RAIL_FOR_POWER[spec.power]
+        if rail == "+5V" and "+5V" not in rails_present:
+            ex.gaps.append(Gap(
+                "expander_terminals_power",
+                f"expander_terminals[{ref!r}]: power: 5v but no +5V rail on this "
+                "board; wiring signal + GND only."))
+            rail = None
+
+        # One NEW net per tapped pin. Namespace on collision (the expand_intent
+        # new_nets append has no guard) and disclose it, never silently duplicate.
+        port_nets: list[tuple[str, str]] = []   # (net_name, port_pin)
+        for i, pin in enumerate(spec.ports):
+            base = f"{spec.net_prefix}_{i}"
+            name = base
+            if name in existing_net_names:
+                name = f"{base}_{ref}"
+                ex.gaps.append(Gap(
+                    "expander_terminals_net_collision",
+                    f"expander_terminals[{ref!r}]: net {base!r} already exists; "
+                    f"using {name!r}."))
+            existing_net_names.add(name)
+            port_nets.append((name, pin))
+
+        device = spec.device
+        if spec.group == "per_sensor":
+            for net_name, pin in port_nets:
+                _emit_expander_terminal(ex, alloc, ref, [(net_name, pin)],
+                                        rail=rail, device=device, value=device)
+        elif spec.group == "per_bank":
+            banks: dict[str, list[tuple[str, str]]] = {}
+            for net_name, pin in port_nets:
+                banks.setdefault(pin[:3], []).append((net_name, pin))   # GPA / GPB
+            for bank in sorted(banks):
+                _emit_expander_terminal(ex, alloc, ref, banks[bank], rail=rail,
+                                        device=device, value=f"{device} {bank}")
+        else:  # single
+            total = len(port_nets) + (1 if rail else 0) + 1   # signals + power + GND
+            force_header = total > _SCREW_MAX
+            if force_header:
+                ex.gaps.append(Gap(
+                    "expander_terminals_single_overflow",
+                    f"expander_terminals[{ref!r}]: 'single' needs {total} positions "
+                    f"(> {_SCREW_MAX}-way screw terminal); using a pin header — "
+                    "consider group: per_bank."))
+            _emit_expander_terminal(ex, alloc, ref, port_nets, rail=rail,
+                                    device=device, value=device, force_header=force_header)
+
+        ex.gaps.append(Gap(
+            "expander_terminals",
+            f"expander_terminals[{ref!r}]: {len(spec.ports)} {device} port(s) tapped "
+            f"to terminal(s) (group={spec.group}, power={spec.power}).",
+            resolved=True, resolved_by="board.yaml"))
+    return ex
+
+
 _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] = [
     ("power_tree", power_tree),
     ("decoupling", decoupling),
@@ -802,6 +923,9 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
     ("uart_device_header", uart_device_header),
     ("device_config", device_config),
     ("remote_peripherals", remote_peripherals),
+    # After remote_peripherals: the MCP is on-board (never remote), and power_tree
+    # has already created the rails the +power taps merge into.
+    ("expander_terminals", expander_terminals),
 ]
 
 
