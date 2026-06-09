@@ -64,7 +64,6 @@ Operations: `search`, `resolve`, `assign`, `accept_tos`, `refresh_snapshot`
 
 ### `schematic_layout` — topology-aware schematic placement
 Operations: `suggest`, `apply`, `clear_cache`.
-See [docs/SPEC_Schematic_Placement.md](docs/SPEC_Schematic_Placement.md).
 
 ### `design` — firmware-driven design + device cards
 Operations: `import_firmware`, `expand_templates`, `generate_schematic`,
