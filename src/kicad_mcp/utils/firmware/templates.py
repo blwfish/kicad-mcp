@@ -797,6 +797,14 @@ _SCREW_MAX = 16
 
 _RAIL_FOR_POWER = {"3v3": "+3V3", "5v": "+5V", "none": None}
 
+# The peripherals that SOURCE the +5V rail — power_tree's regulator and the USB
+# programming block (the only two sites that emit ("+5V", ...) onto ex.power).
+# Used to detect +5V availability: those templates run BEFORE expander_terminals
+# and have already been added to intent.peripherals, but the rail NETS aren't
+# merged until after the template loop, so checking intent.nets would always
+# (wrongly) see no +5V.
+_FIVE_V_SOURCES = frozenset({"AMS1117", "USB_C", "CP2102"})
+
 
 def _emit_expander_terminal(
     ex: Expansion, alloc: RefAllocator, expander_ref: str,
@@ -837,7 +845,7 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         return ex
     periph_by_ref = {p.ref: p for p in intent.peripherals}
     existing_net_names = {n.name for n in intent.nets}
-    rails_present = {n.name for n in intent.nets if n.kind == "power"}
+    has_5v = any(p.type in _FIVE_V_SOURCES for p in intent.peripherals)
 
     for ref, spec in intent.expander_terminals.items():
         p = periph_by_ref.get(ref)
@@ -855,9 +863,10 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
             continue
 
         # Power rail tap is declared topology (not a sensor inference). 5v needs the
-        # +5V rail to exist (USB/regulator block ran) — else disclose + drop to none.
+        # +5V rail to exist (a regulator/USB block sources it) — else disclose +
+        # drop to none, so we never hang a sourceless +5V pin on the terminal.
         rail = _RAIL_FOR_POWER[spec.power]
-        if rail == "+5V" and "+5V" not in rails_present:
+        if rail == "+5V" and not has_5v:
             ex.gaps.append(Gap(
                 "expander_terminals_power",
                 f"expander_terminals[{ref!r}]: power: 5v but no +5V rail on this "

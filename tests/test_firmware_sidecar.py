@@ -219,7 +219,7 @@ def test_known_keys_all_accepted(tmp_path):
         terminal_distribution: multi_edge
         terminal_centering: true
         board_refit: true
-        expander_terminals: {}
+        expander_terminals: {U3: {device: TCRT5000, ports: 6}}
     """))
     assert sc.power_source == "usb_c"
     assert sc.board_size_mm == [90, 75]
@@ -231,7 +231,8 @@ def test_known_keys_all_accepted(tmp_path):
     assert sc.terminal_distribution == "multi_edge"
     assert sc.terminal_centering is True
     assert sc.board_refit is True
-    assert sc.expander_terminals == {}
+    # content (not just an empty dict) exercises the 3-source guard end-to-end
+    assert sc.expander_terminals["U3"]["device"] == "TCRT5000"
 
 
 # --- layout flags: terminal_centering / board_refit (bool) --------------------
@@ -400,6 +401,8 @@ def test_expander_terminals_ports_boundary_accepts(tmp_path, ports):
     ("expander_terminals:\n  U3:\n    ports: -1\n", ">= 0"),
     ("expander_terminals:\n  U3:\n    ports: 17\n", "exceeds"),          # above max
     ("expander_terminals:\n  U3:\n    ports: [GPA0, GPC9]\n", "unknown port pin"),
+    ("expander_terminals:\n  U3:\n    ports: [GPA0, GPA0]\n", "duplicate"),   # short
+
     ("expander_terminals:\n  U3:\n    ports: 1\n    group: weird\n", "group"),
     ("expander_terminals:\n  U3:\n    ports: 1\n    power: 12v\n", "power"),
     ("expander_terminals:\n  U3:\n    ports: 1\n    bogus: x\n", "unknown key"),
