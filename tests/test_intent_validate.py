@@ -28,6 +28,14 @@ from kicad_mcp.utils.firmware.parse import parse_macros, partition
 _FIX = Path(__file__).parent / "fixtures" / "firmware"
 _ALWAYS = ("power_tree", "decoupling", "pullups", "connectors", "parts")
 
+# Collection-time guard: a moved/renamed fixture dir would make sorted(glob(...))
+# empty -> the parametrized corpus tests collect 0 items and "pass" vacuously. Fail
+# loudly instead (mirrors the integration tier's _CORPUS guard).
+_CFGS = sorted(_FIX.glob("**/config.h"))
+if not _CFGS:
+    raise RuntimeError(f"no firmware config.h fixtures under {_FIX} — "
+                       "corpus tests would vacuously pass")
+
 
 def _valid() -> DesignIntent:
     """A minimal, honest, hand-authored intent — the shape an AI producer emits."""
@@ -46,8 +54,7 @@ def test_valid_intent_passes():
 
 # --- keystone: the deterministic producer ALWAYS passes the validator ---------
 
-@pytest.mark.parametrize("cfg", sorted(_FIX.glob("**/config.h")),
-                         ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("cfg", _CFGS, ids=lambda p: p.parent.name)
 def test_build_intent_output_passes_validator(cfg):
     it = build_intent(partition(parse_macros(cfg.read_text())),
                       firmware_path=str(cfg), board_id=find_board_id(str(cfg)))
@@ -62,8 +69,7 @@ def test_unknown_board_intent_passes_validator():
     assert validate_intent(it) == []
 
 
-@pytest.mark.parametrize("cfg", sorted(_FIX.glob("**/config.h")),
-                         ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("cfg", _CFGS, ids=lambda p: p.parent.name)
 def test_expanded_intent_passes_validator(cfg):
     # the EXPANDED intent (template-synthesized peripherals + power/passive nets)
     # must also pass — so the new structural rules don't reject a legit post-expand
@@ -215,3 +221,62 @@ def test_bad_peripheral_locus_rejected():
 def test_example_i2s_passes_validator():
     from kicad_mcp.utils.firmware.intent import example_intent_i2s
     assert validate_intent(example_intent_i2s()) == []
+
+
+# --- threshold boundaries the validator must pin (the <= contract, both ends) ----
+
+@pytest.mark.parametrize("gpio", [0, 48])   # GPIO_MIN, GPIO_MAX — both INCLUSIVE
+def test_gpio_at_boundary_is_valid(gpio):
+    # guards the <= vs < contract on each end: a change to strict-< would reject
+    # these and only an at-boundary VALID test catches it.
+    it = _valid()
+    it.nets[0].endpoints[0].gpio = gpio
+    assert validate_intent(it) == []
+
+
+@pytest.mark.parametrize("gpio", [-1, 49, 99])
+def test_bus_signal_gpio_out_of_range_rejected(gpio):
+    # symmetry with endpoint gpios: an out-of-range BUS signal pin must be rejected
+    # too, else expand wires a pin generate can't resolve (silent unresolved endpoint).
+    it = _valid()
+    it.buses.append(Bus(name="MIC", type="I2S_IN", signals={"BCLK": 4, "WS": 5, "SD": gpio}))
+    assert any("range" in e for e in validate_intent(it))
+
+
+def test_modeled_net_with_zero_endpoints_rejected():
+    # the <2 check has two sub-cases (0 and 1); the 1-endpoint case is pinned
+    # elsewhere — pin the 0-endpoint case too.
+    it = _valid()
+    it.nets.append(Net("EMPTY", "peripheral", "high", []))
+    assert any("endpoints" in e for e in validate_intent(it))
+
+
+def test_bus_signals_form_a_different_valid_type_rejected():
+    # NOT garbage signals (that case is test_mistyped_bus_rejected) — signals that
+    # form a real but DIFFERENT bus type than declared: {BCLK,LRC,DIN} is I2S_OUT,
+    # declared here as I2S_IN (the exact in/out swap). Expanding the wrong template
+    # would build the wrong device; reject it.
+    it = _valid()
+    it.buses.append(Bus(name="X", type="I2S_IN", signals={"BCLK": 4, "LRC": 5, "DIN": 6}))
+    errs = validate_intent(it)
+    assert any("form a" in e for e in errs), errs
+
+
+def test_example_i2s_expands_to_one_wired_ics43434():
+    # F1 regression: the published worked example must expand to EXACTLY the mic it
+    # declares — one ICS-43434, fully wired (BCLK/WS/SD), no phantom SPH0645 default,
+    # no spurious assumed_part gap. A spec-valid intent that builds the wrong board is
+    # the exact bug class this phase exists to prevent, and validate_intent passing
+    # (== []) is not enough — assert the COMPOSITION, not just structural validity.
+    from kicad_mcp.utils.firmware.intent import example_intent_i2s
+    from kicad_mcp.utils.firmware.templates import expand_intent
+    ex = expand_intent(example_intent_i2s())
+    mics = [p.type for p in ex.peripherals if p.type in ("ICS43434", "SPH0645")]
+    assert mics == ["ICS43434"], mics
+    mic_ref = next(p.ref for p in ex.peripherals if p.type == "ICS43434")
+    signal_nets = {n.name for n in ex.nets
+                   if any(e.ref == mic_ref for e in n.endpoints)
+                   and n.name.startswith("MIC_")}
+    assert signal_nets == {"MIC_BCLK", "MIC_WS", "MIC_SD"}, signal_nets
+    assert "assumed_part" not in {g.kind for g in ex.gaps}
+    assert validate_intent(ex) == []

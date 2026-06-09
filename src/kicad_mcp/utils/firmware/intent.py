@@ -556,9 +556,10 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
     producer's (an AI/hand) for the SAME firmware — the gap-parity check that the two
     producers converge. REF-INDEPENDENT (a ref name is an assignment artifact):
     compares MCU part+lib_id; peripherals as a (type, address) multiset; buses as
-    (name, type, signals); nets by name -> (kind, the set of (gpio, role, pin,
+    (name, type, signals); nets by name -> (kind, bus, the set of (gpio, role, pin,
     TARGET-TYPE) endpoint signatures — the target's TYPE, not its ref, so a net
-    wired to the wrong CHIP is caught while a renamed ref is not); and gap KINDS as a
+    wired to the wrong CHIP is caught while a renamed ref is not; bus is included
+    because it selects template behaviour, e.g. i2c_pullups); and gap KINDS as a
     set. Ignores inherently fuzzy parts — gap detail text, confidence, lib_id choice,
     alt_lib_ids, resolved_part, ref names, endpoint order. Empty list == parity."""
     diffs: list[str] = []
@@ -592,8 +593,15 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
 
     def _nets(intent: "DesignIntent") -> dict:
         rt = _ref_type(intent)
-        return {n.name: (n.kind, frozenset((e.gpio, e.role, e.pin, rt.get(e.ref))
-                                           for e in n.endpoints))
+        # n.bus is part of the signature ONLY where it is load-bearing: the
+        # i2c_pullups template fires on kind=="bus" with bus=="I2C", so two bus nets
+        # that agree on endpoints but disagree on bus expand to DIFFERENT boards
+        # (pull-ups present vs absent) — NOT parity. On a non-bus kind (e.g. an
+        # orphan that the deterministic path incidentally tags bus="I2C") the tag
+        # does not reach expansion, so comparing it would flag a false difference.
+        return {n.name: (n.kind, (n.bus if n.kind == "bus" else None),
+                         frozenset((e.gpio, e.role, e.pin, rt.get(e.ref))
+                                   for e in n.endpoints))
                 for n in intent.nets}
     an, bn = _nets(a), _nets(b)
     if set(an) != set(bn):
@@ -649,15 +657,22 @@ def example_intent() -> DesignIntent:
 
 def example_intent_i2s() -> DesignIntent:
     """A second worked example: a typed I2S_IN bus (a MEMS mic) — shows how to
-    express a Bus (signals = role->gpio) vs a per-pin Net, and the S3 MCU. Valid."""
+    express a Bus (signals = role->gpio) vs a per-pin Net, and the S3 MCU. Valid.
+
+    The mic is expressed as a Bus ONLY (mirroring the deterministic producer, which
+    realizes an I2S mic from the bus — NOT as a separate Peripheral). The part is
+    pinned on the bus via ``resolved_part`` so expand places exactly that part; a
+    bus with ``resolved_part=None`` would honestly fall back to the SPH0645 default
+    (and emit an ``assumed_part`` gap). Declaring the mic ALSO as a Peripheral here
+    would leave that peripheral unwired while the bus realizes a second, phantom mic
+    — the example must not teach that shape."""
     mcu_info = resolve_mcu("esp32-s3-devkitc-1")
-    mic = resolve_peripheral("ICS43434")
     return DesignIntent(
         mcu=(Mcu(ref=MCU_REF, part=mcu_info["part"], lib_id=mcu_info["lib_id"],
                  footprint=mcu_info.get("footprint")) if mcu_info else None),
-        peripherals=([Peripheral(ref="U2", type="ICS-43434", lib_id=mic["lib_id"],
-                                 bus="I2S")] if mic else []),
-        buses=[Bus(name="MIC", type="I2S_IN", signals={"BCLK": 4, "WS": 5, "SD": 6})],
+        peripherals=[],
+        buses=[Bus(name="MIC", type="I2S_IN", resolved_part="ICS43434",
+                   signals={"BCLK": 4, "WS": 5, "SD": 6})],
         gaps=[Gap(k, d) for k, d in _ALWAYS_GAPS],
         provenance={"producer": "ai",
                     "source_file": "firmware/mic.rs (e.g. Rust / embassy)"},
@@ -759,8 +774,14 @@ def validate_intent(intent: DesignIntent) -> list[str]:
             errs.append(f"{where}: signals {sorted(b.signals or {})} do not form a "
                         f"{b.type} bus — its role set doesn't match the type")
         for role, gpio in (b.signals or {}).items():
+            # Symmetric with the endpoint gpio check above: a bus signal pin must be
+            # an int AND in range, else expand wires a pin gpio_to_pin_number can't
+            # resolve and the signal silently lands in unresolved_endpoints.
             if not _is_int(gpio):
                 errs.append(f"{where}: signal {role!r} gpio {gpio!r} must be an integer")
+            elif not (GPIO_MIN <= gpio <= GPIO_MAX):
+                errs.append(f"{where}: signal {role!r} gpio {gpio} out of range "
+                            f"[{GPIO_MIN},{GPIO_MAX}]")
 
     # --- honesty: the always-on gap manifest must be present (explicit) ---
     gap_kinds = {g.kind for g in intent.gaps}

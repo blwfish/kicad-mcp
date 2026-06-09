@@ -254,6 +254,51 @@ def test_port_pins_collected_regression():
     assert {"GPA0", "GPB7", "13", "9", "A0", "~{RESET}"} <= set(refs)
 
 
+def test_peripheral_pin_refs_collects_every_registry_field():
+    """C1 collector-completeness: the meta-gate above asserts every card field is
+    *classified*; this asserts every PIN field the registry NAMES is actually
+    *collected* by peripheral_pin_refs. The port_pins bug was a classified pin field
+    the collector skipped — classification completeness alone wouldn't have caught
+    it. A distinct sentinel per field; each must surface. The set-equality asserts
+    are tripwires: a NEW registry/config member that isn't exercised here fails
+    loudly, forcing the author to extend both the collector and this test."""
+    from kicad_mcp.utils.firmware.cards import (
+        CONFIG_SUBKEYS,
+        PERIPHERAL_PIN_FIELDS,
+        peripheral_pin_refs,
+    )
+    card = {
+        "roles": {"R": "PIN_roles"},
+        "supply_pins": ["PIN_supply_pins"],
+        "ground_pins": ["PIN_ground_pins"],
+        "port_pins": ["PIN_port_pins"],
+    }
+    assert set(card) == set(PERIPHERAL_PIN_FIELDS), \
+        "new PERIPHERAL_PIN_FIELDS member not exercised — add a sentinel here"
+    config = {
+        "address_strap": {"pin_bits": ["PIN_address_strap"]},
+        "static_ties": [{"pin": "PIN_static_ties", "rail": "+3V3"}],
+    }
+    assert set(config) == set(CONFIG_SUBKEYS), \
+        "new CONFIG_SUBKEYS member not exercised — extend the collector + this test"
+    refs = set(peripheral_pin_refs({**card, "config": config}))
+    for f in PERIPHERAL_PIN_FIELDS:
+        assert f"PIN_{f}" in refs, f"{f}: registry pin field NOT collected"
+    for k in CONFIG_SUBKEYS:
+        assert f"PIN_{k}" in refs, f"config.{k}: subkey NOT collected"
+
+
+def test_mcu_pin_refs_collects_every_registry_field():
+    """C1 collector-completeness for the MCU side: every MCU_PIN_FIELDS member must
+    be collected by mcu_pin_refs (guards a refactor from the registry-driven loop to
+    a hardcoded list)."""
+    from kicad_mcp.utils.firmware.cards import MCU_PIN_FIELDS, mcu_pin_refs
+    card = {f: f"PIN_{f}" for f in MCU_PIN_FIELDS}
+    refs = set(mcu_pin_refs(card))
+    for f in MCU_PIN_FIELDS:
+        assert f"PIN_{f}" in refs, f"{f}: registry pin field NOT collected"
+
+
 def test_pin_refs_keep_falsy_but_valid_pin_drop_empty():
     """Boundary (CLAUDE.md threshold rule): a pin spelled `0` is valid and must
     survive; an absent/empty pin is dropped. The peripheral and MCU collectors

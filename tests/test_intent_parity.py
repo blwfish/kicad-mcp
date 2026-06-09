@@ -30,17 +30,29 @@ from kicad_mcp.utils.firmware.parse import parse_macros, partition
 
 _FIX = Path(__file__).parent / "fixtures" / "firmware"
 
+# Collection-time guard: an empty glob would make the parametrized corpus tests
+# collect 0 items and "pass" vacuously. Fail loudly instead.
+_CFGS = sorted(_FIX.glob("**/config.h"))
+if not _CFGS:
+    raise RuntimeError(f"no firmware config.h fixtures under {_FIX} — "
+                       "parity corpus tests would vacuously pass")
+
+_BASE_GAPS = [Gap(k, "") for k in ("power_tree", "decoupling", "pullups",
+                                   "connectors", "parts")]
+
 
 def _det(cfg: Path) -> DesignIntent:
     return build_intent(partition(parse_macros(cfg.read_text())),
                         firmware_path=str(cfg), board_id=find_board_id(str(cfg)))
 
 
-@pytest.mark.parametrize("cfg", sorted(_FIX.glob("**/config.h")),
-                         ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("cfg", _CFGS, ids=lambda p: p.parent.name)
 def test_parity_identity(cfg):
+    # Compare against a DEEP COPY, not the same object: a same-object compare is
+    # satisfied by `return []` and proves nothing. A deepcopy still expects [] but
+    # exercises the comparator's value-equality on independent structures.
     it = _det(cfg)
-    assert intent_parity(it, it) == []
+    assert intent_parity(it, copy.deepcopy(it)) == []
 
 
 def test_parity_is_ref_independent():
@@ -135,3 +147,38 @@ def test_parity_ignores_peripheral_lib_id_by_design():
     a = DesignIntent(mcu=m, peripherals=[Peripheral("U2", "HX711", "Analog_ADC:HX711")], gaps=g)
     b = DesignIntent(mcu=m, peripherals=[Peripheral("U2", "HX711", "Wrong:Symbol")], gaps=g)
     assert intent_parity(a, b) == []
+
+
+# --- the endpoint-signature key has four dimensions (gpio, role, pin, target-type);
+#     a mismatch on EACH must break parity, else a dropped key would go unnoticed ----
+
+def _two_chip(net: Net) -> DesignIntent:
+    return DesignIntent(mcu=Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E"),
+                        peripherals=[Peripheral("U2", "HX711", "x:y")],
+                        nets=[net], gaps=list(_BASE_GAPS))
+
+
+def test_parity_detects_endpoint_gpio_mismatch():
+    a = _two_chip(Net("N", "peripheral", "high",
+                      [Endpoint("U1", gpio=16), Endpoint("U2", role="DOUT")]))
+    b = _two_chip(Net("N", "peripheral", "high",
+                      [Endpoint("U1", gpio=17), Endpoint("U2", role="DOUT")]))
+    assert intent_parity(a, b)   # same chip/role, different gpio -> not parity
+
+
+def test_parity_detects_endpoint_role_mismatch():
+    a = _two_chip(Net("N", "peripheral", "high",
+                      [Endpoint("U1", gpio=16), Endpoint("U2", role="DOUT")]))
+    b = _two_chip(Net("N", "peripheral", "high",
+                      [Endpoint("U1", gpio=16), Endpoint("U2", role="SCK")]))
+    assert intent_parity(a, b)   # same chip/gpio, different role -> not parity
+
+
+def test_parity_detects_net_bus_mismatch():
+    # same kind + endpoints, different bus tag: an I2C-tagged net drives i2c_pullups,
+    # an untagged one does not -> the two expand to DIFFERENT boards -> not parity.
+    a = _two_chip(Net("SDA", "bus", "high",
+                      [Endpoint("U1", gpio=21), Endpoint("U2", role="SDA")], bus="I2C"))
+    b = _two_chip(Net("SDA", "bus", "high",
+                      [Endpoint("U1", gpio=21), Endpoint("U2", role="SDA")], bus=None))
+    assert intent_parity(a, b)
