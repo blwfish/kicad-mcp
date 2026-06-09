@@ -191,14 +191,16 @@ def _ic_power_pins(intent: DesignIntent) -> list[tuple[str, list[str], list[str]
 # --- templates ----------------------------------------------------------------
 
 def power_tree(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """Establish the +3V3 rail and tie every IC supply→+3V3, ground→GND.
+    """Establish the board's supply rail (_supply_rail) and tie every IC supply→rail,
+    ground→GND.
 
     Two MCU shapes, ONE rail:
-      * needs_3v3=true (ESP32): place an AMS1117 5V→3V3 + in/out caps — it drives
-        +3V3 (its +5V input source, a USB/connector, stays a gap). The regulator
-        choice (AMS1117) is a design default firmware never states.
-      * needs_3v3=false (Pico module): place NO LDO — the +3V3 rail is SOURCED from
-        the MCU's own on-board-regulated 3V3 output pin (tied via _ic_power_pins).
+      * needs_3v3=true (ESP32): place an AMS1117 5V→3V3 + in/out caps — it drives the
+        rail (+3V3; its +5V input source, a USB/connector, stays a gap). The
+        regulator choice (AMS1117) is a design default firmware never states.
+      * needs_3v3=false (on-board-regulated module): place NO LDO — the rail is
+        SOURCED from the MCU's own regulated output pin (Pico +3V3, a 5V Arduino +5V),
+        tied via _ic_power_pins.
 
     Either way the rail exists and has a driver. (This path used to return empty for
     needs_3v3=false, leaving the board's supply pins tied to nothing — a sourceless
@@ -209,7 +211,7 @@ def power_tree(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     mi = K.resolve_mcu_by_part(intent.mcu.part)
     if mi is None:
         return ex
-    rail = mi.get("supply_rail", "+3V3")   # ESP32/Pico +3V3; a 5V Arduino +5V
+    rail = _supply_rail(intent)   # ESP32/Pico +3V3; a 5V Arduino +5V (single source)
 
     if mi["needs_3v3"]:
         ldo = Peripheral(ref=alloc.next("U"), type="AMS1117", lib_id=K.AMS1117["lib_id"],
@@ -308,7 +310,7 @@ def mcu_straps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     mi = K.resolve_mcu_by_part(intent.mcu.part)
     if mi is None:
         return ex
-    rail = mi.get("supply_rail", "+3V3")
+    rail = _supply_rail(intent)
     straps = [(name, pin) for name, pin in
               (("MCU_EN", mi.get("en_pin")), ("MCU_BOOT", mi.get("boot_pin"))) if pin]
     for net_name, pin_name in straps:
@@ -334,6 +336,13 @@ def device_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     no new template. Direct ties (no resistors) — correct for a fixed address.
     An out-of-range address is flagged as a gap, never silently strapped."""
     ex = Expansion()
+    supply = _supply_rail(intent)
+    # A card's strap/tie rail is a LOGIC LEVEL, not a literal net: "GND" ties low,
+    # anything else (the cards spell it "+3V3") means "tie HIGH = the board's supply
+    # rail". Map it to the board rail so a device on a 5V Nano straps to +5V, not a
+    # sourceless +3V3 (which would, e.g., hold MCP23017 RESET low — permanent reset).
+    def _rail(level: str) -> str:
+        return "GND" if level == "GND" else supply
     for p in intent.peripherals:
         if _peripheral_is_remote(intent, p):
             continue   # remote device configures itself off-board (glue suppression)
@@ -352,10 +361,10 @@ def device_config(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                 ))
             else:
                 for addr_pin, rail in straps:
-                    ex.power.append((rail, Endpoint(ref=p.ref, pin=addr_pin)))
+                    ex.power.append((_rail(rail), Endpoint(ref=p.ref, pin=addr_pin)))
         # Fixed ties (e.g. MCP23017 RESET held high) — address-independent.
         for tie in cfg.get("static_ties", []) or []:
-            ex.power.append((tie["rail"], Endpoint(ref=p.ref, pin=tie["pin"])))
+            ex.power.append((_rail(tie["rail"]), Endpoint(ref=p.ref, pin=tie["pin"])))
     return ex
 
 
@@ -497,6 +506,7 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     if intent.mcu is None:
         return ex
     mcu = intent.mcu.ref
+    rail = _supply_rail(intent)   # MAX98357A is 2.5-5.5V — rail-tolerant
     M = K.MAX98357A
     idx = 0
     for bus in intent.buses:
@@ -519,12 +529,12 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         ex.joins += [(b_net, Endpoint(ref=mcu, gpio=bclk_g)),
                      (l_net, Endpoint(ref=mcu, gpio=lrc_g)),
                      (d_net, Endpoint(ref=mcu, gpio=din_g))]
-        for side, sd_rail in (("L", "GND"), ("R", "+3V3")):
+        for side, sd_rail in (("L", "GND"), ("R", rail)):
             amp = Peripheral(ref=alloc.next("U"), type="MAX98357A", lib_id=M["lib_id"],
                              value="MAX98357A", footprint=M["footprint"], origin=amp_origin)
             ex.components.append(amp)
             for p in K.MAX98357A_VDD_PINS:
-                ex.power.append(("+3V3", Endpoint(ref=amp.ref, pin=p)))
+                ex.power.append((rail, Endpoint(ref=amp.ref, pin=p)))
             for p in K.MAX98357A_GND_PINS:
                 ex.power.append(("GND", Endpoint(ref=amp.ref, pin=p)))
             ex.power.append((sd_rail, Endpoint(ref=amp.ref, pin=M["sd_mode"])))
@@ -557,7 +567,7 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         cb, cbu = _cap(alloc, "100nF", K.FP_C_BYPASS), _cap(alloc, "10uF", K.FP_C_BULK)
         ex.components += [cb, cbu]
         for c in (cb, cbu):
-            ex.power += [("+3V3", Endpoint(ref=c.ref, pin="1")),
+            ex.power += [(rail, Endpoint(ref=c.ref, pin="1")),
                          ("GND", Endpoint(ref=c.ref, pin="2"))]
         idx += 1
     return ex
@@ -584,6 +594,7 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     if intent.mcu is None:
         return ex
     mcu = intent.mcu.ref
+    rail = _supply_rail(intent)
     mic_idx = 0
     for bus in intent.buses:
         if bus.type != "I2S_IN":
@@ -602,7 +613,7 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         mic_idx += 1
         pl = intent.placements.get(bus.name)
         if pl is not None and pl.locus == "remote":
-            _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl, prefix)
+            _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl, prefix, rail)
             continue
         # Build the firmware-named mic if we can realize it; else fall back to the
         # default part so _decide_part either assumes it (rp is None) or refuses it
@@ -616,10 +627,19 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                          value=S["value"], footprint=S["footprint"], origin=mic_origin)
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
         ex.components += [mic, c]
-        ex.power += [("+3V3", Endpoint(ref=mic.ref, pin=S["vdd"])),
+        # MEMS I2S mics are 1.6-3.6V — NOT 5V tolerant. We tie to the board rail (so
+        # there's no sourceless net), but on a non-3.3V board that rail over-volts the
+        # mic: flag it loudly rather than silently wire a part to a damaging supply.
+        if rail != "+3V3":
+            ex.gaps.append(Gap(
+                "mic_supply_voltage",
+                f"{build_part} I2S mic is rated 1.6-3.6V but the board rail is {rail}; "
+                "it needs a dedicated 3V3 supply / level shifting (not synthesized).",
+            ))
+        ex.power += [(rail, Endpoint(ref=mic.ref, pin=S["vdd"])),
                      ("GND", Endpoint(ref=mic.ref, pin=S["gnd"])),
                      ("GND", Endpoint(ref=mic.ref, pin=S["sel"])),  # SEL low = left
-                     ("+3V3", Endpoint(ref=c.ref, pin="1")),
+                     (rail, Endpoint(ref=c.ref, pin="1")),
                      ("GND", Endpoint(ref=c.ref, pin="2"))]
         ex.new_nets += [
             _passive_net(f"{prefix}_BCLK", Endpoint(ref=mcu, gpio=bclk_g), Endpoint(ref=mic.ref, pin=S["bclk"])),
@@ -632,9 +652,10 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
 def _emit_remote_mic(
     ex: Expansion, alloc: RefAllocator, mcu: str,
     bclk_g: int, ws_g: int, sd_g: int, pl: Placement, prefix: str = "MIC",
+    rail: str = "+3V3",
 ) -> None:
     """Field-wired I2S mic: a screw terminal carries the three I2S signals plus a
-    +3V3/GND tap (power delivered over the wire). ``prefix`` namespaces the I2S
+    supply/GND tap (power delivered over the wire). ``prefix`` namespaces the I2S
     nets per bus ("MIC", "MIC1", …) so multiple remote mics don't collide."""
     device = pl.device or "I2S mic"
     bclk_net, ws_net, sd_net = f"{prefix}_BCLK", f"{prefix}_WS", f"{prefix}_SD"
@@ -642,7 +663,7 @@ def _emit_remote_mic(
         ConnectorPosition(bclk_net, "BCLK"),
         ConnectorPosition(ws_net, "WS"),
         ConnectorPosition(sd_net, "SD"),
-        ConnectorPosition("+3V3", "+3V3"),
+        ConnectorPosition(rail, rail),
         ConnectorPosition("GND", "GND"),
     ]
     conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
@@ -670,6 +691,7 @@ def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     if intent.mcu is None:
         return ex
     mcu = intent.mcu.ref
+    rail = _supply_rail(intent)
     n = 0
     for bus in intent.buses:
         if bus.type != "I2C":
@@ -685,7 +707,7 @@ def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         # and appends the silk legend. OLED / I2C breakout → interior, near its bus.
         positions = [
             ConnectorPosition("GND", "GND"),
-            ConnectorPosition("+3V3", "+3V3"),
+            ConnectorPosition(rail, rail),
             ConnectorPosition(scl_net, "SCL"),
             ConnectorPosition(sda_net, "SDA"),
         ]
@@ -693,8 +715,8 @@ def i2c_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                                  connector_type="pin_header")
         r_sda, r_scl = _res(alloc, "4.7k", K.FP_R_0603), _res(alloc, "4.7k", K.FP_R_0603)
         ex.components += [r_sda, r_scl]
-        ex.power += [("+3V3", Endpoint(ref=r_sda.ref, pin="2")),
-                     ("+3V3", Endpoint(ref=r_scl.ref, pin="2"))]
+        ex.power += [(rail, Endpoint(ref=r_sda.ref, pin="2")),
+                     (rail, Endpoint(ref=r_scl.ref, pin="2"))]
         ex.new_nets += [
             _passive_net(scl_net, Endpoint(ref=mcu, gpio=scl_g),
                          sig[scl_net], Endpoint(ref=r_scl.ref, pin="1")),
@@ -714,6 +736,7 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     if intent.mcu is None:
         return ex
     mcu = intent.mcu.ref
+    rail = _supply_rail(intent)
     n = 0
     for bus in intent.buses:
         if bus.type != "UART":
@@ -724,7 +747,7 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
             continue
         pl = intent.placements.get(bus.name)
         if pl is not None and pl.locus == "remote":
-            _emit_remote_uart(ex, alloc, mcu, n, rx_g, tx_g, pl)
+            _emit_remote_uart(ex, alloc, mcu, n, rx_g, tx_g, pl, rail)
             n += 1
             continue
         rx_net, tx_net = f"UART{n}_RX", f"UART{n}_TX"
@@ -734,7 +757,7 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         # (matches i2c_device_header and _emit_remote_uart's RX/TX labels).
         positions = [
             ConnectorPosition("GND", "GND"),
-            ConnectorPosition("+3V3", "+3V3"),
+            ConnectorPosition(rail, rail),
             ConnectorPosition(rx_net, "RX"),
             ConnectorPosition(tx_net, "TX"),
         ]
@@ -742,7 +765,7 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                                  connector_type="pin_header")
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
         ex.components += [c]
-        ex.power += [("+3V3", Endpoint(ref=c.ref, pin="1")),
+        ex.power += [(rail, Endpoint(ref=c.ref, pin="1")),
                      ("GND", Endpoint(ref=c.ref, pin="2"))]
         ex.new_nets += [
             _passive_net(rx_net, Endpoint(ref=mcu, gpio=rx_g), sig[rx_net]),
@@ -754,15 +777,15 @@ def uart_device_header(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
 
 def _emit_remote_uart(
     ex: Expansion, alloc: RefAllocator, mcu: str, n: int,
-    rx_g: int, tx_g: int, pl: Placement,
+    rx_g: int, tx_g: int, pl: Placement, rail: str = "+3V3",
 ) -> None:
-    """Field-wired UART sensor: a screw terminal carries RX/TX + a +3V3/GND tap."""
+    """Field-wired UART sensor: a screw terminal carries RX/TX + a supply/GND tap."""
     device = pl.device or "UART device"
     rx_net, tx_net = f"UART{n}_RX", f"UART{n}_TX"
     positions = [
         ConnectorPosition(rx_net, "RX"),
         ConnectorPosition(tx_net, "TX"),
-        ConnectorPosition("+3V3", "+3V3"),
+        ConnectorPosition(rail, rail),
         ConnectorPosition("GND", "GND"),
     ]
     conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
@@ -797,6 +820,7 @@ def remote_peripherals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     the terminal is wired. Its support glue is already suppressed (``_ic_power_pins``
     / ``device_config`` skip it)."""
     ex = Expansion()
+    rail = _supply_rail(intent)
     for p in intent.peripherals:
         pl = intent.placements.get(p.ref)
         if pl is None or pl.locus != "remote":
@@ -812,7 +836,7 @@ def remote_peripherals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                 seen[net.name] = _short_label(net.name, role)
         device = pl.device or p.value or p.type
         positions = [ConnectorPosition(nn, lbl) for nn, lbl in seen.items()]
-        positions += [ConnectorPosition("+3V3", "+3V3"), ConnectorPosition("GND", "GND")]
+        positions += [ConnectorPosition(rail, rail), ConnectorPosition("GND", "GND")]
         conn, te = _emit_connector(ex, alloc, positions, device=device, placement=pl,
                                    connector_type="screw_terminal")
         # Signal nets already exist (from import) — join the terminal onto them.
@@ -883,6 +907,10 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     periph_by_ref = {p.ref: p for p in intent.peripherals}
     existing_net_names = {n.name for n in intent.nets}
     has_5v = any(p.type in _FIVE_V_SOURCES for p in intent.peripherals)
+    # A +3V3 tap is only sourced when the board's logic rail IS +3V3 (ESP32 LDO /
+    # Pico); a 5V board (Nano) has no +3V3 — requesting it must downgrade, not hang
+    # a sourceless +3V3 pin on the terminal (symmetric with the has_5v guard).
+    has_3v3 = _supply_rail(intent) == "+3V3"
 
     for ref, spec in intent.expander_terminals.items():
         p = periph_by_ref.get(ref)
@@ -908,6 +936,12 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                 "expander_terminals_power",
                 f"expander_terminals[{ref!r}]: power: 5v but no +5V rail on this "
                 "board; wiring signal + GND only."))
+            rail = None
+        elif rail == "+3V3" and not has_3v3:
+            ex.gaps.append(Gap(
+                "expander_terminals_power",
+                f"expander_terminals[{ref!r}]: power: 3v3 but this board's rail is "
+                f"{_supply_rail(intent)} (no +3V3); wiring signal + GND only."))
             rail = None
 
         # One NEW net per tapped pin. Namespace on collision (the expand_intent

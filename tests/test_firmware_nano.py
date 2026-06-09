@@ -55,11 +55,15 @@ def test_nano_card_valid_without_en_boot():
 # --- the D{n} digital pin prefix (incl. the D0/RX compound) ---------------------
 
 def test_d_prefix_resolves_digital_pins():
-    sym = _sym(("D0/RX", "2"), ("D2", "5"), ("D13", "16"))
+    # mirror the REAL Nano symbol: D0/RX and D1/TX are compound names (tokenizer
+    # splits on "/"), D2..D13 are plain. D14 is genuinely absent -> honest None.
+    sym = _sym(("D0/RX", "2"), ("D1/TX", "1"), ("D2", "5"), ("D13", "16"))
     assert gpio_to_pin_number(sym, 0, "D") == "2"     # D0 inside the D0/RX compound
+    assert gpio_to_pin_number(sym, 1, "D") == "1"     # D1 inside the D1/TX compound
     assert gpio_to_pin_number(sym, 2, "D") == "5"
     assert gpio_to_pin_number(sym, 13, "D") == "16"
-    assert gpio_to_pin_number(sym, 1, "D") is None    # no D1 pin -> honest None
+    assert gpio_to_pin_number(sym, 14, "D") is None   # no D14 pin -> honest None
+    assert gpio_to_pin_number(sym, 1, "D") != "16"    # D1 must not collide with D13
 
 
 # --- supply_rail: 5V board ties to +5V; ESP32 stays +3V3 (regression) -----------
@@ -97,3 +101,56 @@ def test_validate_mcu_card_rejects_non_string_supply_rail():
     mi = dict(resolve_mcu("nanoatmega328"))
     mi["supply_rail"] = 5
     assert any("supply_rail" in e for e in validate_mcu_card(mi))
+
+
+@pytest.mark.parametrize("bad", [5, ""])   # non-string AND empty-string both rejected
+def test_validate_mcu_card_rejects_bad_supply_rail(bad):
+    mi = dict(resolve_mcu("nanoatmega328"))
+    mi["supply_rail"] = bad
+    assert any("supply_rail" in e for e in validate_mcu_card(mi))
+
+
+def test_arduino_ide_fqbn_nano_is_mcu_unknown():
+    # the Arduino-IDE FQBN form is NOT resolvable (avoids hijacking nano_every etc.);
+    # the user supplies board.yaml board_id: nanoatmega328 instead. Pin the honest None.
+    assert resolve_mcu("arduino:avr:nano") is None
+
+
+# --- the rail generalization reaches EVERY power-emitting template (cold review) --
+
+def test_nano_mcp23017_straps_to_5v_not_sourceless_3v3():
+    # MCP23017 is detected by its I2C ADDRESS, so it fires even though the Nano's I2C
+    # is on analog pins we can't yet parse. On a Nano its RESET static-tie + address
+    # straps (device_config) must go to +5V — NOT a sourceless +3V3, which would hold
+    # RESET low (permanent reset). The sharpest cold-review finding.
+    ex = _expand("nanoatmega328", "#define MCP23017_ADDR 0x21\n")
+    rails = {n.name for n in ex.nets if n.kind == "power"}
+    assert "+3V3" not in rails and "+5V" in rails
+    mcp = next(p.ref for p in ex.peripherals if p.type == "MCP23017")
+    mcp_rails = {n.name for n in ex.nets if n.kind == "power"
+                 for e in n.endpoints if e.ref == mcp}
+    assert mcp_rails == {"+5V", "GND"}   # RESET + address pins on +5V, none sourceless
+
+
+def test_nano_i2s_mic_ties_to_rail_with_loud_voltage_gap():
+    # a 3.3V-only MEMS mic on a 5V board: tied to the board rail (so no sourceless
+    # +3V3 net), but with a LOUD mic_supply_voltage gap rather than a silent over-volt.
+    from kicad_mcp.utils.firmware.intent import Bus, DesignIntent, Mcu
+    mi = resolve_mcu("nanoatmega328")
+    it = DesignIntent(mcu=Mcu("U1", mi["part"], mi["lib_id"]),
+                      buses=[Bus("MIC", "I2S_IN", {"BCLK": 2, "WS": 3, "SD": 4})])
+    ex = expand_intent(it)
+    rails = {n.name for n in ex.nets if n.kind == "power"}
+    assert "+3V3" not in rails and "+5V" in rails
+    assert any(g.kind == "mic_supply_voltage" for g in ex.gaps)
+
+
+def test_esp32_i2s_mic_has_no_voltage_gap():
+    # regression: a 3.3V mic on a 3V3 board is fine — no voltage gap, ties to +3V3
+    from kicad_mcp.utils.firmware.intent import Bus, DesignIntent, Mcu
+    mi = resolve_mcu("esp32dev")
+    it = DesignIntent(mcu=Mcu("U1", mi["part"], mi["lib_id"]),
+                      buses=[Bus("MIC", "I2S_IN", {"BCLK": 2, "WS": 3, "SD": 4})])
+    ex = expand_intent(it)
+    assert not any(g.kind == "mic_supply_voltage" for g in ex.gaps)
+    assert "+3V3" in {n.name for n in ex.nets if n.kind == "power"}

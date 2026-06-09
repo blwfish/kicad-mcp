@@ -362,7 +362,8 @@ def test_packaged_cards_load():
         "MCP23017", "HX711", "MPU6050", "OLED", "ICS43434",
         "PIEZO", "SWITCH", "TCRT5000",
     }
-    assert {m["part"] for m in mcus} >= {"ESP32-WROOM-32E", "ESP32-S3-WROOM-1"}
+    assert {m["part"] for m in mcus} >= {"ESP32-WROOM-32E", "ESP32-S3-WROOM-1",
+                                         "RaspberryPi-Pico", "Arduino-Nano-v3"}
 
 
 # Frozen snapshot — the migration must reproduce the old literals EXACTLY.
