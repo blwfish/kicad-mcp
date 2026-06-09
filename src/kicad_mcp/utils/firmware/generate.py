@@ -20,6 +20,7 @@ from typing import Any
 from kicad_mcp.utils.firmware.intent import DesignIntent, is_remote
 from kicad_mcp.utils.firmware.knowledge import (
     is_terminal_card_type,
+    resolve_mcu_by_part,
     resolve_symbol,
     role_to_pin_name,
 )
@@ -126,6 +127,12 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
 
     type_by_ref = {p.ref: p.type for p in intent.peripherals}
 
+    # The MCU's GPIO pin-name token prefix is per-MCU data (ESP32 "IO", Pico
+    # "GPIO"). Resolved once from the card; an endpoint carrying a gpio is always
+    # MCU-side, so this single prefix covers every gpio resolution below.
+    _mcu_info = resolve_mcu_by_part(intent.mcu.part) if intent.mcu else None
+    gpio_prefix = _mcu_info.get("gpio_pin_prefix", "IO") if _mcu_info else "IO"
+
     def resolve_pin(ref: str, gpio: Any, role: Any, pin: Any) -> Any:
         sym = symbols.get(ref)
         if sym is None:
@@ -133,7 +140,7 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         if pin is not None:                        # direct pin NAME or number
             return resolve_pin_token(sym, pin)
         if gpio is not None:                       # MCU side
-            return gpio_to_pin_number(sym, int(gpio))
+            return gpio_to_pin_number(sym, int(gpio), gpio_prefix)
         ptype = type_by_ref.get(ref)               # peripheral side
         # The roles map may point at a pin NAME (MCP23017 ``SDA``) or a pin
         # NUMBER (a module-header device, ``SDA`` -> ``4``) — handle both.

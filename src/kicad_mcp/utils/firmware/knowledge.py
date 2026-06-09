@@ -38,19 +38,28 @@ __all__ = [
 ]
 
 
-class McuInfo(TypedDict):
+class _McuInfoBase(TypedDict):
     part: str
     lib_id: str
     value: str
     footprint: str
-    needs_3v3: bool      # board needs a 3V3 supply (power_tree template fires)
-    supply_pin: str      # pin NAME for the 3V3 supply
+    needs_3v3: bool      # board needs an EXTERNAL 3V3 regulator (power_tree LDO).
+                         # False when the MCU module regulates on-board (Pico): the
+                         # +3V3 rail is then SOURCED from the MCU's own supply pin.
+    supply_pin: str      # pin NAME on the +3V3 rail (ESP32: VDD input; Pico: 3V3 out)
     ground_pin: str      # pin NAME for ground (ESP32: the merged "GND" pin)
-    en_pin: str          # chip-enable pin NAME (needs pull-up)
-    boot_pin: str        # boot/strap pin NAME (needs pull-up)
     uart_rx_pin: str     # console UART RX pin NAME (<- USB bridge TXD)
     uart_tx_pin: str     # console UART TX pin NAME (-> USB bridge RXD)
     native_usb: bool     # True if the MCU has native USB (no CP2102 bridge needed)
+
+
+class McuInfo(_McuInfoBase, total=False):
+    # Optional per-MCU extras (Python 3.10 has no typing.NotRequired, so use the
+    # total=False inheritance pattern). Absent on MCUs that don't have the feature.
+    en_pin: str          # chip-enable pin NAME (pulled up); absent on MCUs w/o a strap
+    boot_pin: str        # boot/strap pin NAME (pulled up); absent on MCUs w/o a strap
+    gpio_pin_prefix: str  # GPIO pin-name token prefix (default "IO"; Pico "GPIO")
+    alt_lib_ids: list[str]
 
 
 # Required fields + optional card extras (Python 3.10 has no typing.NotRequired,

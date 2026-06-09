@@ -191,37 +191,50 @@ def _ic_power_pins(intent: DesignIntent) -> list[tuple[str, list[str], list[str]
 # --- templates ----------------------------------------------------------------
 
 def power_tree(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """AMS1117 5V→3V3 + in/out caps; tie every IC supply→+3V3, ground→GND.
-    Fires only for a 3V3 MCU. The regulator choice (AMS1117) is a design default
-    firmware never states — flagged in the resolved gap detail."""
+    """Establish the +3V3 rail and tie every IC supply→+3V3, ground→GND.
+
+    Two MCU shapes, ONE rail:
+      * needs_3v3=true (ESP32): place an AMS1117 5V→3V3 + in/out caps — it drives
+        +3V3 (its +5V input source, a USB/connector, stays a gap). The regulator
+        choice (AMS1117) is a design default firmware never states.
+      * needs_3v3=false (Pico module): place NO LDO — the +3V3 rail is SOURCED from
+        the MCU's own on-board-regulated 3V3 output pin (tied via _ic_power_pins).
+
+    Either way the rail exists and has a driver. (This path used to return empty for
+    needs_3v3=false, leaving the board's supply pins tied to nothing — a sourceless
+    board.)"""
     ex = Expansion()
     if intent.mcu is None:
         return ex
     mi = K.resolve_mcu_by_part(intent.mcu.part)
-    if mi is None or not mi["needs_3v3"]:
+    if mi is None:
         return ex
 
-    ldo = Peripheral(ref=alloc.next("U"), type="AMS1117", lib_id=K.AMS1117["lib_id"],
-                     value=K.AMS1117["value"], footprint=K.AMS1117["footprint"],
-                     origin="template")
-    c_in = _cap(alloc, "10uF", K.FP_C_BULK)
-    c_out = _cap(alloc, "10uF", K.FP_C_BULK)
-    c_byp = _cap(alloc, "100nF", K.FP_C_BYPASS)
-    ex.components += [ldo, c_in, c_out, c_byp]
+    if mi["needs_3v3"]:
+        ldo = Peripheral(ref=alloc.next("U"), type="AMS1117", lib_id=K.AMS1117["lib_id"],
+                         value=K.AMS1117["value"], footprint=K.AMS1117["footprint"],
+                         origin="template")
+        c_in = _cap(alloc, "10uF", K.FP_C_BULK)
+        c_out = _cap(alloc, "10uF", K.FP_C_BULK)
+        c_byp = _cap(alloc, "100nF", K.FP_C_BYPASS)
+        ex.components += [ldo, c_in, c_out, c_byp]
 
-    vi, vo, gnd = K.AMS1117["vin_pin"], K.AMS1117["vout_pin"], K.AMS1117["gnd_pin"]
-    # +5V (input rail; source — USB/connector — is out of scope, stays a gap)
-    ex.power += [("+5V", Endpoint(ref=ldo.ref, pin=vi)),
-                 ("+5V", Endpoint(ref=c_in.ref, pin="1"))]
-    # +3V3 (regulated): LDO out, output caps, and EVERY IC supply pin
-    ex.power += [("+3V3", Endpoint(ref=ldo.ref, pin=vo)),
-                 ("+3V3", Endpoint(ref=c_out.ref, pin="1")),
-                 ("+3V3", Endpoint(ref=c_byp.ref, pin="1"))]
-    # GND: LDO gnd, all cap returns, and EVERY IC ground pin
-    ex.power += [("GND", Endpoint(ref=ldo.ref, pin=gnd)),
-                 ("GND", Endpoint(ref=c_in.ref, pin="2")),
-                 ("GND", Endpoint(ref=c_out.ref, pin="2")),
-                 ("GND", Endpoint(ref=c_byp.ref, pin="2"))]
+        vi, vo, gnd = K.AMS1117["vin_pin"], K.AMS1117["vout_pin"], K.AMS1117["gnd_pin"]
+        # +5V (input rail; source — USB/connector — is out of scope, stays a gap)
+        ex.power += [("+5V", Endpoint(ref=ldo.ref, pin=vi)),
+                     ("+5V", Endpoint(ref=c_in.ref, pin="1"))]
+        # +3V3 (regulated): LDO out + output caps
+        ex.power += [("+3V3", Endpoint(ref=ldo.ref, pin=vo)),
+                     ("+3V3", Endpoint(ref=c_out.ref, pin="1")),
+                     ("+3V3", Endpoint(ref=c_byp.ref, pin="1"))]
+        # GND: LDO gnd + all cap returns
+        ex.power += [("GND", Endpoint(ref=ldo.ref, pin=gnd)),
+                     ("GND", Endpoint(ref=c_in.ref, pin="2")),
+                     ("GND", Endpoint(ref=c_out.ref, pin="2")),
+                     ("GND", Endpoint(ref=c_byp.ref, pin="2"))]
+
+    # EVERY IC (incl. the MCU) supply→+3V3, ground→GND. For a Pico the MCU's 3V3
+    # OUTPUT pin sources the rail here; for an ESP32 it consumes the LDO's output.
     for ref, supplies, grounds in _ic_power_pins(intent):
         for s in supplies:
             ex.power.append(("+3V3", Endpoint(ref=ref, pin=s)))
@@ -269,14 +282,19 @@ def i2c_pullups(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
 
 
 def mcu_straps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """ESP32 EN and IO0 (boot) each pulled up to +3V3 via 10k."""
+    """Pull each PRESENT strap pin up to +3V3 via 10k (ESP32 EN and IO0/boot). An
+    MCU module that has no such strap (the Pico — its RUN/3V3_EN carry on-board
+    pull-ups) declares neither pin, so no resistors are placed and 'pullups' is
+    not claimed resolved."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
     mi = K.resolve_mcu_by_part(intent.mcu.part)
     if mi is None:
         return ex
-    for net_name, pin_name in (("MCU_EN", mi["en_pin"]), ("MCU_BOOT", mi["boot_pin"])):
+    straps = [(name, pin) for name, pin in
+              (("MCU_EN", mi.get("en_pin")), ("MCU_BOOT", mi.get("boot_pin"))) if pin]
+    for net_name, pin_name in straps:
         r = _res(alloc, "10k", K.FP_R_0603)
         ex.components.append(r)
         ex.new_nets.append(Net(
@@ -285,7 +303,8 @@ def mcu_straps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                        Endpoint(ref=r.ref, pin="1")],
         ))
         ex.power.append(("+3V3", Endpoint(ref=r.ref, pin="2")))
-    ex.resolved.append("pullups")
+    if straps:
+        ex.resolved.append("pullups")
     return ex
 
 

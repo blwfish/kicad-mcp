@@ -1,0 +1,120 @@
+"""Phase 2 — MCU generalization, proven on the RaspberryPi-Pico (the first
+non-ESP32 MCU). Pins the four generalization seams at the unit level (no KiCad):
+GPIO pin-name prefix, optional en/boot straps, on-board-regulated power sourcing,
+and board->card resolution. The end-to-end symbol resolution + routing is proven
+in tests/integration/test_firmware_invariants.py over the pico_basic fixture.
+"""
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from kicad_mcp.utils.firmware.cards import validate_mcu_card
+from kicad_mcp.utils.firmware.intent import build_intent, resolve_mcu
+from kicad_mcp.utils.firmware.mcu_pinmap import gpio_to_pin_number
+from kicad_mcp.utils.firmware.parse import parse_macros, partition
+from kicad_mcp.utils.firmware.templates import expand_intent
+
+
+def _sym(*names_numbers):
+    """A fake symbol with the given (pin_name, pin_number) pairs."""
+    pins = [SimpleNamespace(name=n, number=num) for n, num in names_numbers]
+    return SimpleNamespace(pins=pins)
+
+
+# --- board -> Pico card resolution (and the rp2040 greediness boundary) --------
+
+@pytest.mark.parametrize("board_id", ["pico", "rpipico", "raspberry-pi-pico",
+                                      "rp2040:rp2040:rpipico"])  # arduino-pico FQBN
+def test_pico_board_ids_resolve(board_id):
+    mi = resolve_mcu(board_id)
+    assert mi is not None and mi["part"] == "RaspberryPi-Pico"
+    assert mi.get("gpio_pin_prefix") == "GPIO"
+    assert mi["needs_3v3"] is False and mi["native_usb"] is True
+
+
+@pytest.mark.parametrize("board_id", ["rp2040", "stm32f407", "nrf52840"])
+def test_unsupported_boards_stay_unknown(board_id):
+    # modules-only: bare "rp2040" is NOT the Pico module -> honest mcu_unknown,
+    # NOT a silent mis-resolve to the Pico card.
+    assert resolve_mcu(board_id) is None
+
+
+def test_pico_card_is_structurally_valid_without_en_boot():
+    mi = resolve_mcu("pico")
+    assert "en_pin" not in mi and "boot_pin" not in mi   # the Pico has neither
+    assert validate_mcu_card(dict(mi)) == []
+
+
+# --- gpio_to_pin_number: the prefix + the Pico compound/ tokenization boundary --
+
+def test_gpio_prefix_esp32_default():
+    sym = _sym(("IO21", "10"), ("RXD0/IO3", "5"))
+    assert gpio_to_pin_number(sym, 21) == "10"            # default prefix "IO"
+    assert gpio_to_pin_number(sym, 3) == "5"              # token inside RXD0/IO3
+
+
+def test_gpio_prefix_pico_gpio():
+    sym = _sym(("GPIO0", "1"), ("GPIO21", "27"), ("GPIO26_ADC0", "31"))
+    assert gpio_to_pin_number(sym, 0, "GPIO") == "1"
+    assert gpio_to_pin_number(sym, 21, "GPIO") == "27"
+    # compound ADC pin: GPIO26 must match inside GPIO26_ADC0 (underscore is a split)
+    assert gpio_to_pin_number(sym, 26, "GPIO") == "31"
+
+
+def test_gpio_prefix_tokenization_no_false_substring():
+    # GPIO2 must NOT match GPIO20 (tokenized equality, not substring)
+    sym = _sym(("GPIO20", "26"))
+    assert gpio_to_pin_number(sym, 2, "GPIO") is None
+    assert gpio_to_pin_number(sym, 20, "GPIO") == "26"
+
+
+def test_gpio_prefix_mismatch_returns_none():
+    # an ESP32-prefix lookup against Pico-named pins resolves nothing (and v.v.)
+    pico = _sym(("GPIO4", "6"))
+    assert gpio_to_pin_number(pico, 4) is None            # default "IO" vs GPIO4
+    assert gpio_to_pin_number(pico, 4, "GPIO") == "6"
+
+
+def test_pico_non_broken_out_gpio_is_unresolved():
+    # GP25 (on-board LED) is NOT a pin on the module symbol -> honest None, the
+    # caller turns it into an unresolved-endpoint gap rather than mis-wiring it.
+    sym = _sym(("GPIO22", "29"), ("GPIO26_ADC0", "31"))   # no GPIO25
+    assert gpio_to_pin_number(sym, 25, "GPIO") is None
+
+
+# --- power: needs_3v3=false sources +3V3 from the module, places NO LDO ---------
+
+def _expand(board_id):
+    fw = ("#define I2C_SDA 4\n#define I2C_SCL 5\n"
+          "#define HX711_DOUT_PIN 2\n#define HX711_SCK_PIN 3\n")
+    return expand_intent(build_intent(partition(parse_macros(fw)),
+                                      firmware_path="c.h", board_id=board_id))
+
+
+def test_pico_power_tree_sources_from_module_no_ldo():
+    ex = _expand("pico")
+    assert not any(p.type == "AMS1117" for p in ex.peripherals)   # no external LDO
+    p3 = next(n for n in ex.nets if n.name == "+3V3")
+    # the MCU (U1) is ON the +3V3 net — its 3V3 output pin sources the rail
+    assert any(e.ref == "U1" for e in p3.endpoints)
+    # and a peripheral consumes it (not a sourceless, MCU-only rail)
+    assert any(e.ref != "U1" for e in p3.endpoints)
+
+
+def test_esp32_power_tree_still_places_ldo():
+    # regression guard: the ESP32 (needs_3v3=true) path is unchanged
+    ex = _expand("esp32dev")
+    assert any(p.type == "AMS1117" for p in ex.peripherals)
+
+
+def test_pico_has_no_mcu_straps_esp32_does():
+    pico_refs = {p.type for p in _expand("pico").peripherals}
+    esp_nets = {n.name for n in _expand("esp32dev").nets}
+    # Pico declares no en/boot -> no MCU_EN/MCU_BOOT strap nets
+    assert "MCU_EN" not in {n.name for n in _expand("pico").nets}
+    assert "MCU_BOOT" not in {n.name for n in _expand("pico").nets}
+    # ESP32 still straps EN + boot
+    assert "MCU_EN" in esp_nets and "MCU_BOOT" in esp_nets
+    assert pico_refs  # sanity: the Pico board still expanded peripherals

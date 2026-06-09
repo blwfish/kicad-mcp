@@ -1,0 +1,23 @@
+# Raspberry Pi Pico (RP2040 module). The module regulates 3V3 on-board (RT6150),
+# so needs_3v3=false: the +3V3 rail is SOURCED from the module's 3V3 OUTPUT pin,
+# not an external LDO. Pins are named GPIO{n} (gpio_pin_prefix), and GPIO26..28 are
+# the compound ADC pins GPIO26_ADC0/27_ADC1/28_ADC2 — the tokenizer matches GPIO26
+# inside them. GP23/24/25 are NOT broken out on the module (internal use / on-board
+# LED) so firmware using them resolves to an honest unresolved-endpoint gap. Native
+# USB: no CP2102 bridge, and no EN/BOOT straps (RUN/3V3_EN carry on-board pull-ups).
+part: RaspberryPi-Pico
+lib_id: MCU_Module:RaspberryPi_Pico
+value: RaspberryPi_Pico
+footprint: Module:RaspberryPi_Pico_Common_Unspecified
+board_match: ["raspberry-pi-pico", "rpipico", "pico"]   # board-id / FQBN substrings (longest wins).
+# Intentionally NOT bare "rp2040": modules-only — we support the Pico MODULE, not
+# every RP2040 board. The arduino-pico FQBN "rp2040:rp2040:rpipico" still matches
+# via "rpipico"; a board we can't place to THIS module stays an honest mcu_unknown.
+needs_3v3: false       # on-board regulator; module's 3V3 pin sources the rail
+supply_pin: 3V3        # regulated 3V3 OUTPUT pin (drives the +3V3 net)
+ground_pin: GND
+uart_rx_pin: GPIO1     # UART0 RX default
+uart_tx_pin: GPIO0     # UART0 TX default
+native_usb: true       # native USB bootloader (BOOTSEL) — no USB-UART bridge
+gpio_pin_prefix: GPIO  # symbol pins are GPIO{n}, not the ESP32 IO{n}
+# (no en_pin / boot_pin: the Pico has no chip-enable or boot strap to pull up)

@@ -95,8 +95,12 @@ def compute_address_straps(
 # non-bus peripheral — so a card omitting it gets a clean error, not a KeyError.
 _PERIPHERAL_REQUIRED = ("type", "lib_id", "value", "footprint", "roles",
                         "supply_pins", "ground_pins", "module", "bus")
+# en_pin / boot_pin are NOT required: an MCU module without a chip-enable or boot
+# strap (the RP2040/Pico) simply omits them and mcu_straps places no pull-ups.
+# They stay in MCU_PIN_FIELDS so, WHEN present, their values are still validated
+# against the real symbol.
 _MCU_REQUIRED = ("part", "lib_id", "value", "footprint", "board_match",
-                 "needs_3v3", "supply_pin", "ground_pin", "en_pin", "boot_pin",
+                 "needs_3v3", "supply_pin", "ground_pin",
                  "uart_rx_pin", "uart_tx_pin", "native_usb")
 
 
@@ -120,7 +124,7 @@ CONFIG_SUBKEYS = ("address_strap", "static_ties")
 MCU_PIN_FIELDS = ("supply_pin", "ground_pin", "en_pin", "boot_pin",
                   "uart_rx_pin", "uart_tx_pin")
 MCU_NONPIN_FIELDS = ("part", "lib_id", "alt_lib_ids", "value", "footprint",
-                     "board_match", "needs_3v3", "native_usb")
+                     "board_match", "needs_3v3", "native_usb", "gpio_pin_prefix")
 
 
 def peripheral_pin_refs(card: dict[str, Any]) -> list[str]:

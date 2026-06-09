@@ -3,11 +3,14 @@
 Two pure helpers over a kicad-sch-api symbol's ``.pins`` list:
 
   * ``gpio_to_pin_number`` — maps an MCU GPIO number to the symbol pin whose
-    name carries the ``IO{n}`` token (ESP32 names pins ``IO21``, ``RXD0/IO3``,
-    ``IO0`` …). Derived from the symbol's own pin names — no hardcoded table —
-    so it generalizes to any ESP32 variant whose pins follow the ``IO{n}``
-    convention. Returns None (caller flags) when no such pin exists, e.g.
-    input-only ``SENSOR_VP``/``SENSOR_VN`` pins that lack an ``IO`` token.
+    name carries the ``{prefix}{n}`` token. The prefix is per-MCU data (the MCU
+    card's ``gpio_pin_prefix``): ESP32 names pins ``IO21``/``RXD0/IO3``/``IO0``
+    (prefix ``IO``), the RP2040/Pico names them ``GPIO21``/``GPIO26_ADC0``
+    (prefix ``GPIO``). Derived from the symbol's own pin names — no hardcoded
+    table — so it generalizes to any MCU whose pins follow a ``{prefix}{n}``
+    convention. Returns None (caller flags) when no such pin exists, e.g. the
+    Pico's GP25 on-board LED (not broken out on the module symbol) or an ESP32
+    input-only ``SENSOR_VP``/``SENSOR_VN`` pin that lacks an ``IO`` token.
   * ``pin_number_by_name`` — exact pin-name lookup (for peripheral pins whose
     name we resolved via the knowledge ``roles`` map).
 
@@ -26,11 +29,16 @@ def _tokens(name: str) -> list[str]:
     return [t for t in _TOKEN_RE.split(name) if t]
 
 
-def gpio_to_pin_number(symbol: Any, gpio: int) -> Optional[str]:
-    """Return the pin NUMBER (str) for the symbol pin naming GPIO ``gpio``."""
+def gpio_to_pin_number(symbol: Any, gpio: int, prefix: str = "IO") -> Optional[str]:
+    """Return the pin NUMBER (str) for the symbol pin naming GPIO ``gpio``.
+
+    ``prefix`` is the MCU's GPIO pin-name token prefix (ESP32 ``IO`` -> ``IO21``;
+    RP2040/Pico ``GPIO`` -> ``GPIO21``). Tokenized matching (split on
+    non-alphanumerics, incl. ``_``) means ``GPIO26`` matches the compound Pico
+    pin ``GPIO26_ADC0`` while ``GPIO2`` still does NOT match ``GPIO20``."""
     if symbol is None:
         return None
-    want = f"IO{gpio}"
+    want = f"{prefix}{gpio}"
     for pin in getattr(symbol, "pins", None) or ():
         if want in _tokens(pin.name or ""):
             return str(pin.number)
