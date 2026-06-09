@@ -219,6 +219,7 @@ def test_known_keys_all_accepted(tmp_path):
         terminal_distribution: multi_edge
         terminal_centering: true
         board_refit: true
+        expander_terminals: {U3: {device: TCRT5000, ports: 6}}
     """))
     assert sc.power_source == "usb_c"
     assert sc.board_size_mm == [90, 75]
@@ -230,6 +231,8 @@ def test_known_keys_all_accepted(tmp_path):
     assert sc.terminal_distribution == "multi_edge"
     assert sc.terminal_centering is True
     assert sc.board_refit is True
+    # content (not just an empty dict) exercises the 3-source guard end-to-end
+    assert sc.expander_terminals["U3"]["device"] == "TCRT5000"
 
 
 # --- layout flags: terminal_centering / board_refit (bool) --------------------
@@ -346,3 +349,69 @@ def test_apply_threads_mounting_holes_into_source():
     sc = BoardSidecar(mounting_holes={"count": 4, "drill_mm": 3.2})
     apply_sidecar(i, sc)
     assert i.source["mounting_holes"] == {"count": 4, "drill_mm": 3.2}
+
+
+# --- expander_terminals (v2: tap an expander's GPA/GPB pins -> terminals) ------
+
+def test_expander_terminals_load_and_apply(tmp_path):
+    sc = load_sidecar(_write(tmp_path, """\
+        expander_terminals:
+          U3:
+            device: TCRT5000
+            ports: 6
+    """))
+    assert "U3" in sc.expander_terminals
+    intent = _intent()
+    apply_sidecar(intent, sc)
+    spec = intent.expander_terminals["U3"]
+    assert spec.device == "TCRT5000"
+    assert spec.group == "per_sensor" and spec.power == "3v3"   # defaults
+    assert spec.net_prefix == "TCRT5000"                        # default = device
+    # ports:int resolves to the first N pins in MCP hardware register order
+    assert spec.ports == ["GPA0", "GPA1", "GPA2", "GPA3", "GPA4", "GPA5"]
+
+
+def test_expander_terminals_int_and_list_equivalent(tmp_path):
+    sc_i = load_sidecar(_write(tmp_path,
+        "expander_terminals:\n  U3:\n    device: D\n    ports: 3\n"))
+    sc_l = load_sidecar(_write(tmp_path,
+        "expander_terminals:\n  U3:\n    device: D\n    ports: [GPA0, GPA1, GPA2]\n"))
+    a, b = _intent(), _intent()
+    apply_sidecar(a, sc_i)
+    apply_sidecar(b, sc_l)
+    assert a.expander_terminals["U3"].ports == b.expander_terminals["U3"].ports \
+        == ["GPA0", "GPA1", "GPA2"]
+
+
+@pytest.mark.parametrize("ports", [0, 16])    # at/below: 0 and the 16-pin max accept
+def test_expander_terminals_ports_boundary_accepts(tmp_path, ports):
+    sc = load_sidecar(_write(tmp_path,
+        f"expander_terminals:\n  U3:\n    device: D\n    ports: {ports}\n"))
+    intent = _intent()
+    apply_sidecar(intent, sc)
+    assert len(intent.expander_terminals["U3"].ports) == ports
+
+
+@pytest.mark.parametrize("body,needle", [
+    ("expander_terminals: 5\n", "must be a mapping"),
+    ("expander_terminals:\n  U3: 5\n", "must be a mapping"),
+    ("expander_terminals:\n  NOTAREF:\n    ports: 1\n", "not a KiCad ref"),
+    ("expander_terminals:\n  U3:\n    device: D\n", "ports is required"),
+    ("expander_terminals:\n  U3:\n    ports: true\n", "ports must be an int"),
+    ("expander_terminals:\n  U3:\n    ports: -1\n", ">= 0"),
+    ("expander_terminals:\n  U3:\n    ports: 17\n", "exceeds"),          # above max
+    ("expander_terminals:\n  U3:\n    ports: [GPA0, GPC9]\n", "unknown port pin"),
+    ("expander_terminals:\n  U3:\n    ports: [GPA0, GPA0]\n", "duplicate"),   # short
+
+    ("expander_terminals:\n  U3:\n    ports: 1\n    group: weird\n", "group"),
+    ("expander_terminals:\n  U3:\n    ports: 1\n    power: 12v\n", "power"),
+    ("expander_terminals:\n  U3:\n    ports: 1\n    bogus: x\n", "unknown key"),
+    ("expander_terminals:\n  U3:\n    ports: 1\n    net_prefix: ''\n", "net_prefix"),
+    # two entries whose EFFECTIVE prefix (default = device) collide
+    ("expander_terminals:\n  U3:\n    device: D\n    ports: 1\n"
+     "  U4:\n    device: D\n    ports: 1\n", "must be unique"),
+])
+def test_expander_terminals_rejected(tmp_path, body, needle):
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, body))
+    assert needle in str(e.value)

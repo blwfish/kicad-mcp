@@ -1,0 +1,9 @@
+# Firmware-blind: the MCP23017 (U3) fans 6 TCRT5000 reflectance sensors out to
+# screw terminals. Firmware addresses them by MCP register at runtime, so the
+# per-sensor wiring exists only here, with provenance.
+expander_terminals:
+  U3:
+    device: TCRT5000
+    ports: 6
+    group: per_sensor
+    power: 3v3

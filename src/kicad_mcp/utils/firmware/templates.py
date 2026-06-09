@@ -40,6 +40,30 @@ from kicad_mcp.utils.firmware.intent import (
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 
+def _inject_terminal_loci(intent: DesignIntent) -> None:
+    """For every carded peripheral whose card declares ``realize: terminal``,
+    inject a synthetic ``Placement(locus="remote")`` into ``intent.placements``
+    (if no explicit user directive already exists for that ref).  Also stamps
+    ``p.locus = "remote"`` on the ``Peripheral`` record.
+
+    This MUST run before any template that inspects ``is_remote`` / ``_peripheral_is_remote``
+    (i.e. before power_tree, device_config, etc.) so that glue suppression and
+    placement exclusion work correctly for terminal-only devices — they are
+    treated exactly like an explicitly-remote carded peripheral from this point.
+
+    The honesty contract: the card itself IS the explicit declaration that this
+    part is always a wire-out (G3 satisfied).  No board.yaml directive is
+    required (and no ``placement_unsupported`` gap is raised) because the locus
+    is injected here, not validated by _apply_placement."""
+    for p in intent.peripherals:
+        if p.ref in intent.placements:
+            continue   # user override takes precedence — honor it
+        if K.is_terminal_card_type(p.type):
+            pl = Placement(locus="remote", device=p.value or p.type)
+            intent.placements[p.ref] = pl
+            p.locus = "remote"
+
+
 def _first(signals: dict[str, int], *roles: str) -> Optional[int]:
     """First present role's GPIO, else None — preserving a GPIO of 0.
     ``signals.get(a) or signals.get(b)`` wrongly falls through when a maps to
@@ -502,16 +526,27 @@ def i2s_output_amps(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+# Buildable I2S-input mics, keyed by the canonical resolved-part string the bus
+# resolver produces (canonical_type: hyphen-stripped, upper — so "ICS-43434" → key
+# "ICS43434"). A firmware-named mic in this registry is placed as that exact part;
+# an EOL/unrecognized mic with no realization (e.g. INMP441 — no KiCad symbol) is
+# deliberately absent, so _decide_part refuses to substitute the default rather
+# than silently swapping parts.
+_MIC_REALIZATIONS = {"SPH0645": K.SPH0645, "ICS43434": K.ICS43434}
+_DEFAULT_MIC = "SPH0645"
+
+
 def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
-    """Each I2S-input bus -> an SPH0645 MEMS mic (SEL→GND, VDD bypass), UNLESS the
-    bus is declared ``remote`` in board.yaml — then the mic is field-wired and the
-    bus crosses to a screw terminal instead of an on-board chip (no chip, no
-    bypass: the device's support glue lives at the device)."""
+    """Each I2S-input bus -> a MEMS mic (SEL/LR→GND, VDD bypass): the specific part
+    the firmware names when it's one we can realize (SPH0645 or ICS-43434), else the
+    SPH0645 default. A firmware-named mic with no realization (e.g. EOL INMP441) is
+    refused, not substituted. UNLESS the bus is declared ``remote`` in board.yaml —
+    then the mic is field-wired and the bus crosses to a screw terminal instead of an
+    on-board chip (no chip, no bypass: the device's support glue lives at the device)."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
     mcu = intent.mcu.ref
-    S = K.SPH0645
     mic_idx = 0
     for bus in intent.buses:
         if bus.type != "I2S_IN":
@@ -532,11 +567,16 @@ def i2s_mic(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         if pl is not None and pl.locus == "remote":
             _emit_remote_mic(ex, alloc, mcu, bclk_g, ws_g, sd_g, pl, prefix)
             continue
-        place, mic_origin = _decide_part(bus, "SPH0645", ex)
+        # Build the firmware-named mic if we can realize it; else fall back to the
+        # default part so _decide_part either assumes it (rp is None) or refuses it
+        # (rp names a different, unrealizable part — the INMP441 case).
+        build_part = bus.resolved_part if bus.resolved_part in _MIC_REALIZATIONS else _DEFAULT_MIC
+        S = _MIC_REALIZATIONS[build_part]
+        place, mic_origin = _decide_part(bus, build_part, ex)
         if not place:
             continue   # firmware declares a different mic we can't realize (gapped)
-        mic = Peripheral(ref=alloc.next("MK"), type="SPH0645", lib_id=S["lib_id"],
-                         value="SPH0645LM4H", footprint=S["footprint"], origin=mic_origin)
+        mic = Peripheral(ref=alloc.next("MK"), type=build_part, lib_id=S["lib_id"],
+                         value=S["value"], footprint=S["footprint"], origin=mic_origin)
         c = _cap(alloc, "100nF", K.FP_C_BYPASS)
         ex.components += [mic, c]
         ex.power += [("+3V3", Endpoint(ref=mic.ref, pin=S["vdd"])),
@@ -750,6 +790,136 @@ def remote_peripherals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
     return ex
 
 
+# Max positions for a Phoenix screw terminal (Connector:Screw_Terminal_01x{N});
+# beyond this `single` grouping falls back to a pin header. Mirrors
+# connectors._PHOENIX_RANGE (2..16).
+_SCREW_MAX = 16
+
+_RAIL_FOR_POWER = {"3v3": "+3V3", "5v": "+5V", "none": None}
+
+# The peripherals that SOURCE the +5V rail — power_tree's regulator and the USB
+# programming block (the only two sites that emit ("+5V", ...) onto ex.power).
+# Used to detect +5V availability: those templates run BEFORE expander_terminals
+# and have already been added to intent.peripherals, but the rail NETS aren't
+# merged until after the template loop, so checking intent.nets would always
+# (wrongly) see no +5V.
+_FIVE_V_SOURCES = frozenset({"AMS1117", "USB_C", "CP2102"})
+
+
+def _emit_expander_terminal(
+    ex: Expansion, alloc: RefAllocator, expander_ref: str,
+    signals: list[tuple[str, str]], *, rail: Optional[str], device: str,
+    value: str, force_header: bool = False,
+) -> None:
+    """Emit ONE terminal for ``signals`` (each ``(new_net_name, port_pin)``) plus
+    the power/GND rail positions, and wire each signal into a NEW net joining the
+    expander's port pin to the terminal position. Power rails are delivered as taps
+    (folded onto ``ex.power`` by ``_emit_connector``)."""
+    positions = [ConnectorPosition(net_name, pin) for net_name, pin in signals]
+    if rail is not None:
+        positions.append(ConnectorPosition(rail, rail))
+    positions.append(ConnectorPosition("GND", "GND"))
+    ctype = "pin_header" if (force_header or len(positions) > _SCREW_MAX) else "screw_terminal"
+    _conn, sig_eps = _emit_connector(ex, alloc, positions, device=device,
+                                     value=value, connector_type=ctype)
+    for net_name, pin in signals:
+        ex.new_nets.append(Net(
+            name=net_name, kind="passive", confidence="high", origin="template",
+            endpoints=[Endpoint(ref=expander_ref, pin=pin), sig_eps[net_name]],
+        ))
+
+
+def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
+    """Tap a placed I/O-expander's floating GPA/GPB pins out to labeled screw
+    terminal(s), per a board.yaml ``expander_terminals`` declaration. Each tapped
+    port pin gets a NEW net ``{prefix}_{i}`` joining the expander pin to a terminal
+    position; +power/GND are delivered over the terminal as rail taps. The
+    expander's I2C/INT side is untouched (only GPA/GPB are tapped), and the MCP is
+    a normally-placed peripheral so ``remote_peripherals`` never sees it.
+
+    Honest-by-construction: only fires for a user declaration, and only when the
+    named ref is actually a placed MCP23017 — otherwise a Gap, never a silent
+    no-op or a board missing its sensor terminals."""
+    ex = Expansion()
+    if not intent.expander_terminals:
+        return ex
+    periph_by_ref = {p.ref: p for p in intent.peripherals}
+    existing_net_names = {n.name for n in intent.nets}
+    has_5v = any(p.type in _FIVE_V_SOURCES for p in intent.peripherals)
+
+    for ref, spec in intent.expander_terminals.items():
+        p = periph_by_ref.get(ref)
+        if p is None or p.type != "MCP23017":
+            ex.gaps.append(Gap(
+                "expander_terminals_unresolved",
+                f"board.yaml expander_terminals[{ref!r}] is not a placed MCP23017 "
+                f"expander (got {p.type if p else 'no such ref'!r}); no terminals "
+                "synthesized."))
+            continue
+        if not spec.ports:
+            ex.gaps.append(Gap(
+                "expander_terminals_empty",
+                f"expander_terminals[{ref!r}]: no ports declared; nothing to tap."))
+            continue
+
+        # Power rail tap is declared topology (not a sensor inference). 5v needs the
+        # +5V rail to exist (a regulator/USB block sources it) — else disclose +
+        # drop to none, so we never hang a sourceless +5V pin on the terminal.
+        rail = _RAIL_FOR_POWER[spec.power]
+        if rail == "+5V" and not has_5v:
+            ex.gaps.append(Gap(
+                "expander_terminals_power",
+                f"expander_terminals[{ref!r}]: power: 5v but no +5V rail on this "
+                "board; wiring signal + GND only."))
+            rail = None
+
+        # One NEW net per tapped pin. Namespace on collision (the expand_intent
+        # new_nets append has no guard) and disclose it, never silently duplicate.
+        port_nets: list[tuple[str, str]] = []   # (net_name, port_pin)
+        for i, pin in enumerate(spec.ports):
+            base = f"{spec.net_prefix}_{i}"
+            name = base
+            if name in existing_net_names:
+                name = f"{base}_{ref}"
+                ex.gaps.append(Gap(
+                    "expander_terminals_net_collision",
+                    f"expander_terminals[{ref!r}]: net {base!r} already exists; "
+                    f"using {name!r}."))
+            existing_net_names.add(name)
+            port_nets.append((name, pin))
+
+        device = spec.device
+        if spec.group == "per_sensor":
+            for net_name, pin in port_nets:
+                _emit_expander_terminal(ex, alloc, ref, [(net_name, pin)],
+                                        rail=rail, device=device, value=device)
+        elif spec.group == "per_bank":
+            banks: dict[str, list[tuple[str, str]]] = {}
+            for net_name, pin in port_nets:
+                banks.setdefault(pin[:3], []).append((net_name, pin))   # GPA / GPB
+            for bank in sorted(banks):
+                _emit_expander_terminal(ex, alloc, ref, banks[bank], rail=rail,
+                                        device=device, value=f"{device} {bank}")
+        else:  # single
+            total = len(port_nets) + (1 if rail else 0) + 1   # signals + power + GND
+            force_header = total > _SCREW_MAX
+            if force_header:
+                ex.gaps.append(Gap(
+                    "expander_terminals_single_overflow",
+                    f"expander_terminals[{ref!r}]: 'single' needs {total} positions "
+                    f"(> {_SCREW_MAX}-way screw terminal); using a pin header — "
+                    "consider group: per_bank."))
+            _emit_expander_terminal(ex, alloc, ref, port_nets, rail=rail,
+                                    device=device, value=device, force_header=force_header)
+
+        ex.gaps.append(Gap(
+            "expander_terminals",
+            f"expander_terminals[{ref!r}]: {len(spec.ports)} {device} port(s) tapped "
+            f"to terminal(s) (group={spec.group}, power={spec.power}).",
+            resolved=True, resolved_by="board.yaml"))
+    return ex
+
+
 _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] = [
     ("power_tree", power_tree),
     ("decoupling", decoupling),
@@ -762,6 +932,9 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
     ("uart_device_header", uart_device_header),
     ("device_config", device_config),
     ("remote_peripherals", remote_peripherals),
+    # After remote_peripherals: the MCP is on-board (never remote), and power_tree
+    # has already created the rails the +power taps merge into.
+    ("expander_terminals", expander_terminals),
 ]
 
 
@@ -769,6 +942,10 @@ _REGISTRY: list[tuple[str, Callable[[DesignIntent, RefAllocator], Expansion]]] =
 
 def expand_intent(intent: DesignIntent) -> DesignIntent:
     """Run all templates over ``intent`` (mutated in place and returned)."""
+    # Inject synthetic remote placements for terminal-only cards BEFORE any
+    # template runs, so is_remote() / _peripheral_is_remote() returns True for
+    # them and glue suppression (power_tree, device_config) fires correctly.
+    _inject_terminal_loci(intent)
     alloc = RefAllocator(intent)
     rail_endpoints: dict[str, list[Endpoint]] = {}
     nets_by_name = {n.name: n for n in intent.nets}

@@ -286,7 +286,9 @@ def test_remote_peripheral_terminal_joins_its_signal_net():
     """A carded remote device's terminal must actually join the device's signal
     net (else the terminal is a routing island with no net)."""
     intent = _intent(TRACK_GEOM)
-    ref = intent.peripherals[0].ref          # an MPU6050 on the shared I2C bus
+    # pick the MPU explicitly (not [0]): TRACK_GEOM's BUZZER now resolves to a
+    # terminal-only card, so peripherals[0] is no longer guaranteed to be the MPU.
+    ref = next(p.ref for p in intent.peripherals if p.type == "MPU6050")  # on shared I2C bus
     apply_sidecar(intent, BoardSidecar(placement={ref: {"locus": "remote",
                                                         "device": "MPU6050"}}))
     intent = expand_intent(intent)

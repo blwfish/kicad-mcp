@@ -28,6 +28,7 @@ CONFIG_H = FIXTURE / "config.h"
 AUDIO_CONFIG_H = FIXTURE / "audio_s3" / "config.h"
 TRACK_GEOM_CONFIG_H = FIXTURE / "track_geometry" / "config.h"
 SIDECAR_CONFIG_H = FIXTURE / "sidecar_demo" / "config.h"
+EXPANDER_CONFIG_H = FIXTURE / "expander_demo" / "config.h"
 
 _MINIMAL_PRO = {
     "board": {"design_settings": {}},
@@ -303,7 +304,7 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     assert r1["status"] == "ok"
     assert r1["board"] == "esp32dev"
     assert r1["summary"]["mcu"] == "ESP32-WROOM-32E"
-    assert {p["type"] for p in r1["summary"]["peripherals"]} == {"HX711", "MCP23017"}
+    assert {p["type"] for p in r1["summary"]["peripherals"]} == {"HX711", "MCP23017", "PIEZO"}
 
     # 2) expand templates (power/glue + USB programming block)
     r2 = design(operation="expand_templates", intent_path=str(intent))
@@ -315,19 +316,20 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
                 schematic_path=str(sch))
     assert r3["status"] == "ok"
     assert not r3["unresolved_endpoints"]
-    assert r3["components_placed"] == 23      # 3 ICs + power tree + USB block
+    assert r3["components_placed"] == 24      # 3 ICs + power tree + USB block + PIEZO terminal
 
     # 4) build a routed PCB from it — the core gate
     pro.write_text(json.dumps(_MINIMAL_PRO))
     # add_mounting_holes=False: this explicit size was calibrated pre-Phase-5 and
     # is tight; the test gates nets + routing, not holes (holes-on is gated by the
     # roomy audio_s3 and the auto-sized audio-remote boards).
-    # autoroute_passes=6 (not 2): FreeRouter is stochastic and does best-of-N.
-    # best-of-2 against the bound of 2 sits at the noise floor and occasionally
-    # lands at 3 unrouted. More passes reduce — but do not eliminate — that
-    # flake; the bound stays at 2 (SPEC §9-A3: bump passes, never loosen it).
+    # autoroute_passes=10 (was 6): FreeRouter is stochastic and does best-of-N.
+    # The PIEZO terminal added a net, nudging this crowded board to the marginal
+    # KiCad-9 router's noise floor — best-of-6 occasionally landed at 3 unrouted
+    # (>bound 2). Match the dense track-geometry board's best-of-10 for headroom;
+    # the bound stays at 2 (SPEC §9-A3: bump passes, never loosen it).
     r4 = build(project_path=str(pro), board_width_mm=90, board_height_mm=75,
-               autoroute_passes=6, export_gerbers=False, add_mounting_holes=False)
+               autoroute_passes=10, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
     _assert_mostly_routed(r4, max_unrouted=2)
@@ -352,10 +354,16 @@ def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     def refs_on(net):
         return {x["component"] for x in nl["nets"].get(net, [])}
 
-    # MCU (U1) + LDO (U4) powered from +3V3; CP2102 (U5) VDD is an OUTPUT, so U5
-    # must NOT appear on +3V3 (the landmine the templates handle).
-    assert {"U1", "U4"} <= refs_on("+3V3")
-    assert "U5" not in refs_on("+3V3")
+    # MCU (U1) + the LDO are powered from +3V3; the CP2102's VDD is an OUTPUT, so
+    # it must NOT appear on +3V3 (the landmine the templates handle). Resolve the
+    # LDO and bridge BY VALUE, not a hardcoded ref — adding a peripheral (e.g. the
+    # PIEZO terminal) shifts U-numbers, which is exactly what made the old
+    # {"U1","U4"}/{"U5"} asserts stale.
+    val = {ref: (c.get("value") or "") for ref, c in nl["components"].items()}
+    ldo = next(r for r, v in val.items() if "AMS1117" in v)
+    cp2102 = next(r for r, v in val.items() if "CP2102" in v)
+    assert {"U1", ldo} <= refs_on("+3V3")
+    assert cp2102 not in refs_on("+3V3")
     assert "U1" in refs_on("GND")
     # I2C bus joins the ESP32 (U1) and the MCP23017 (U3).
     assert {"U1", "U3"} <= refs_on("I2C_SDA")
@@ -936,8 +944,9 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     the generalization that matters here — MULTIPLE address-declared devices,
     INCLUDING TWO OF THE SAME TYPE (dual MPU-6050 at 0x68/0x69), sharing one I2C
     bus, plus an OLED. Devices are modeled as breakout-module headers; AD0 is
-    strapped per address. The buzzer GPIO stays a flagged orphan (no driver
-    template yet) — which must NOT break routing."""
+    strapped per address. The buzzer resolves via the PIEZO card's BUZZER alias
+    into a terminal device (off-board screw terminal) — which must NOT break
+    routing."""
     design = _tool(mcp_server, "design")
     build = _tool(mcp_server, "build_pcb_from_schematic")
     intent = tmp_path / "intent.yaml"
@@ -952,13 +961,14 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     # Two MPU6050 instances + one OLED, all recognized off their *_ADDR macros.
     types = [p["type"] for p in r1["summary"]["peripherals"]]
     assert types.count("MPU6050") == 2 and types.count("OLED") == 1
-    # The undriven buzzer (declared BUZZER_PIN, no device card) MUST be surfaced
-    # as an unknown_peripheral gap, not silently dropped — that gap is the user's
-    # only signal it became a single-pad orphan net. Pin it so a refactor can't
-    # quietly stop emitting it (the orphan itself is invisible to the route count).
+    # The buzzer (declared BUZZER_PIN) resolves via the PIEZO card's BUZZER alias
+    # into a terminal device (v1 terminal cards) — it materializes as a recognized
+    # peripheral and emits NO unknown_peripheral gap. Pin both halves so a refactor
+    # can't silently drop the alias or re-orphan the buzzer.
+    assert "BUZZER" in types
     buzzer_gaps = [g for g in r1["gaps"]
                    if g["kind"] == "unknown_peripheral" and "BUZZER" in g["detail"].upper()]
-    assert buzzer_gaps, f"undriven-buzzer gap not surfaced; gaps={r1['gaps']}"
+    assert not buzzer_gaps, f"buzzer should resolve as a terminal, not a gap; gaps={r1['gaps']}"
 
     r2 = design(operation="expand_templates", intent_path=str(intent))
     assert r2["status"] == "ok"
@@ -973,11 +983,11 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     # MULTI-pad nets unrouted — pure FreeRouter nondeterminism on the crowded
     # SDA/SCL cluster (MCU + 2× MPU-6050 + OLED + pull-ups) and the CP2102/USB
     # block. The bound of 2 is observed-max + 1 margin of that router noise.
-    # NOTE: the buzzer GPIO is a single-pad ORPHAN net (declared BUZZER_PIN, no
-    # driver template) — a single pad has no ratsnest, so KiCad's
-    # GetUnconnectedCount (what incomplete_nets reads, see pcb_autoroute.py) scores
-    # it ZERO. The orphan is NOT part of the bound; older comments that blamed it
-    # were wrong. Each prior bound bump hit the tail again on CI's KiCad 9
+    # NOTE: the buzzer (BUZZER_PIN) is now a TERMINAL device (PIEZO card's BUZZER
+    # alias) — its net runs MCU-GPIO -> screw-terminal pad, a routable 2-point net,
+    # not the old single-pad orphan. It routes within the bound here; the margin is
+    # for FreeRouter noise on the crowded SDA/SCL cluster, not the buzzer. Each
+    # prior bound bump hit the tail again on CI's KiCad 9
     # (best-of-2, then -4, then -6 on 2026-06-02). best-of-N keeps the best of N
     # independent routing attempts, so raising N shrinks the all-attempts-fail tail
     # exponentially; 10 gives real headroom over the chronically-marginal 9.0
@@ -989,7 +999,7 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
                autoroute_passes=10, export_gerbers=False, add_mounting_holes=False)
     assert r4["status"] == "ok"
     assert r4["pads_assigned"] > 0
-    _assert_mostly_routed(r4, max_unrouted=2)            # router-noise margin (single-pad buzzer orphan isn't counted)
+    _assert_mostly_routed(r4, max_unrouted=2)            # router-noise margin on the I2C cluster
     assert r4["steps"]["zones"]["zones_added"] >= 1
 
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
@@ -1001,9 +1011,14 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
 
     def refs_on(net):
         return {x["component"] for x in nl["nets"].get(net, [])}
-    # The shared I2C bus joins the ESP32 (U1) + both MPU6050 (U2/U3) + OLED (U4).
-    assert {"U1", "U2", "U3", "U4"} <= refs_on("I2C_SDA")
-    assert {"U1", "U2", "U3", "U4"} <= refs_on("I2C_SCL")
+    # The shared I2C bus joins the ESP32 (U1) + both MPU6050 + the OLED. Resolve
+    # those device refs BY VALUE, not hardcoded U-numbers — the buzzer terminal
+    # now consumes a ref slot, shifting the I2C devices (what made U2/U3/U4 stale).
+    val = {ref: (c.get("value") or "") for ref, c in nl["components"].items()}
+    i2c_devs = {r for r, v in val.items() if "MPU-6050" in v or "SSD1306" in v}
+    assert len(i2c_devs) == 3                            # 2 MPU6050 + 1 OLED
+    assert {"U1", *i2c_devs} <= refs_on("I2C_SDA")
+    assert {"U1", *i2c_devs} <= refs_on("I2C_SCL")
     assert "U1" in refs_on("+3V3")
 
 
@@ -1055,3 +1070,62 @@ def test_sidecar_to_routed_pcb(mcp_server, tmp_path):
                    for x in nl["nets"].get(net, []))
 
     assert has_pwr_in("+5V") and has_pwr_in("GND")
+
+
+@pytest.mark.timeout(360)  # 6 sensor terminals -> dense; passes=10 like the others
+def test_expander_terminals_to_routed_pcb(mcp_server, tmp_path):
+    """v2: a board.yaml expander_terminals block taps a placed MCP23017's floating
+    GPA0..GPA5 pins out to 6 labeled TCRT5000 screw terminals → full
+    import→expand→generate→routed PCB. THIS is where the KiCad 9-vs-10 MCP23017
+    symbol rename surfaces (the chip must place + its port pins wire on BOTH), so
+    it runs on the whole matrix — the regression gate for cross-version resolution
+    feeding a real port-pin-dependent feature."""
+    design = _tool(mcp_server, "design")
+    build = _tool(mcp_server, "build_pcb_from_schematic")
+    intent = tmp_path / "intent.yaml"
+    sch = tmp_path / "exp.kicad_sch"
+    pro = tmp_path / "exp.kicad_pro"
+
+    r1 = design(operation="import_firmware", firmware_path=str(EXPANDER_CONFIG_H),
+                out_path=str(intent))
+    assert r1["status"] == "ok"
+    assert r1["sidecar"] is not None                       # board.yaml auto-detected
+    # HX711 -> U2, MCP23017 -> U3 (alphabetical); the expander is the chip we tap.
+    assert {p["type"] for p in r1["summary"]["peripherals"]} == {"HX711", "MCP23017"}
+
+    r2 = design(operation="expand_templates", intent_path=str(intent))
+    assert r2["status"] == "ok"
+
+    r3 = design(operation="generate_schematic", intent_path=str(intent),
+                schematic_path=str(sch))
+    # On KiCad 9 the MCP23017 resolves via alt_lib_ids and its GPA pins wire out;
+    # a regression there would leave the sensor nets unresolved (caught here).
+    assert r3["status"] == "ok" and not r3["unresolved_endpoints"]
+
+    pro.write_text(json.dumps(_MINIMAL_PRO))
+    # Generous board: 6 three-pos terminals + core is roomy at 130x100 (the test
+    # gates the feature + cross-version wiring, not tight packing). passes=10 for
+    # the marginal KiCad-9 router (SPEC §9-A3: bump passes, hold the bound).
+    r4 = build(project_path=str(pro), board_width_mm=130, board_height_mm=100,
+               autoroute_passes=10, export_gerbers=False, add_mounting_holes=False)
+    assert r4["status"] == "ok"
+    assert r4["pads_assigned"] > 0
+    _assert_mostly_routed(r4, max_unrouted=2)
+    assert r4["steps"]["zones"]["zones_added"] >= 1
+
+    from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
+    nl = extract_netlist_via_cli(str(sch))
+    assert nl is not None
+    comps = nl["components"]
+    # 6 TCRT5000 screw terminals placed (value carries the device).
+    terms = {ref for ref, c in comps.items() if c.get("value") == "TCRT5000"}
+    assert len(terms) == 6
+
+    def refs_on(net):
+        return {x["component"] for x in nl["nets"].get(net, [])}
+    # Each formerly-floating GPA0..GPA5 pin now wires the expander (U3) to a sensor
+    # terminal — the core invariant of the feature, proven on the real netlist.
+    for i in range(6):
+        members = refs_on(f"TCRT5000_{i}")
+        assert "U3" in members, f"TCRT5000_{i} missing the expander pin: {members}"
+        assert members & terms, f"TCRT5000_{i} not landed on a terminal: {members}"

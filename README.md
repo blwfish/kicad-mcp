@@ -57,7 +57,7 @@ The server provides <!-- tool-count -->17<!-- /tool-count --> tools — 12 domai
 - **`export`** — manufacturing output: Gerbers, BOM CSV, PCB thumbnail
 - **`lcsc`** — LCSC/JLCPCB component search, footprint resolution, and part selection
 - **`schematic_layout`** — topology-aware schematic placement (see [docs/SPEC_Schematic_Placement.md](docs/SPEC_Schematic_Placement.md))
-- **`design`** — firmware-driven design: import firmware, expand templates, generate schematics, suggest device cards
+- **`design`** — firmware-driven design: import firmware, expand templates, generate schematics, suggest device cards. Supported MCUs, toolchains, firmware languages, and chips are a **narrow, explicit set** — see [what it can and cannot handle](docs/FIRMWARE_FRONTEND_SCOPE.md)
 - **`build_pcb_from_schematic`** *(standalone)* — top-level schematic → board pipeline
 - **`panelize_pcb`** *(standalone)* — manufacturing panelization
 - **`estimate_board_size`** *(standalone)* — pre-PCB board size estimation

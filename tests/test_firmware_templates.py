@@ -333,6 +333,53 @@ def test_i2s_mic_ambiguous_bus_held_not_assumed():
         "must not emit a contradictory assumed_part gap for an ambiguous bus"
 
 
+def test_i2s_mic_builds_ics43434_when_declared():
+    """Firmware naming ICS-43434 (canonical 'ICS43434') gets THAT exact part placed
+    — not the SPH0645 default — wired to ITS pin names. The ICS-43434 symbol differs
+    from SPH0645 on three pins (bit clock SCK not BCLK, data SD not DATA, L/R select
+    LR not SEL), so a wrong realization would silently orphan BCLK/data/SEL."""
+    i = _audio()
+    mic_bus = next(b for b in i.buses if b.type == "I2S_IN")
+    mic_bus.resolved_part = "ICS43434"          # as resolve_bus_parts marks it
+    mic_bus.part_provenance = "corpus"
+    ex = i2s_mic(i, RefAllocator(i))
+
+    mics = [c for c in ex.components if c.type == "ICS43434"]
+    assert len(mics) == 1, "the declared ICS-43434 must be placed"
+    mic = mics[0]
+    assert mic.lib_id == "Sensor_Audio:ICS-43434"
+    assert mic.footprint == "Sensor_Audio:InvenSense_ICS-43434-6_3.5x2.65mm"
+    assert mic.origin == "imported"             # firmware-named, not assumed/substituted
+    assert not any(c.type == "SPH0645" for c in ex.components), \
+        "SPH0645 default must NOT be substituted when ICS-43434 is named"
+    # Realized → no honesty gap.
+    assert not any(g.kind in ("assumed_part", "part_unavailable") for g in ex.gaps)
+    # Signal nets land on the ICS-43434 pin NAMES (SCK/SD/WS), not SPH0645's.
+    pins_by_net = {n.name: [e.pin for e in n.endpoints if e.pin] for n in ex.new_nets}
+    assert pins_by_net["MIC_BCLK"] == ["SCK"]
+    assert pins_by_net["MIC_SD"] == ["SD"]
+    assert pins_by_net["MIC_WS"] == ["WS"]
+    # L/R-select pin "LR" strapped to GND (left); VDD to +3V3.
+    assert ("GND", Endpoint(ref=mic.ref, pin="LR")) in ex.power
+    assert ("+3V3", Endpoint(ref=mic.ref, pin="VDD")) in ex.power
+
+
+def test_i2s_mic_refuses_named_inmp441():
+    """A firmware-named mic with no realization (EOL INMP441 — no KiCad symbol) is
+    REFUSED at the TEMPLATE level: nothing placed, part_unavailable disclosed. Guards
+    the build_part fallback — INMP441 must route to the default/refuse path, never be
+    built (and never silently substituted with the SPH0645 default or ICS-43434)."""
+    i = _audio()
+    mic_bus = next(b for b in i.buses if b.type == "I2S_IN")
+    mic_bus.resolved_part = "INMP441"           # recognized name, no realization
+    mic_bus.part_provenance = "corpus"
+    ex = i2s_mic(i, RefAllocator(i))
+    assert ex.components == [], "no mic may be placed for the unrealizable INMP441"
+    assert ex.new_nets == []
+    assert any(g.kind == "part_unavailable" and "INMP441" in g.detail for g in ex.gaps)
+    assert mic_bus.resolved_part == "INMP441"   # declared part not overwritten
+
+
 def test_i2c_device_header_with_pullups():
     i = _audio()
     ex = i2c_device_header(i, RefAllocator(i))
@@ -488,13 +535,17 @@ def test_generate_expanded_speedcal(tmp_path):
     # the MCP_INT signal net is NOT polluted into a rail
     assert members("MCP23017_INT") == {"U1.16", "U3.20"}
 
-    # --- CP2102 programming block (U5=CP2102, J1=USB-C — deterministic refs) ---
-    assert {"J1.A4", "J1.A9", "J1.B4", "J1.B9", "U4.3"} <= p5  # +5V USB-sourced
-    assert "U5.6" not in p3                              # LANDMINE: CP2102 VDD not +3V3
-    assert "U5.6" in members("CP2102_VDD")              # ...it's on its own net
-    assert {"U5.3", "U5.29"} <= gnd                      # LANDMINE: both CP2102 GND pins
-    assert members("UART_RX") == {"U1.34", "U5.26"}     # CP2102 TXD -> ESP32 RX
-    assert members("UART_TX") == {"U1.35", "U5.25"}     # CP2102 RXD <- ESP32 TX
+    # --- CP2102 programming block (U7=CP2102, J1=USB-C — deterministic refs).
+    # U4=PIEZO, U5=TRACK (both terminal-only cards, remote), U6=AMS1117 (VI=pin3),
+    # so CP2102 is U7. U6.3 = AMS1117 VI (input) on +5V; J1 VBUS pins are the source.
+    assert {"J1.A4", "J1.A9", "J1.B4", "J1.B9", "U6.3"} <= p5  # +5V USB-sourced
+    # CP2102 VREGIN+VBUS are also on +5V (pin numbers vary by symbol version).
+    assert p5 & {f"U7.{n}" for n in range(1, 30)}        # CP2102 has at least one +5V pin
+    assert "U7.6" not in p3                              # LANDMINE: CP2102 VDD not +3V3
+    assert "U7.6" in members("CP2102_VDD")              # ...it's on its own net
+    assert {"U7.3", "U7.29"} <= gnd                      # LANDMINE: both CP2102 GND pins
+    assert members("UART_RX") == {"U1.34", "U7.26"}     # CP2102 TXD -> ESP32 RX
+    assert members("UART_TX") == {"U1.35", "U7.25"}     # CP2102 RXD <- ESP32 TX
 
 
 def test_first_preserves_gpio_zero():

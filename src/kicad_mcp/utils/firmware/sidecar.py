@@ -35,6 +35,13 @@ mounting_holes:                # corner fixture holes (firmware-blind mechanical
   drill_mm: 3.2                # M3 = 3.2, M2.5 = 2.7
   inset_mm: 3.5                # hole-centre inset from each board edge
   keepout_mm: 1.5              # no-copper margin beyond the drill
+expander_terminals:            # tap an I/O-expander's GPA/GPB pins out to terminals
+  U3:                          # the expander's peripheral ref (a placed MCP23017)
+    device: TCRT5000           # silk label + connector value
+    ports: 6                   # first N port pins (GPA0..7,GPB0..7), or a list [GPA0, GPB3]
+    group: per_sensor          # per_sensor (default) | per_bank | single
+    power: 3v3                 # 3v3 (default) | 5v | none
+    net_prefix: SENSOR         # net base name (default = device); unique across entries
 ```
 
 Unknown top-level keys are REJECTED (a typo like ``board_size`` for
@@ -57,6 +64,7 @@ from kicad_mcp.utils.firmware.connectors import (
 )
 from kicad_mcp.utils.firmware.intent import (
     DesignIntent,
+    ExpanderSpec,
     Gap,
     Net,
     Placement,
@@ -118,6 +126,10 @@ class BoardSidecar:
     # (a tighter second pass). Size lever — only applies to auto-sized boards. See
     # SPEC_Post_Placement_Board_Refit.md.
     board_refit: Optional[bool] = None
+    # tap an I/O-expander's floating GPA/GPB port pins out to labeled terminals,
+    # keyed by the expander's peripheral ref (e.g. U3). Firmware-blind (sensors are
+    # register-addressed at runtime). See ExpanderSpec / SPEC_expander_terminals.md.
+    expander_terminals: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # Top-level board.yaml keys. An unknown key is a loud error (catches a typo like
@@ -128,9 +140,15 @@ _KNOWN_SIDECAR_KEYS = frozenset({
     "power_source", "board_size_mm", "extra_connectors",
     "placement", "placement_hints", "mounting_holes", "bus_part_overrides",
     "terminal_distribution", "terminal_centering", "board_refit",
+    "expander_terminals",
 })
 
 _TERMINAL_DISTRIBUTIONS = frozenset({"single_edge", "multi_edge"})
+
+# expander_terminals (v2): per-entry sub-keys + the closed value sets.
+_KNOWN_EXPANDER_KEYS = frozenset({"device", "ports", "group", "power", "net_prefix"})
+_EXPANDER_GROUPS = frozenset({"per_sensor", "per_bank", "single"})
+_EXPANDER_POWER = frozenset({"3v3", "5v", "none"})
 
 _KNOWN_BUS_OVERRIDE_KEYS = frozenset({"part", "footprint"})
 
@@ -268,7 +286,92 @@ def _validate(d: dict[str, Any]) -> list[str]:
     _validate_hints(d, errs)
     _validate_mounting_holes(d, errs)
     _validate_bus_part_overrides(d, errs)
+    _validate_expander_terminals(d, errs)
     return errs
+
+
+def _expander_port_pins() -> list[str]:
+    """The valid GPA/GPB port-pin names for v2.0 (MCP23017-only — non-goal: other
+    expanders). Data-only: reads the MCP23017 card's ``port_pins`` (no KiCad). The
+    board.yaml entry is keyed by ref and the chip type isn't known at load time, so
+    we validate against this canonical set; expand-time confirms the ref is a
+    placed MCP23017. When more expanders are supported this becomes per-type."""
+    from kicad_mcp.utils.firmware.knowledge import resolve_peripheral
+    info = resolve_peripheral("MCP23017")
+    return list(info.get("port_pins", [])) if info else []
+
+
+def _validate_expander_terminals(d: dict[str, Any], errs: list[str]) -> None:
+    """``expander_terminals`` is optional: a mapping of expander ref -> spec. Each
+    spec taps the expander's GPA/GPB pins out to terminals. Validated here (no
+    KiCad): known sub-keys, ports (int count <= available, or a list of real port
+    pins), group/power in their value sets, and net_prefix UNIQUE across entries
+    (so two devices can't fight over the same net namespace). Ref-existence (is it
+    a placed MCP23017?) is deferred to expand time, where placement happens."""
+    et = d.get("expander_terminals")
+    if et is None:
+        return
+    if not isinstance(et, dict):
+        errs.append("expander_terminals must be a mapping of expander-ref -> spec")
+        return
+    valid_pins = _expander_port_pins()
+    seen_prefix: dict[str, str] = {}   # effective net_prefix -> the ref that claimed it
+    for ref, spec in et.items():
+        where = f"expander_terminals[{ref!r}]"
+        if not _VALID_REF.match(str(ref)):
+            errs.append(f"{where}: {ref!r} is not a KiCad ref (e.g. U3)")
+        if not isinstance(spec, dict):
+            errs.append(f"{where}: must be a mapping")
+            continue
+        unknown = set(spec) - _KNOWN_EXPANDER_KEYS
+        if unknown:
+            errs.append(f"{where}: unknown key(s) {sorted(unknown)} — "
+                        f"valid: {sorted(_KNOWN_EXPANDER_KEYS)}")
+        dev = spec.get("device")
+        if dev is not None and not (isinstance(dev, str) and dev.strip()):
+            errs.append(f"{where}: device must be a non-empty string")
+        # ports: required — an int count, or an explicit list of port-pin names.
+        ports = spec.get("ports")
+        if ports is None:
+            errs.append(f"{where}: ports is required (an int count or a list of pin names)")
+        elif isinstance(ports, bool):
+            errs.append(f"{where}: ports must be an int count or a list of pin names")
+        elif isinstance(ports, int):
+            if ports < 0:
+                errs.append(f"{where}: ports {ports} must be >= 0")
+            elif valid_pins and ports > len(valid_pins):
+                errs.append(f"{where}: ports {ports} exceeds the {len(valid_pins)} "
+                            f"available expander port pins")
+        elif isinstance(ports, list):
+            if not all(isinstance(p, str) for p in ports):
+                errs.append(f"{where}: ports list must be pin-name strings")
+            elif valid_pins and (bad := [p for p in ports if p not in valid_pins]):
+                errs.append(f"{where}: unknown port pin(s) {bad} — valid: {valid_pins}")
+            elif len(set(ports)) != len(ports):
+                # each port maps to one terminal position; a repeat would short two
+                # positions onto one expander pad.
+                errs.append(f"{where}: ports has duplicate pin(s) {sorted(ports)}")
+        else:
+            errs.append(f"{where}: ports must be an int count or a list of pin names")
+        grp = spec.get("group")
+        if grp is not None and grp not in _EXPANDER_GROUPS:
+            errs.append(f"{where}: group {grp!r} not in {sorted(_EXPANDER_GROUPS)}")
+        pwr = spec.get("power")
+        if pwr is not None and pwr not in _EXPANDER_POWER:
+            errs.append(f"{where}: power {pwr!r} not in {sorted(_EXPANDER_POWER)}")
+        np = spec.get("net_prefix")
+        if np is not None and not (isinstance(np, str) and np.strip()):
+            errs.append(f"{where}: net_prefix must be a non-empty string")
+        # Uniqueness is on the EFFECTIVE prefix (net_prefix else device) — two
+        # entries that both default to the same device would silently collide nets.
+        prefix = (np if isinstance(np, str) and np.strip()
+                  else dev if isinstance(dev, str) and dev.strip() else None)
+        if prefix is not None:
+            if prefix in seen_prefix:
+                errs.append(f"{where}: net_prefix {prefix!r} duplicates "
+                            f"{seen_prefix[prefix]} — must be unique across entries")
+            else:
+                seen_prefix[prefix] = where
 
 
 def _validate_bus_part_overrides(d: dict[str, Any], errs: list[str]) -> None:
@@ -324,6 +427,7 @@ def load_sidecar(path: str) -> BoardSidecar:
         terminal_distribution=data.get("terminal_distribution"),
         terminal_centering=data.get("terminal_centering"),
         board_refit=data.get("board_refit"),
+        expander_terminals=dict(data.get("expander_terminals", {}) or {}),
     )
 
 
@@ -431,6 +535,29 @@ def apply_sidecar(
             bus.resolved_part = str(spec["part"])
             bus.part_provenance = "user"
             bus.part_is_assumption = False
+
+    # Expander terminals: resolve the `ports:int` shorthand to concrete pin names
+    # (first N in MCP hardware order) HERE, so the template sees only pin names.
+    # net_prefix defaults to device (then ref); group/power take their defaults.
+    # Ref-existence + "is it an MCP23017" is checked at expand time (placement).
+    if sidecar.expander_terminals:
+        port_pins = _expander_port_pins()
+        for ref, spec in sidecar.expander_terminals.items():
+            device = str(spec.get("device") or "") or str(ref)
+            ports = spec.get("ports")
+            if isinstance(ports, int) and not isinstance(ports, bool):
+                pins = list(port_pins[:ports])
+            elif isinstance(ports, list):
+                pins = [str(p) for p in ports]
+            else:
+                pins = []
+            intent.expander_terminals[str(ref)] = ExpanderSpec(
+                device=device,
+                ports=pins,
+                group=str(spec.get("group") or "per_sensor"),
+                power=str(spec.get("power") or "3v3"),
+                net_prefix=str(spec.get("net_prefix") or device),
+            )
 
     return intent
 

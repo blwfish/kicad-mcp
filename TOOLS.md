@@ -69,7 +69,10 @@ See [docs/SPEC_Schematic_Placement.md](docs/SPEC_Schematic_Placement.md).
 ### `design` — firmware-driven design + device cards
 Operations: `import_firmware`, `expand_templates`, `generate_schematic`,
 `show_intent`, `suggest_cards`.
-See [docs/SPEC_Firmware_Device_Cards.md](docs/SPEC_Firmware_Device_Cards.md).
+Works within a **narrow, explicit envelope** (2 ESP32 MCUs, PlatformIO layout,
+C `#define` pins, a fixed set of recognized chips); outside it, it emits loud
+gaps rather than a wrong board. See
+[docs/FIRMWARE_FRONTEND_SCOPE.md](docs/FIRMWARE_FRONTEND_SCOPE.md).
 
 ## Standalone Tools
 

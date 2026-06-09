@@ -26,7 +26,7 @@ from kicad_mcp.utils.firmware.parse import (
     address_base,
 )
 
-SCHEMA_VERSION = 6  # v6: Bus part resolution (resolved_part/part_provenance/part_is_assumption)
+SCHEMA_VERSION = 8  # v8: DesignIntent.expander_terminals (GPA/GPB -> labeled terminals)
 
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
@@ -63,6 +63,11 @@ class Peripheral:
     ref: str
     type: str
     lib_id: Optional[str] = None
+    # Older-KiCad names for the same symbol (KiCad 10 renamed MCP23017_SO ->
+    # MCP23017x-x-SO); the generator tries these in order when lib_id is absent
+    # from the running library. Carried on the intent (not baked at build time)
+    # so resolution happens against the live library at generate time.
+    alt_lib_ids: list[str] = field(default_factory=list)
     value: Optional[str] = None
     footprint: Optional[str] = None
     bus: Optional[str] = None
@@ -101,6 +106,23 @@ class Placement:
     connector: str = "screw_terminal"   # screw_terminal | pin_header | pluggable
     footprint: Optional[str] = None  # series-default override for the terminal
     external_io: list[str] = field(default_factory=list)  # roles crossing (remote_io)
+
+
+@dataclass
+class ExpanderSpec:
+    """A board.yaml ``expander_terminals`` entry (keyed by expander peripheral ref
+    in ``DesignIntent.expander_terminals``): tap an I/O-expander's floating GPA/GPB
+    port pins out to labeled screw terminal(s).
+
+    Honest-by-construction — firmware can't know this (the sensors are
+    register-addressed at runtime, no per-sensor #define), so it must be declared.
+    The ``ports: int`` board.yaml shorthand is expanded to a concrete pin-name list
+    at sidecar-apply time, so templates only ever see resolved pin names."""
+    device: str                        # silk label + connector value (e.g. TCRT5000)
+    ports: list[str] = field(default_factory=list)   # resolved pin names: [GPA0, GPA1, ...]
+    group: str = "per_sensor"          # per_sensor | per_bank | single
+    power: str = "3v3"                 # 3v3 | 5v | none
+    net_prefix: str = ""               # net base name; filled from device at apply if empty
 
 
 @dataclass
@@ -156,6 +178,10 @@ class DesignIntent:
     # PCB-layer concern, distinct from `placements` (the firmware-semantic locus
     # channel).  Validated by edge_terminal.normalize_hint before use.
     placement_hints: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # board.yaml expander_terminals: tap an I/O-expander's GPA/GPB port pins out to
+    # labeled terminals. Keyed by the expander's peripheral ref. Set by
+    # apply_sidecar, consumed by the expander_terminals template.
+    expander_terminals: dict[str, "ExpanderSpec"] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -311,8 +337,10 @@ def build_intent(
             continue
         placed_module = placed_module or info["module"]
         p = Peripheral(
-            ref=f"U{next_ref}", type=t, lib_id=info["lib_id"], value=info["value"],
-            footprint=info["footprint"], bus=info["bus"], address=address,
+            ref=f"U{next_ref}", type=t, lib_id=info["lib_id"],
+            alt_lib_ids=list(info.get("alt_lib_ids", []) or []),
+            value=info["value"], footprint=info["footprint"], bus=info["bus"],
+            address=address,
         )
         next_ref += 1
         peripherals.append(p)
@@ -481,6 +509,10 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             for k, v in (d.get("placements", {}) or {}).items()
         },
         placement_hints=d.get("placement_hints", {}) or {},
+        expander_terminals={
+            k: ExpanderSpec(**_only_fields(ExpanderSpec, v))
+            for k, v in (d.get("expander_terminals", {}) or {}).items()
+        },
         provenance=d.get("provenance", {}),
     )
 

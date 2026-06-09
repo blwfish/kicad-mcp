@@ -1,13 +1,27 @@
 # MCP23017 16-bit I2C GPIO expander (chip-down SOIC).
 # NB: the I2C clock pin is named "SCK" on this symbol, not "SCL".
 type: MCP23017
+# KiCad 10 renamed this symbol family: MCP23017_SO (KiCad 9) -> MCP23017x-x-SO
+# (KiCad 10). Primary = the newest name; alt_lib_ids carries the KiCad-9 name so
+# the card builds on both (resolve_symbol uses whichever the library has).
 lib_id: Interface_Expansion:MCP23017x-x-SO
+alt_lib_ids: ["Interface_Expansion:MCP23017_SO"]
 value: MCP23017
 bus: I2C
 footprint: Package_SO:SOIC-28W_7.5x17.9mm_P1.27mm
 roles: {SDA: SDA, SCL: SCK, INT: INTA, INTA: INTA}
-supply_pins: ["V_{DD}"]
-ground_pins: ["V_{SS}"]
+# The 16 GPA/GPB I/O port pins in MCP23017 hardware register order (GPA0..7 then
+# GPB0..7). Source of truth for expander_terminals validation (data-only, so the
+# sidecar validator needs no KiCad at unit-test time). Identical names on KiCad
+# 9 and 10 (only the supply pins differ across versions — see above).
+port_pins: [GPA0, GPA1, GPA2, GPA3, GPA4, GPA5, GPA6, GPA7,
+            GPB0, GPB1, GPB2, GPB3, GPB4, GPB5, GPB6, GPB7]
+# Supply/ground by PAD NUMBER (9, 10), not name: KiCad 9 names them VDD/VSS but
+# KiCad 10 names them V_{DD}/V_{SS} — pad numbers are identical on both, so they
+# resolve version-independently. (These two pins are the symbol's ONLY other
+# cross-version difference; every signal/strap/INT pin name matches.)
+supply_pins: ["9"]
+ground_pins: ["10"]
 module: false
 config:
   # A2 A1 A0 select 0x20..0x27 (LSB-first); RESET held high (active-low).
