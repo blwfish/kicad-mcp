@@ -1,8 +1,9 @@
 # PLAN: Coverage & Substrate Expansion
 
 Status: **DRAFT roadmap** (a program, not a single-change spec). Living document.
-**Cold-reviewed once** (3 severity-tier subagents) — material corrections folded in;
-see *Provenance* at the end for what changed and what was verified against the code.
+**Cold-reviewed twice** (3 severity-tier subagents per pass) — material corrections
+folded in; see *Provenance* at the end for what changed and what was verified
+against the code.
 
 ## Motivation
 
@@ -11,6 +12,11 @@ track-geometry, audio nodes), ~a dozen device cards, exactly two MCUs
 (`ESP32-WROOM-32E`, `ESP32-S3-WROOM-1`), and one toolchain shape (PlatformIO + a
 C `config.h` of pin macros). Everything outside that envelope is unexplored.
 Bug-finding to date has been **reactive** — we fix what breaks on boards we build.
+
+> The authoritative statement of *today's* envelope is
+> [`docs/FIRMWARE_FRONTEND_SCOPE.md`](FIRMWARE_FRONTEND_SCOPE.md) (on `main`). This
+> plan is its forward-looking counterpart — keep the two paired: the scope doc is
+> "what's true now," this is "how we widen it."
 
 You do not close an infinite space by enumeration. The strategy is three moves:
 
@@ -102,6 +108,11 @@ Distinguish **seal** (eliminate the gap) from **close** (narrow it appreciably).
   - **AI-extracted intents** — non-reproducible by construction; verify on a
     sample.
 
+**Net:** fail-safe is *sealed*; declared-connectivity faithfulness and semantic
+correctness are *closed* (not sealed — both lean on card correctness); the residual
+is small and named. The program narrows the correctness gap appreciably — it does
+not eliminate it.
+
 Effort estimates below are in claude+blw **pairing** units.
 
 ## Phases (ordered by leverage, cheapest/broadest first)
@@ -127,32 +138,66 @@ Effort estimates below are in claude+blw **pairing** units.
   port-pin-gate, and duplicate-pin bugs from the off-board-terminals session before
   they were written — the three structural ones, not the two semantic ones.)
 
-### Phase 1 — Import-path generalization (cheap, broad — the highest-leverage win)
+### Phase 1 — Import-path generalization (real work, but cheap *relative to MCU*; highest-leverage)
 
 Unlock whole user populations for chips already supported, with **zero new MCU
-surgery**. Two sub-tracks:
+surgery**. Two sub-tracks. (Second-pass correction: this is **not** "mostly
+mechanical" — it has genuine design decisions, the same trap the first draft fell
+into with the Pico. Sized honestly below.)
 
 **1a. Toolchain / board-identity.** Today `find_board_id` only reads a
 `platformio.ini board=`; an Arduino-IDE sketch keeps the board in GUI state (no
-project file), pico-sdk keeps it in a CMake `PICO_BOARD` var. So:
-- Add **`board_id` (and/or `fqbn`) to `BoardSidecar`** — the board becomes a
-  firmware-blind fact (it genuinely is, for these layouts), supplied like
-  `power_source`. `resolve_mcu`'s `board_match` learns to match FQBNs too.
-- Read an Arduino `sketch.yaml` `default_fqbn` when present (covers the arduino-cli
-  subset for free).
-- Treat the **`.ino` (and tab files) as a first-class config source** — pins live
-  there, not in a `config.h`; `_find_config_header` is `config.h`-only today.
-- *Reach:* unlocks **ESP32-via-Arduino-IDE** — probably the single largest
-  hobbyist population — for no new chip work.
+project file), pico-sdk keeps it in a CMake `PICO_BOARD` var. The work:
+- Add **`board_id` (and/or `fqbn`) to `BoardSidecar`** so the board is a declared
+  firmware-blind fact. **Plumbing seam (verified):** unlike `power_source` (late
+  metadata), `board_id` must be resolved *before* `find_board_id` /
+  `select_active_branches` — the board selects the active `#if CONFIG_IDF_TARGET_*`
+  block *before* pins are parsed. So this restructures the front of `_op_import`,
+  not just a field + a late `apply_sidecar` line.
+- **FQBN matching is already done for the two MCUs** (verified by running
+  `resolve_mcu`): `esp32:esp32:esp32` → WROOM-32E, `esp32:esp32:esp32s3` → S3, with
+  *no code change* — the FQBN tail is already a `board_match` substring. Future
+  MCUs' FQBNs ship with their Phase-2 cards. So **no matcher surgery** in Phase 1.
+- Treat the **`.ino` (and its tabs) as a config source** — *several* coordinated
+  changes, not one: `_find_config_header` (glob `.ino`, not just `config.h`),
+  `find_board_id` (walk up from any file, not just PlatformIO roots), `find_sidecar`
+  (anchor on the `.ino` — today a `board.yaml` next to `sketch.ino` is *silently
+  ignored*), and **multi-tab concatenation** (the Arduino IDE concatenates all
+  `.ino` tabs; the importer returns one file).
+- *(Optional)* read an Arduino `sketch.yaml` `default_fqbn` when present — but that
+  is the opt-in arduino-cli-profiles minority; the mainstream IDE user has no
+  project file, so the **`board_id` sidecar is the load-bearing mechanism**, not
+  `sketch.yaml`.
+- *Reach (tightened):* 1a unlocks ESP32-via-Arduino-IDE *board identity* + the
+  **`#define`-style** pin subset (a `.ino` using `#define X_PIN n` parses
+  identically to a `config.h` — verified). The *dominant* Arduino idiom (`const
+  int`, constructor args, `pinMode()`) yields **no pins** through the deterministic
+  parser → that share falls to **1b**, not 1a. The "single largest population" is
+  split across 1a (identity + macro subset) and 1b (the rest).
 
 **1b. Formalize the AI intent-producer path.** Make "AI reads non-C-macro firmware
-→ writes/fills the intent" a documented, supported path (not an accident), with a
-verification step. Unlocks MicroPython/CircuitPython/pico-sdk/Rust *for the chips
-already supported*.
-- *Exit:* an ESP32 Arduino-IDE sketch (no `platformio.ini`) and a MicroPython
-  Pico script both reach a generated schematic via their respective producers.
-- *Effort:* 1a ~2–3 days (importer + sidecar field, mostly mechanical); 1b is
-  partly process/docs + a verification harness, ~1–2 days. Mostly delegable.
+→ writes/fills the intent" a supported path. Unlocks MicroPython/CircuitPython/
+pico-sdk/Rust *and the const/constructor Arduino majority*, for chips already
+supported. The load path is genuinely robust (`from_dict`/`_only_fields` tolerate
+external authoring — verified), **but two real pieces of work** the first cut
+glossed as "process/docs":
+- **Gap-honesty parity (a harness, not docs).** An AI-authored intent *bypasses*
+  the parser's part-resolution, ambiguity gaps, and `advise_unspecified_placement`
+  (all run *inside* `_op_import`). Without a normalization/validation harness that
+  re-applies them, AI-produced boards silently lose the gap-honesty the parser path
+  guarantees.
+- **A published intent contract.** No documented schema/example exists today — an
+  AI producer would reverse-engineer the dataclass. 1b must publish a stable
+  contract (an annotated example and/or `design(operation="intent_schema")`).
+- *Exit:* an ESP32 Arduino-IDE sketch (no `platformio.ini`) and a MicroPython Pico
+  script both reach a generated schematic **with the same gaps the parser path
+  would emit**, via their respective producers.
+
+*Effort (corrected — not "mostly mechanical"):* 1a ~3–5 days (the three coordinated
+`find_*` changes + multi-tab + the early `board_id` seam; the FQBN matcher is
+already done); 1b ~2–4 days (the gap-parity harness + the published contract are
+real code). Delegable, but the `board_id` seam and the intent contract are design
+decisions to settle first.
 
 ### Phase 2 — MCU-module generalization (expensive; the real ESP32-shaped surgery)
 
@@ -196,13 +241,17 @@ only open question is whether the 5V power work is worth it.
 
 Run import→expand over a diverse corpus; emit a **chip-frequency-ranked carding
 backlog** + a **fail-safe report** + firmware-as-spec results. Route only a sample.
-- **Prerequisites the cold review surfaced** (the corpus is *not* "almost no
-  scraping"): library example sketches are `.ino` with **no `platformio.ini`**
-  (→ needs Phase 1a's `board_id`) and pins often passed as **constructor
-  arguments**, not `#define`s (→ sparse firmware-as-spec signal; the corpus skews
-  to bus-default parts). Plan a sampling spike before committing.
-- **Can start ESP32-only in parallel with Phase 2** — peripheral-chip coverage is
-  independent of MCU breadth, so an ESP32 corpus already produces a carding backlog.
+- Library examples are a **good chip-labeled source** (one chip per library, with
+  canonical pin `#define`s) — *for the PlatformIO subset*. But the cold review
+  surfaced real blockers (it's *not* "almost no scraping"): most Arduino library
+  examples are `.ino` with **no `platformio.ini`** (→ needs Phase 1a's `board_id` +
+  `.ino` import) and pins are often passed as **constructor arguments**, not
+  `#define`s (→ sparse deterministic signal; those need the 1b AI producer). Plan a
+  sampling spike before committing.
+- **Sequencing:** a **PlatformIO-ESP32** corpus can run **before Phase 1a** (that
+  subset imports today) and produces a carding backlog **in parallel with Phase 2's
+  MCU work**. The broader `.ino` / non-C corpus is **gated on Phase 1**. ("ESP32 in
+  parallel" means the PlatformIO subset — *not* Arduino-IDE ESP32 sketches.)
 - *Mechanics:* multi-agent fan-out; nightly once stood up. Decide corpus storage /
   licensing (third-party sketches) and CI cost (separate from per-PR runners).
 - *Effort:* ~2–3 days for the harness (after 1a), fully delegable; then continuous.
@@ -258,3 +307,25 @@ Verified solid: modules-only thesis; the measure→fill loop; fail-safe genuinel
 holds (gap-not-crash); the 2-MCU baseline + IDF guard; `en_pin`/`boot_pin` really
 required; the Pico module symbol (`MCU_Module:RaspberryPi_Pico`) + castellated
 footprint (`Module:RaspberryPi_Pico_SMD`) exist on both KiCad versions.
+
+### Second cold review (2026-06-09)
+
+Re-reviewed the revised doc (3 subagents). **No headline-invalidator** — the
+import-leading re-rank holds; SEAL→CLOSE and the cheap-probe removal verified as
+landed; the two-producer *load path* verified robust. But the same failure mode
+recurred (the "easy" phase under-scoped). Corrections folded in:
+- **FQBN matcher already done** for the two ESP32 MCUs (don't size it as work).
+- **`board_id`-from-sidecar has an earlier plumbing seam** — resolved before
+  branch-selection, not late like `power_source`.
+- **Phase-1a reach tightened** — board identity + `#define` subset via 1a; the
+  `const`/constructor Arduino majority via 1b.
+- **`.ino` support is several coordinated `find_*` changes + multi-tab**, not one.
+- **The AI-producer path needs a gap-parity harness + a published intent contract**,
+  not just docs.
+- `sketch.yaml` downgraded to opt-in minority; **Phase-1a effort raised to ~3–5
+  days**, 1b to ~2–4; the "what this closes" net-summary restored; the corpus
+  description rebalanced.
+- **Phase-3 parallelism clarified** — the PlatformIO-ESP32 subset runs before 1a;
+  the `.ino`/non-C corpus is gated on Phase 1.
+- Cross-referenced [`FIRMWARE_FRONTEND_SCOPE.md`](FIRMWARE_FRONTEND_SCOPE.md) as the
+  paired "today's envelope" doc.
