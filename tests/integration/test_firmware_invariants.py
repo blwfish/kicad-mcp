@@ -110,6 +110,19 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
     offboard_refs = {p.ref for p in intent.peripherals
                      if is_remote(intent, p.ref) or is_terminal_card_type(p.type)}
 
+    # The third disposition bucket must report EXACTLY the off-board endpoints
+    # generate skipped — so an "ok" build is transparent about which declared
+    # connections it deferred. Verifying it against an INDEPENDENT derivation (not
+    # generate's own report) means generate can neither omit a deferred endpoint
+    # nor defer an on-board one to dodge the connectivity check below.
+    reported_deferred = {(d["net"], d["ref"]) for d in res["deferred_endpoints"]}
+    expected_deferred = {(net.name, ep.ref)
+                         for net in intent.nets for ep in net.endpoints
+                         if ep.ref in offboard_refs}
+    assert reported_deferred == expected_deferred, (
+        f"{config_path.parent.name}: deferred_endpoints {reported_deferred} != "
+        f"off-board endpoints {expected_deferred}")
+
     checked = 0
     for net in intent.nets:
         if net.kind not in MODELED_NET_KINDS or len(net.endpoints) < 2:

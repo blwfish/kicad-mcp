@@ -5,6 +5,13 @@ label-at-pin (same net name on every resolved endpoint → KiCad connectivity),
 the same mechanism the schematic-build tools use. Endpoints that don't resolve
 to a real symbol pin are recorded (not silently skipped). Orphan nets get only
 their MCU pin labeled — the far end is left open, matching the intent's gap.
+
+Three disposition buckets in the result keep an ``ok`` status honest about what
+was NOT wired and why: ``component_errors`` (a chip couldn't be placed) and
+``unresolved_endpoints`` (a wire that should have been made failed) are FAILURES
+and gate the status off ``ok``; ``deferred_endpoints`` are off-board endpoints
+(remote/terminal) intentionally not wired here — realized at the expand step or
+field-wired through a connector — and do NOT affect status (deferral isn't loss).
 """
 from __future__ import annotations
 
@@ -34,6 +41,9 @@ def _build_status(component_errors: list, unresolved: list, any_placed: bool) ->
     ``error`` if nothing was. Mirrors pcb_nets' ok/partial/error so callers see
     one consistent contract — and so a version-renamed/typo'd lib_id surfaces
     instead of silently reporting ``ok`` on a board missing a chip.
+
+    Deferred endpoints (off-board/terminal, see ``deferred_endpoints``) are NOT
+    failures and are intentionally excluded here — deferral is not loss.
     """
     if not component_errors and not unresolved:
         return "ok"
@@ -74,10 +84,15 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     # peripheral is off-board if it's declared remote OR its card is
     # ``realize: terminal`` — the latter is intrinsically remote even on a raw
     # (non-expanded) intent, before _inject_terminal_loci has run.
-    offboard_refs = {
-        p.ref for p in intent.peripherals
-        if is_remote(intent, p.ref) or is_terminal_card_type(p.type)
-    }
+    # ref -> why it's off-board (the reason carried into deferred_endpoints, so an
+    # ``ok`` build still says which declared connections it deferred and why).
+    offboard_reason: dict[str, str] = {}
+    for p in intent.peripherals:
+        if is_remote(intent, p.ref):
+            offboard_reason[p.ref] = "remote: off-board, field-wired through a connector"
+        elif is_terminal_card_type(p.type):
+            offboard_reason[p.ref] = "terminal: realized as a screw terminal at the expand step"
+    offboard_refs = set(offboard_reason)
     to_place += [
         (p.ref, p.lib_id, list(p.alt_lib_ids), p.value or p.type, p.footprint)
         for p in intent.peripherals if p.ref not in offboard_refs
@@ -146,13 +161,19 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
     nets_by_kind: dict[str, int] = {}
     endpoints_wired = 0
     unresolved: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
     for net in intent.nets:
         for ep in net.endpoints:
             if ep.ref not in placed:
                 # Off-board peripherals are intentionally excluded from placement
-                # (a terminal connector handles their signals); their original
-                # endpoints are not wired and must not be flagged as unresolved.
+                # (a terminal/connector handles their signals). Not a failure —
+                # record them in their own bucket so a later ``ok`` is transparent
+                # about which declared connections were deferred, rather than the
+                # connection silently vanishing from the schematic.
                 if ep.ref in offboard_refs:
+                    deferred.append({"net": net.name, "ref": ep.ref,
+                                     "role": ep.role,
+                                     "reason": offboard_reason[ep.ref]})
                     continue
                 unresolved.append({"net": net.name, "ref": ep.ref,
                                    "reason": "component not placed"})
@@ -209,5 +230,6 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         "endpoints_wired": endpoints_wired,
         "rail_markers": rail_markers,
         "unresolved_endpoints": unresolved,
+        "deferred_endpoints": deferred,
         "gaps": len(intent.gaps),
     }
