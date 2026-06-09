@@ -50,8 +50,9 @@ if not _CORPUS:   # collection-time guard: an empty parametrize collects ONE
 
 def _intent_for(config_path: Path):
     from kicad_mcp.utils.firmware.intent import build_intent, find_board_id
-    from kicad_mcp.utils.firmware.parse import parse_defines, partition
-    parsed = partition(parse_defines(config_path.read_text()))
+    from kicad_mcp.utils.firmware.parse import parse_macros, partition
+    # parse_macros (not parse_defines) — mirror the real import op: #define + const.
+    parsed = partition(parse_macros(config_path.read_text()))
     return build_intent(parsed, firmware_path=str(config_path),
                         board_id=find_board_id(str(config_path)))
 

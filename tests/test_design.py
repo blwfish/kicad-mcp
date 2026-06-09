@@ -109,3 +109,39 @@ def test_op_import_arduino_sketch_end_to_end(tmp_path):
     assert gpio_of("BUZZER") == 4     # const int, the pins.ino tab
     # the const/constexpr I2C bare-alias pins were recognized too
     assert any(n.name in ("I2C_SDA", "I2C_SCL") for n in intent.nets)
+
+
+# --- cold-review fixes: discovery precedence + anchor ------------------------
+
+def test_find_firmware_top_level_ino_beats_nested_config_h(tmp_path):
+    # a vendored library's nested config.h must NOT hijack a top-level .ino sketch
+    (tmp_path / "sketch.ino").write_text("const int LED_PIN = 2;\n")
+    lib = tmp_path / "libraries" / "VendorLib" / "src"
+    lib.mkdir(parents=True)
+    (lib / "config.h").write_text("#define VENDOR_THING 1\n")
+    src = _find_firmware(str(tmp_path))
+    assert src is not None and src.anchor == tmp_path / "sketch.ino"
+    assert "LED_PIN" in src.text and "VENDOR_THING" not in src.text
+
+
+def test_find_firmware_top_level_config_h_preferred(tmp_path):
+    # a config.h at the top level (PlatformIO without include/) still wins over .ino
+    (tmp_path / "config.h").write_text("#define A_PIN 5\n")
+    (tmp_path / "sketch.ino").write_text("const int B_PIN = 6;\n")
+    assert _find_firmware(str(tmp_path)).anchor == tmp_path / "config.h"
+
+
+def test_find_firmware_anchors_on_pointed_at_ino(tmp_path):
+    # pointing at a specific tab anchors provenance on THAT file, not the alpha-first
+    (tmp_path / "aaa.ino").write_text("const int A_PIN = 1;\n")
+    (tmp_path / "zzz.ino").write_text("const int Z_PIN = 9;\n")
+    src = _find_firmware(str(tmp_path / "zzz.ino"))
+    assert src is not None and src.anchor == tmp_path / "zzz.ino"
+    assert "A_PIN" in src.text and "Z_PIN" in src.text   # still builds the whole sketch
+
+
+def test_suggest_cards_works_on_ino_sketch():
+    # regression guard: _op_suggest_cards must discover a .ino sketch, not error
+    from kicad_mcp.tools.design import _op_suggest_cards
+    r = _op_suggest_cards(firmware_path=str(_SKETCH))
+    assert r["status"] == "ok"

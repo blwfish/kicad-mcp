@@ -315,19 +315,21 @@ def parse_defines(text: str) -> list[Macro]:
     return out
 
 
-# A C++ const/constexpr integer declaration — how Arduino sketches name pins when
-# they don't use #define (``const int LED = 2;`` / ``constexpr uint8_t SDA = 21;``
-# / ``static const gpio_num_t MIC = GPIO_NUM_15;``). Captures the NAME and the
-# value up to the ``;``; the value is then value-validated by the SAME classifier
-# as #define. A pointer/string type (``const char* SSID``) has ``*`` where this
-# expects whitespace before the name, so it never matches — strings are skipped,
-# not misread. Arrays (``const int PINS[] = {..}``) have ``[`` after the name and
-# likewise don't match. ``int x = 2`` (no const/constexpr) is deliberately NOT
-# matched — a mutable global is not a pin constant.
+# A C++ const/constexpr declaration — how Arduino sketches name pins when they
+# don't use #define (``const int LED = 2;`` / ``constexpr uint8_t SDA = 21;`` /
+# ``static const gpio_num_t MIC = GPIO_NUM_15;``). Captures the type then the whole
+# declarator list up to the ``;``; each comma-separated ``NAME = VALUE`` is then
+# value-validated by the SAME classifier as #define. A pointer/string type
+# (``const char* SSID``) has ``*`` where this expects a declarator, so it never
+# matches — strings are skipped, not misread. ``int x = 2`` (no const/constexpr)
+# is deliberately NOT matched — a mutable global is not a pin constant.
 _CONST_DECL_RE = re.compile(
     r"^\s*(?:static\s+)?(?:const|constexpr)\s+(?:unsigned\s+)?"
-    r"(?P<type>\w+)\s+(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;]+?)\s*;"
+    r"\w+\s+(?P<decls>[A-Za-z_][^;]*);"
 )
+# One ``NAME = VALUE`` declarator. A bare fragment (``PINS[]``, a comma-split piece
+# of a function-call value) has no scalar ``=`` here and is skipped.
+_DECLARATOR_RE = re.compile(r"\s*(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>.+?)\s*$")
 
 
 def parse_const_decls(text: str) -> list[Macro]:
@@ -336,25 +338,39 @@ def parse_const_decls(text: str) -> list[Macro]:
     truth for "is this a pin", two syntactic feeders). A const whose NAME says pin
     and whose value is a plausible GPIO is a pin; ``const int TIMEOUT = 5000`` is
     OTHER (name doesn't say pin), so the classifier is the safety net against
-    over-matching. Order-preserving; nothing dropped."""
+    over-matching. One statement may declare several comma-separated names
+    (``const int TIMEOUT = 5000, LED_PIN = 2;``) — split so a pin after the first
+    is NOT silently dropped. Order-preserving."""
     out: list[Macro] = []
     for i, line in enumerate(text.splitlines(), start=1):
         m = _CONST_DECL_RE.match(line)
         if not m:
             continue
-        value, comment = _split_comment(m.group("value"))
-        macro = classify(m.group("name"), value, None)
-        macro.line_no = i
-        macro.comment = comment
-        out.append(macro)
+        for part in m.group("decls").split(","):
+            dm = _DECLARATOR_RE.match(part)
+            if dm is None:
+                continue
+            value, comment = _split_comment(dm.group("value"))
+            macro = classify(dm.group("name"), value, None)
+            macro.line_no = i
+            macro.comment = comment
+            out.append(macro)
     return out
+
+
+def _blank_block_comments(text: str) -> str:
+    """Replace ``/* */`` block comments with blank lines (line numbers preserved),
+    so a commented-out pin block isn't parsed as live macros."""
+    return _BLOCK_COMMENT_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
 
 
 def parse_macros(text: str) -> list[Macro]:
     """Every pin/address/config macro in firmware text — both ``#define`` and
     ``const``/``constexpr`` declarations (the latter is how Arduino-IDE sketches
-    name pins). Both syntactic sources feed the one classifier; order is defines
-    then const-decls."""
+    name pins). Block comments are stripped first so a commented-out pinout isn't
+    read as live pins; both syntactic sources then feed the one classifier (order:
+    defines, then const-decls)."""
+    text = _blank_block_comments(text)
     return parse_defines(text) + parse_const_decls(text)
 
 
@@ -420,14 +436,30 @@ def select_active_branches(text: str, defines: set[str]) -> str:
     return "".join(out)
 
 
+# An esp32 id with a variant-FAMILY suffix — ``esp32`` then an optional separator
+# then a C/S/H/P family letter + digit (``esp32c2``, ``esp32-s4``, ``esp32h2``).
+# Used to FAIL CLOSED on a variant we have no target for, so it can't alias to
+# classic ESP32 (a silently-wrong board). The family set is exactly C/S/H/P (every
+# real ESP32 variant); a classic die/board name with a different letter
+# (``esp32-cam``, ``esp32-d0wd``, ``esp32-pico``, ``esp32dev``) is NOT a variant
+# and falls through to the classic target.
+_ESP32_VARIANT_RE = re.compile(r"esp32[-_]?[cshp]\d")
+
+
 def idf_target_defines(board_id: Optional[str]) -> set[str]:
-    """Map a platformio board id to the ESP-IDF target macro it defines, so the
-    preprocessor selects the matching pin block."""
+    """Map a platformio board id / Arduino FQBN to the ESP-IDF target macro it
+    defines, so the preprocessor selects the matching pin block (and so
+    ``resolve_mcu``'s target guard rejects a variant that isn't classic/S3)."""
     b = (board_id or "").lower()
-    for key, target in (("s3", "ESP32S3"), ("c3", "ESP32C3"),
-                        ("c6", "ESP32C6"), ("s2", "ESP32S2")):
+    for key, target in (("s3", "ESP32S3"), ("c3", "ESP32C3"), ("c6", "ESP32C6"),
+                        ("s2", "ESP32S2"), ("h2", "ESP32H2"), ("p4", "ESP32P4")):
         if key in b:
             return {f"CONFIG_IDF_TARGET_{target}"}
+    # Unknown esp32 variant (esp32c2, esp32x9, …): fail closed rather than alias to
+    # classic ESP32 — the substring `"esp32" in b` can't tell a new die from the
+    # classic one (the dangerous case of the C3/C6 silently-wrong-board seam).
+    if _ESP32_VARIANT_RE.search(b):
+        return set()
     if "esp32" in b:
         return {"CONFIG_IDF_TARGET_ESP32"}
     return set()

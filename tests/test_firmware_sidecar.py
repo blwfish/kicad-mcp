@@ -508,11 +508,14 @@ def test_sidecar_board_id_accepts_arduino_fqbn(tmp_path, fqbn, part):
 
 @pytest.mark.parametrize("fqbn", [
     "esp32:esp32:esp32c3", "esp32:esp32:esp32c6", "esp32:esp32:esp32s2",
+    "esp32:esp32:esp32h2", "esp32:esp32:esp32p4",   # cold review: totally diff silicon
+    "esp32:esp32:esp32c2",                           # unknown variant -> fail closed
 ])
 def test_sidecar_board_id_unsupported_esp32_variant_fails_loud(tmp_path, fqbn):
-    """C3/C6/S2 contain 'esp32' as a substring but are UNSUPPORTED chips — they must
-    fail loud (mcu_unknown), NOT silently resolve to classic ESP32. This is the
-    dangerous case of the substring-match seam; the IDF-target guard catches it."""
+    """C3/C6/S2/H2/P4 (and unknown variants like C2) contain 'esp32' as a substring
+    but are UNSUPPORTED chips — they must fail loud (mcu_unknown), NOT silently
+    resolve to classic ESP32. The dangerous case of the substring-match seam; the
+    IDF-target guard (with the fail-closed variant check) catches it."""
     from kicad_mcp.tools.design import _op_import
     from kicad_mcp.utils.firmware.intent import load_intent
     (tmp_path / "config.h").write_text("#define I2C_SDA 21\n#define I2C_SCL 22\n")

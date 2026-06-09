@@ -396,3 +396,59 @@ def test_parse_macros_defines_first_then_const():
     # ordering contract: #defines, then const-decls (regardless of source line order)
     assert [m.name for m in parse_macros("const int B_PIN = 4;\n#define A_PIN 2\n")] \
         == ["A_PIN", "B_PIN"]
+
+
+# --- cold-review fixes: multi-declarator, block comments, esp32 variant guard ---
+
+@pytest.mark.parametrize("line,expected", [
+    # CRITICAL regression: a pin AFTER the first declarator must not be dropped.
+    ("const int TIMEOUT = 5000, LED_PIN = 2;",
+     [("TIMEOUT", MacroKind.OTHER, None), ("LED_PIN", MacroKind.PIN, 2)]),
+    ("const int BUZZER_PIN = 4, LED_PIN = 2;",
+     [("BUZZER_PIN", MacroKind.PIN, 4), ("LED_PIN", MacroKind.PIN, 2)]),
+    ("constexpr uint8_t SDA_PIN = 21, SCL_PIN = 22;",
+     [("SDA_PIN", MacroKind.PIN, 21), ("SCL_PIN", MacroKind.PIN, 22)]),
+])
+def test_const_multi_declarator_no_pin_dropped(line, expected):
+    assert [(m.name, m.kind, m.gpio) for m in parse_const_decls(line)] == expected
+
+
+def test_parse_macros_strips_block_comments():
+    # a commented-out pinout must NOT be read as live pins (for BOTH #define + const)
+    text = ("/* disabled\nconst int FAKE_PIN = 2;\n#define ALSO_FAKE_PIN 3\n*/\n"
+            "const int REAL_PIN = 5;\n#define ANOTHER_PIN 6\n")
+    pins = {m.name for m in parse_macros(text) if m.kind is MacroKind.PIN}
+    assert pins == {"REAL_PIN", "ANOTHER_PIN"}
+
+
+def test_const_inside_if_branch_is_selected():
+    # branch-select strips the inactive branch first, so parse_macros sees one MIC_PIN
+    from kicad_mcp.utils.firmware.parse import select_active_branches
+    text = ("#if CONFIG_IDF_TARGET_ESP32S3\nconst int MIC_PIN = 15;\n"
+            "#else\nconst int MIC_PIN = 4;\n#endif\n")
+    s3 = parse_macros(select_active_branches(text, idf_target_defines("esp32-s3-devkitc-1")))
+    classic = parse_macros(select_active_branches(text, idf_target_defines("esp32dev")))
+    assert [m.gpio for m in s3 if m.name == "MIC_PIN"] == [15]
+    assert [m.gpio for m in classic if m.name == "MIC_PIN"] == [4]
+
+
+@pytest.mark.parametrize("board_id,target", [
+    ("esp32dev", "CONFIG_IDF_TARGET_ESP32"),
+    ("esp32", "CONFIG_IDF_TARGET_ESP32"),
+    ("esp32-pico-d4", "CONFIG_IDF_TARGET_ESP32"),     # classic die name, not a variant
+    ("esp32-cam", "CONFIG_IDF_TARGET_ESP32"),         # classic board, "cam" != family+digit
+    ("esp32-s3-devkitc-1", "CONFIG_IDF_TARGET_ESP32S3"),
+    ("esp32:esp32:esp32h2", "CONFIG_IDF_TARGET_ESP32H2"),
+    ("esp32:esp32:esp32p4", "CONFIG_IDF_TARGET_ESP32P4"),
+])
+def test_idf_target_known(board_id, target):
+    assert idf_target_defines(board_id) == {target}
+
+
+@pytest.mark.parametrize("board_id", [
+    "esp32:esp32:esp32c2", "esp32c5", "esp32-s4", "esp32h4",
+])
+def test_idf_target_unknown_variant_fails_closed(board_id):
+    # an unrecognized esp32 variant must NOT alias to classic ESP32 (empty set ->
+    # resolve_mcu guard returns mcu_unknown, not a silently-wrong board)
+    assert idf_target_defines(board_id) == set()

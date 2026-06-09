@@ -20,10 +20,11 @@ resolves to an `mcu_unknown` gap (no MCU placed).
 
 ### Project layout — PlatformIO `config.h` or Arduino sketch
 
-- The **board** is read from `platformio.ini` (`board = ...`), or — when there's
-  no `platformio.ini`, or its board isn't recognized — from a `board.yaml`
-  **`board_id`** (a board id like `esp32dev` or an Arduino FQBN like
-  `esp32:esp32:esp32`). The sidecar `board_id` wins over platformio.
+- The **board** is read from `platformio.ini` (`board = ...`), or declared
+  explicitly in `board.yaml` via **`board_id`** (a board id like `esp32dev` or an
+  Arduino FQBN like `esp32:esp32:esp32`). A `board.yaml` `board_id` *always* wins
+  over `platformio.ini` — the escape hatch for projects with no `platformio.ini`
+  (an Arduino-IDE sketch) or whose board isn't recognized.
 - **Pin and address definitions** are read from a `config.h`, **or** from an
   Arduino **`.ino` sketch** — point the tool at the sketch folder and all its
   `.ino` tabs are concatenated the way the IDE builds them.

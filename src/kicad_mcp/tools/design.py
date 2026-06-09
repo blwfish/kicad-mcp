@@ -99,32 +99,39 @@ def _gather_sketch(sketch_dir: Path) -> Optional[FirmwareSource]:
 
 def _find_firmware(firmware_path: str) -> Optional[FirmwareSource]:
     """Locate the firmware to parse from a file or directory path. Supports a
-    PlatformIO/ESP-IDF ``config.h`` and an Arduino ``.ino`` sketch (multi-tab). In a
-    folder that has both, ``config.h`` wins (the PlatformIO layout). Returns the
-    source text plus an anchor path for sidecar/board lookup."""
+    PlatformIO/ESP-IDF ``config.h`` and an Arduino ``.ino`` sketch (multi-tab).
+    Returns the source text plus an anchor path for sidecar/board lookup."""
     p = Path(firmware_path)
     if p.is_file():
-        if p.suffix == ".ino":   # one tab -> build the whole sketch from its folder
-            return _gather_sketch(p.parent) or FirmwareSource(p, p.read_text(errors="replace"))
+        if p.suffix == ".ino":
+            # Build the whole sketch from its folder's tabs, but anchor on the FILE
+            # the user named (provenance/sidecar lookup), not the folder-named main.
+            sketch = _gather_sketch(p.parent)
+            text = sketch.text if sketch is not None else p.read_text(errors="replace")
+            return FirmwareSource(p, text)
         return FirmwareSource(p, p.read_text(errors="replace"))
     if p.is_dir():
-        prefer = p / "include" / "config.h"
-        if prefer.exists():
-            return FirmwareSource(prefer, prefer.read_text(errors="replace"))
+        for direct in (p / "include" / "config.h", p / "config.h"):
+            if direct.exists():
+                return FirmwareSource(direct, direct.read_text(errors="replace"))
+        # A top-level .ino sketch wins over a config.h buried DEEPER in the tree —
+        # otherwise a vendored library's nested config.h would hijack the import.
+        sketch = _gather_sketch(p)
+        if sketch is not None:
+            return sketch
         matches = sorted(p.rglob("config.h"))
         if matches:
             if len(matches) > 1:
-                # Monorepo with several projects each carrying a config.h, and no
-                # include/config.h to disambiguate — we pick the alphabetically-first,
-                # which may be the wrong firmware. Warn so a silently-wrong import is
-                # diagnosable; the user can pass the specific config.h path to override.
+                # Several projects each carrying a config.h, none at the top level —
+                # we pick the alphabetically-first, which may be the wrong firmware.
+                # Warn so a silently-wrong import is diagnosable; pass a specific path.
                 logger.warning(
                     "Multiple config.h found under %r; using %s. Pass a specific "
                     "config.h path to disambiguate. Candidates: %s",
                     firmware_path, matches[0], ", ".join(str(m) for m in matches),
                 )
             return FirmwareSource(matches[0], matches[0].read_text(errors="replace"))
-        return _gather_sketch(p)   # no config.h — try an Arduino sketch folder
+        return None
     return None
 
 
