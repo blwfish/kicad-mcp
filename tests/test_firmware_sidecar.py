@@ -486,3 +486,39 @@ def test_expander_terminals_rejected(tmp_path, body, needle):
     with pytest.raises(SidecarError) as e:
         load_sidecar(_write(tmp_path, body))
     assert needle in str(e.value)
+
+
+@pytest.mark.parametrize("fqbn,part", [
+    ("esp32:esp32:esp32", "ESP32-WROOM-32E"),
+    ("esp32:esp32:esp32s3", "ESP32-S3-WROOM-1"),
+    ("esp32:esp32:esp32-s3-devkitc-1", "ESP32-S3-WROOM-1"),
+])
+def test_sidecar_board_id_accepts_arduino_fqbn(tmp_path, fqbn, part):
+    """A board.yaml board_id may be an Arduino FQBN — it resolves the right ESP32."""
+    from kicad_mcp.tools.design import _op_import
+    from kicad_mcp.utils.firmware.intent import load_intent
+    (tmp_path / "config.h").write_text("#define I2C_SDA 21\n#define I2C_SCL 22\n")
+    (tmp_path / "board.yaml").write_text(f"board_id: {fqbn}\n")
+    r = _op_import(firmware_path=str(tmp_path / "config.h"),
+                   out_path=str(tmp_path / "i.yaml"))
+    assert r["status"] == "ok" and r["board_source"] == "sidecar"
+    intent = load_intent(r["intent_path"])
+    assert intent.mcu is not None and intent.mcu.part == part
+
+
+@pytest.mark.parametrize("fqbn", [
+    "esp32:esp32:esp32c3", "esp32:esp32:esp32c6", "esp32:esp32:esp32s2",
+])
+def test_sidecar_board_id_unsupported_esp32_variant_fails_loud(tmp_path, fqbn):
+    """C3/C6/S2 contain 'esp32' as a substring but are UNSUPPORTED chips — they must
+    fail loud (mcu_unknown), NOT silently resolve to classic ESP32. This is the
+    dangerous case of the substring-match seam; the IDF-target guard catches it."""
+    from kicad_mcp.tools.design import _op_import
+    from kicad_mcp.utils.firmware.intent import load_intent
+    (tmp_path / "config.h").write_text("#define I2C_SDA 21\n#define I2C_SCL 22\n")
+    (tmp_path / "board.yaml").write_text(f"board_id: {fqbn}\n")
+    r = _op_import(firmware_path=str(tmp_path / "config.h"),
+                   out_path=str(tmp_path / "i.yaml"))
+    intent = load_intent(r["intent_path"])
+    assert intent.mcu is None
+    assert any(g.kind == "mcu_unknown" for g in intent.gaps)
