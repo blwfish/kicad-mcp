@@ -28,6 +28,12 @@ from kicad_mcp.utils.firmware.parse import (
 
 SCHEMA_VERSION = 8  # v8: DesignIntent.expander_terminals (GPA/GPB -> labeled terminals)
 
+# The reserved MCU reference. Even when the board is unknown (mcu is None), the
+# recovered signal nets reference this slot on the MCU side — the slot a board.yaml
+# board_id / card fills later. Single source so build_intent and validate_intent
+# agree on which ref is "the MCU".
+MCU_REF = "U1"
+
 # Gap categories firmware is structurally blind to — always emitted so the doc
 # is honest about what a human/LLM must still supply.
 _ALWAYS_GAPS = [
@@ -37,6 +43,10 @@ _ALWAYS_GAPS = [
     ("connectors", "Connector parts and pinouts are not in firmware."),
     ("parts", "Part numbers/footprints beyond recognized ICs are not in firmware."),
 ]
+# The honesty manifest every intent must carry — firmware is structurally blind to
+# these, so build_intent emits them unconditionally and validate_intent REQUIRES
+# them (so an AI/hand-authored intent can't quietly look more complete than it is).
+_ALWAYS_GAP_KINDS = frozenset(k for k, _ in _ALWAYS_GAPS)
 
 
 @dataclass
@@ -64,6 +74,9 @@ class Net:
 # (bus/peripheral); orphan/power/passive are gaps or template-supplied.
 NET_KINDS = frozenset({"bus", "peripheral", "orphan", "power", "passive"})
 MODELED_NET_KINDS = frozenset({"bus", "peripheral"})
+_NET_CONFIDENCE = frozenset({"high", "low"})
+# Typed-bus values _build_buses / _bus_type can produce (the validator's allow-list).
+_BUS_TYPES = frozenset({"I2C", "I2S_OUT", "I2S_IN", "UART", "SPI"})
 
 
 @dataclass
@@ -318,7 +331,7 @@ def build_intent(
     # --- MCU ---
     mcu_info = resolve_mcu(board_id)
     if mcu_info is not None:
-        intent.mcu = Mcu(ref="U1", part=mcu_info["part"], lib_id=mcu_info["lib_id"],
+        intent.mcu = Mcu(ref=MCU_REF, part=mcu_info["part"], lib_id=mcu_info["lib_id"],
                          footprint=mcu_info["footprint"])
     else:
         intent.gaps.append(Gap("mcu_unknown",
@@ -387,7 +400,7 @@ def build_intent(
             ))
 
     # --- nets, with first-wins on duplicate net names ---
-    mcu_ref = intent.mcu.ref if intent.mcu else "U1"
+    mcu_ref = intent.mcu.ref if intent.mcu else MCU_REF
     seen_names: set[str] = set()
     for m in parsed.pins:
         # Bus pins are wired by their bus-driven template, not as orphan nets.
@@ -533,6 +546,97 @@ def save_intent(intent: DesignIntent, path: str) -> None:
 def load_intent(path: str) -> DesignIntent:
     with open(path) as f:
         return from_dict(yaml.safe_load(f))
+
+
+def _is_int(v: Any) -> bool:
+    # bool is an int subclass; a strap/gpio of True is not a pin number.
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def validate_intent(intent: DesignIntent) -> list[str]:
+    """Hold a DesignIntent — however produced — to the SAME structural + honesty bar
+    that the deterministic ``build_intent`` guarantees. Returns a list of error
+    strings (empty == valid).
+
+    ``load_intent`` / ``from_dict`` are deliberately forgiving of shape (they drop
+    unknown keys and coerce nulls), so this is the gate that makes a non-parsed
+    intent — one an AI wrote from MicroPython/Rust, or a human hand-edited —
+    trustworthy: a wrong net kind, a dangling endpoint ref, a missing honesty gap,
+    or a claimed-but-absent MCU is caught HERE instead of silently becoming a wrong
+    board. INVARIANT: ``validate_intent(build_intent(...)) == []`` for every input
+    (the validator's bar is exactly the deterministic path's guarantees), pinned by
+    the gap-parity tests. It checks that a lib_id is PRESENT, not that it resolves
+    in KiCad — symbol resolution is generate's job (component_errors)."""
+    errs: list[str] = []
+
+    # --- components: every endpoint must name one of these refs ---
+    # The MCU slot (MCU_REF) is always reserved: when the board is unknown the nets
+    # still reference it on the MCU side (honest — paired with an mcu_unknown gap).
+    known_refs: set[str] = {MCU_REF}
+    if intent.mcu is not None:
+        m = intent.mcu
+        if not (m.ref and m.part and m.lib_id):
+            errs.append("mcu: ref, part and lib_id are all required")
+        if m.ref:
+            known_refs.add(m.ref)
+    for p in intent.peripherals:
+        where = f"peripheral {p.ref!r}"
+        if not p.ref:
+            errs.append("peripheral: ref is required")
+        elif p.ref in known_refs:
+            errs.append(f"{where}: duplicate ref")
+        if not p.type:
+            errs.append(f"{where}: type is required")
+        if not p.lib_id:
+            errs.append(f"{where}: lib_id is required (to place the symbol)")
+        if p.ref:
+            known_refs.add(p.ref)
+
+    # --- nets: valid kind/confidence; endpoints name a real component ---
+    for n in intent.nets:
+        where = f"net {n.name!r}"
+        if not n.name:
+            errs.append("net: name is required")
+        if n.kind not in NET_KINDS:
+            errs.append(f"{where}: kind {n.kind!r} not in {sorted(NET_KINDS)}")
+        if n.confidence not in _NET_CONFIDENCE:
+            errs.append(f"{where}: confidence {n.confidence!r} not in {sorted(_NET_CONFIDENCE)}")
+        for ep in n.endpoints:
+            if not ep.ref:
+                errs.append(f"{where}: an endpoint has no ref")
+            elif ep.ref not in known_refs:
+                errs.append(f"{where}: endpoint ref {ep.ref!r} is not a declared "
+                            "component (an mcu or peripheral)")
+            if ep.gpio is not None and not _is_int(ep.gpio):
+                errs.append(f"{where}: endpoint gpio {ep.gpio!r} must be an integer")
+
+    # --- buses: valid type; signals are role -> int gpio ---
+    for b in intent.buses:
+        where = f"bus {b.name!r}"
+        if not b.name:
+            errs.append("bus: name is required")
+        if b.type not in _BUS_TYPES:
+            errs.append(f"{where}: type {b.type!r} not in {sorted(_BUS_TYPES)}")
+        for role, gpio in (b.signals or {}).items():
+            if not _is_int(gpio):
+                errs.append(f"{where}: signal {role!r} gpio {gpio!r} must be an integer")
+
+    # --- honesty: the always-on gap manifest must be present (explicit) ---
+    gap_kinds = {g.kind for g in intent.gaps}
+    missing = _ALWAYS_GAP_KINDS - gap_kinds
+    if missing:
+        errs.append(f"missing required honesty gap(s) {sorted(missing)} — firmware is "
+                    "structurally blind to these; every intent must declare them")
+
+    # --- honesty: an mcu_unknown gap is present IFF there is no MCU ---
+    has_mcu_unknown = "mcu_unknown" in gap_kinds
+    if intent.mcu is None and not has_mcu_unknown:
+        errs.append("no mcu and no 'mcu_unknown' gap — an intent without an MCU must "
+                    "declare why (it would otherwise look complete)")
+    if intent.mcu is not None and has_mcu_unknown:
+        errs.append("both an mcu and an 'mcu_unknown' gap — contradictory")
+
+    return errs
 
 
 def merge(existing: DesignIntent, fresh: DesignIntent) -> DesignIntent:
