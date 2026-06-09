@@ -254,6 +254,20 @@ def test_port_pins_collected_regression():
     assert {"GPA0", "GPB7", "13", "9", "A0", "~{RESET}"} <= set(refs)
 
 
+def test_pin_refs_keep_falsy_but_valid_pin_drop_empty():
+    """Boundary (CLAUDE.md threshold rule): a pin spelled `0` is valid and must
+    survive; an absent/empty pin is dropped. The peripheral and MCU collectors
+    must agree — `mcu_pin_refs` used to filter the raw value, silently dropping
+    int `0` while keeping `"0"`."""
+    from kicad_mcp.utils.firmware.cards import mcu_pin_refs, peripheral_pin_refs
+    prefs = peripheral_pin_refs({"supply_pins": [0, "", "9"]})
+    assert "0" in prefs and "9" in prefs and "" not in prefs
+    mrefs = mcu_pin_refs({"supply_pin": "VDD", "ground_pin": "GND", "en_pin": "EN",
+                          "boot_pin": 0, "uart_rx_pin": "RX", "uart_tx_pin": ""})
+    assert "0" in mrefs                 # boot_pin: 0 survives (dropped before the fix)
+    assert "" not in mrefs              # empty uart_tx_pin dropped
+
+
 def test_recognized_part_names_maps_raw_to_canonical():
     peripherals = {
         "INMP441": dict(_GOOD_PERIPHERAL, type="INMP441"),

@@ -107,6 +107,9 @@ _MCU_REQUIRED = ("part", "lib_id", "value", "footprint", "board_match",
 # Together they mean a NEW pin-bearing field cannot silently escape the symbol
 # gate — the port_pins lesson (a pin field was added but left out of the
 # collector for a release). CLAUDE.md Rule 3 (one source) + data-capture rule.
+# Limit (be honest): the meta-gate enforces that every field is *classified*, not
+# that the classification is *correct* — a pin field misfiled into NONPIN would
+# still escape. That residual is the one conscious call a human makes per field.
 PERIPHERAL_PIN_FIELDS = ("roles", "supply_pins", "ground_pins", "port_pins")
 PERIPHERAL_NONPIN_FIELDS = ("type", "lib_id", "alt_lib_ids", "value", "footprint",
                             "bus", "module", "aliases", "serves", "realize", "decoupling")
@@ -143,9 +146,11 @@ def peripheral_pin_refs(card: dict[str, Any]) -> list[str]:
 
 
 def mcu_pin_refs(card: dict[str, Any]) -> list[str]:
-    """Every symbol-pin name an MCU card references (driven by ``MCU_PIN_FIELDS``;
-    falsy values skipped, anticipating optional straps for non-ESP32 MCUs)."""
-    return [str(card[f]) for f in MCU_PIN_FIELDS if card.get(f)]
+    """Every symbol-pin name an MCU card references (driven by ``MCU_PIN_FIELDS``).
+    Coerce-then-filter, SYMMETRIC with ``peripheral_pin_refs``: an absent or empty
+    field is skipped, but a falsy-but-valid pin like ``0`` is kept (filtering the
+    raw value would drop int ``0`` while keeping ``"0"`` — a silent asymmetry)."""
+    return [r for r in (str(card[f]) for f in MCU_PIN_FIELDS if f in card) if r]
 
 
 def valid_lib_id(val: Any) -> bool:
