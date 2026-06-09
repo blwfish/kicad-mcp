@@ -124,7 +124,8 @@ CONFIG_SUBKEYS = ("address_strap", "static_ties")
 MCU_PIN_FIELDS = ("supply_pin", "ground_pin", "en_pin", "boot_pin",
                   "uart_rx_pin", "uart_tx_pin")
 MCU_NONPIN_FIELDS = ("part", "lib_id", "alt_lib_ids", "value", "footprint",
-                     "board_match", "needs_3v3", "native_usb", "gpio_pin_prefix")
+                     "board_match", "needs_3v3", "native_usb", "gpio_pin_prefix",
+                     "supply_rail")
 
 
 def peripheral_pin_refs(card: dict[str, Any]) -> list[str]:
@@ -306,6 +307,9 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
     pfx = card.get("gpio_pin_prefix")
     if pfx is not None and not (isinstance(pfx, str) and pfx.strip()):
         errs.append(f"{where}: gpio_pin_prefix must be a non-empty string when present")
+    rail = card.get("supply_rail")
+    if rail is not None and not (isinstance(rail, str) and rail.strip()):
+        errs.append(f"{where}: supply_rail must be a non-empty string when present")
     return errs
 
 

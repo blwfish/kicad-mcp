@@ -44,13 +44,16 @@ class _McuInfoBase(TypedDict):
     value: str
     footprint: str
     needs_3v3: bool      # board needs an EXTERNAL 3V3 regulator (power_tree LDO).
-                         # False when the MCU module regulates on-board (Pico): the
-                         # +3V3 rail is then SOURCED from the MCU's own supply pin.
-    supply_pin: str      # pin NAME on the +3V3 rail (ESP32: VDD input; Pico: 3V3 out)
+                         # False when the MCU module regulates on-board (Pico, a 5V
+                         # Arduino): the supply rail is then SOURCED from the MCU's
+                         # own supply pin.
+    supply_pin: str      # pin NAME on the supply rail (ESP32 VDD/3V3 in; Pico 3V3 out;
+                         # a 5V Arduino +5V out)
     ground_pin: str      # pin NAME for ground (ESP32: the merged "GND" pin)
     uart_rx_pin: str     # console UART RX pin NAME (<- USB bridge TXD)
     uart_tx_pin: str     # console UART TX pin NAME (-> USB bridge RXD)
-    native_usb: bool     # True if the MCU has native USB (no CP2102 bridge needed)
+    native_usb: bool     # True if the board needs no external USB-serial bridge
+                         # (native-USB MCU, or a module with the bridge on-board)
 
 
 class McuInfo(_McuInfoBase, total=False):
@@ -58,7 +61,9 @@ class McuInfo(_McuInfoBase, total=False):
     # total=False inheritance pattern). Absent on MCUs that don't have the feature.
     en_pin: str          # chip-enable pin NAME (pulled up); absent on MCUs w/o a strap
     boot_pin: str        # boot/strap pin NAME (pulled up); absent on MCUs w/o a strap
-    gpio_pin_prefix: str  # GPIO pin-name token prefix (default "IO"; Pico "GPIO")
+    gpio_pin_prefix: str  # GPIO pin-name token prefix (default "IO"; Pico/Nano "GPIO"/"D")
+    supply_rail: str     # the logic rail peripherals tie to (default "+3V3"; a 5V
+                         # AVR Arduino is "+5V"). Single source for the glue templates.
     alt_lib_ids: list[str]
 
 

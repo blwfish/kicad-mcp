@@ -1,0 +1,27 @@
+# Arduino Nano v3 (ATmega328P module) — the first 5V MCU. The board regulates 5V
+# on-board, so needs_3v3=false and the +5V rail is SOURCED from the module's own +5V
+# pin (no external LDO). Logic is 5V: supply_rail=+5V (peripherals tie there, not the
+# ESP32/Pico +3V3). Digital pins are named D{n} (gpio_pin_prefix=D); D0/D1 are the
+# compound D0/RX, D1/TX (the tokenizer matches D0 inside). The KiCad symbol
+# Arduino_Nano_v3.x EXTENDS Arduino_Nano_v2.x — kicad-sch-api resolves the inherited
+# pins (verified). Analog A0-A7 are referenced as "A0" (non-integer) in firmware and
+# are NOT handled by the single D-prefix yet — a known limitation (digital pins only).
+# Self-contained module (on-board USB-serial) so native_usb=true: no external bridge;
+# RESET carries an on-board pull-up so there are no en/boot straps to add.
+part: Arduino-Nano-v3
+lib_id: MCU_Module:Arduino_Nano_v3.x
+value: Arduino_Nano_v3.x
+footprint: Module:Arduino_Nano
+board_match: ["nanoatmega328"]   # PlatformIO classic-Nano id (covers ...328new via substring).
+# Deliberately NOT bare "nano"/"avr:nano": would hijack the Nano Every (ATmega4809),
+# Nano ESP32 and Nano RP2040 Connect (all different silicon/pinout). An Arduino-IDE
+# Nano user sets board.yaml board_id: nanoatmega328 (the escape hatch).
+needs_3v3: false       # on-board 5V regulator; the module's +5V pin sources the rail
+supply_pin: "+5V"      # the +5V OUTPUT pin (drives the +5V rail)
+supply_rail: "+5V"     # 5V logic: peripherals/decoupling/pull-ups tie here, not +3V3
+ground_pin: GND
+uart_rx_pin: D0/RX     # exact symbol pin name (UART0 RX); unused while native_usb=true
+uart_tx_pin: D1/TX     # exact symbol pin name (UART0 TX)
+native_usb: true       # self-contained module (on-board USB-serial) — no CP2102 bridge
+gpio_pin_prefix: D     # digital pins are D{n}, not the ESP32 IO{n} / Pico GPIO{n}
+# (no en_pin / boot_pin: the Nano's RESET has an on-board pull-up, no strap to add)
