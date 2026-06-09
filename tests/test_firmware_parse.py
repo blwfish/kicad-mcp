@@ -440,9 +440,21 @@ def test_const_inside_if_branch_is_selected():
     ("esp32-s3-devkitc-1", "CONFIG_IDF_TARGET_ESP32S3"),
     ("esp32:esp32:esp32h2", "CONFIG_IDF_TARGET_ESP32H2"),
     ("esp32:esp32:esp32p4", "CONFIG_IDF_TARGET_ESP32P4"),
+    # Arduino Nano ESP32 is an S3 — its id hides the chip behind a trailing "esp32".
+    # Must classify as S3 so the resolve guard refuses the classic WROOM-32E card.
+    ("arduino_nano_esp32", "CONFIG_IDF_TARGET_ESP32S3"),
 ])
 def test_idf_target_known(board_id, target):
     assert idf_target_defines(board_id) == {target}
+
+
+def test_arduino_nano_esp32_does_not_resolve_to_classic_wroom():
+    # regression: "arduino_nano_esp32" contains "esp32" and used to mis-resolve to the
+    # classic ESP32-WROOM-32E (wrong pinout — it's an S3 board). No Nano-ESP32 card
+    # exists, so the honest outcome is mcu_unknown, NOT the wrong ESP32.
+    from kicad_mcp.utils.firmware.intent import resolve_mcu
+    assert resolve_mcu("arduino_nano_esp32") is None
+    assert resolve_mcu("esp32dev") is not None   # the classic path still works
 
 
 @pytest.mark.parametrize("board_id", [

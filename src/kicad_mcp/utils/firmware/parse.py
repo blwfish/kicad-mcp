@@ -455,7 +455,12 @@ def idf_target_defines(board_id: Optional[str]) -> set[str]:
     a Pico firmware that guards its pins with ``#ifdef ARDUINO_ARCH_RP2040`` is not
     silently emptied."""
     b = (board_id or "").lower()
-    for key, target in (("s3", "ESP32S3"), ("c3", "ESP32C3"), ("c6", "ESP32C6"),
+    for key, target in (("nano_esp32", "ESP32S3"),  # Arduino Nano ESP32 is an S3 — its
+                                                    # id hides the chip behind "esp32";
+                                                    # checked first so it doesn't fall to
+                                                    # the bare-esp32 (classic) branch and
+                                                    # mis-resolve to the WROOM-32E card.
+                        ("s3", "ESP32S3"), ("c3", "ESP32C3"), ("c6", "ESP32C6"),
                         ("s2", "ESP32S2"), ("h2", "ESP32H2"), ("p4", "ESP32P4")):
         if key in b:
             return {f"CONFIG_IDF_TARGET_{target}"}
