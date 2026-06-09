@@ -58,6 +58,14 @@ class Net:
     origin: str = "imported"     # "imported"|"template"|"user" (see merge())
 
 
+# The net-"kind" universe — single source of truth (CLAUDE.md Rule 3) so tests and
+# consumers import these rather than hand-copying the string literals. MODELED =
+# the high-confidence connections the importer asserts as firmware-as-spec claims
+# (bus/peripheral); orphan/power/passive are gaps or template-supplied.
+NET_KINDS = frozenset({"bus", "peripheral", "orphan", "power", "passive"})
+MODELED_NET_KINDS = frozenset({"bus", "peripheral"})
+
+
 @dataclass
 class Peripheral:
     ref: str

@@ -30,13 +30,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 _FIXROOT = Path(__file__).resolve().parents[1] / "fixtures" / "firmware"
-# Nets the importer models as real, high-confidence connections (a firmware-as-spec
-# claim). Orphan/power/passive are gaps or template-supplied, not import claims.
-_MODELED = {"bus", "peripheral"}
+# The canonical ESP32 fixture (I2C + HX711 + MCP) is rich enough that it MUST always
+# place components and realize >=1 modeled connection. The skips below look green; if
+# this fixture ever hits one, a generate regression is hiding behind it — so we fail
+# instead of skipping for this fixture specifically.
+_KNOWN_GOOD = "firmware"
 
 
 def _corpus() -> list[Path]:
     return sorted(_FIXROOT.glob("**/config.h"))
+
+
+_CORPUS = _corpus()
+if not _CORPUS:   # collection-time guard: an empty parametrize collects ONE
+    raise RuntimeError(                       # [NOTSET] item and passes green — refuse.
+        f"Firmware fixture corpus is empty; expected config.h under {_FIXROOT}. "
+        "Did the fixtures move?")
 
 
 def _intent_for(config_path: Path):
@@ -47,9 +56,10 @@ def _intent_for(config_path: Path):
                         board_id=find_board_id(str(config_path)))
 
 
-@pytest.mark.parametrize("config_path", _corpus(), ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("config_path", _CORPUS, ids=lambda p: p.parent.name)
 def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
     from kicad_mcp.utils.firmware.generate import generate_schematic
+    from kicad_mcp.utils.firmware.intent import MODELED_NET_KINDS, is_remote
     from kicad_mcp.utils.firmware.knowledge import is_terminal_card_type
     from kicad_mcp.utils.netlist_parser import extract_netlist_via_cli
 
@@ -74,8 +84,11 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
             "status 'partial' must mean something placed AND something failed")
 
     if placed == 0:
-        pytest.skip(f"{config_path.parent.name}: nothing placed "
-                    "(MCU unresolved) — connectivity N/A")
+        if config_path.parent.name == _KNOWN_GOOD:
+            pytest.fail(f"{_KNOWN_GOOD} fixture placed nothing — a regression broke "
+                        "MCU/component resolution (this fixture must always place)")
+        pytest.skip(f"{config_path.parent.name}: nothing placed (MCU unresolved) — "
+                    "connectivity N/A")
 
     # --- invariant 4: firmware-as-spec connectivity --------------------------
     nl = extract_netlist_via_cli(str(out))
@@ -88,24 +101,25 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
     for u in unres:
         unresolved_by_net.setdefault(u.get("net"), set()).add(u.get("ref"))
 
-    # Terminal-card peripherals (PIEZO/buzzer/TCRT) are realized as screw terminals
-    # at the EXPAND step, not in bare generate — so on a bare intent their endpoint
-    # is legitimately not-yet-wired (deferred, not lost; the expander/pipeline tests
-    # cover that leg). Exclude them so this bare-intent check tests the contract it
-    # actually governs: the on-board IC connections generate is responsible for.
-    terminal_refs = {p.ref for p in intent.peripherals
-                     if is_terminal_card_type(p.type)}
+    # Mirror generate's OWN offboard set exactly (single source — CLAUDE.md Rule 3):
+    # a peripheral that's remote (board.yaml locus) or a terminal card is realized
+    # off-board / at the expand step, so on a bare intent its endpoint is deferred,
+    # not lost (verified: PIEZO_ADC -> screw terminal after expand). Deriving the
+    # exclusion from the same predicate generate uses means the two can't drift — a
+    # terminal-only copy would silently disagree the day a fixture sets locus:remote.
+    offboard_refs = {p.ref for p in intent.peripherals
+                     if is_remote(intent, p.ref) or is_terminal_card_type(p.type)}
 
     checked = 0
     for net in intent.nets:
-        if net.kind not in _MODELED or len(net.endpoints) < 2:
+        if net.kind not in MODELED_NET_KINDS or len(net.endpoints) < 2:
             continue
         # Every endpoint the intent declares that generate did NOT report as
-        # unresolved (and that isn't a deferred terminal) must actually be
+        # unresolved (and that isn't a deferred off-board endpoint) must actually be
         # connected to this net in the schematic.
         expected = ({ep.ref for ep in net.endpoints}
                     - unresolved_by_net.get(net.name, set())
-                    - terminal_refs)
+                    - offboard_refs)
         got = member_refs(net.name)
         assert expected <= got, (
             f"{config_path.parent.name}: net {net.name!r} ({net.kind}) declares "
@@ -116,5 +130,8 @@ def test_generate_is_honest_and_realizes_intent(config_path, tmp_path):
             assert len(got) >= 2
 
     if checked == 0:
+        if config_path.parent.name == _KNOWN_GOOD:
+            pytest.fail(f"{_KNOWN_GOOD} fixture realized no modeled connection — a "
+                        "regression broke net wiring (it must always wire >=1)")
         pytest.skip(f"{config_path.parent.name}: no realized modeled connections "
                     "to check connectivity against")

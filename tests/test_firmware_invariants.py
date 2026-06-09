@@ -22,7 +22,9 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from kicad_mcp.utils.firmware.intent import (
+    NET_KINDS,
     SCHEMA_VERSION,
+    Bus,
     ConnectorLegend,
     DesignIntent,
     Endpoint,
@@ -41,6 +43,11 @@ from kicad_mcp.utils.firmware.parse import MacroKind, parse_defines, partition
 # build_intent does device-card resolution (yaml-backed, no live KiCad) so it is
 # unit-safe but not free; drop the per-example deadline rather than chase timing.
 _SETTINGS = settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+# A wider budget for the conservation/retention property: its interesting branches
+# (duplicate_signal, bus nets) are rare draws — but they're also pinned by the
+# deterministic tests below, so this just adds breadth.
+_SETTINGS_MANY = settings(deadline=None, max_examples=300,
+                          suppress_health_check=[HealthCheck.too_slow])
 
 
 # --- firmware-text strategy: tokens that exercise every classifier branch, plus
@@ -133,7 +140,7 @@ def test_partition_conserves_every_macro(text):
 
 
 @given(_firmware_text, _boards)
-@_SETTINGS
+@_SETTINGS_MANY
 def test_build_intent_no_crash_and_no_silent_loss(text, board):
     pf = partition(parse_defines(text))
     intent = build_intent(pf, firmware_path="config.h", board_id=board)  # must not raise
@@ -148,8 +155,9 @@ def test_build_intent_no_crash_and_no_silent_loss(text, board):
 
     # Pin conservation law: every net in intent.nets comes 1:1 from the pin loop,
     # so every valid pin became exactly one net, OR was consumed by a typed bus
-    # (bus-stem), OR was dropped as a duplicate WITH a gap. Nothing vanishes — a
-    # stray `continue` that skips a pin without recording it breaks this equality.
+    # (bus-stem), OR — if not bus-stem — was dropped as a duplicate WITH a gap.
+    # Nothing vanishes: a stray `continue` that skips a pin without recording it
+    # breaks this equality.
     bus_stems = {b.name for b in intent.buses}
     bus_stem_pins = sum(1 for m in pf.pins if m.peripheral_hint in bus_stems)
     dup_gaps = sum(1 for g in intent.gaps if g.kind == "duplicate_signal")
@@ -174,6 +182,33 @@ def test_typed_bus_pins_conserved_as_bus_stem(defs, stem, btype):
     assert len(intent.nets) + bus_stem_pins + dup_gaps == len(pf.pins)
 
 
+@pytest.mark.parametrize("defs,expected_dups", [
+    (["FOO_PIN 5", "FOO_PIN 10"], 1),     # same stripped name -> 2nd is a duplicate
+    (["BAR_GPIO 3", "BAR_PIN 7"], 1),     # _GPIO and _PIN both strip to "BAR"
+])
+def test_duplicate_signal_gap_conserved(defs, expected_dups):
+    # Deterministic coverage of the conservation law's duplicate term: the fuzz hits
+    # duplicate_signal <1% of the time (a rare stripped-name collision), so that term
+    # is ~never exercised there. Pin it: a duplicate pin is dropped WITH a gap, and
+    # the law still balances.
+    pf = partition(parse_defines("\n".join(f"#define {d}" for d in defs)))
+    intent = build_intent(pf, firmware_path="config.h", board_id="esp32dev")
+    dup_gaps = sum(1 for g in intent.gaps if g.kind == "duplicate_signal")
+    assert dup_gaps == expected_dups
+    bus_stem_pins = sum(1 for m in pf.pins
+                        if m.peripheral_hint in {b.name for b in intent.buses})
+    assert len(intent.nets) + bus_stem_pins + dup_gaps == len(pf.pins)
+
+
+def test_invalid_pin_gap_emitted_not_dropped():
+    # invalid_pins is empty in ~4/5 fuzz examples, making the retention assertion
+    # trivially true there; pin it deterministically (-1 sentinel + out-of-range).
+    pf = partition(parse_defines("#define BUZZER_PIN -1\n#define LED_GPIO 99"))
+    assert len(pf.invalid_pins) == 2
+    intent = build_intent(pf, firmware_path="config.h", board_id="esp32dev")
+    assert sum(1 for g in intent.gaps if g.kind == "invalid_pin") == 2
+
+
 # --- 2. round-trip ----------------------------------------------------------
 
 @given(_firmware_text, _boards)
@@ -195,10 +230,21 @@ _endpoint = st.builds(
 )
 _net = st.builds(
     Net, name=st.text(min_size=1, max_size=8),
-    kind=st.sampled_from(["bus", "peripheral", "orphan", "power", "passive"]),
+    kind=st.sampled_from(sorted(NET_KINDS)),
     confidence=st.sampled_from(["high", "low"]),
     endpoints=st.lists(_endpoint, max_size=3),
     bus=_opt_str, origin=st.sampled_from(["imported", "template", "user"]),
+)
+_bus = st.builds(
+    Bus, name=st.text(min_size=1, max_size=8),
+    type=st.sampled_from(["I2C", "I2S_OUT", "I2S_IN", "SPI", "UART"]),
+    signals=st.dictionaries(st.sampled_from(["SDA", "SCL", "BCLK", "WS", "MOSI"]),
+                            st.integers(min_value=0, max_value=48), max_size=4),
+    address=st.one_of(st.none(), st.integers(min_value=0, max_value=0x7F)),
+    origin=st.sampled_from(["imported", "template", "user"]),
+    resolved_part=_opt_str,
+    part_provenance=_opt_str,
+    part_is_assumption=st.booleans(),
 )
 _expander = st.builds(
     ExpanderSpec, device=st.text(min_size=1, max_size=6),
@@ -217,8 +263,9 @@ _legend = st.builds(
     positions=st.lists(st.text(max_size=4), max_size=3), device=st.text(max_size=6),
 )
 # Directly-built intent: deliberately populates the fields the firmware parser
-# NEVER emits (expander_terminals, placements, connector_legends) so the
-# round-trip covers them too.
+# NEVER emits (buses with non-empty signals, expander_terminals, placements,
+# connector_legends, placement_hints) so the round-trip covers their serialization
+# too — a Bus field renamed without updating _only_fields would surface here.
 _constructed_intent = st.builds(
     DesignIntent,
     schema_version=st.just(SCHEMA_VERSION),
@@ -229,11 +276,16 @@ _constructed_intent = st.builds(
     peripherals=st.lists(st.builds(
         Peripheral, ref=_ref, type=st.text(min_size=1, max_size=6),
         lib_id=_opt_str), max_size=3),
+    buses=st.lists(_bus, max_size=3),
     nets=st.lists(_net, max_size=4),
     gaps=st.lists(st.builds(Gap, kind=st.text(min_size=1, max_size=6),
                             detail=st.text(max_size=8)), max_size=3),
     connector_legends=st.lists(_legend, max_size=2),
     placements=st.dictionaries(_ref, _placement, max_size=2),
+    placement_hints=st.dictionaries(_ref, st.fixed_dictionaries({
+        "edge": st.sampled_from(["top", "bottom", "left", "right"]),
+        "rotation": st.sampled_from([0, 90, 180, 270]),
+    }), max_size=2),
     expander_terminals=st.dictionaries(_ref, _expander, max_size=2),
     provenance=st.just({}),
 )
