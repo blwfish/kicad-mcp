@@ -280,3 +280,15 @@ def test_example_i2s_expands_to_one_wired_ics43434():
     assert signal_nets == {"MIC_BCLK", "MIC_WS", "MIC_SD"}, signal_nets
     assert "assumed_part" not in {g.kind for g in ex.gaps}
     assert validate_intent(ex) == []
+
+
+def test_authored_bus_with_ambiguous_signals_rejected():
+    # an AI-authored full-duplex I2S bus (both DIN and SD) declared as I2S_OUT
+    # must be rejected loudly — the I2S_OUT template would realize only its own
+    # roles and silently drop the input direction.
+    from kicad_mcp.utils.firmware.intent import Bus, DesignIntent, Mcu, validate_intent
+    it = DesignIntent(mcu=Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E"),
+                      buses=[Bus("CODEC", "I2S_OUT",
+                                 {"BCLK": 4, "WS": 5, "DIN": 6, "SD": 7})])
+    errs = validate_intent(it)
+    assert any("CODEC" in e and "I2S_IN" in e for e in errs)

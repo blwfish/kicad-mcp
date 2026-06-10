@@ -477,3 +477,33 @@ def test_validate_mcu_card_rejects_chip_outside_vocabulary():
     assert any("chip" in e and "vocabulary" in e for e in validate_mcu_card(bad))
     bad = dict(_GOOD_MCU, chip="ESP32")          # case matters: ids are lowercase
     assert any("chip" in e for e in validate_mcu_card(bad))
+
+
+def test_packaged_board_match_entries_classify_to_their_cards_chip():
+    # THE load-bearing consistency meta-test: every packaged card's board_match
+    # entry (and its part name) must classify — via board_chip — to the card's
+    # own declared chip. A board_match id added to the wrong card, or one the
+    # classifier can't place, would otherwise only surface as a resolution bug
+    # at a user's desk. (A *test*, not a validate_mcu_card rule, because a
+    # third-party card may legitimately list an exact-only id the classifier
+    # can't place — exact ids bypass the fuzzy path entirely.)
+    from kicad_mcp.utils.firmware.parse import board_chip
+    _, mcus = load_cards()
+    for card in mcus:
+        for bm in card["board_match"]:
+            assert board_chip(bm) == card["chip"], (
+                f"{card['part']}: board_match entry {bm!r} classifies to "
+                f"{board_chip(bm)!r}, card declares {card['chip']!r}")
+        # the part NAME is exact-match-trusted (and chip-filtered in the fuzzy
+        # pass), so it may be unclassifiable — but it must NEVER classify to a
+        # DIFFERENT chip than its own card declares.
+        assert board_chip(card["part"]) in (card["chip"], None)
+
+
+def test_packaged_cards_declare_known_chips():
+    _, mcus = load_cards()
+    from kicad_mcp.utils.firmware.parse import CHIP_TARGET_DEFINES
+    by_part = {c["part"]: c["chip"] for c in mcus}
+    assert by_part == {"ESP32-WROOM-32E": "esp32", "ESP32-S3-WROOM-1": "esp32s3",
+                       "RaspberryPi-Pico": "rp2040", "Arduino-Nano-v3": "avr"}
+    assert set(by_part.values()) <= set(CHIP_TARGET_DEFINES)

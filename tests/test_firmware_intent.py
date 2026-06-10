@@ -432,3 +432,10 @@ def test_full_duplex_i2s_stem_gets_loud_gap_and_conserves_pins():
     # every pin survives as an orphan net — flagged, not dropped
     names = {n.name for n in it.nets if n.kind == "orphan"}
     assert {"CODEC_BCLK", "CODEC_WS", "CODEC_DIN", "CODEC_SD"} <= names
+
+
+def test_bus_types_three_family_set():
+    from kicad_mcp.utils.firmware.intent import _bus_type, _bus_types
+    roles = {"SDA", "SCL", "BCLK", "WS", "DIN", "SD"}
+    assert _bus_types(roles) == {"I2C", "I2S_IN", "I2S_OUT"}
+    assert _bus_type(roles) is None

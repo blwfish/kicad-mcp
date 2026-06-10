@@ -481,13 +481,6 @@ CHIP_TARGET_DEFINES: dict[str, frozenset[str]] = {
     "avr":     frozenset({"ARDUINO_ARCH_AVR", "__AVR__"}),
 }
 
-# "pico" as a word of the board id (start/end or non-alphanumeric boundaries):
-# matches ``pico`` / ``pico_w`` / ``raspberry-pi-pico``, but NOT ``tinypico`` (an
-# ESP32 board!) nor ``pico2`` (RP2350 — different silicon). A bare substring here
-# was the verified tinypico/pico2 silently-wrong-chip bug.
-_PICO_TOKEN_RE = re.compile(r"(?<![a-z0-9])pico(?![a-z0-9])")
-
-
 def board_chip(board_id: Optional[str]) -> Optional[str]:
     """Classify a platformio board id / Arduino FQBN to a ``CHIP_TARGET_DEFINES``
     chip, or None when the id can't be confidently classified (the caller fails
@@ -516,11 +509,20 @@ def board_chip(board_id: Optional[str]) -> Optional[str]:
         return "esp32"
     # Non-ESP32 archs — AFTER the esp32 check so an "esp32-pico" board (a real ESP32)
     # lands above, never here.
-    # Pico 2 / RP2350 first: "pico2"/"rpipico2" contain pico-ish text but are
-    # DIFFERENT silicon with no card — fail closed, never alias to the RP2040.
-    if "rp2350" in b or "pico2" in b:
+    # Pico 2 / RP2350 first: "pico2"/"rpipico2"/"pico-2" contain pico-ish text but
+    # are DIFFERENT silicon with no card — fail closed, never alias to the RP2040.
+    # Separator-normalized so a hyphen/underscore can't smuggle a Pico 2 past the
+    # check ("pico-2" would otherwise prefix-match "pico" below).
+    bn = b.replace("-", "").replace("_", "")
+    if "rp2350" in bn or "pico2" in bn:
         return None
-    if "rp2040" in b or "rpipico" in b or _PICO_TOKEN_RE.search(b):
+    # RP2040 forms are CURATED, not a word-match: "pico" as a *word* still
+    # over-matches real ESP32 products whose ids end in it (m5stamp-pico is an
+    # ESP32-PICO-D4 — cold-review catch). Accept the chip name itself, the
+    # rpipico/raspberry-pi family ids, and a "pico..." PREFIX (pico / pico_w /
+    # picow); anything else pico-ish fails closed to an honest unknown.
+    if ("rp2040" in b or "rpipico" in b or "raspberry" in b
+            or b.startswith("pico")):
         return "rp2040"
     if "atmega" in b:        # nanoatmega328 / megaatmega2560 — classic-AVR cores
         return "avr"

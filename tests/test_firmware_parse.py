@@ -528,3 +528,16 @@ def test_idf_target_defines_is_a_view_over_the_chip_table():
     assert idf_target_defines("tinypico") == set()   # was the RP2040 arch macros (wrong!)
     assert idf_target_defines("pico2") == set()      # RP2350 must never alias to RP2040
     assert idf_target_defines("esp32dev") == set(CHIP_TARGET_DEFINES["esp32"])
+
+
+def test_board_chip_pico_curated_forms_not_word_match():
+    # COLD-REVIEW catch: m5stamp-pico is a real ESP32 product (ESP32-PICO-D4)
+    # whose id has "pico" word-bounded at the end — a word-boundary rule still
+    # over-matched it. RP2040 forms are curated (rp2040/rpipico/raspberry
+    # substrings, "pico" PREFIX); everything else pico-ish fails closed.
+    from kicad_mcp.utils.firmware.parse import board_chip
+    assert board_chip("m5stamp-pico") is None      # ESP32, must NOT classify rp2040
+    assert board_chip("picow") == "rp2040"         # "pico" prefix form
+    assert board_chip("pico-2") is None            # separator-normalized Pico 2
+    assert board_chip("rpi_pico_2") is None
+    assert board_chip("seeed_xiao_rp2040") == "rp2040"

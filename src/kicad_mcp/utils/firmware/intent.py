@@ -825,8 +825,8 @@ def validate_intent(intent: DesignIntent) -> list[str]:
             # silently produces nothing for this bus (a declared device vanishes) or
             # — when the roles straddle two families, e.g. full-duplex I2S — the
             # type's template realizes only its own roles and drops the rest.
-            errs.append(f"{where}: signals {sorted(b.signals or {})} do not "
-                        f"unambiguously form a {b.type} bus (roles match "
+            errs.append(f"{where}: signals {sorted(b.signals or {})} do not form "
+                        f"a {b.type} bus (roles match "
                         f"{sorted(_bus_types(set(b.signals or {}))) or 'no'} bus types)")
         for role, gpio in (b.signals or {}).items():
             # Symmetric with the endpoint gpio check above: a bus signal pin must be

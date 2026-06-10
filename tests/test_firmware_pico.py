@@ -184,3 +184,9 @@ def test_pico2_rp2350_fails_closed(board_id):
 def test_pico_word_boundary_resolution(board_id, part):
     mi = resolve_mcu(board_id)
     assert (mi["part"] if mi else None) == part
+
+
+def test_m5stamp_pico_is_not_a_raspberry_pico():
+    # cold-review catch: a real ESP32 product (M5Stamp Pico) with word-bounded
+    # "pico" in its id must stay an honest mcu_unknown, not the RP2040 module.
+    assert resolve_mcu("m5stamp-pico") is None

@@ -224,19 +224,41 @@ def mpu6050_ad0_strap(address: int) -> tuple[str, str] | None:
 
 def resolve_mcu(board_id: str | None) -> McuInfo | None:
     """Map a platformio ``board =`` id to an MCU card. Exact ``board_match`` /
-    ``part`` first, then the card with the LONGEST ``board_match`` substring in
-    the id (deterministic; no hand-ordered precedence — removes the Rule-3 seam
-    where ``esp32-s3`` had to precede ``esp32``)."""
+    ``part`` first (trusted curation), then — only among cards whose declared
+    ``chip`` matches ``board_chip(board_id)`` — the card with the LONGEST
+    ``board_match`` substring in the id (deterministic; no hand-ordered
+    precedence — removes the Rule-3 seam where ``esp32-s3`` had to precede
+    ``esp32``)."""
     if not board_id:
         return None
     key = board_id.strip().lower()
     _, mcus = _cards()
-    best: dict[str, Any] | None = None
-    best_len = -1
+    # Pass 1 — EXACT board_match/part ids are trusted unconditionally: they are
+    # curated facts (and the board.yaml board_id opt-in escape hatch, e.g.
+    # building a pin-compatible Pico 2 design by declaring board_id: pico).
     for card in mcus:
         matches = [str(s).lower() for s in card["board_match"]] + [str(card["part"]).lower()]
         if key in matches:
             return cast(McuInfo, card)
+    # Pass 2 — FUZZY substring match, but only among cards whose DECLARED ``chip``
+    # equals the board id's classified chip: identity from data, not a second
+    # text-match. (The old post-hoc guard re-ran the substring classifier on the
+    # card's part string, so when the board-side classifier over-matched — "pico"
+    # inside tinypico — both sides agreed on the wrong answer; and rejecting only
+    # the BEST match could drop a correct lower-scoring card.) An unclassifiable
+    # board (chip None) takes no fuzzy match at all — the front end emits an
+    # mcu_unknown gap rather than the wrong pinout. NOTE this verifies the CHIP
+    # axis only — board_match must still pick the right MODULE (a Feather RP2040
+    # is rp2040 silicon but not a Pico; it must not match).
+    chip = board_chip(board_id)
+    if chip is None:
+        return None
+    best: dict[str, Any] | None = None
+    best_len = -1
+    for card in mcus:
+        if card.get("chip") != chip:
+            continue
+        matches = [str(s).lower() for s in card["board_match"]] + [str(card["part"]).lower()]
         for sub in matches:
             if sub and sub in key and len(sub) > best_len:
                 best, best_len = card, len(sub)
@@ -244,20 +266,7 @@ def resolve_mcu(board_id: str | None) -> McuInfo | None:
                 # deterministic tie-break by part, for stability
                 if str(card["part"]) < str(best["part"]):
                     best = card
-    if best is None:
-        return None
-    # Guard the FUZZY substring match (an exact board_match/part above is trusted):
-    # the board id's classified chip must equal the card's DECLARED ``chip`` —
-    # identity from data, not a second text-match. (The old guard re-ran the
-    # substring classifier on the card's part string, so when the board-side
-    # classifier over-matched — "pico" inside tinypico — both sides agreed on the
-    # wrong answer.) board_chip None (unclassifiable) fails closed: the front end
-    # emits an mcu_unknown gap rather than the wrong pinout. NOTE the guard
-    # verifies the CHIP axis only — board_match must still pick the right MODULE
-    # (a Feather RP2040 is rp2040 silicon but not a Pico; it must not match).
-    if board_chip(board_id) != best.get("chip"):
-        return None
-    return cast(McuInfo, best)
+    return cast(McuInfo, best) if best is not None else None
 
 
 def resolve_mcu_by_part(part: str | None) -> McuInfo | None:
