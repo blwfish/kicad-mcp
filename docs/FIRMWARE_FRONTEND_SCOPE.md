@@ -17,9 +17,20 @@ the authoritative scope statement; if the tool surprises you, check it here firs
 | `RaspberryPi-Pico` (RP2040) | `pico`, `rpipico`, `rp2040:rp2040:rpipico` | first non-ESP32 MCU; 3V3 logic; pins `GPIO{n}`, on-board 3V3 regulator (no external LDO), native USB, no EN/BOOT straps |
 | `Arduino-Nano-v3` (ATmega328P) | `nanoatmega328` | first **5V** MCU; **+5V** logic rail (sourced from the module's +5V pin, no external LDO); pins `D{n}` (digital) and `A{n}` (analog — `#define X A0` resolves to the symbol's `A0` pin); on-board USB-serial |
 
-Any other board id — including ESP32-**C3 / C6 / S2**, bare **`rp2040`**, the other
-Nano variants (**Nano Every / ESP32 / RP2040 Connect** — different silicon), and every
-other unsupported chip — resolves to an `mcu_unknown` gap (no MCU placed). Modules-only.
+Any other board id — including ESP32-**C3 / C6 / S2**, bare **`rp2040`**, the
+**Pico 2** (`pico2` / `rpipico2` — RP2350, different silicon), boards whose id only
+*looks* pico-ish (**`tinypico`** is an ESP32), the other Nano variants (**Nano Every /
+ESP32 / RP2040 Connect** — different silicon), and every other unsupported chip —
+resolves to an `mcu_unknown` gap (no MCU placed). Modules-only.
+
+Resolution is guarded by **declared chip identity**: every MCU card declares its
+build-target `chip` (`esp32`, `esp32s3`, `rp2040`, `avr` — the same ids a
+PlatformIO/Arduino user names) from a closed vocabulary, and a fuzzy board-id match
+is accepted only when the board id independently classifies to that same chip.
+A board the classifier can't place fails closed to `mcu_unknown` rather than
+guessing. To *opt in* to a pin-compatible approximation (e.g. build a Pico 2 design
+on the Pico card — same module pinout), set `board.yaml` `board_id: pico`
+explicitly: exact ids are trusted past the guard.
 
 ### Project layout — PlatformIO `config.h` or Arduino sketch
 

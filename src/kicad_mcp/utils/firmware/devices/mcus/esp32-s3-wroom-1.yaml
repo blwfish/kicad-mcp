@@ -2,6 +2,7 @@
 # WROOM-32), so the IO{n} mapper works; UART0 pins are named RXD0/TXD0.
 # board_match carries ALL S3 board-id variants (omitting any is a regression).
 part: ESP32-S3-WROOM-1
+chip: esp32s3        # declared build-target identity (resolve_mcu fuzzy-guard axis)
 lib_id: RF_Module:ESP32-S3-WROOM-1
 value: ESP32-S3-WROOM-1
 footprint: RF_Module:ESP32-S3-WROOM-1

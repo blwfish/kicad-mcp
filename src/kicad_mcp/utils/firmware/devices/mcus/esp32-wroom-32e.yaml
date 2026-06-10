@@ -1,6 +1,7 @@
 # ESP32-WROOM-32E. GND is the symbol's MERGED pin (physical pads 1/15/38/39
 # collapsed) — resolve it by NAME, never by number.
 part: ESP32-WROOM-32E
+chip: esp32          # declared build-target identity (resolve_mcu fuzzy-guard axis)
 lib_id: RF_Module:ESP32-WROOM-32E
 value: ESP32-WROOM-32E
 footprint: RF_Module:ESP32-WROOM-32E

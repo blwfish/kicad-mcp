@@ -398,3 +398,37 @@ def test_hub_buzzer_resolves_via_piezo_terminal_card():
 
 def test_hub_module_assumption_flagged():
     assert any(g.kind == "module_assumption" for g in _hub_intent().gaps)
+
+
+# --- bus-family ambiguity: a stem straddling two families must never be half-
+# realized by whichever family's template was checked first (audit finding) -----
+
+def test_bus_type_ambiguous_role_sets_return_none():
+    from kicad_mcp.utils.firmware.intent import _bus_type, _bus_types
+    # full-duplex I2S (both DIN and SD on one stem) matches both directions
+    assert _bus_types({"BCLK", "WS", "DIN", "SD"}) == {"I2S_IN", "I2S_OUT"}
+    assert _bus_type({"BCLK", "WS", "DIN", "SD"}) is None
+    # I2C pins sharing a stem with I2S pins — was silently classified I2C
+    assert _bus_type({"SDA", "SCL", "BCLK", "WS", "DIN"}) is None
+    # single-family sets are unchanged
+    assert _bus_type({"SDA", "SCL"}) == "I2C"
+    assert _bus_type({"BCLK", "WS", "DIN"}) == "I2S_OUT"
+    assert _bus_type({"SCK", "WS", "SD"}) == "I2S_IN"      # ICS-43434 naming
+    assert _bus_type({"RX", "TX"}) == "UART"
+    assert _bus_type({"MOSI", "MISO"}) == "SPI"
+
+
+def test_full_duplex_i2s_stem_gets_loud_gap_and_conserves_pins():
+    # before the fix this classified I2S_OUT and the amp template realized only
+    # BCLK/WS/DIN — the SD (input) pin silently vanished from the board.
+    from kicad_mcp.utils.firmware.parse import parse_macros
+    fw = ("#define CODEC_BCLK_PIN 4\n#define CODEC_WS_PIN 5\n"
+          "#define CODEC_DIN_PIN 6\n#define CODEC_SD_PIN 7\n")
+    it = build_intent(partition(parse_macros(fw)), firmware_path="c.h",
+                      board_id="esp32dev")
+    assert not any(b.name == "CODEC" for b in it.buses)
+    amb = [g for g in it.gaps if g.kind == "bus_ambiguous"]
+    assert len(amb) == 1 and "CODEC" in amb[0].detail and "I2S" in amb[0].detail
+    # every pin survives as an orphan net — flagged, not dropped
+    names = {n.name for n in it.nets if n.kind == "orphan"}
+    assert {"CODEC_BCLK", "CODEC_WS", "CODEC_DIN", "CODEC_SD"} <= names

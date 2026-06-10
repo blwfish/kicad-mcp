@@ -69,7 +69,7 @@ _GOOD_PERIPHERAL = {
     "ground_pins": ["1"], "module": True,
 }
 _GOOD_MCU = {
-    "part": "FOO-MCU", "lib_id": "Lib:Foo", "value": "Foo", "footprint": "FP:Foo",
+    "part": "FOO-MCU", "chip": "esp32", "lib_id": "Lib:Foo", "value": "Foo", "footprint": "FP:Foo",
     "board_match": ["foo"], "needs_3v3": True, "supply_pin": "VDD",
     "ground_pin": "GND", "en_pin": "EN", "boot_pin": "IO0",
     "uart_rx_pin": "RX", "uart_tx_pin": "TX", "native_usb": False,
@@ -468,3 +468,12 @@ def test_neither_peripheral_nor_mcu_raises(tmp_path):
     (tmp_path / "huh.yaml").write_text("foo: bar\n")
     with pytest.raises(CardError):
         load_cards(extra_dirs=[str(tmp_path)])
+
+
+def test_validate_mcu_card_rejects_chip_outside_vocabulary():
+    # the chip vocabulary is CLOSED (parse.CHIP_TARGET_DEFINES) so two cards can
+    # never spell one chip two ways and the guard always compares comparable ids.
+    bad = dict(_GOOD_MCU, chip="rp2350")
+    assert any("chip" in e and "vocabulary" in e for e in validate_mcu_card(bad))
+    bad = dict(_GOOD_MCU, chip="ESP32")          # case matters: ids are lowercase
+    assert any("chip" in e for e in validate_mcu_card(bad))

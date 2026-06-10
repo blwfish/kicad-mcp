@@ -461,37 +461,80 @@ def select_active_branches(text: str, defines: set[str]) -> str:
 _ESP32_VARIANT_RE = re.compile(r"esp32[-_]?[cshp]\d")
 
 
-def idf_target_defines(board_id: Optional[str]) -> set[str]:
-    """Map a platformio board id / Arduino FQBN to the preprocessor TARGET macros
-    its firmware uses to select a pin block, so ``select_active_branches`` keeps the
-    matching ``#if`` branch (and so ``resolve_mcu``'s target guard rejects a board
-    whose target disagrees with the resolved card). ESP-IDF targets
-    (CONFIG_IDF_TARGET_*) for ESP32; the Arduino-core arch macros for the RP2040 so
-    a Pico firmware that guards its pins with ``#ifdef ARDUINO_ARCH_RP2040`` is not
-    silently emptied."""
+# The CLOSED chip vocabulary — build-target granularity (what a PlatformIO
+# ``platform``/Arduino-IDE user already names), the single source of truth tying
+# together (1) what ``board_chip`` may classify a board id as, (2) what an MCU
+# card may declare as its ``chip``, and (3) the preprocessor target macros that
+# chip's firmware guards pins with. One table so the three can never drift;
+# ``validate_mcu_card`` rejects any card chip not listed here.
+CHIP_TARGET_DEFINES: dict[str, frozenset[str]] = {
+    "esp32":   frozenset({"CONFIG_IDF_TARGET_ESP32"}),
+    "esp32s2": frozenset({"CONFIG_IDF_TARGET_ESP32S2"}),
+    "esp32s3": frozenset({"CONFIG_IDF_TARGET_ESP32S3"}),
+    "esp32c3": frozenset({"CONFIG_IDF_TARGET_ESP32C3"}),
+    "esp32c6": frozenset({"CONFIG_IDF_TARGET_ESP32C6"}),
+    "esp32h2": frozenset({"CONFIG_IDF_TARGET_ESP32H2"}),
+    "esp32p4": frozenset({"CONFIG_IDF_TARGET_ESP32P4"}),
+    "rp2040":  frozenset({"ARDUINO_ARCH_RP2040", "PICO_RP2040"}),
+    # classic AVR (ATmega328/2560 Arduino cores). avr-gcc defines __AVR__;
+    # the Arduino core adds ARDUINO_ARCH_AVR.
+    "avr":     frozenset({"ARDUINO_ARCH_AVR", "__AVR__"}),
+}
+
+# "pico" as a word of the board id (start/end or non-alphanumeric boundaries):
+# matches ``pico`` / ``pico_w`` / ``raspberry-pi-pico``, but NOT ``tinypico`` (an
+# ESP32 board!) nor ``pico2`` (RP2350 — different silicon). A bare substring here
+# was the verified tinypico/pico2 silently-wrong-chip bug.
+_PICO_TOKEN_RE = re.compile(r"(?<![a-z0-9])pico(?![a-z0-9])")
+
+
+def board_chip(board_id: Optional[str]) -> Optional[str]:
+    """Classify a platformio board id / Arduino FQBN to a ``CHIP_TARGET_DEFINES``
+    chip, or None when the id can't be confidently classified (the caller fails
+    closed: ``resolve_mcu`` stays mcu_unknown rather than guessing a chip).
+
+    This is a TEXT heuristic over the board id — it cannot know what silicon an
+    arbitrary id names (``tinypico`` is an ESP32; nothing in the text says so).
+    Its honesty contract is therefore: prefer None over a guess, and fail closed
+    on every known-newer-silicon pattern (esp32 variant families, pico2/RP2350)."""
     b = (board_id or "").lower()
-    for key, target in (("nano_esp32", "ESP32S3"),  # Arduino Nano ESP32 is an S3 — its
-                                                    # id hides the chip behind "esp32";
-                                                    # checked first so it doesn't fall to
-                                                    # the bare-esp32 (classic) branch and
-                                                    # mis-resolve to the WROOM-32E card.
-                        ("s3", "ESP32S3"), ("c3", "ESP32C3"), ("c6", "ESP32C6"),
-                        ("s2", "ESP32S2"), ("h2", "ESP32H2"), ("p4", "ESP32P4")):
+    for key, chip in (("nano_esp32", "esp32s3"),  # Arduino Nano ESP32 is an S3 — its
+                                                  # id hides the chip behind "esp32";
+                                                  # checked first so it doesn't fall to
+                                                  # the bare-esp32 (classic) branch and
+                                                  # mis-resolve to the WROOM-32E card.
+                      ("s3", "esp32s3"), ("c3", "esp32c3"), ("c6", "esp32c6"),
+                      ("s2", "esp32s2"), ("h2", "esp32h2"), ("p4", "esp32p4")):
         if key in b:
-            return {f"CONFIG_IDF_TARGET_{target}"}
+            return chip
     # Unknown esp32 variant (esp32c2, esp32x9, …): fail closed rather than alias to
     # classic ESP32 — the substring `"esp32" in b` can't tell a new die from the
     # classic one (the dangerous case of the C3/C6 silently-wrong-board seam).
     if _ESP32_VARIANT_RE.search(b):
-        return set()
+        return None
     if "esp32" in b:
-        return {"CONFIG_IDF_TARGET_ESP32"}
+        return "esp32"
     # Non-ESP32 archs — AFTER the esp32 check so an "esp32-pico" board (a real ESP32)
-    # lands above, never here. RP2040/Pico firmware commonly guards pins under
-    # ARDUINO_ARCH_RP2040 / PICO_RP2040.
-    if "rp2040" in b or "pico" in b:
-        return {"ARDUINO_ARCH_RP2040", "PICO_RP2040"}
-    return set()
+    # lands above, never here.
+    # Pico 2 / RP2350 first: "pico2"/"rpipico2" contain pico-ish text but are
+    # DIFFERENT silicon with no card — fail closed, never alias to the RP2040.
+    if "rp2350" in b or "pico2" in b:
+        return None
+    if "rp2040" in b or "rpipico" in b or _PICO_TOKEN_RE.search(b):
+        return "rp2040"
+    if "atmega" in b:        # nanoatmega328 / megaatmega2560 — classic-AVR cores
+        return "avr"
+    return None
+
+
+def idf_target_defines(board_id: Optional[str]) -> set[str]:
+    """The preprocessor TARGET macros a board's firmware uses to select a pin
+    block, so ``select_active_branches`` keeps the matching ``#if`` branch —
+    e.g. a Pico firmware guarding pins with ``#ifdef ARDUINO_ARCH_RP2040`` is not
+    silently emptied. Thin view over ``board_chip`` + ``CHIP_TARGET_DEFINES``
+    (the single chip table); empty set when the board can't be classified."""
+    chip = board_chip(board_id)
+    return set(CHIP_TARGET_DEFINES.get(chip, frozenset())) if chip else set()
 
 
 @dataclass

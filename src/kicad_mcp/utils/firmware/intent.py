@@ -262,28 +262,46 @@ def _peripheral_type_from_addr(name: str) -> str:
     return address_base(name) or name
 
 
-def _bus_type(roles: set[str]) -> Optional[str]:
-    """Classify a bus instance from the signal roles present on it."""
+def _bus_types(roles: set[str]) -> set[str]:
+    """EVERY bus family the role set matches — the classifier's full answer, so a
+    role set straddling two families (full-duplex I2S with both DIN and SD; I2C
+    pins sharing a stem with I2S pins) is visible as ambiguity instead of being
+    silently collapsed to whichever family happened to be checked first. The
+    bus templates each realize only their own family's roles, so a first-match
+    pick would silently drop the other family's pins."""
+    out: set[str] = set()
     if {"SDA", "SCL"} <= roles:
-        return "I2C"
+        out.add("I2C")
     has_clk = bool(roles & {"BCLK", "SCK"})
     has_ws = bool(roles & {"LRC", "LRCK", "WS"})
     if has_clk and has_ws and "DIN" in roles:
-        return "I2S_OUT"
-    if has_clk and has_ws and (roles & {"SD", "DOUT"}):
-        return "I2S_IN"
+        out.add("I2S_OUT")
+    if has_clk and has_ws and bool(roles & {"SD", "DOUT"}):
+        out.add("I2S_IN")
     if {"RX", "TX"} <= roles or {"RXD", "TXD"} <= roles:
-        return "UART"
+        out.add("UART")
     if {"MOSI", "MISO"} <= roles:
-        return "SPI"
-    return None
+        out.add("SPI")
+    return out
 
 
-def _build_buses(parsed: ParsedFirmware, known_types: set[str]) -> list[Bus]:
+def _bus_type(roles: set[str]) -> Optional[str]:
+    """Classify a bus instance from the signal roles present on it; None when the
+    roles match no family OR more than one (ambiguous — the caller must not
+    realize a bus that would drop the other family's pins)."""
+    matches = _bus_types(roles)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _build_buses(parsed: ParsedFirmware, known_types: set[str],
+                 gaps: list[Gap]) -> list[Bus]:
     """Group stemmed pin macros into typed buses. Pins whose stem is a recognized
     peripheral (HX711, …) or has no stem (bare ``I2C_SDA``) are left to the
     existing peripheral/bus-net path — this captures project-convention buses
-    like ``CMCA_I2S`` that have no ``_ADDR`` device."""
+    like ``CMCA_I2S`` that have no ``_ADDR`` device. A stem whose roles match
+    MORE THAN ONE bus family (e.g. a full-duplex I2S codec with both DIN and SD)
+    is not realized as a bus — its pins fall through to individual orphan nets
+    (no pin lost) and a ``bus_ambiguous`` gap says why."""
     groups: dict[str, dict[str, int]] = {}
     for m in parsed.pins:
         stem, role = m.peripheral_hint, m.signal_role
@@ -293,10 +311,18 @@ def _build_buses(parsed: ParsedFirmware, known_types: set[str]) -> list[Bus]:
     addr_by_stem = {_peripheral_type_from_addr(a.name): a.address for a in parsed.addresses}
     buses: list[Bus] = []
     for stem, signals in groups.items():
-        btype = _bus_type(set(signals))
-        if btype is None:
+        matches = _bus_types(set(signals))
+        if len(matches) > 1:
+            gaps.append(Gap(
+                kind="bus_ambiguous",
+                detail=f"pin group {stem!r} {sorted(signals)} matches multiple bus "
+                       f"types {sorted(matches)} (e.g. full-duplex I2S); no single "
+                       f"bus template can realize it — pins kept as orphan nets",
+            ))
             continue
-        buses.append(Bus(name=stem, type=btype, signals=signals,
+        if not matches:
+            continue
+        buses.append(Bus(name=stem, type=next(iter(matches)), signals=signals,
                          address=addr_by_stem.get(stem)))
     return buses
 
@@ -387,7 +413,7 @@ def build_intent(
             by_bus.setdefault(p.bus, []).append(p)
 
     # --- typed buses (project-convention buses a bus-driven template expands) ---
-    intent.buses = _build_buses(parsed, set(periph_by_type))
+    intent.buses = _build_buses(parsed, set(periph_by_type), intent.gaps)
     bus_stems = {b.name for b in intent.buses}
 
     # --- pin conflicts: one GPIO claimed by two different signals (flag, never
@@ -795,10 +821,13 @@ def validate_intent(intent: DesignIntent) -> list[str]:
         if b.type not in _BUS_TYPES:
             errs.append(f"{where}: type {b.type!r} not in {sorted(_BUS_TYPES)}")
         elif _bus_type(set(b.signals or {})) != b.type:
-            # signals must match the declared type, else expand silently produces
-            # nothing for this bus (a declared device vanishes from the board).
-            errs.append(f"{where}: signals {sorted(b.signals or {})} do not form a "
-                        f"{b.type} bus — its role set doesn't match the type")
+            # signals must UNAMBIGUOUSLY match the declared type, else expand either
+            # silently produces nothing for this bus (a declared device vanishes) or
+            # — when the roles straddle two families, e.g. full-duplex I2S — the
+            # type's template realizes only its own roles and drops the rest.
+            errs.append(f"{where}: signals {sorted(b.signals or {})} do not "
+                        f"unambiguously form a {b.type} bus (roles match "
+                        f"{sorted(_bus_types(set(b.signals or {}))) or 'no'} bus types)")
         for role, gpio in (b.signals or {}).items():
             # Symmetric with the endpoint gpio check above: a bus signal pin must be
             # an int AND in range, else expand wires a pin gpio_to_pin_number can't

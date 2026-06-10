@@ -6,6 +6,7 @@
 # LED) so firmware using them resolves to an honest unresolved-endpoint gap. Native
 # USB: no CP2102 bridge, and no EN/BOOT straps (RUN/3V3_EN carry on-board pull-ups).
 part: RaspberryPi-Pico
+chip: rp2040         # declared build-target identity (resolve_mcu fuzzy-guard axis)
 lib_id: MCU_Module:RaspberryPi_Pico
 value: RaspberryPi_Pico
 footprint: Module:RaspberryPi_Pico_Common_Unspecified

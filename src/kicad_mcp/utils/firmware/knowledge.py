@@ -28,7 +28,7 @@ from kicad_mcp.utils.firmware.cards import (
     load_cards,
     recognized_part_names,
 )
-from kicad_mcp.utils.firmware.parse import canonical_type, idf_target_defines
+from kicad_mcp.utils.firmware.parse import board_chip, canonical_type
 
 __all__ = [
     "McuInfo", "PeripheralInfo", "resolve_mcu", "resolve_mcu_by_part",
@@ -40,6 +40,9 @@ __all__ = [
 
 class _McuInfoBase(TypedDict):
     part: str
+    chip: str            # build-target chip id from parse.CHIP_TARGET_DEFINES
+                         # (esp32/esp32s3/rp2040/avr/...) — the DECLARED identity
+                         # resolve_mcu's fuzzy-match guard verifies against
     lib_id: str
     value: str
     footprint: str
@@ -244,11 +247,15 @@ def resolve_mcu(board_id: str | None) -> McuInfo | None:
     if best is None:
         return None
     # Guard the FUZZY substring match (an exact board_match/part above is trusted):
-    # the resolved card's IDF target must agree with the board's. Without this a
-    # bare "esp32" substring mis-resolves a C3/C6/S2 board to the classic
-    # WROOM-32E (h-resolve-mcu); stay unknown so the front end emits an
-    # mcu_unknown gap rather than the wrong pinout.
-    if idf_target_defines(board_id) != idf_target_defines(str(best["part"])):
+    # the board id's classified chip must equal the card's DECLARED ``chip`` —
+    # identity from data, not a second text-match. (The old guard re-ran the
+    # substring classifier on the card's part string, so when the board-side
+    # classifier over-matched — "pico" inside tinypico — both sides agreed on the
+    # wrong answer.) board_chip None (unclassifiable) fails closed: the front end
+    # emits an mcu_unknown gap rather than the wrong pinout. NOTE the guard
+    # verifies the CHIP axis only — board_match must still pick the right MODULE
+    # (a Feather RP2040 is rp2040 silicon but not a Pico; it must not match).
+    if board_chip(board_id) != best.get("chip"):
         return None
     return cast(McuInfo, best)
 

@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 import yaml
 
-from kicad_mcp.utils.firmware.parse import canonical_type
+from kicad_mcp.utils.firmware.parse import CHIP_TARGET_DEFINES, canonical_type
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 
 # Packaged seed library shipped with the tool (the KiCad-library model — no
@@ -99,7 +99,7 @@ _PERIPHERAL_REQUIRED = ("type", "lib_id", "value", "footprint", "roles",
 # strap (the RP2040/Pico) simply omits them and mcu_straps places no pull-ups.
 # They stay in MCU_PIN_FIELDS so, WHEN present, their values are still validated
 # against the real symbol.
-_MCU_REQUIRED = ("part", "lib_id", "value", "footprint", "board_match",
+_MCU_REQUIRED = ("part", "chip", "lib_id", "value", "footprint", "board_match",
                  "needs_3v3", "supply_pin", "ground_pin",
                  "uart_rx_pin", "uart_tx_pin", "native_usb")
 
@@ -123,7 +123,7 @@ PERIPHERAL_NONPIN_FIELDS = ("type", "lib_id", "alt_lib_ids", "value", "footprint
 CONFIG_SUBKEYS = ("address_strap", "static_ties")
 MCU_PIN_FIELDS = ("supply_pin", "ground_pin", "en_pin", "boot_pin",
                   "uart_rx_pin", "uart_tx_pin")
-MCU_NONPIN_FIELDS = ("part", "lib_id", "alt_lib_ids", "value", "footprint",
+MCU_NONPIN_FIELDS = ("part", "chip", "lib_id", "alt_lib_ids", "value", "footprint",
                      "board_match", "needs_3v3", "native_usb", "gpio_pin_prefix",
                      "supply_rail")
 
@@ -310,6 +310,13 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
     rail = card.get("supply_rail")
     if rail is not None and not (isinstance(rail, str) and rail.strip()):
         errs.append(f"{where}: supply_rail must be a non-empty string when present")
+    # chip is the DECLARED build-target identity the resolve_mcu fuzzy guard
+    # verifies against — a closed vocabulary (parse.CHIP_TARGET_DEFINES) so two
+    # cards can't spell the same chip differently and the guard can't compare
+    # strings that never had a chance to be equal. Unknown chip = loud error.
+    if card["chip"] not in CHIP_TARGET_DEFINES:
+        errs.append(f"{where}: chip {card['chip']!r} not in the known chip "
+                    f"vocabulary {sorted(CHIP_TARGET_DEFINES)}")
     return errs
 
 

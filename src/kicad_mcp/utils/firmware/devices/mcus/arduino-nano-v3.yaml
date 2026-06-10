@@ -4,11 +4,12 @@
 # ESP32/Pico +3V3). Digital pins are named D{n} (gpio_pin_prefix=D); D0/D1 are the
 # compound D0/RX, D1/TX (the tokenizer matches D0 inside). The KiCad symbol
 # Arduino_Nano_v3.x EXTENDS Arduino_Nano_v2.x — kicad-sch-api resolves the inherited
-# pins (verified). Analog A0-A7 are referenced as "A0" (non-integer) in firmware and
-# are NOT handled by the single D-prefix yet — a known limitation (digital pins only).
+# pins (verified). Analog A0-A7 are referenced as "A0" (non-integer) in firmware,
+# carried as Endpoint.pin names, and resolved against the symbol's A{n} pins by NAME.
 # Self-contained module (on-board USB-serial) so native_usb=true: no external bridge;
 # RESET carries an on-board pull-up so there are no en/boot straps to add.
 part: Arduino-Nano-v3
+chip: avr            # declared build-target identity (resolve_mcu fuzzy-guard axis)
 lib_id: MCU_Module:Arduino_Nano_v3.x
 value: Arduino_Nano_v3.x
 footprint: Module:Arduino_Nano

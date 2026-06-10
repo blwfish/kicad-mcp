@@ -160,11 +160,27 @@ def test_validate_mcu_card_rejects_missing_required_field():
     assert any("supply_pin" in e for e in validate_mcu_card(mi))
 
 
-def test_pico2_resolves_to_pico_card_known_approximation():
-    # DOCUMENTED boundary: "pico2" (RP2350 / Pico 2) currently resolves to the RP2040
-    # Pico card via the "pico" substring. The Pico 2 is pin-compatible with the Pico
-    # (same module footprint/pinout), so this is a safe approximation today; when an
-    # RP2350 card is added its more-specific board_match will take precedence. Pinned
-    # so the behavior is a conscious choice, not a silent surprise.
-    mi = resolve_mcu("pico2")
-    assert mi is not None and mi["part"] == "RaspberryPi-Pico"
+@pytest.mark.parametrize("board_id", ["pico2", "pico2_w", "rpipico2", "rp2350-custom"])
+def test_pico2_rp2350_fails_closed(board_id):
+    # REVERSED documented boundary: "pico2" (RP2350 / Pico 2) used to resolve to the
+    # RP2040 Pico card as a pin-compatible approximation. With the chip guard the
+    # chip axis is load-bearing (RP2350-guarded #if pin blocks would select wrongly),
+    # so RP2350 ids now fail closed to an honest mcu_unknown. A user who WANTS the
+    # pin-compatible approximation opts in explicitly via board.yaml board_id: pico
+    # (an exact board_match, trusted past the guard).
+    assert resolve_mcu(board_id) is None
+
+
+@pytest.mark.parametrize("board_id,part", [
+    ("tinypico", None),            # an ESP32 board with "pico" glued to "tiny" — the
+                                   # verified silently-wrong-chip over-match; no esp32
+                                   # text in the id, so honest mcu_unknown.
+    ("pico_w", "RaspberryPi-Pico"),            # "pico" as a word still matches
+    ("rpipicow", "RaspberryPi-Pico"),          # arduino-pico Pico W id
+    ("esp32-pico-d4", "ESP32-WROOM-32E"),      # classic-ESP32 die: realized as the
+                                               # WROOM module (same chip, our canonical
+                                               # classic-esp32 realization)
+])
+def test_pico_word_boundary_resolution(board_id, part):
+    mi = resolve_mcu(board_id)
+    assert (mi["part"] if mi else None) == part

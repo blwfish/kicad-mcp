@@ -490,3 +490,41 @@ def test_const_analog_pin_uses_same_classifier():
     from kicad_mcp.utils.firmware.parse import parse_const_decls
     ms = parse_const_decls("const int LDR_PIN = A0;\n")
     assert len(ms) == 1 and ms[0].analog_pin == "A0" and ms[0].kind is MacroKind.PIN
+
+
+# --- board_chip: the single chip classifier behind idf_target_defines AND the
+# resolve_mcu guard (chip identity declared on cards, classified from board ids) --
+
+def test_board_chip_classifies_known_families():
+    from kicad_mcp.utils.firmware.parse import CHIP_TARGET_DEFINES, board_chip
+    assert board_chip("esp32dev") == "esp32"
+    assert board_chip("esp32-s3-devkitc-1") == "esp32s3"
+    assert board_chip("pico") == "rp2040"                # word-bounded
+    assert board_chip("pico_w") == "rp2040"
+    assert board_chip("raspberry-pi-pico") == "rp2040"
+    assert board_chip("rpipico") == "rp2040"             # curated substring (no boundary)
+    assert board_chip("rp2040:rp2040:rpipico") == "rp2040"
+    assert board_chip("nanoatmega328") == "avr"
+    assert board_chip("megaatmega2560") == "avr"
+    # every answer the classifier can give is in the closed vocabulary
+    for b in ("esp32dev", "esp32-s3-devkitc-1", "pico", "nanoatmega328"):
+        assert board_chip(b) in CHIP_TARGET_DEFINES
+
+
+def test_board_chip_fails_closed_where_text_cannot_carry_identity():
+    from kicad_mcp.utils.firmware.parse import board_chip
+    assert board_chip("tinypico") is None        # ESP32 board; "pico" is not a word here
+    assert board_chip("pico2") is None           # RP2350 — different silicon, no card
+    assert board_chip("pico2_w") is None
+    assert board_chip("rpipico2") is None        # contains "rpipico" but is RP2350
+    assert board_chip("rp2350-custom") is None
+    assert board_chip("unknown-board") is None
+    assert board_chip("") is None and board_chip(None) is None
+
+
+def test_idf_target_defines_is_a_view_over_the_chip_table():
+    from kicad_mcp.utils.firmware.parse import CHIP_TARGET_DEFINES, idf_target_defines
+    assert idf_target_defines("nanoatmega328") == {"ARDUINO_ARCH_AVR", "__AVR__"}
+    assert idf_target_defines("tinypico") == set()   # was the RP2040 arch macros (wrong!)
+    assert idf_target_defines("pico2") == set()      # RP2350 must never alias to RP2040
+    assert idf_target_defines("esp32dev") == set(CHIP_TARGET_DEFINES["esp32"])
