@@ -90,16 +90,21 @@ class SweepStats:
 
 def sketch_dirs(root: Path) -> list[Path]:
     """Every directory under ``root`` containing at least one .ino (deduped).
-    For a project tree, only libdeps examples are corpus (the project's OWN
-    firmware is measured by its own design() runs, not the sweep)."""
-    dirs: set[Path] = set()
-    for ino in root.rglob("*.ino"):
-        if ".pio" in ino.parts and "libdeps" not in ino.parts:
-            continue  # build artifacts that aren't libdeps examples
-        if root.name == "mr-esp32" and "libdeps" not in ino.parts:
-            continue  # skip the user's own firmware in a project tree
-        dirs.add(ino.parent)
-    return sorted(dirs)
+    A root containing ANY libdeps sketches is a PROJECT tree: only its libdeps
+    examples are corpus — the project's OWN firmware is measured by its own
+    design() runs, not the sweep. Detected STRUCTURALLY (libdeps presence),
+    not by directory name: the original ``root.name == "mr-esp32"`` check was
+    a hardcoded basename carrying the project-tree distinction, which silently
+    leaked own firmware into the corpus for any other project tree passed via
+    --root (cold-review catch)."""
+    inos = list(root.rglob("*.ino"))
+    libdeps = [i for i in inos if "libdeps" in i.parts]
+    if libdeps:
+        picked = libdeps
+    else:
+        # plain examples tree: everything except .pio build artifacts
+        picked = [i for i in inos if ".pio" not in i.parts]
+    return sorted({i.parent for i in picked})
 
 
 def sweep_one(d: Path, board: str) -> dict:
@@ -134,9 +139,12 @@ def libdeps_backlog(project_root: Path) -> tuple[Counter, Counter, Counter]:
             continue
         project = str(d).split("/.pio/")[0]
         for env in d.iterdir():
-            if env.is_dir():
+            if env.is_dir() and not env.name.startswith("."):
                 for lib in env.iterdir():
-                    if lib.is_dir():
+                    # dot-dirs are PlatformIO bookkeeping (.cache), not
+                    # libraries — counting one as an unmapped "lib" would
+                    # silently pollute the backlog census (cold-review catch).
+                    if lib.is_dir() and not lib.name.startswith("."):
                         per_project.add((project, lib.name))
     devices: Counter = Counter()
     excluded: Counter = Counter()
@@ -158,8 +166,17 @@ def main() -> int:
     ap.add_argument("--json", default=None, help="write full per-sketch rows here")
     args = ap.parse_args()
 
-    roots = ([tuple(r.split("=", 2)) for r in args.root] if args.root
-             else DEFAULT_ROOTS)
+    roots: list[tuple[str, str, str]] = []
+    for r in args.root or []:
+        parts = r.split("=", 2)
+        if len(parts) != 3 or not all(p.strip() for p in parts):
+            ap.error(f"--root must be name=board_id=path, got {r!r}")
+        roots.append((parts[0], parts[1], parts[2]))
+    if not roots:
+        roots = list(DEFAULT_ROOTS)
+    paths = [p for _, _, p in roots]
+    if len(set(paths)) != len(paths):
+        ap.error("duplicate --root path(s) would double-count the corpus")
 
     all_rows: list[dict] = []
     manifest: dict = {}
@@ -173,6 +190,13 @@ def main() -> int:
             manifest[name] = {"path": path, "error": "missing"}
             continue
         dirs = sketch_dirs(root)
+        if not dirs:
+            # Present-but-EMPTY is the same disease one boundary over: a wiped
+            # examples dir, a remounted-empty volume, or a regressed discovery
+            # glob must not read as a 0-sketch green run (cold-review catch —
+            # the original guard checked existence, not non-emptiness).
+            manifest[name] = {"path": path, "error": "no_sketches_found"}
+            continue
         rows = [sweep_one(d, board) for d in dirs]
         all_rows += rows
         st = SweepStats(
@@ -214,15 +238,17 @@ def main() -> int:
             {"manifest": manifest, "rows": all_rows}, indent=1))
         print(f"\nrows -> {args.json}")
 
+    # Exit precedence: crash (1) outranks corpus trouble (2) when both occur —
+    # a fail-safe violation is the rarer, more actionable signal. Both messages
+    # are always printed; only the exit code picks the headline.
     if crashed:
         print("\nFAIL-SAFE VIOLATIONS:")
         for r in crashed:
             print(f"  {r['dir']}\n    {r['crash']}")
-        return 1
-    if any(m.get("error") for m in manifest.values()):
-        print("\nMISSING CORPUS ROOT(S) — see manifest above")
-        return 2
-    return 0
+    bad_roots = [n for n, m in manifest.items() if m.get("error")]
+    if bad_roots:
+        print(f"\nMISSING/EMPTY CORPUS ROOT(S): {bad_roots} — see manifest above")
+    return 1 if crashed else (2 if bad_roots else 0)
 
 
 if __name__ == "__main__":

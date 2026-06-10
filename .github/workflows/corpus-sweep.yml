@@ -8,13 +8,14 @@ name: Corpus Sweep (nightly fail-safe)
 # the printed manifest distinguishes them. Deliberately NOT part of the per-PR
 # suite: a new third-party sketch must never block an unrelated PR.
 #
-# NOTE: GitHub only fires `schedule` from the DEFAULT branch's workflow file,
-# so the cron activates when this lands on main (next release). Until then run
-# it manually via workflow_dispatch with the dev branch selected.
+# NOTE: GitHub fires `schedule` — and surfaces workflow_dispatch — only for
+# workflow files present on the DEFAULT branch, so BOTH activate when this
+# lands on main (next release). Until then, run the sweep directly:
+#   uv run python scripts/corpus_sweep.py
 
 on:
   schedule:
-    - cron: "10 9 * * *"   # daily 09:10 UTC (clear of the Mon 09:45 dep audit)
+    - cron: "10 9 * * *"   # daily 09:10 UTC
   workflow_dispatch:
 
 permissions:

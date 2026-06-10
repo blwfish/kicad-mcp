@@ -44,8 +44,10 @@ def test_sweep_one_never_drops_a_row_on_empty_sketch(tmp_path):
 
 
 def test_sketch_dirs_skips_own_firmware_in_project_tree(tmp_path):
-    # in a project tree (root named mr-esp32) only libdeps examples are corpus
-    root = tmp_path / "mr-esp32"
+    # in ANY project tree (detected structurally by libdeps presence, NOT by
+    # directory name — the name check was a cold-review catch) only libdeps
+    # examples are corpus
+    root = tmp_path / "some-other-project"
     own = _mk_sketch(root / "myproj/src", "main", "void loop(){}")
     dep = _mk_sketch(root / "myproj/.pio/libdeps/esp32dev/SomeLib/examples",
                      "Demo", "void loop(){}")
@@ -60,7 +62,7 @@ def test_missing_root_exits_loudly(tmp_path):
          f"gone=esp32dev={tmp_path}/does-not-exist"],
         capture_output=True, text=True)
     assert r.returncode == 2
-    assert "MISSING CORPUS ROOT" in r.stdout
+    assert "MISSING/EMPTY CORPUS ROOT" in r.stdout
 
 
 def test_backlog_counts_per_project_not_per_example(tmp_path):
@@ -89,3 +91,41 @@ def test_lib_to_device_excludes_have_no_silent_fourth_label():
     # entry can be "didn't notice".
     for lib, dev in cs.LIB_TO_DEVICE.items():
         assert dev is None or (isinstance(dev, str) and dev.strip()), lib
+
+
+def test_present_but_empty_root_exits_loudly(tmp_path):
+    # cold-review catch: an EXISTING root with zero sketches (wiped examples,
+    # remounted-empty volume, regressed glob) must not read as a green run.
+    empty = tmp_path / "corpus"
+    empty.mkdir()
+    r = subprocess.run([sys.executable, str(SCRIPT), "--root",
+                        f"e=esp32dev={empty}"], capture_output=True, text=True)
+    assert r.returncode == 2
+    assert "no_sketches_found" in r.stdout
+
+
+def test_malformed_root_arg_is_a_clean_usage_error(tmp_path):
+    r = subprocess.run([sys.executable, str(SCRIPT), "--root", "oops-no-equals"],
+                       capture_output=True, text=True)
+    assert r.returncode == 2 and "name=board_id=path" in r.stderr
+    assert "Traceback" not in r.stderr   # usage error, not a fake crash signal
+
+
+def test_duplicate_root_paths_rejected(tmp_path):
+    d = _mk_sketch(tmp_path, "s", "#define LED_PIN 2\nvoid loop(){}")
+    r = subprocess.run([sys.executable, str(SCRIPT),
+                        "--root", f"a=esp32dev={tmp_path}",
+                        "--root", f"b=esp32dev={tmp_path}"],
+                       capture_output=True, text=True)
+    assert r.returncode == 2 and "double-count" in r.stderr
+
+
+def test_backlog_ignores_platformio_bookkeeping_dotdirs(tmp_path):
+    # a .cache/ dir inside a libdeps env is tooling, not a library — it must
+    # not appear in the unmapped census (cold-review catch).
+    root = tmp_path / "tree"
+    _mk_sketch(root / "p/.pio/libdeps/esp32dev/ESP32Servo/examples", "X",
+               "void loop(){}")
+    (root / "p/.pio/libdeps/esp32dev/.cache").mkdir(parents=True)
+    devices, _excluded, unmapped = cs.libdeps_backlog(root)
+    assert not unmapped and devices == {"servo header": 1}
