@@ -525,3 +525,22 @@ def test_sidecar_board_id_unsupported_esp32_variant_fails_loud(tmp_path, fqbn):
     intent = load_intent(r["intent_path"])
     assert intent.mcu is None
     assert any(g.kind == "mcu_unknown" for g in intent.gaps)
+
+
+# --- single-source-of-truth parity pins (/audit-syntactic-seams findings) --------
+
+def test_expander_power_vocab_matches_template_rail_map():
+    # sidecar validates power against _EXPANDER_POWER; templates realize it via
+    # _RAIL_FOR_POWER — two hand-typed copies of one closed set. Drift currently
+    # fails LOUD (bracket lookup), but only by accident; pin the parity.
+    from kicad_mcp.utils.firmware.sidecar import _EXPANDER_POWER
+    from kicad_mcp.utils.firmware.templates import _RAIL_FOR_POWER
+    assert set(_RAIL_FOR_POWER) == _EXPANDER_POWER
+
+
+def test_commonly_remote_bus_types_are_real_bus_types():
+    # the advisory set hand-copies members of intent._BUS_TYPES; a renamed bus
+    # type would silently stop the placement nudge from firing.
+    from kicad_mcp.utils.firmware.intent import _BUS_TYPES
+    from kicad_mcp.utils.firmware.sidecar import _COMMONLY_REMOTE_BUS_TYPES
+    assert _COMMONLY_REMOTE_BUS_TYPES <= _BUS_TYPES
