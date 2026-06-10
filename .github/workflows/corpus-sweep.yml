@@ -1,0 +1,48 @@
+name: Corpus Sweep (nightly fail-safe)
+
+# NON-GATING measurement job (Phase 3 harness): runs the deterministic firmware
+# front end over every local example sketch (framework installs + per-project
+# libdeps — machine state on the self-hosted runner, read in place, never
+# copied into the repo) and asserts the fail-safe contract: foreign code never
+# crashes the importer. A red run means a code regression OR a corpus change —
+# the printed manifest distinguishes them. Deliberately NOT part of the per-PR
+# suite: a new third-party sketch must never block an unrelated PR.
+#
+# NOTE: GitHub only fires `schedule` from the DEFAULT branch's workflow file,
+# so the cron activates when this lands on main (next release). Until then run
+# it manually via workflow_dispatch with the dev branch selected.
+
+on:
+  schedule:
+    - cron: "10 9 * * *"   # daily 09:10 UTC (clear of the Mon 09:45 dep audit)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    name: corpus fail-safe sweep
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Run corpus sweep
+        run: uv run python scripts/corpus_sweep.py --json corpus-sweep-results.json
+
+      - name: Upload per-sketch results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-sweep-results
+          path: corpus-sweep-results.json
+          retention-days: 30
