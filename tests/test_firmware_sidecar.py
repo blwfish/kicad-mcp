@@ -544,3 +544,31 @@ def test_commonly_remote_bus_types_are_real_bus_types():
     from kicad_mcp.utils.firmware.intent import _BUS_TYPES
     from kicad_mcp.utils.firmware.sidecar import _COMMONLY_REMOTE_BUS_TYPES
     assert _COMMONLY_REMOTE_BUS_TYPES <= _BUS_TYPES
+
+
+# --- /audit-tests findings: pin every key of the numeric-validation loop --------
+# Mutation run showed a tuple-member-deletion mutant (drop "keepout_mm" from the
+# loop) survived the suite — only drill_mm pinned the shared loop, leaving the
+# other keys' membership unprotected. One rejection test per key kills it.
+
+@pytest.mark.parametrize("key", ["drill_mm", "inset_mm", "keepout_mm"])
+def test_mounting_holes_each_numeric_key_rejects_nonpositive(tmp_path, key):
+    with pytest.raises(SidecarError, match=key):
+        load_sidecar(_write(tmp_path, f"mounting_holes: {{{key}: -1}}\n"))
+    with pytest.raises(SidecarError, match=key):
+        load_sidecar(_write(tmp_path, f"mounting_holes: {{{key}: 0}}\n"))
+
+
+def test_mounting_holes_count_float_equality_accepted(tmp_path):
+    # PINNED CONTRACT: `2.0 in (0, 2, 4)` is True by numeric equality, so a YAML
+    # float count is accepted. Harmless downstream (count is used arithmetically);
+    # pinned so a future strictness change is a conscious choice, not a surprise.
+    sc = load_sidecar(_write(tmp_path, "mounting_holes: {count: 2.0}\n"))
+    assert sc.mounting_holes == {"count": 2.0}
+
+
+def test_mounting_holes_tiny_drill_accepted_here(tmp_path):
+    # PINNED CONTRACT: this layer checks only >0 — manufacturability range sanity
+    # is the pipeline's job (see docstring). 0.001mm passes validation.
+    assert load_sidecar(_write(tmp_path,
+        "mounting_holes: {drill_mm: 0.001}\n")).mounting_holes == {"drill_mm": 0.001}
