@@ -55,7 +55,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
     "mypy>=2.1.0",
-    "pip-audit>=2.10.0",
+    "pip-audit>=2.10.1",
     "pytest-timeout>=2.3.0",
     "hypothesis>=6.0",
 ]
