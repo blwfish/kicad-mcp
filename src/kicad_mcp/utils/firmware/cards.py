@@ -190,6 +190,14 @@ def _validate_config(cfg: Any, where: str, errs: list[str]) -> None:
     if not isinstance(cfg, dict):
         errs.append(f"{where}: config must be a mapping")
         return
+    # Reject an unknown config sub-key (a typo like `strap` for `address_strap`
+    # would otherwise be SILENTLY ignored — the intended strap never computed, the
+    # address pins left untied). CONFIG_SUBKEYS is the closed set the meta-gate also
+    # enforces is fully classified. Mirrors the mounting-holes unknown-key check.
+    unknown = set(cfg) - set(CONFIG_SUBKEYS)
+    if unknown:
+        errs.append(f"{where}: unknown config sub-key(s) {sorted(unknown)} not in "
+                    f"{sorted(CONFIG_SUBKEYS)}")
     if "address_strap" in cfg:
         _validate_address_strap(cfg["address_strap"], where, errs)
     for tie in cfg.get("static_ties", []) or []:
@@ -214,6 +222,19 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
         errs.append(f"{where}: roles must be a mapping role->pin")
     if not isinstance(card["module"], bool):
         errs.append(f"{where}: module must be a bool")
+    # supply_pins / ground_pins are PIN-bearing lists (peripheral_pin_refs collects
+    # them with `isinstance(v, list)`). A bare string slips that isinstance check —
+    # so a card writing `supply_pins: VDD` would pass structural validation while
+    # ALL its supply/ground pin refs vanish from the symbol gate AND from net
+    # injection (silent floating power). Require a list of non-empty pin strings
+    # (empty list is valid — a device with no supply/ground pin).
+    for f in ("supply_pins", "ground_pins"):
+        v = card[f]
+        if not isinstance(v, list) or not all(
+            isinstance(p, str) and p.strip() for p in v
+        ):
+            errs.append(f"{where}: {f} must be a list of pin-name strings "
+                        f"(got {type(v).__name__})")
     _validate_aliases(card.get("aliases"), where, errs)
     _validate_alt_lib_ids(card.get("alt_lib_ids"), where, errs)
     _validate_port_pins(card.get("port_pins"), where, errs)
@@ -307,9 +328,18 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
     pfx = card.get("gpio_pin_prefix")
     if pfx is not None and not (isinstance(pfx, str) and pfx.strip()):
         errs.append(f"{where}: gpio_pin_prefix must be a non-empty string when present")
+    # supply_rail names the board power net peripherals/decoupling/pull-ups tie to
+    # (a 5V-logic MCU sets +5V). It MUST be a canonical rail in _RAILS — KiCad net
+    # names are case-sensitive, so a wrong-case "+5v" would NOT join the board's
+    # "+5V" rail and every peripheral power pin would float as a silent open. Same
+    # _RAILS gate the address_strap/static_ties rails already use (Rule 3).
     rail = card.get("supply_rail")
-    if rail is not None and not (isinstance(rail, str) and rail.strip()):
-        errs.append(f"{where}: supply_rail must be a non-empty string when present")
+    if rail is not None:
+        if not (isinstance(rail, str) and rail.strip()):
+            errs.append(f"{where}: supply_rail must be a non-empty string when present")
+        elif rail not in _RAILS:
+            errs.append(f"{where}: supply_rail {rail!r} not a known rail "
+                        f"{sorted(r for r in _RAILS)}")
     # chip is the DECLARED build-target identity the resolve_mcu fuzzy guard
     # verifies against — a closed vocabulary (parse.CHIP_TARGET_DEFINES) so two
     # cards can't spell the same chip differently and the guard can't compare

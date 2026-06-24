@@ -58,6 +58,12 @@ def test_empty_sidecar_ok(tmp_path):
     ("extra_connectors:\n  - ref: J\n    nets: {}\n", "lib_id"),      # missing lib_id
     ("extra_connectors:\n  - ref: J\n    lib_id: X:Y\n", "nets"),     # missing nets
     ("extra_connectors:\n  - ref: J\n    lib_id: X:Y\n    nets: {}\n", "nets"),  # empty nets
+    # M3 (release-gate): unknown SUB-keys in placement / extra_connectors entries.
+    # The header's "unknown keys REJECTED" contract previously covered only the
+    # TOP-LEVEL keys; a typo'd sub-key degraded the directive silently.
+    ("placement:\n  U2: {locus: remote, devcie: INMP441}\n", "unknown key"),
+    ("extra_connectors:\n  - ref: J1\n    lib_id: X:Y\n    footprint: F:P\n"
+     "    nets: {1: VCC}\n    desc: barrel\n", "unknown key"),
 ])
 def test_malformed_raises(tmp_path, body, needle):
     with pytest.raises(SidecarError) as e:
@@ -343,6 +349,9 @@ def test_bus_part_override_loads(tmp_path):
     ("bus_part_overrides: {B: {}}\n", "empty"),
     ("bus_part_overrides: {B: {part: 7}}\n", "part must be"),
     ("bus_part_overrides: {B: {prt: INMP441}}\n", "unknown key"),   # typo'd sub-key
+    # H6 (release-gate): footprint was validated but NEVER applied (silent no-op) —
+    # now rejected as unknown until a real footprint-override is plumbed.
+    ("bus_part_overrides: {B: {footprint: F:P}}\n", "unknown key"),
 ])
 def test_bus_part_override_rejected(tmp_path, body, needle):
     with pytest.raises(SidecarError) as e:

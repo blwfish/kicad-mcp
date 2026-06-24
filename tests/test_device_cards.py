@@ -87,12 +87,39 @@ def test_good_cards_validate_clean():
     (lambda c: c.update(lib_id="NoColon"), "lib_id"),
     (lambda c: c.update(bus="SDIO"), "bus"),
     (lambda c: c.update(module="yes"), "module must be a bool"),
+    # M7 (release-gate): a bare string slips the isinstance(v, list) collector, so
+    # the pins vanish from the symbol gate AND net injection — silent floating power.
+    (lambda c: c.update(supply_pins="VDD"), "supply_pins must be a list"),
+    (lambda c: c.update(ground_pins="GND"), "ground_pins must be a list"),
+    # M4 (release-gate): a typo'd config sub-key silently no-ops the strap.
+    (lambda c: c.update(config={"strap": {"pin_bits": ["A0"], "base": 1}}),
+     "unknown config sub-key"),
 ])
 def test_bad_peripheral_rejected(mutate, needle):
     card = dict(_GOOD_PERIPHERAL)
     mutate(card)
     errs = validate_peripheral_card(card)
     assert errs and any(needle in e for e in errs)
+
+
+def test_empty_supply_ground_pin_lists_are_valid():
+    # the type-check must still ACCEPT an empty list (a device with no supply/ground
+    # pin, e.g. a mechanical encoder) — only a non-list is rejected.
+    assert validate_peripheral_card(
+        dict(_GOOD_PERIPHERAL, supply_pins=[], ground_pins=[])) == []
+
+
+@pytest.mark.parametrize("rail,ok", [
+    ("+5V", True), ("+3V3", True),
+    ("+5v", False),       # H1 (release-gate): wrong case — KiCad nets are case-sensitive
+    ("5V", False),        # missing leading '+'
+    ("VDD", False),       # not a canonical board rail
+])
+def test_mcu_supply_rail_validated_against_rails(rail, ok):
+    # supply_rail names the board power net peripherals tie to; a wrong-case "+5v"
+    # would not join "+5V" and every peripheral power pin floats (silent open).
+    card = dict(_GOOD_MCU, supply_rail=rail)
+    assert (validate_mcu_card(card) == []) is ok
 
 
 @pytest.mark.parametrize("strap,ok", [

@@ -156,9 +156,24 @@ _KNOWN_EXPANDER_KEYS = frozenset({"device", "ports", "group", "power", "net_pref
 _EXPANDER_GROUPS = frozenset({"per_sensor", "per_bank", "single"})
 _EXPANDER_POWER = frozenset({"3v3", "5v", "none"})
 
-_KNOWN_BUS_OVERRIDE_KEYS = frozenset({"part", "footprint"})
+# Only ``part`` is supported. A ``footprint`` sub-key was previously accepted and
+# validated but NEVER applied — Bus carries no footprint field, and each bus
+# realization template takes the footprint from the resolved part's card, so the
+# override silently did nothing. Reject it so the contract is honest; a real
+# footprint-override would have to be plumbed through EVERY bus-realization
+# template (a deliberate follow-up feature, not a silent partial one).
+_KNOWN_BUS_OVERRIDE_KEYS = frozenset({"part"})
 
 _KNOWN_MOUNTING_HOLES_KEYS = frozenset({"count", "drill_mm", "inset_mm", "keepout_mm"})
+
+# Per-entry sub-keys for placement[] and extra_connectors[]. The header promises
+# "unknown keys are REJECTED", but that only covered TOP-LEVEL keys — a typo'd
+# SUB-key (`devcie` for `device`, `Nets` for `nets`) was silently ignored, so the
+# directive degraded quietly (the misspelled value defaulting away). Reject them
+# too, the same way mounting_holes / expander_terminals already do.
+_KNOWN_PLACEMENT_KEYS = frozenset({"locus", "connector", "device", "footprint",
+                                   "external_io"})
+_KNOWN_EXTRA_CONNECTOR_KEYS = frozenset({"ref", "lib_id", "nets", "footprint", "value"})
 
 
 def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
@@ -175,6 +190,10 @@ def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
         if not isinstance(spec, dict):
             errs.append(f"{where}: must be a mapping")
             continue
+        unknown = set(spec) - _KNOWN_PLACEMENT_KEYS
+        if unknown:
+            errs.append(f"{where}: unknown key(s) {sorted(unknown)} — "
+                        f"valid: {sorted(_KNOWN_PLACEMENT_KEYS)}")
         locus = spec.get("locus")
         if locus not in VALID_LOCI:
             errs.append(f"{where}: locus {locus!r} not in {list(VALID_LOCI)}")
@@ -278,6 +297,10 @@ def _validate(d: dict[str, Any]) -> list[str]:
         if not isinstance(c, dict):
             errs.append(f"{where}: must be a mapping")
             continue
+        unknown = set(c) - _KNOWN_EXTRA_CONNECTOR_KEYS
+        if unknown:
+            errs.append(f"{where}: unknown key(s) {sorted(unknown)} — "
+                        f"valid: {sorted(_KNOWN_EXTRA_CONNECTOR_KEYS)}")
         # footprint is REQUIRED: a placed connector with no footprint silently
         # produces an unrouteable board (no pads at the PCB step).
         for req in ("ref", "lib_id", "nets", "footprint"):
@@ -385,11 +408,10 @@ def _validate_expander_terminals(d: dict[str, Any], errs: list[str]) -> None:
 
 
 def _validate_bus_part_overrides(d: dict[str, Any], errs: list[str]) -> None:
-    """``bus_part_overrides`` is optional: a mapping of bus stem → ``{part?,
-    footprint?}`` (both strings). Whether ``part`` names a recognized device is
-    NOT checked here (that needs the card registry); an unrealizable part surfaces
-    as a ``part_unavailable`` gap at realization — consistent with the honest-gap
-    model, not a silent drop."""
+    """``bus_part_overrides`` is optional: a mapping of bus stem → ``{part}`` (a
+    string). Whether ``part`` names a recognized device is NOT checked here (that
+    needs the card registry); an unrealizable part surfaces as a ``part_unavailable``
+    gap at realization — consistent with the honest-gap model, not a silent drop."""
     ov = d.get("bus_part_overrides")
     if ov is None:
         return
@@ -406,10 +428,9 @@ def _validate_bus_part_overrides(d: dict[str, Any], errs: list[str]) -> None:
             errs.append(f"{where}: unknown key(s) {sorted(unknown)} — "
                         f"valid: {sorted(_KNOWN_BUS_OVERRIDE_KEYS)}")
         if not spec:
-            errs.append(f"{where}: empty — give a part and/or footprint")
-        for k in ("part", "footprint"):
-            if k in spec and not (isinstance(spec[k], str) and spec[k].strip()):
-                errs.append(f"{where}: {k} must be a non-empty string")
+            errs.append(f"{where}: empty — give a part")
+        if "part" in spec and not (isinstance(spec["part"], str) and spec["part"].strip()):
+            errs.append(f"{where}: part must be a non-empty string")
 
 
 def load_sidecar(path: str) -> BoardSidecar:

@@ -204,7 +204,15 @@ def power_tree(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
 
     Either way the rail exists and has a driver. (This path used to return empty for
     needs_3v3=false, leaving the board's supply pins tied to nothing — a sourceless
-    board.)"""
+    board.)
+
+    The rail's ERC *driver* is the per-rail ``power:PWR_FLAG`` that generate adds to
+    every ``kind=="power"`` net — NOT an assumption that the MCU ``supply_pin`` is
+    electrically a power-output (a module's regulated-output pin is often marked
+    ``passive``/``power_in`` in its KiCad symbol). So a needs_3v3=false card whose
+    supply pin is passive still yields a driven rail; this template's contract is
+    only that the supply_pin physically ties to the right rail (a wrong-CASE
+    ``supply_rail`` is what would actually float it — guarded in validate_mcu_card)."""
     ex = Expansion()
     if intent.mcu is None:
         return ex
