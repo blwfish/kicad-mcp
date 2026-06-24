@@ -131,8 +131,20 @@ def sweep_one(d: Path, board: str) -> dict:
     return row
 
 
+def _normalize_lib_name(name: str) -> str:
+    """The bare library name for LIB_TO_DEVICE lookup. PlatformIO may store a
+    libdep dir with a ``@version`` suffix (``ESP32Encoder@1.0.0``) or a registry
+    ``_id`` suffix (``ESP32Encoder@src-<hash>``); the curated table keys are bare
+    names, so a versioned install would otherwise land in ``unmapped`` — a silent
+    miscount of a device the corpus actually uses. Strip at the first ``@``."""
+    return name.split("@", 1)[0]
+
+
 def libdeps_backlog(project_root: Path) -> tuple[Counter, Counter, Counter]:
-    """Per-PROJECT dependency census -> (device counts, excluded, unmapped)."""
+    """Per-PROJECT dependency census -> (device counts, excluded, unmapped).
+
+    May raise OSError on a broken symlink / unreadable dir in the tree; the caller
+    guards each root so one bad tree doesn't lose the whole run's work."""
     per_project: set[tuple[str, str]] = set()
     for d in project_root.rglob("libdeps"):
         if not d.is_dir() or ".pio" not in d.parts:
@@ -145,7 +157,7 @@ def libdeps_backlog(project_root: Path) -> tuple[Counter, Counter, Counter]:
                     # libraries — counting one as an unmapped "lib" would
                     # silently pollute the backlog census (cold-review catch).
                     if lib.is_dir() and not lib.name.startswith("."):
-                        per_project.add((project, lib.name))
+                        per_project.add((project, _normalize_lib_name(lib.name)))
     devices: Counter = Counter()
     excluded: Counter = Counter()
     unmapped: Counter = Counter()
@@ -225,13 +237,29 @@ def main() -> int:
     print("\ncarding backlog (per-project dependency census):")
     for name, board, path in roots:
         root = Path(path)
-        if root.is_dir() and any(root.rglob("libdeps")):
+        try:
+            has_libdeps = root.is_dir() and any(root.rglob("libdeps"))
+        except OSError as e:
+            print(f"  [{name}] {path}: backlog scan skipped (filesystem error: {e})")
+            continue
+        if not has_libdeps:
+            continue
+        try:
             devices, excluded, unmapped = libdeps_backlog(root)
-            for dev, n in devices.most_common():
-                print(f"  {n:3d} project(s)  {dev}")
-            if unmapped:
-                print(f"  UNMAPPED libs (extend LIB_TO_DEVICE): "
-                      f"{dict(unmapped.most_common())}")
+        except OSError as e:
+            # A broken symlink / unreadable dir must NOT crash the whole run after
+            # the sweep already did its work — degrade this one root to a notice.
+            print(f"  [{name}] {path}: backlog census incomplete "
+                  f"(filesystem error: {e})")
+            continue
+        # Label each root: an unlabeled multi-root census prints device counts
+        # back to back with no way to tell which corpus contributed which.
+        print(f"  [{name}] {path}")
+        for dev, n in devices.most_common():
+            print(f"    {n:3d} project(s)  {dev}")
+        if unmapped:
+            print(f"    UNMAPPED libs (extend LIB_TO_DEVICE): "
+                  f"{dict(unmapped.most_common())}")
 
     if args.json:
         Path(args.json).write_text(json.dumps(

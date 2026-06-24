@@ -129,3 +129,37 @@ def test_backlog_ignores_platformio_bookkeeping_dotdirs(tmp_path):
     (root / "p/.pio/libdeps/esp32dev/.cache").mkdir(parents=True)
     devices, _excluded, unmapped = cs.libdeps_backlog(root)
     assert not unmapped and devices == {"servo header": 1}
+
+
+def test_backlog_normalizes_versioned_libdep_dir_names(tmp_path):
+    # M8 (release-gate): PlatformIO may store a libdep dir with an @version suffix;
+    # the curated LIB_TO_DEVICE keys are bare names. A versioned install must still
+    # map to its device, not land in `unmapped` (a silent miscount).
+    root = tmp_path / "tree"
+    _mk_sketch(root / "p/.pio/libdeps/esp32dev/ESP32Encoder@1.0.0/examples", "X",
+               "void loop(){}")
+    devices, _excluded, unmapped = cs.libdeps_backlog(root)
+    assert devices == {"rotary encoder": 1} and not unmapped
+
+
+def test_crash_sets_fail_safe_exit_code(tmp_path, monkeypatch, capsys):
+    # M11 (release-gate): the fail-safe contract is "the importer NEVER crashes on
+    # foreign code"; a crash => exit 1 (the nightly red signal), outranking the
+    # corpus-trouble code 2. The real importer is fail-safe, so inject a crash row
+    # to exercise the exit-code path a mutation removing the `crashed` branch would
+    # otherwise survive.
+    _mk_sketch(tmp_path, "s", "#define LED_PIN 2\nvoid loop(){}")
+    real = cs.sweep_one
+
+    def fake(d, board):
+        row = real(d, board)
+        row["crash"] = "RuntimeError: injected fail-safe violation"
+        return row
+
+    monkeypatch.setattr(cs, "sweep_one", fake)
+    monkeypatch.setattr(sys, "argv",
+                        ["corpus_sweep.py", "--root", f"x=esp32dev={tmp_path}"])
+    code = cs.main()
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "FAIL-SAFE VIOLATIONS" in out and "CRASHED" in out
