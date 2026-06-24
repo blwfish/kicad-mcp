@@ -228,6 +228,14 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
             if wire_pin(mcomp, "1", rail):
                 rail_markers += 1
 
+    # Pick the smallest standard paper size that fits the layout height.
+    # KiCad default orientation is landscape; standard heights (mm):
+    # A4=210, A3=297, A2=420, A1=594, A0=841.  Content height = marker row
+    # + the same 25.4 mm bottom margin used at the top.
+    _content_h = marker_y + 25.4
+    _PAPER_HEIGHTS = [("A4", 210), ("A3", 297), ("A2", 420), ("A1", 594), ("A0", 841)]
+    sch.set_paper_size(next((p for p, h in _PAPER_HEIGHTS if _content_h <= h), "A0"))
+
     sch.save(schematic_path)
     return {
         "status": _build_status(component_errors, unresolved, bool(placed)),
