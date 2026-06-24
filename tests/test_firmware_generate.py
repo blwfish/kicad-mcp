@@ -76,6 +76,27 @@ def test_build_status(errs, unres, any_placed, expected):
     assert _build_status(errs, unres, any_placed) == expected
 
 
+# --- paper sizing (CI-safe; pure, boundary-pinned) ---------------------------
+
+@pytest.mark.parametrize("content_h,size,clipped", [
+    (10, "A4", False),       # tiny -> smallest sheet
+    (210, "A4", False),      # AT A4 height — inclusive boundary fits A4
+    (210.1, "A3", False),    # just above A4 -> next sheet up
+    (297, "A3", False),      # AT A3
+    (420, "A2", False),      # AT A2
+    (594, "A1", False),      # AT A1
+    (841, "A0", False),      # AT A0 — the largest standard sheet, NOT clipped
+    (841.1, "A0", True),     # just above A0 -> clamp to A0 AND flag the clip
+    (5000, "A0", True),      # far past A0 -> still A0, still flagged (no silent clip)
+])
+def test_paper_for_height_boundaries(content_h, size, clipped):
+    # M12 (release-gate): a layout taller than A0 has no sheet that fits; KiCad
+    # clamps to the page and an SVG/PDF export silently clips. The boundary is
+    # inclusive (<=); the overflow must be REPORTED, not silently absorbed.
+    from kicad_mcp.utils.firmware.generate import _paper_for_height
+    assert _paper_for_height(content_h) == (size, clipped)
+
+
 # --- generation integration (needs real KiCad symbol libraries) --------------
 
 SPEEDCAL_CONFIG = Path(

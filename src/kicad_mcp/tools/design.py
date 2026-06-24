@@ -544,6 +544,11 @@ def _op_intent_template() -> dict:
             "peripheral ref. A gpio must be a plain integer (not a YAML boolean or a "
             "string) in range [0, 48]. A 'bus'/'peripheral' net needs >=2 endpoints "
             "(use 'orphan' for a one-ended net).",
+            "An Arduino ANALOG-pin endpoint (A0..A7) carries `pin: \"A0\"` — the "
+            "symbol pin NAME, resolved by name — INSTEAD of a `gpio` (the A-pin names "
+            "the symbol pin directly, it is not a GPIO number). Every other net must "
+            "still be anchored: at least one endpoint carrying a `gpio` or a `pin` (a "
+            "ref/role alone does not locate a pin).",
             "A bus's signals must be the real roles for its type (I2C: SDA+SCL; "
             "I2S_IN: BCLK+WS+SD/DOUT; I2S_OUT: BCLK+WS+DIN; UART: RX+TX; SPI: "
             "MOSI+MISO) or it's rejected.",

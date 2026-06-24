@@ -32,6 +32,20 @@ from kicad_mcp.utils.firmware.mcu_pinmap import (
 _PITCH_MM = 63.5
 _COLS = 4
 
+# Standard landscape sheet heights (mm), smallest first. Single source for the
+# paper-size pick + the overflow check.
+_PAPER_HEIGHTS = [("A4", 210), ("A3", 297), ("A2", 420), ("A1", 594), ("A0", 841)]
+
+
+def _paper_for_height(content_h_mm: float) -> tuple[str, bool]:
+    """The smallest standard landscape sheet whose height fits ``content_h_mm``, and
+    whether the content overflows even A0 (the largest). KiCad clamps a too-tall
+    layout to the page and a later SVG/PDF export SILENTLY clips the overflow, so the
+    overflow flag lets the caller tell a clipped export from a complete one. The
+    height boundary is INCLUSIVE: content exactly == a sheet height fits that sheet."""
+    fit = next((p for p, h in _PAPER_HEIGHTS if content_h_mm <= h), None)
+    return (fit or "A0", fit is None)
+
 
 def _build_status(component_errors: list, unresolved: list, any_placed: bool) -> str:
     """Three-state status for a (partial) schematic build.
@@ -228,13 +242,11 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
             if wire_pin(mcomp, "1", rail):
                 rail_markers += 1
 
-    # Pick the smallest standard paper size that fits the layout height.
-    # KiCad default orientation is landscape; standard heights (mm):
-    # A4=210, A3=297, A2=420, A1=594, A0=841.  Content height = marker row
-    # + the same 25.4 mm bottom margin used at the top.
+    # Size the sheet to the layout height (content = marker row + the same 25.4 mm
+    # bottom margin used at the top). Overflow past A0 is reported, not silent.
     _content_h = marker_y + 25.4
-    _PAPER_HEIGHTS = [("A4", 210), ("A3", 297), ("A2", 420), ("A1", 594), ("A0", 841)]
-    sch.set_paper_size(next((p for p, h in _PAPER_HEIGHTS if _content_h <= h), "A0"))
+    paper_size, paper_clipped = _paper_for_height(_content_h)
+    sch.set_paper_size(paper_size)
 
     sch.save(schematic_path)
     return {
@@ -249,4 +261,10 @@ def generate_schematic(intent: DesignIntent, schematic_path: str) -> dict[str, A
         "unresolved_endpoints": unresolved,
         "deferred_endpoints": deferred,
         "gaps": len(intent.gaps),
+        # Export honesty: which sheet the schematic was sized to, and whether the
+        # content overflows even A0 (so an SVG/PDF export would clip — connectivity
+        # is intact; only the rendering is truncated).
+        "paper_size": paper_size or "A0",
+        "paper_clipped": paper_clipped,
+        "content_height_mm": round(_content_h, 1),
     }
