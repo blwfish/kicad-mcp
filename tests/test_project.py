@@ -8,7 +8,6 @@ import json
 import os
 from unittest.mock import patch
 
-import pytest
 
 from kicad_mcp.utils.file_utils import get_project_files, load_project_json
 from kicad_mcp.utils.kicad_utils import get_project_name_from_path, open_kicad_project

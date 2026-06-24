@@ -21,7 +21,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kicad_mcp.utils.firmware.parse import canonical_type
 
 # Evidence strength, low = strongest: a part named in compiled source outranks a
 # config comment, which outranks prose docs. Used to rank when a name appears in

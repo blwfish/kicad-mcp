@@ -17,7 +17,6 @@ Threshold-Boundary Testing Rule: touching (gap=0), 1-unit overlap,
 1-unit gap.
 """
 
-import pytest
 from kicad_mcp.utils.geometry import aabb_overlap, GEOMETRY_HELPER
 
 

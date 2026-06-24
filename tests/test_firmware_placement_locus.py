@@ -372,7 +372,7 @@ def test_locus_only_projection_without_placement_is_not_behaviorally_remote():
     """A hand-edited Peripheral.locus='remote' with NO placements entry must not
     silently land in the split state (placed but glue-suppressed). placements is
     the single behavioral source: both checks agree it is NOT remote."""
-    from kicad_mcp.utils.firmware.intent import Peripheral, is_remote
+    from kicad_mcp.utils.firmware.intent import is_remote
     from kicad_mcp.utils.firmware.templates import _peripheral_is_remote
     intent = _intent(TRACK_GEOM)
     p = intent.peripherals[0]

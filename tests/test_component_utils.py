@@ -13,7 +13,6 @@ from kicad_mcp.utils.component_utils import (
     extract_capacitance_value,
     extract_inductance_value,
     format_resistance,
-    format_capacitance,
     normalize_component_value,
     get_component_type_from_reference,
     is_power_component,

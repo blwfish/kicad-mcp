@@ -227,7 +227,6 @@ class TestFallbackTrigger:
         """Fill the center of a large board with many placed boxes so the
         spiral (which orbits the center) finds no collision-free spot, then
         confirm the grid fallback still finds one in a corner."""
-        import math as _math
 
         outline = _outline(0, 0, 40, 30)
         spacing = 0.5

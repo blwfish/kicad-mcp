@@ -7,7 +7,6 @@ external-interface drift, and progress-reporting behaviour.
 
 import asyncio
 import json
-import os
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 

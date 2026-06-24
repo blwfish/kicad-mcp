@@ -4,7 +4,6 @@ Tests for the pcbnew bridge utility.
 Tests the bridge functions that manage subprocess execution to KiCad's Python.
 """
 
-import json
 import os
 from unittest.mock import patch, MagicMock
 

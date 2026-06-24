@@ -5,7 +5,6 @@ Tests the job management logic and error paths without requiring FreeRouter.
 """
 
 import asyncio
-import threading
 import time
 from unittest.mock import patch, MagicMock
 
@@ -20,7 +19,6 @@ from kicad_mcp.tools.pcb_autoroute import (
     _cleanup_stale_jobs,
     _select_best_pass,
     _freerouter_cmd,
-    MAX_CONCURRENT_JOBS,
 )
 
 

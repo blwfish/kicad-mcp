@@ -3,7 +3,6 @@ GPA/GPB pins out to labeled screw terminal(s), per a board.yaml declaration.
 Behavior + edge cases; no KiCad needed (the data flow is pin-name based)."""
 from __future__ import annotations
 
-import pytest
 
 from kicad_mcp.utils.firmware.intent import (
     DesignIntent,

@@ -27,7 +27,7 @@ overhang uses for the MCU keepout.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 # --- Confidence thresholds for the courtyard-overhang asymmetry (mm) ----------
 # The signal is thin (~0.6 mm on the MKDS family), so the bands are deliberately

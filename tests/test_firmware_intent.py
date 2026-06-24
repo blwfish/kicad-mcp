@@ -5,7 +5,6 @@ from pathlib import Path
 
 from kicad_mcp.utils.firmware.intent import (
     SCHEMA_VERSION,
-    Gap,
     Net,
     build_intent,
     find_board_id,

@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import os
-import sqlite3
-import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,7 +22,6 @@ from kicad_mcp.utils.lcsc_db import (
     get_component,
     search_components,
     search_components_with_total,
-    db_exists,
     get_snapshot_age_days,
     get_snapshot_date,
     _parse_price,

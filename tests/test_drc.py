@@ -6,8 +6,7 @@ Tests drc.py router and utils/drc_history.py functions.
 
 import asyncio
 import json
-import os
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch
 
 import pytest
 from fastmcp import FastMCP

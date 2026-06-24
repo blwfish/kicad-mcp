@@ -4,7 +4,6 @@ high; no bus → skip; unexplained/SPI pins, missing power, multi-unit → low.
 """
 from __future__ import annotations
 
-import pytest
 
 from kicad_mcp.utils.firmware.cards import validate_peripheral_card
 from kicad_mcp.utils.firmware.parse import canonical_type as _type_from_symbol_name

@@ -14,7 +14,6 @@ Assertion rules:
 import asyncio
 import inspect
 import os
-import shutil
 
 import pytest
 

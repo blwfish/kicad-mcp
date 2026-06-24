@@ -5,7 +5,6 @@ Unit tests that don't require KiCad's pcbnew bindings.
 """
 
 import json
-import os
 
 import pytest
 from fastmcp import FastMCP

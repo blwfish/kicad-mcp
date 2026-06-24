@@ -13,9 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from unittest.mock import patch
 
-import pytest
 
 from kicad_mcp.utils.path_validation import validate_project_path
 

@@ -1,7 +1,6 @@
 """Tests for the unified library index (symbols + footprints)."""
 
 import os
-import sqlite3
 
 import pytest
 

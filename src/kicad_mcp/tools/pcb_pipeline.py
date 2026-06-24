@@ -3,7 +3,6 @@
 import logging
 import math
 import os
-import re
 import shutil
 import subprocess
 import time
