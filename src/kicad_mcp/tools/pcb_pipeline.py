@@ -1199,6 +1199,16 @@ tier4.sort(key=sort_key)
 placements = {}            # ref -> (x_mm, y_mm, angle_deg)
 placed_boxes = []
 keepout_boxes = []  # absolute keepout zone bboxes
+# Seed board-level rule-area keepouts (e.g. mounting-hole keep-clears added by
+# _step_add_mounting_holes before this script runs).  fp.Zones() only returns
+# zones OWNED by a footprint; board.Zones() is needed for board-level zones.
+for _bz in board.Zones():
+    if _bz.GetIsRuleArea():
+        _bzbb = _bz.GetBoundingBox()
+        keepout_boxes.append((
+            pcbnew.ToMM(_bzbb.GetX()), pcbnew.ToMM(_bzbb.GetY()),
+            pcbnew.ToMM(_bzbb.GetRight()), pcbnew.ToMM(_bzbb.GetBottom()),
+        ))
 placement_decisions = []   # structured rotation/hint events → response envelope
 
 def rotate_keepout(krel, theta):
