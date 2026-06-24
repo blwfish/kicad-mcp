@@ -114,7 +114,9 @@ _DEFINE_RE = re.compile(
     r"^\s*#\s*define\s+(?P<name>[A-Za-z_]\w*)(?P<args>\([^)]*\))?"
     r"(?:[ \t]+(?P<value>[^\n]*?))?[ \t]*$"
 )
-_TRAILING_COMMENT_RE = re.compile(r"(?P<value>.*?)\s*//(?P<comment>.*)$")
+# NOTE: a `//` line comment is split off by _split_comment, which scans for `//`
+# OUTSIDE a string/char literal — a regex `.*?//` would tear `"http://host"` into
+# value `"http:` (violating Macro.raw_value's verbatim invariant for URL/path values).
 
 
 class MacroKind(str, Enum):
@@ -182,9 +184,26 @@ def _as_int(raw: str) -> Optional[int]:
 
 
 def _split_comment(value_field: str) -> tuple[str, str]:
-    m = _TRAILING_COMMENT_RE.match(value_field)
-    if m:
-        return m.group("value").strip(), m.group("comment").strip()
+    """Split a value field into (value, trailing-``//``-comment). The ``//`` marker
+    is honored only OUTSIDE a string/char literal, so a value like
+    ``"http://host"`` (or a path) keeps its ``//`` verbatim. Returns ("", "") cleanly
+    for an empty field."""
+    quote: Optional[str] = None
+    i = 0
+    n = len(value_field)
+    while i < n:
+        c = value_field[i]
+        if quote is not None:
+            if c == "\\":            # skip an escaped char inside the literal
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in ('"', "'"):
+            quote = c
+        elif c == "/" and i + 1 < n and value_field[i + 1] == "/":
+            return value_field[:i].strip(), value_field[i + 2:].strip()
+        i += 1
     return value_field.strip(), ""
 
 
@@ -347,6 +366,47 @@ _CONST_DECL_RE = re.compile(
 _DECLARATOR_RE = re.compile(r"\s*(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>.+?)\s*$")
 
 
+def _split_declarators(decls: str) -> list[str]:
+    """Split a declarator list on commas at bracket depth 0 ONLY, so an initializer
+    that itself contains commas (``= digitalPinToInterrupt(2, 3)``, ``= {1, 2, 3}``)
+    is not torn apart — which would corrupt the value AND silently drop a real pin
+    declared after it in the same statement. Commas inside string/char literals are
+    likewise not split points."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: Optional[str] = None
+    i = 0
+    n = len(decls)
+    while i < n:
+        c = decls[i]
+        if quote is not None:
+            buf.append(c)
+            if c == "\\" and i + 1 < n:
+                buf.append(decls[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in ('"', "'"):
+            quote = c
+            buf.append(c)
+        elif c in "([{":
+            depth += 1
+            buf.append(c)
+        elif c in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(c)
+        elif c == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(c)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
 def parse_const_decls(text: str) -> list[Macro]:
     """Extract C++ ``const``/``constexpr`` declarations and classify them with the
     SAME name-primary classifier as ``#define`` (CLAUDE.md Rule 3 — one source of
@@ -361,7 +421,7 @@ def parse_const_decls(text: str) -> list[Macro]:
         m = _CONST_DECL_RE.match(line)
         if not m:
             continue
-        for part in m.group("decls").split(","):
+        for part in _split_declarators(m.group("decls")):
             dm = _DECLARATOR_RE.match(part)
             if dm is None:
                 continue
@@ -491,20 +551,24 @@ def board_chip(board_id: Optional[str]) -> Optional[str]:
     Its honesty contract is therefore: prefer None over a guess, and fail closed
     on every known-newer-silicon pattern (esp32 variant families, pico2/RP2350)."""
     b = (board_id or "").lower()
-    for key, chip in (("nano_esp32", "esp32s3"),  # Arduino Nano ESP32 is an S3 — its
-                                                  # id hides the chip behind "esp32";
-                                                  # checked first so it doesn't fall to
-                                                  # the bare-esp32 (classic) branch and
-                                                  # mis-resolve to the WROOM-32E card.
-                      ("s3", "esp32s3"), ("c3", "esp32c3"), ("c6", "esp32c6"),
-                      ("s2", "esp32s2"), ("h2", "esp32h2"), ("p4", "esp32p4")):
-        if key in b:
-            return chip
-    # Unknown esp32 variant (esp32c2, esp32x9, …): fail closed rather than alias to
-    # classic ESP32 — the substring `"esp32" in b` can't tell a new die from the
-    # classic one (the dangerous case of the C3/C6 silently-wrong-board seam).
-    if _ESP32_VARIANT_RE.search(b):
-        return None
+    # Arduino Nano ESP32 is an S3, but its id hides the chip behind "esp32" — map it
+    # explicitly before the generic esp32 handling so it doesn't fall to the
+    # bare-esp32 (classic) branch and mis-resolve to the WROOM-32E card.
+    if "nano_esp32" in b:
+        return "esp32s3"
+    # esp32 variant family (S2/S3/C3/C6/H2/P4) — ANCHORED to the esp32 prefix via
+    # _ESP32_VARIANT_RE, NOT bare two-char substrings. A bare `"p4" in b` /
+    # `"s2" in b` test would misclassify a NON-esp32 arch id that merely contains
+    # those characters ("stm32p4" -> esp32p4, "c3po" -> esp32c3) — a
+    # syntactic-semantic seam where the chip-family distinction was load-bearing on
+    # an unanchored substring. The variant letter+digit must follow "esp32".
+    vm = _ESP32_VARIANT_RE.search(b)
+    if vm:
+        # The matched chip ("esp32" + the family token) is honest only if it's in the
+        # closed vocab; an unknown variant (esp32c2, esp32s4, …) fails closed rather
+        # than aliasing to classic ESP32 (the C3/C6 silently-wrong-board seam).
+        chip = "esp32" + vm.group(0)[-2:]   # family token is letter+digit (2 chars)
+        return chip if chip in CHIP_TARGET_DEFINES else None
     if "esp32" in b:
         return "esp32"
     # Non-ESP32 archs — AFTER the esp32 check so an "esp32-pico" board (a real ESP32)

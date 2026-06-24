@@ -522,6 +522,30 @@ def test_board_chip_fails_closed_where_text_cannot_carry_identity():
     assert board_chip("") is None and board_chip(None) is None
 
 
+def test_board_chip_variant_family_is_esp32_anchored_not_bare_substring():
+    # COLD-REVIEW catch (release-gate): the variant-family detection used BARE
+    # two-char substrings ("p4","c3","s2",…) checked before any esp32 anchoring, so
+    # a NON-esp32 arch id that merely contained those chars was misclassified as an
+    # esp32 variant ("stm32p4" -> esp32p4) and idf_target_defines then injected
+    # ESP32 IDF macros into a non-ESP32 firmware's branch selection. The family
+    # token must follow "esp32".
+    from kicad_mcp.utils.firmware.parse import board_chip, idf_target_defines
+    assert board_chip("stm32p4") is None
+    assert board_chip("stm32s2-disco") is None
+    assert board_chip("c3po") is None
+    assert board_chip("h2so4_board") is None
+    assert board_chip("cortex_s3_dev") is None
+    assert idf_target_defines("stm32p4") == set()   # no ESP32 macros leak in
+    # esp32 variants still classify (anchored match), incl. separator forms
+    assert board_chip("esp32s3") == "esp32s3"
+    assert board_chip("esp32-c6") == "esp32c6"
+    assert board_chip("esp32_s2") == "esp32s2"
+    assert board_chip("esp32h2-devkit") == "esp32h2"
+    # an UNKNOWN esp32 variant still fails closed (never aliases to classic esp32)
+    assert board_chip("esp32c2") is None
+    assert board_chip("esp32s4") is None
+
+
 def test_idf_target_defines_is_a_view_over_the_chip_table():
     from kicad_mcp.utils.firmware.parse import CHIP_TARGET_DEFINES, idf_target_defines
     assert idf_target_defines("nanoatmega328") == {"ARDUINO_ARCH_AVR", "__AVR__"}
@@ -541,3 +565,41 @@ def test_board_chip_pico_curated_forms_not_word_match():
     assert board_chip("pico-2") is None            # separator-normalized Pico 2
     assert board_chip("rpi_pico_2") is None
     assert board_chip("seeed_xiao_rp2040") == "rp2040"
+
+
+# --- _split_comment / declarator splitting: external firmware text quirks --------
+
+def test_split_comment_keeps_double_slash_inside_a_string_literal():
+    # INVENTORY catch: Macro.raw_value is documented verbatim, but a regex `.*?//`
+    # tore `"http://host"` into value `"http:`. The // is a comment only OUTSIDE a
+    # string literal.
+    from kicad_mcp.utils.firmware.parse import _split_comment
+    assert _split_comment('"http://host/path"') == ('"http://host/path"', "")
+    assert _split_comment("5 // real trailing comment") == ("5", "real trailing comment")
+    assert _split_comment("0x13") == ("0x13", "")
+    assert _split_comment("") == ("", "")
+    # escaped quote inside the literal doesn't end the string early
+    assert _split_comment(r'"a\"b//c"') == (r'"a\"b//c"', "")
+
+
+def test_const_decl_initializer_with_internal_comma_is_not_torn_apart():
+    # INVENTORY/CODE catch: the declarator list was split on EVERY comma, so an
+    # initializer containing a comma (`= f(2, 3)`, `= {1, 2}`) was corrupted and a
+    # real pin declared after it in the same statement could be silently dropped.
+    from kicad_mcp.utils.firmware.parse import (
+        MacroKind, _split_declarators, parse_const_decls,
+    )
+    assert _split_declarators("X = f(a, b), LED_PIN = 5") == ["X = f(a, b)", " LED_PIN = 5"]
+    macros = parse_const_decls(
+        "const int LED_PIN = digitalPinToInterrupt(2, 3), BTN_PIN = 7;"
+    )
+    by_name = {m.name: m for m in macros}
+    # LED_PIN's value is kept verbatim (not the corrupted "digitalPinToInterrupt(2")
+    assert by_name["LED_PIN"].raw_value == "digitalPinToInterrupt(2, 3)"
+    # the pin declared AFTER the comma-bearing initializer is still recovered
+    assert by_name["BTN_PIN"].kind is MacroKind.PIN and by_name["BTN_PIN"].gpio == 7
+    # a brace initializer with commas, followed by a pin, likewise survives
+    macros = parse_const_decls("const int CFG = {1, 2, 3}, RELAY_PIN = 9;")
+    by_name = {m.name: m for m in macros}
+    assert by_name["CFG"].raw_value == "{1, 2, 3}"
+    assert by_name["RELAY_PIN"].gpio == 9
