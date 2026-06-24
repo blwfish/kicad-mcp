@@ -1,0 +1,21 @@
+# DHT22 temperature and humidity sensor (AM2302 is the OEM/through-hole variant).
+# Single-wire data protocol on pin 2 — despite the "SDA" pin name this is NOT I2C;
+# bus: null is correct.  A 10 kΩ pull-up to VDD is required on the data line
+# (add via a separate resistor or board.yaml pull-up directive).
+#
+# Firmware libraries: AM2302-Sensor, DHT-sensor-library, Adafruit_DHT.
+# Typical firmware pin names:
+#   DHT22_PIN / AM2302_PIN / DHT_DATA_PIN → hint "DHT22"/"AM2302"/"DHT", role DATA/SIGNAL
+#
+# Pins: 1=VDD, 2=DATA (SDA label in symbol), 3=GND, 4=GND (both GND pins tied).
+# Footprint: ASAIR AM2302 through-hole, 2.54 mm pitch.
+type: DHT22
+aliases: ["AM2302", "DHT"]
+lib_id: Sensor:AM2302
+value: AM2302
+bus: null
+footprint: Sensor:ASAIR_AM2302_P2.54mm_Vertical
+roles: {DATA: "2", SDA: "2", SIGNAL: "2", OUT: "2", IN: "2"}
+supply_pins: ["1"]
+ground_pins: ["3", "4"]
+module: false

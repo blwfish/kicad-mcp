@@ -1,0 +1,22 @@
+# EC11-style rotary encoder with integrated push-button switch (e.g. Alps EC11E).
+# Quadrature outputs A/B share common C (→GND); push button is S1/S2 (S2→GND).
+# No VCC required — encoder and switch are purely mechanical.
+#
+# Firmware library: ESP32Encoder (CLK=A channel, DT=B channel).
+# Typical firmware pin names:
+#   ENCODER_CLK_PIN  → hint "ENCODER", role CLK  → pin A
+#   ENCODER_DT_PIN   → hint "ENCODER", role DT   → pin B
+#   ENCODER_SW_PIN   → hint "ENCODER", role SW   → pin S1
+#
+# Aliases are hint-stems (the macro prefix before the role):
+#   ROTARY_*_PIN → "ROTARY" alias → this card.
+type: ENCODER
+aliases: ["ROTARY", "ROT_ENC"]
+lib_id: Device:RotaryEncoder_Switch
+value: EC11
+bus: null
+footprint: Rotary_Encoder:RotaryEncoder_Alps_EC11E-Switch_Vertical_H20mm
+roles: {A: "A", CLK: "A", B: "B", DT: "B", SW: "S1", BUTTON: "S1"}
+supply_pins: []
+ground_pins: ["C", "S2"]
+module: false

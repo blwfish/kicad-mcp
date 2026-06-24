@@ -1,0 +1,22 @@
+# RC servo motor (e.g. SG90, MG996R, DS3218).
+# Always an external actuator — terminal card synthesizes a signal connector for
+# the PWM control line.  Power (+5V) and GND are sourced from the board power
+# rails via the power_tree template (NOT from the servo connector terminal itself).
+#
+# Firmware library: ESP32Servo.
+# Typical firmware pin names:
+#   SERVO_PIN / SERVO_PWM_PIN → hint "SERVO", role PWM/SIGNAL
+#
+# lib_id / footprint are placeholder BOM entries only; no schematic symbol is
+# placed (realize: terminal).  The screw terminal is synthesized at expand_intent
+# time by the remote_peripherals template via synthesize_connector.
+type: SERVO
+lib_id: Connector_Generic:Conn_01x01
+value: Servo (terminal)
+bus: null
+footprint: Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical
+roles: {PWM: "1", SIGNAL: "1", OUT: "1"}
+supply_pins: []
+ground_pins: []
+module: false
+realize: terminal
