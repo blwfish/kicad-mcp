@@ -196,3 +196,21 @@ def test_parity_detects_net_bus_mismatch():
     b = _two_chip(Net("SDA", "bus", "high",
                       [Endpoint("U1", gpio=21), Endpoint("U2", role="SDA")], bus=None))
     assert intent_parity(a, b)
+
+
+def test_parity_surfaces_duplicate_net_names_instead_of_dropping_one():
+    # M1 (release-gate): the comparator keys nets by name, so a duplicate name in
+    # `other` would silently overwrite — one net (and its endpoints) vanishing from
+    # the check, hiding a real difference. intent_parity does NOT require valid input
+    # (validate_intent is the gate for that), so it must surface the collision.
+    g = [Gap(k, "") for k in ("power_tree", "decoupling", "pullups", "connectors", "parts")]
+    m = Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E")
+    a = DesignIntent(mcu=m, peripherals=[Peripheral("U2", "HX711", "x:y")],
+                     nets=[Net("N", "peripheral", "high",
+                               [Endpoint("U1", gpio=16), Endpoint("U2", role="DOUT")])],
+                     gaps=g)
+    # `other` has TWO nets named "N"; the second would clobber the first in a dict
+    dup = copy.deepcopy(a)
+    dup.nets.append(Net("N", "orphan", "low", [Endpoint("U1", gpio=17)]))
+    diffs = intent_parity(a, dup)
+    assert any("duplicate net names" in d for d in diffs)

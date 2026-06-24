@@ -529,9 +529,11 @@ def _only_fields(cls: type, d: dict[str, Any]) -> dict[str, Any]:
     contract (a v4 schema or a typo'd hand-edited key must not crash load_intent)."""
     known = {f.name: f for f in dataclasses.fields(cls)}
     out: dict[str, Any] = {}
+    dropped: list[str] = []
     for k, v in d.items():
         f = known.get(k)
         if f is None:
+            dropped.append(k)
             continue
         # A hand-edited doc with `signals: null` (or any list/dict field set to
         # null) would override the field's default_factory with None, so e.g.
@@ -541,7 +543,33 @@ def _only_fields(cls: type, d: dict[str, Any]) -> dict[str, Any]:
         if v is None and f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
             continue
         out[k] = v
+    if dropped:
+        # An unknown key in a hand/AI-authored intent is almost always a TYPO
+        # (`gpio_pin` for `gpio`, `end_points` for `endpoints`) whose value then
+        # silently vanishes while the field default-fills — a lost connection that
+        # still loads "ok". The forward-compat drop is intentional, but it must not
+        # be SILENT. Mirrors the schema_version warning in from_dict.
+        logger.warning("design-intent: dropped unknown %s field(s) %s — typo, or a "
+                       "newer schema's field?", cls.__name__, sorted(dropped))
     return out
+
+
+# Net is built field-by-field (its nested endpoints need conversion), so it can't
+# go through _only_fields directly — this set lets us flag a typo'd Net key with the
+# same honesty as _only_fields does for the other dataclasses.
+_NET_KEYS = frozenset({"name", "kind", "confidence", "endpoints", "bus", "origin"})
+
+
+def _net_from_dict(n: dict[str, Any]) -> Net:
+    unknown = sorted(set(n) - _NET_KEYS)
+    if unknown:
+        logger.warning("design-intent: dropped unknown Net field(s) %s on net %r — "
+                       "typo, or a newer schema's field?", unknown, n.get("name"))
+    return Net(
+        name=n["name"], kind=n["kind"], confidence=n["confidence"],
+        endpoints=[Endpoint(**_only_fields(Endpoint, e)) for e in (n.get("endpoints") or [])],
+        bus=n.get("bus"), origin=n.get("origin", "imported"),
+    )
 
 
 def from_dict(d: dict[str, Any]) -> DesignIntent:
@@ -564,14 +592,7 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
         mcu=Mcu(**_only_fields(Mcu, mcu_d)) if mcu_d else None,
         peripherals=[Peripheral(**_only_fields(Peripheral, p)) for p in (d.get("peripherals") or [])],
         buses=[Bus(**_only_fields(Bus, b)) for b in (d.get("buses") or [])],
-        nets=[
-            Net(
-                name=n["name"], kind=n["kind"], confidence=n["confidence"],
-                endpoints=[Endpoint(**_only_fields(Endpoint, e)) for e in (n.get("endpoints") or [])],
-                bus=n.get("bus"), origin=n.get("origin", "imported"),
-            )
-            for n in (d.get("nets") or [])
-        ],
+        nets=[_net_from_dict(n) for n in (d.get("nets") or [])],
         gaps=[Gap(**_only_fields(Gap, g)) for g in (d.get("gaps") or [])],
         connector_legends=[
             ConnectorLegend(**_only_fields(ConnectorLegend, c))
@@ -643,7 +664,7 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
             m[p.ref] = p.type            # endpoint identity is the TARGET's type
         return m
 
-    def _nets(intent: "DesignIntent") -> dict:
+    def _nets(intent: "DesignIntent") -> tuple[dict, list[str]]:
         rt = _ref_type(intent)
         # n.bus is part of the signature ONLY where it is load-bearing: the
         # i2c_pullups template fires on kind=="bus" with bus=="I2C", so two bus nets
@@ -651,11 +672,25 @@ def intent_parity(deterministic: "DesignIntent", other: "DesignIntent") -> list[
         # (pull-ups present vs absent) — NOT parity. On a non-bus kind (e.g. an
         # orphan that the deterministic path incidentally tags bus="I2C") the tag
         # does not reach expansion, so comparing it would flag a false difference.
-        return {n.name: (n.kind, (n.bus if n.kind == "bus" else None),
-                         frozenset((e.gpio, e.role, e.pin, rt.get(e.ref))
-                                   for e in n.endpoints))
-                for n in intent.nets}
-    an, bn = _nets(a), _nets(b)
+        # Keyed by name; a DUPLICATE name would silently overwrite (one net dropped
+        # from the check), so collisions are collected and surfaced by the caller.
+        out: dict = {}
+        dups: list[str] = []
+        for n in intent.nets:
+            if n.name in out:
+                dups.append(n.name)
+            out[n.name] = (n.kind, (n.bus if n.kind == "bus" else None),
+                           frozenset((e.gpio, e.role, e.pin, rt.get(e.ref))
+                                     for e in n.endpoints))
+        return out, dups
+    an, a_dups = _nets(a)
+    bn, b_dups = _nets(b)
+    if a_dups or b_dups:
+        # validate_intent rejects duplicate net names, but intent_parity is a
+        # standalone convergence check that does not require valid input — surface a
+        # name collision instead of letting the overwrite hide a dropped net.
+        diffs.append(f"duplicate net names — deterministic={sorted(set(a_dups))} "
+                     f"other={sorted(set(b_dups))}")
     if set(an) != set(bn):
         diffs.append(f"net names differ: {sorted(set(an) ^ set(bn))}")
     else:
@@ -760,8 +795,16 @@ def validate_intent(intent: DesignIntent) -> list[str]:
         m = intent.mcu
         if not (m.ref and m.part and m.lib_id):
             errs.append("mcu: ref, part and lib_id are all required")
-        if m.ref:
-            known_refs.add(m.ref)
+        # The MCU slot is canonically MCU_REF ("U1"): build_intent always assigns it,
+        # the nets reference it on the MCU side, and BOTH this validator and
+        # intent_parity key the MCU off that single constant. A producer that named
+        # the MCU anything else would make an endpoint ref to "U1" read as valid here
+        # (it's always in known_refs) while parity's ref-type map keyed off the other
+        # name — two encodings of "which ref is the MCU" that disagree. Pin the
+        # convention so the single source of truth holds.
+        elif m.ref != MCU_REF:
+            errs.append(f"mcu: ref must be {MCU_REF!r} (the reserved MCU slot), "
+                        f"got {m.ref!r}")
     # NOTE (boundary): we check a lib_id/type is PRESENT, not that the type has a
     # device card or that its lib_id resolves in KiCad — an unrecognized type is
     # placed bare (no support glue) and an absent symbol surfaces in generate's
@@ -812,6 +855,20 @@ def validate_intent(intent: DesignIntent) -> list[str]:
                 elif not (GPIO_MIN <= ep.gpio <= GPIO_MAX):
                     errs.append(f"{where}: endpoint gpio {ep.gpio} out of range "
                                 f"[{GPIO_MIN},{GPIO_MAX}]")
+        # A net must be ANCHORED: at least one endpoint that locates a concrete pin
+        # — a gpio, or a pin name. build_intent always anchors a net on its MCU-side
+        # endpoint (a gpio, or an analog pin name). An intent whose net carries only
+        # ref/role endpoints (no gpio and no pin anywhere) is an EMPTY connection
+        # claim — two parts asserted as "wired" with no pin on either side — which
+        # the >=2-endpoint check above does NOT catch. Without an anchor the net
+        # produces no real connectivity; reject it here rather than let it pass as a
+        # quiet no-op. (A role-only endpoint is still fine on the FAR side, as the
+        # deterministic path emits for a bare DEVICE_PIN, as long as the net has at
+        # least one anchored endpoint.)
+        if n.endpoints and not any(e.gpio is not None or e.pin for e in n.endpoints):
+            errs.append(f"{where}: net has no anchored endpoint — at least one "
+                        "endpoint must carry a gpio or a pin (a ref or role alone "
+                        "does not locate a pin)")
 
     # --- buses: valid type; signals actually form that type; gpios are ints ---
     for b in intent.buses:

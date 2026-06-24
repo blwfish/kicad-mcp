@@ -292,3 +292,40 @@ def test_authored_bus_with_ambiguous_signals_rejected():
                                  {"BCLK": 4, "WS": 5, "DIN": 6, "SD": 7})])
     errs = validate_intent(it)
     assert any("CODEC" in e and "I2S_IN" in e for e in errs)
+
+
+def test_mcu_ref_must_be_the_reserved_slot():
+    # H4 (release-gate): the MCU slot is canonically MCU_REF ("U1"); build_intent
+    # always assigns it and BOTH validate_intent and intent_parity key the MCU off
+    # that single constant. A non-"U1" mcu.ref makes an endpoint ref to "U1" read as
+    # valid here (always in known_refs) while parity keys off the other name — two
+    # disagreeing encodings of "which ref is the MCU". Reject it at the source.
+    from kicad_mcp.utils.firmware.intent import MCU_REF
+    it = _valid()
+    assert it.mcu.ref == MCU_REF                  # baseline: the valid intent uses it
+    it.mcu.ref = "U9"
+    errs = validate_intent(it)
+    assert any("reserved MCU slot" in e and "U9" in e for e in errs)
+
+
+def test_net_with_no_anchored_endpoint_rejected():
+    # H3 (release-gate): a modeled net whose endpoints carry only ref/role (no gpio,
+    # no pin anywhere) is an empty connection claim — two parts asserted "wired" with
+    # no pin on either side. The >=2-endpoint check passes; the anchor check rejects.
+    it = _valid()
+    it.nets = [Net(name="GHOST", kind="peripheral", confidence="high",
+                   endpoints=[Endpoint(ref="U1", role="DOUT"),
+                              Endpoint(ref="U2", role="DOUT")])]
+    errs = validate_intent(it)
+    assert any("anchored endpoint" in e for e in errs)
+
+
+def test_net_anchor_requirement_is_per_net_not_per_endpoint():
+    # The anchor is required once PER NET, not per endpoint: a role-only FAR end is
+    # legitimate (the deterministic path emits it for a bare DEVICE_PIN) as long as
+    # the net has one gpio/pin anchor — so build_intent's output keeps validating.
+    it = _valid()
+    it.nets = [Net(name="OK", kind="peripheral", confidence="high",
+                   endpoints=[Endpoint(ref="U1", gpio=16),
+                              Endpoint(ref="U2", role="DOUT")])]
+    assert validate_intent(it) == []

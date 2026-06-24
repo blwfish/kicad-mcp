@@ -150,6 +150,24 @@ def test_from_dict_drops_unknown_fields():
     assert "future_v4_field" not in to_dict(intent)["mcu"]   # unknown was dropped
 
 
+def test_from_dict_logs_dropped_unknown_fields(caplog):
+    """Forward-compat drop is intentional but must NOT be silent: an unknown key in
+    a hand/AI-authored intent (a typo whose value then vanishes while the field
+    default-fills) is logged at WARNING — the data-loss seam the release-gate
+    inventory pass flagged. Covers both the _only_fields path (dataclasses) and the
+    hand-built Net path (_net_from_dict)."""
+    import logging
+    doc = to_dict(_intent())
+    doc["mcu"]["gpio_pin"] = 4                        # typo'd key on the mcu dataclass
+    assert doc.get("nets"), "fixture must have nets to exercise the Net path"
+    doc["nets"][0]["priority"] = 1                    # typo'd key on a Net
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.firmware.intent"):
+        from_dict(doc)
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "gpio_pin" in msg and "Mcu" in msg         # _only_fields path
+    assert "priority" in msg and "Net" in msg         # _net_from_dict path
+
+
 def test_from_dict_null_factory_field_coerced_to_empty():
     """A hand-edited doc with a default_factory field (Bus.signals: dict) set to
     null must NOT override the factory with None — templates then crash on
