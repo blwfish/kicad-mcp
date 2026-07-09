@@ -48,8 +48,9 @@ KiCad sessions accumulate large tool results that fill an agent's context window
 > **Firmware-driven path:** the `design` tool can import a firmware project and
 > generate the schematic for you — but only within a narrow, explicit envelope
 > (2 ESP32 MCUs, PlatformIO layout, C `#define` pins, a fixed set of chips).
-> Outside it, `design` emits loud gaps, not a wrong board. Read
-> [docs/FIRMWARE_FRONTEND_SCOPE.md](docs/FIRMWARE_FRONTEND_SCOPE.md) before using it.
+> Outside it, `design` emits loud gaps, not a wrong board. The envelope doc
+> (FIRMWARE_FRONTEND_SCOPE.md) is an internal design doc, not shipped in this
+> repo; ask the maintainer if you need it before using this path.
 
 Follow this order for a complete board design:
 
