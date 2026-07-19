@@ -60,3 +60,23 @@ This is checkable, not just etiquette: if `scripts/audit_testability.py` reports
 the logic as helperless boundary logic, or its test as a tautological boundary
 mock, you cannot honestly claim "pinned against regression" for it — there is no
 in-process test that reaches it.
+
+## Note: portfolio-wide tautology sweep vs. this repo's own baseline (2026-07-19)
+
+`~/.claude/scripts/tautology_sweep.py` is a generalized port of this repo's own
+`find_tautological_tests` (in `scripts/audit_testability.py`), built to run
+across other repos in the same portfolio. Run for the first time against five
+sibling repos (mneme, heimdall, writer, freecad-mcp, mr-esp32) on 2026-07-19,
+all five came back genuinely clean — 0 violations, verified both at current
+state and against each repo's pre-review historical commit, not a scan
+artifact.
+
+Run the same day against kicad-mcp directly (`--root .`, no `--test-dir`
+override needed), it found **55** violations. This repo's own
+`scripts/testability_baseline.json` currently grandfathers **51** under
+`tautological_tests`. The 4-violation gap between the two counts is
+unexplained — not yet checked whether it's a real drift since the native
+baseline was last refreshed (`python scripts/audit_testability.py
+--update-baseline`) or a detection-logic difference between the generalized
+sweep and this repo's own detector. Flagged, not chased (2026-07-19,
+attention/budget reasons).
