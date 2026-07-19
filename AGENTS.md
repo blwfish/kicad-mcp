@@ -72,11 +72,32 @@ state and against each repo's pre-review historical commit, not a scan
 artifact.
 
 Run the same day against kicad-mcp directly (`--root .`, no `--test-dir`
-override needed), it found **55** violations. This repo's own
-`scripts/testability_baseline.json` currently grandfathers **51** under
-`tautological_tests`. The 4-violation gap between the two counts is
-unexplained — not yet checked whether it's a real drift since the native
-baseline was last refreshed (`python scripts/audit_testability.py
---update-baseline`) or a detection-logic difference between the generalized
-sweep and this repo's own detector. Flagged, not chased (2026-07-19,
+override needed), it found **55** violations vs. this repo's own
+`scripts/testability_baseline.json`, which grandfathers **51** under
+`tautological_tests`. The two counts aren't a subset of each other: diffing
+the actual test names, 8 are flagged only by the portfolio sweep and 4 only
+by the native detector (net +4, but 12 tests actually disagree). This is a
+real detection-logic difference, not baseline drift — confirmed by reading
+two examples:
+
+- `tests/test_new_tools.py::test_clean_board_skips_fix` (sweep flags it,
+  native doesn't) — one assertion (`result["status"] == "ok"`) echoes a
+  mocked field, but the same test also asserts `mock_fix.assert_not_called()`
+  and `"preflight" not in result`, both genuine behavioral checks. The
+  portfolio sweep flagging the whole test looks like a **false positive**.
+- `tests/test_pcb_keepout.py::test_placement_in_keepout` (native flags it,
+  sweep doesn't) — all four assertions echo the mocked `run_pcbnew_script`
+  return value (`valid`, `len(violations)`, `violations[0]["type"]`,
+  `violations[0]["keepout_ref"]`), no independent behavioral check anywhere.
+  This one reads as more tautological than the sweep-only example above, yet
+  the portfolio sweep missed it — plausibly because its AST matcher doesn't
+  follow chained/indexed dict access (`violations[0]["keepout_ref"]`) the
+  same way it follows a flat `result["status"]`. Looks like a **false
+  negative** in the portfolio tool.
+
+Only these 2 of the 12 disagreements were read — not exhaustive. Worth a
+closer look at `~/.claude/scripts/tautology_sweep.py`'s AST matcher (indexed
+dict access, and whether it should discount a test that has other genuine
+assertions alongside an echoed one) before trusting its output over this
+repo's own detector on future runs. Flagged, not chased further (2026-07-19,
 attention/budget reasons).
