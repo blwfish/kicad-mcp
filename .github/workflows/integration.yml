@@ -2,7 +2,7 @@ name: Integration Tests (KiCad multi-version)
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
     branches: [main]
   # Run on the merge queue's temp refs so "integration / kicad-10.0" can gate

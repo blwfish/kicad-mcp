@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   # Run on the merge queue's temp refs so the required check-docs check gates
   # queued PRs (the queue blocks forever on a required check that never runs).
   merge_group:
