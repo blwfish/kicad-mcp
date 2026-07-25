@@ -78,13 +78,20 @@ If the URL above is stale, find the current `.jar` at https://github.com/freerou
 
 ## Installation
 
+> **Install from `main`, not `dev`.** This repo's default branch is `dev` — a
+> plain `git clone` with no `-b` flag checks that out. `dev` is where active
+> work happens and can be left inconsistent or incomplete between commits;
+> `main` is the stable branch releases are cut from. Always clone/pull `main`.
+
 ```bash
-git clone https://github.com/blwfish/kicad-mcp.git
+git clone -b main https://github.com/blwfish/kicad-mcp.git
 cd kicad-mcp
 python3 -m venv .venv
 source .venv/bin/activate    # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
+
+To update an existing install: `git checkout main && git pull`.
 
 Clone location: `~/Projects/`, `~/src/`, or wherever repos live on this system. `~/kicad-mcp` is a safe default.
 
