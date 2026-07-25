@@ -41,7 +41,19 @@ jobs:
               subprocess.run(["uv", "lock", "--upgrade-package", pkg], check=True)
           EOF
 
-      - name: Open PR with fixed lock file
+      # A PR opened by this job's GITHUB_TOKEN does NOT trigger pull_request-
+      # based CI: GitHub deliberately excludes GITHUB_TOKEN-authored events
+      # from cascading into further workflow runs (anti-recursion), so
+      # tests.yml/integration.yml never fire on a dep-audit PR no matter how
+      # long it sits open. Run the real test suite here instead, so a human
+      # reviewer gets a genuine pass/fail signal rather than an eternally
+      # checkless PR. (2026-07-25: 5 weeks of these piled up unmerged for
+      # exactly this reason before anyone noticed — see PR #109.)
+      - name: Run test suite against the bumped lockfile
+        if: steps.audit.outputs.clean == 'false'
+        run: uv run pytest -q --timeout=120
+
+      - name: Open or update PR with fixed lock file
         if: steps.audit.outputs.clean == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,22 +64,44 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="dep-audit/fix-$(date +%Y%m%d)"
-          git checkout -b "$BRANCH"
+          # A stable (undated) branch name, so an unmerged week's fix gets
+          # UPDATED in place next week instead of stacking a new PR on top of
+          # it — stacking dated branches (dep-audit/fix-YYYYMMDD) is exactly
+          # what let 5 separate PRs pile up unreviewed for a month.
+          BRANCH="dep-audit/fix"
+          git checkout -B "$BRANCH"
           git add uv.lock
-          git commit -m "fix(deps): bump vulnerable packages from dep audit"
-          git push origin "$BRANCH"
-          gh pr create \
-            --title "fix(deps): bump vulnerable packages ($(date +%Y-%m-%d))" \
-            --body "$(cat /tmp/audit.json | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)
-          lines = ['Automated fix from weekly dependency audit.\n']
-          for dep in data.get('dependencies', []):
-              for v in dep.get('vulns', []):
-                  fixes = ', '.join(v.get('fix_versions', ['none']))
-                  lines.append(f\"- **{dep['name']}** {dep['version']}: {v['id']} → fix in {fixes}\")
-          print('\n'.join(lines))
-          ")" \
-            --base main \
-            --head "$BRANCH"
+          git commit -m "fix(deps): bump vulnerable packages from dep audit ($(date +%Y-%m-%d))"
+          git push --force origin "$BRANCH"
+
+          BODY="$(python3 - <<PYEOF
+          import json
+          data = json.load(open("/tmp/audit.json"))
+          lines = [
+              "Automated fix from weekly dependency audit ($(date +%Y-%m-%d)).",
+              "",
+              "This PR does not get pull_request-triggered CI (GITHUB_TOKEN-authored",
+              "PRs are excluded from triggering further workflow runs) -- the test",
+              "suite was run inline in this job instead; see the workflow run logs.",
+              "",
+          ]
+          for dep in data.get("dependencies", []):
+              for v in dep.get("vulns", []):
+                  fixes = ", ".join(v.get("fix_versions", ["none"]))
+                  lines.append(f"- **{dep['name']}** {dep['version']}: {v['id']} -> fix in {fixes}")
+          print("\n".join(lines))
+          PYEOF
+          )"
+
+          existing=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" \
+            --base main --state open --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "Updating existing PR #$existing"
+            gh pr edit "$existing" --body "$BODY"
+          else
+            gh pr create \
+              --title "fix(deps): bump vulnerable packages ($(date +%Y-%m-%d))" \
+              --body "$BODY" \
+              --base main \
+              --head "$BRANCH"
+          fi
