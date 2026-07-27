@@ -35,7 +35,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           LATEST=$(gh api repos/KiCad/KiCad/releases/latest --jq '.tag_name' | sed 's/^v//')
-          CURRENT="10.0.2"
+          CURRENT="10.0.5"
           echo "latest=$LATEST" >> $GITHUB_OUTPUT
           echo "current=$CURRENT" >> $GITHUB_OUTPUT
           if [ "$LATEST" != "$CURRENT" ]; then
