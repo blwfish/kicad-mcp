@@ -4,6 +4,7 @@ Single database with separate tables for symbols and footprints.
 Both indexes auto-rebuild when their respective library files change.
 """
 
+import hashlib
 import logging
 import os
 import platform
@@ -12,17 +13,39 @@ import sqlite3
 import time
 from typing import Dict, List, Optional
 
+import filelock
+
 logger = logging.getLogger(__name__)
 
 # Singleton instance
 _index: Optional["LibraryIndex"] = None
 
-# Default cache location
-_DEFAULT_DB_PATH = os.path.join(
+# Cache directory (shared across KiCad installs; the DB filename itself is
+# partitioned per-install — see _default_db_path).
+_DEFAULT_CACHE_DIR = os.path.join(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
     "kicad-mcp",
-    "library_index.db",
 )
+
+
+def _default_db_path(symbol_lib_path: Optional[str], footprint_lib_path: Optional[str]) -> str:
+    """Per-install cache path, keyed by which library tree this index indexes.
+
+    Two KiCad installs (e.g. this repo's CI matrix running 9.0 and 10.0
+    concurrently on the same self-hosted runner) share one $HOME /
+    XDG_CACHE_HOME. A single shared library_index.db meant one install's
+    rebuild_symbols()/rebuild_footprints() (DROP TABLE then repopulate) could
+    be read mid-rebuild by the OTHER install's search — confirmed in CI as
+    empty search results for a query that had worked seconds earlier, only
+    when the kicad-9.0 and kicad-10.0 integration jobs overlapped.
+
+    Keying on the actual resolved library paths (rather than e.g. a parsed
+    KiCad version number) partitions correctly even when KICAD_SYMBOL_DIR /
+    KICAD_FOOTPRINT_DIR are overridden independently of KICAD_APP_PATH.
+    """
+    key = f"{symbol_lib_path or ''}|{footprint_lib_path or ''}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(_DEFAULT_CACHE_DIR, f"library_index-{digest}.db")
 
 
 # ---------------------------------------------------------------------------
@@ -280,18 +303,27 @@ class LibraryIndex:
 
     def __init__(
         self,
-        db_path: str = _DEFAULT_DB_PATH,
+        db_path: Optional[str] = None,
         footprint_lib_path: Optional[str] = None,
         symbol_lib_path: Optional[str] = None,
     ):
-        self.db_path = db_path
         self.footprint_lib_path = footprint_lib_path or _get_footprint_lib_path()
         self.symbol_lib_path = symbol_lib_path or _get_symbol_lib_path()
+        # db_path defaults to a path partitioned by the resolved library paths
+        # (not a fixed constant) so different KiCad installs never share a
+        # cache file — see _default_db_path.
+        self.db_path = db_path or _default_db_path(self.symbol_lib_path, self.footprint_lib_path)
         # Additional directories discovered from lib-tables / KICAD_USER_LIB
         self.extra_footprint_dirs: List[str] = _get_extra_footprint_lib_dirs()
         self.extra_symbol_dirs: List[str] = _get_extra_symbol_lib_dirs()
         self._ensure_db_dir()
         self._ensure_tables()
+        # Serializes rebuild_* against other processes pointed at the SAME
+        # db_path (e.g. two concurrent sessions against one KiCad install).
+        # Does not protect a concurrent reader from observing a rebuild
+        # in-progress on this same db_path — narrower residual risk than the
+        # cross-install race this class already avoids by partitioning above.
+        self._rebuild_lock = filelock.FileLock(f"{self.db_path}.lock")
 
     def _ensure_db_dir(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -325,7 +357,13 @@ class LibraryIndex:
                               ".pretty", tuple(self.extra_footprint_dirs))
 
     def rebuild_footprints(self) -> int:
-        """Rebuild the footprint index. Returns count."""
+        """Rebuild the footprint index. Returns count.
+
+        Holds self._rebuild_lock for the duration — serializes against any
+        other process rebuilding the SAME db_path (e.g. two sessions against
+        one KiCad install), so concurrent DROP TABLE + repopulate calls can't
+        interleave and corrupt each other.
+        """
         if not self.footprint_lib_path or not os.path.isdir(self.footprint_lib_path):
             raise RuntimeError(
                 f"Footprint library path not found: {self.footprint_lib_path}. "
@@ -335,62 +373,63 @@ class LibraryIndex:
         start = time.monotonic()
         logger.info("Rebuilding footprint index from %s", self.footprint_lib_path)
 
-        conn = self._connect()
-        conn.execute("DROP TABLE IF EXISTS footprints")
-        conn.execute("DROP TABLE IF EXISTS footprints_fts")
+        with self._rebuild_lock:
+            conn = self._connect()
+            conn.execute("DROP TABLE IF EXISTS footprints")
+            conn.execute("DROP TABLE IF EXISTS footprints_fts")
 
-        conn.execute("""
-            CREATE TABLE footprints (
-                id INTEGER PRIMARY KEY,
-                library TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT,
-                tags TEXT,
-                pad_count INTEGER
-            )
-        """)
-        conn.execute("""
-            CREATE VIRTUAL TABLE footprints_fts USING fts5(
-                library, name, description, tags,
-                content='footprints', content_rowid='id'
-            )
-        """)
+            conn.execute("""
+                CREATE TABLE footprints (
+                    id INTEGER PRIMARY KEY,
+                    library TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    tags TEXT,
+                    pad_count INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE VIRTUAL TABLE footprints_fts USING fts5(
+                    library, name, description, tags,
+                    content='footprints', content_rowid='id'
+                )
+            """)
 
-        count = 0
-        scan_dirs = [self.footprint_lib_path] + [
-            d for d in self.extra_footprint_dirs if os.path.isdir(d)
-        ]
-        seen_libs: set = set()
-        for scan_root in scan_dirs:
-            for lib_dir in sorted(os.scandir(scan_root), key=lambda e: e.name):
-                if not lib_dir.name.endswith(".pretty") or not lib_dir.is_dir():
-                    continue
-                library = lib_dir.name[:-7]  # strip ".pretty"
-                if library in seen_libs:
-                    continue  # system lib takes precedence
-                seen_libs.add(library)
-                for mod_file in sorted(os.scandir(lib_dir.path), key=lambda e: e.name):
-                    if not mod_file.name.endswith(".kicad_mod"):
+            count = 0
+            scan_dirs = [self.footprint_lib_path] + [
+                d for d in self.extra_footprint_dirs if os.path.isdir(d)
+            ]
+            seen_libs: set = set()
+            for scan_root in scan_dirs:
+                for lib_dir in sorted(os.scandir(scan_root), key=lambda e: e.name):
+                    if not lib_dir.name.endswith(".pretty") or not lib_dir.is_dir():
                         continue
-                    meta = _parse_kicad_mod(mod_file.path)
-                    if not meta["name"]:
-                        meta["name"] = mod_file.name[:-10]
-                    conn.execute(
-                        "INSERT INTO footprints (library, name, description, tags, pad_count) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (library, meta["name"], meta["description"], meta["tags"], meta["pad_count"]),
-                    )
-                    count += 1
+                    library = lib_dir.name[:-7]  # strip ".pretty"
+                    if library in seen_libs:
+                        continue  # system lib takes precedence
+                    seen_libs.add(library)
+                    for mod_file in sorted(os.scandir(lib_dir.path), key=lambda e: e.name):
+                        if not mod_file.name.endswith(".kicad_mod"):
+                            continue
+                        meta = _parse_kicad_mod(mod_file.path)
+                        if not meta["name"]:
+                            meta["name"] = mod_file.name[:-10]
+                        conn.execute(
+                            "INSERT INTO footprints (library, name, description, tags, pad_count) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (library, meta["name"], meta["description"], meta["tags"], meta["pad_count"]),
+                        )
+                        count += 1
 
-        conn.execute("""
-            INSERT INTO footprints_fts (rowid, library, name, description, tags)
-            SELECT id, library, name, description, tags FROM footprints
-        """)
-        self._set_meta(conn, "fp_build_time", str(time.time()))
-        self._set_meta(conn, "fp_lib_path", self.footprint_lib_path)
-        self._set_meta(conn, "fp_count", str(count))
-        conn.commit()
-        conn.close()
+            conn.execute("""
+                INSERT INTO footprints_fts (rowid, library, name, description, tags)
+                SELECT id, library, name, description, tags FROM footprints
+            """)
+            self._set_meta(conn, "fp_build_time", str(time.time()))
+            self._set_meta(conn, "fp_lib_path", self.footprint_lib_path)
+            self._set_meta(conn, "fp_count", str(count))
+            conn.commit()
+            conn.close()
 
         logger.info("Indexed %d footprints in %.2fs", count, time.monotonic() - start)
         return count
@@ -460,7 +499,10 @@ class LibraryIndex:
                               ".kicad_sym", tuple(self.extra_symbol_dirs))
 
     def rebuild_symbols(self) -> int:
-        """Rebuild the symbol index. Returns count."""
+        """Rebuild the symbol index. Returns count.
+
+        Holds self._rebuild_lock for the duration — see rebuild_footprints.
+        """
         if not self.symbol_lib_path or not os.path.isdir(self.symbol_lib_path):
             raise RuntimeError(
                 f"Symbol library path not found: {self.symbol_lib_path}. "
@@ -470,66 +512,67 @@ class LibraryIndex:
         start = time.monotonic()
         logger.info("Rebuilding symbol index from %s", self.symbol_lib_path)
 
-        conn = self._connect()
-        conn.execute("DROP TABLE IF EXISTS symbols")
-        conn.execute("DROP TABLE IF EXISTS symbols_fts")
+        with self._rebuild_lock:
+            conn = self._connect()
+            conn.execute("DROP TABLE IF EXISTS symbols")
+            conn.execute("DROP TABLE IF EXISTS symbols_fts")
 
-        conn.execute("""
-            CREATE TABLE symbols (
-                id INTEGER PRIMARY KEY,
-                library TEXT NOT NULL,
-                name TEXT NOT NULL,
-                lib_id TEXT NOT NULL,
-                description TEXT,
-                keywords TEXT,
-                pin_count INTEGER
-            )
-        """)
-        conn.execute("""
-            CREATE VIRTUAL TABLE symbols_fts USING fts5(
-                library, name, lib_id, description, keywords,
-                content='symbols', content_rowid='id'
-            )
-        """)
+            conn.execute("""
+                CREATE TABLE symbols (
+                    id INTEGER PRIMARY KEY,
+                    library TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    lib_id TEXT NOT NULL,
+                    description TEXT,
+                    keywords TEXT,
+                    pin_count INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE VIRTUAL TABLE symbols_fts USING fts5(
+                    library, name, lib_id, description, keywords,
+                    content='symbols', content_rowid='id'
+                )
+            """)
 
-        count = 0
-        scan_dirs = [self.symbol_lib_path] + [
-            d for d in self.extra_symbol_dirs if os.path.isdir(d)
-        ]
-        seen_libs: set = set()
-        for scan_root in scan_dirs:
-            for entry in sorted(os.scandir(scan_root), key=lambda e: e.name):
-                if not entry.name.endswith(".kicad_sym"):
-                    continue
-                lib_name = entry.name[:-10]  # strip ".kicad_sym"
-                if lib_name in seen_libs:
-                    continue  # system lib takes precedence
-                seen_libs.add(lib_name)
-                for sym in _parse_kicad_sym(entry.path):
-                    lib_id = f"{sym['library']}:{sym['name']}"
-                    conn.execute(
-                        "INSERT INTO symbols (library, name, lib_id, description, keywords, pin_count) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (
-                            sym["library"],
-                            sym["name"],
-                            lib_id,
-                            sym["description"],
-                            sym["keywords"],
-                            sym["pin_count"],
-                        ),
-                    )
-                    count += 1
+            count = 0
+            scan_dirs = [self.symbol_lib_path] + [
+                d for d in self.extra_symbol_dirs if os.path.isdir(d)
+            ]
+            seen_libs: set = set()
+            for scan_root in scan_dirs:
+                for entry in sorted(os.scandir(scan_root), key=lambda e: e.name):
+                    if not entry.name.endswith(".kicad_sym"):
+                        continue
+                    lib_name = entry.name[:-10]  # strip ".kicad_sym"
+                    if lib_name in seen_libs:
+                        continue  # system lib takes precedence
+                    seen_libs.add(lib_name)
+                    for sym in _parse_kicad_sym(entry.path):
+                        lib_id = f"{sym['library']}:{sym['name']}"
+                        conn.execute(
+                            "INSERT INTO symbols (library, name, lib_id, description, keywords, pin_count) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                sym["library"],
+                                sym["name"],
+                                lib_id,
+                                sym["description"],
+                                sym["keywords"],
+                                sym["pin_count"],
+                            ),
+                        )
+                        count += 1
 
-        conn.execute("""
-            INSERT INTO symbols_fts (rowid, library, name, lib_id, description, keywords)
-            SELECT id, library, name, lib_id, description, keywords FROM symbols
-        """)
-        self._set_meta(conn, "sym_build_time", str(time.time()))
-        self._set_meta(conn, "sym_lib_path", self.symbol_lib_path)
-        self._set_meta(conn, "sym_count", str(count))
-        conn.commit()
-        conn.close()
+            conn.execute("""
+                INSERT INTO symbols_fts (rowid, library, name, lib_id, description, keywords)
+                SELECT id, library, name, lib_id, description, keywords FROM symbols
+            """)
+            self._set_meta(conn, "sym_build_time", str(time.time()))
+            self._set_meta(conn, "sym_lib_path", self.symbol_lib_path)
+            self._set_meta(conn, "sym_count", str(count))
+            conn.commit()
+            conn.close()
 
         logger.info("Indexed %d symbols in %.2fs", count, time.monotonic() - start)
         return count

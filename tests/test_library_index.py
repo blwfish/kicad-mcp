@@ -2,10 +2,12 @@
 
 import os
 
+import filelock
 import pytest
 
 from kicad_mcp.utils.library_index import (
     LibraryIndex,
+    _default_db_path,
     _parse_kicad_mod,
     _parse_kicad_sym,
 )
@@ -500,3 +502,154 @@ class TestSearchTruncatedBoundary:
             result = _op_search("R", type="symbol", limit=n)
         assert result["count"] == n
         assert result["truncated"] is True
+
+
+# ---------------------------------------------------------------------------
+# Multi-install cache partitioning (regression: confirmed CI bug where the
+# kicad-9.0 and kicad-10.0 integration matrix jobs, running concurrently on
+# one self-hosted runner, shared a single library_index.db -- one install's
+# rebuild (DROP TABLE then repopulate) could be read mid-rebuild by the
+# OTHER install's search, surfacing as empty results for a query that had
+# just worked seconds earlier).
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultDbPathPartitioning:
+    """Unit-level pin of the hashing function itself -- fast, no I/O."""
+
+    def test_different_library_paths_get_different_db_paths(self):
+        p1 = _default_db_path("/kicad9/symbols", "/kicad9/footprints")
+        p2 = _default_db_path("/kicad10/symbols", "/kicad10/footprints")
+        assert p1 != p2
+
+    def test_same_library_paths_are_deterministic(self):
+        """Same install queried twice (e.g. process restart) must reuse the
+        same cache file -- the whole point of caching."""
+        p1 = _default_db_path("/kicad9/symbols", "/kicad9/footprints")
+        p2 = _default_db_path("/kicad9/symbols", "/kicad9/footprints")
+        assert p1 == p2
+
+    def test_none_paths_do_not_crash(self):
+        """KiCad not found at all (both paths None) still produces a path --
+        rebuild_* will raise RuntimeError before writing anything meaningful,
+        but path computation itself must not blow up on None."""
+        assert _default_db_path(None, None)
+
+
+class TestMultiInstallDoesNotClobber:
+    """End-to-end: two LibraryIndex instances constructed with db_path=None
+    (the REAL default-path-selection code, not the tmp_path override the
+    other fixtures in this file use), pointed at two different fake KiCad
+    installs. Patches the module's cache-dir constant directly rather than
+    the XDG_CACHE_HOME env var, since _DEFAULT_CACHE_DIR is evaluated once
+    at import time and would not observe a later monkeypatch.setenv."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kicad_mcp.utils.library_index._DEFAULT_CACHE_DIR",
+            str(tmp_path / "cache"),
+        )
+
+    def test_different_installs_get_different_db_paths(self, tmp_path):
+        fp9 = tmp_path / "kicad9" / "footprints"
+        sym9 = tmp_path / "kicad9" / "symbols"
+        fp10 = tmp_path / "kicad10" / "footprints"
+        sym10 = tmp_path / "kicad10" / "symbols"
+        for d in (fp9, sym9, fp10, sym10):
+            d.mkdir(parents=True)
+
+        idx9 = LibraryIndex(footprint_lib_path=str(fp9), symbol_lib_path=str(sym9))
+        idx10 = LibraryIndex(footprint_lib_path=str(fp10), symbol_lib_path=str(sym10))
+
+        assert idx9.db_path != idx10.db_path
+
+    def test_rebuilding_one_install_does_not_clobber_the_other(self, tmp_path):
+        fp9 = tmp_path / "kicad9" / "footprints"
+        sym9 = tmp_path / "kicad9" / "symbols"
+        fp10 = tmp_path / "kicad10" / "footprints"
+        sym10 = tmp_path / "kicad10" / "symbols"
+        for d in (fp9, sym9, fp10, sym10):
+            d.mkdir(parents=True)
+
+        # "KiCad 9"-style install: a resistor footprint + Device symbols.
+        r9 = fp9 / "Resistor_SMD.pretty"
+        r9.mkdir()
+        (r9 / "R_0603_1608Metric.kicad_mod").write_text(SAMPLE_RESISTOR_MOD)
+        (sym9 / "Device.kicad_sym").write_text(SAMPLE_DEVICE_SYM)
+
+        # "KiCad 10"-style install: a DIFFERENT, non-overlapping library set.
+        so10 = fp10 / "Package_SO.pretty"
+        so10.mkdir()
+        (so10 / "SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod").write_text(SAMPLE_SOIC_MOD)
+        (sym10 / "Amplifier_Operational.kicad_sym").write_text(SAMPLE_AMPLIFIER_SYM)
+
+        idx9 = LibraryIndex(footprint_lib_path=str(fp9), symbol_lib_path=str(sym9))
+        idx10 = LibraryIndex(footprint_lib_path=str(fp10), symbol_lib_path=str(sym10))
+
+        idx9.rebuild_footprints()
+        idx9.rebuild_symbols()
+
+        # idx10 rebuilds AFTER idx9. With the old shared-path bug this would
+        # DROP + repopulate the SAME file idx9 just wrote, wiping its content.
+        idx10.rebuild_footprints()
+        idx10.rebuild_symbols()
+
+        # idx9's content must be untouched by idx10's rebuild.
+        assert idx9.search_footprints("resistor")
+        assert idx9.search_symbols("R")
+        assert not idx9.search_footprints("SOIC")  # idx9 never indexed this
+
+        # idx10's content is independent, not idx9's leftovers or a merge.
+        assert idx10.search_footprints("SOIC")
+        assert idx10.search_symbols("LM358")
+        assert not idx10.search_footprints("resistor")  # idx10 never indexed this
+
+
+class TestRebuildLock:
+    """Pin that self._rebuild_lock is a REAL, working mutual-exclusion lock
+    across two LibraryIndex instances sharing one db_path -- not just a
+    lock object that's constructed and hoped to matter."""
+
+    def test_second_instance_cannot_acquire_while_first_holds_it(
+        self, mock_fp_lib, mock_sym_lib, tmp_path
+    ):
+        db_path = str(tmp_path / "shared.db")
+        idx1 = LibraryIndex(
+            db_path=db_path, footprint_lib_path=mock_fp_lib, symbol_lib_path=mock_sym_lib
+        )
+        idx2 = LibraryIndex(
+            db_path=db_path, footprint_lib_path=mock_fp_lib, symbol_lib_path=mock_sym_lib
+        )
+
+        idx1._rebuild_lock.acquire()
+        try:
+            with pytest.raises(filelock.Timeout):
+                idx2._rebuild_lock.acquire(timeout=0.2)
+        finally:
+            idx1._rebuild_lock.release()
+
+        # Lock is free again once released -- not permanently wedged.
+        idx2._rebuild_lock.acquire(timeout=1)
+        idx2._rebuild_lock.release()
+
+    def test_unrelated_db_paths_do_not_share_a_lock(
+        self, mock_fp_lib, mock_sym_lib, tmp_path
+    ):
+        """Sanity check on the other direction: two DIFFERENT db_paths must
+        NOT contend with each other -- the lock is per-file, not global."""
+        idx_a = LibraryIndex(
+            db_path=str(tmp_path / "a.db"),
+            footprint_lib_path=mock_fp_lib, symbol_lib_path=mock_sym_lib,
+        )
+        idx_b = LibraryIndex(
+            db_path=str(tmp_path / "b.db"),
+            footprint_lib_path=mock_fp_lib, symbol_lib_path=mock_sym_lib,
+        )
+
+        idx_a._rebuild_lock.acquire()
+        try:
+            idx_b._rebuild_lock.acquire(timeout=0.2)  # must NOT raise Timeout
+            idx_b._rebuild_lock.release()
+        finally:
+            idx_a._rebuild_lock.release()
