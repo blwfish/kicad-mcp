@@ -984,6 +984,39 @@ class TestAddLabelToPin:
         assert result["status"] == "ok"
         assert result["text"] == "VCC"
 
+    def test_label_sits_on_wire_endpoint_not_bare_pin(self, sch_server):
+        """Regression guard: a label with no wire underneath looks connected in
+        the schematic view but KiCad ERC reports zero connections (see
+        circuit-synth/mcp-kicad-sch-api#3, comment by sebclaude-hub). The label
+        must sit on a wire endpoint that is itself anchored at the pin -- not
+        at the pin's bare coordinate with no wire at all.
+        """
+        fn = _get_schematic_fn(sch_server)
+        sch = sch_module._current_schematic
+        comp = sch_module._find_component_for_pin(sch, "R1", "1")
+        pin_pos = sch_module._kicad_pin_position(comp, "1")
+
+        result = _call(fn, "add_label_to_pin", reference="R1", pin_number="1", text="GND")
+        label_pos = tuple(result["position"])
+
+        # The label must NOT be placed directly at the pin's own coordinate.
+        assert label_pos != (pin_pos.x, pin_pos.y)
+
+        # A wire must run from the pin to the label's position.
+        matching_wires = [
+            w for w in sch.wires
+            if (w.start.x, w.start.y) == (pin_pos.x, pin_pos.y)
+            and (w.end.x, w.end.y) == label_pos
+        ]
+        assert len(matching_wires) == 1, (
+            f"expected exactly one wire from pin {pin_pos} to label {label_pos}, "
+            f"found {len(matching_wires)}"
+        )
+
+        # The label itself must be positioned at that wire's far endpoint.
+        label = sch.labels.get(result["label_uuid"])
+        assert (label.position.x, label.position.y) == label_pos
+
     def test_nonexistent_component_returns_error(self, sch_server):
         fn = _get_schematic_fn(sch_server)
         result = _call(fn, "add_label_to_pin", reference="R99", pin_number="1", text="GND")
@@ -1031,6 +1064,41 @@ class TestConnectPinsWithLabels:
                        comp1_ref="R1", pin1="2", comp2_ref="R2", pin2="2", net_name="GND_NET")
         uuids = result["label_uuids"]
         assert uuids[0] != uuids[1]
+
+    def test_both_labels_sit_on_wire_endpoints_not_bare_pins(self, sch_server):
+        """Regression guard: each net label must terminate a wire stub rooted
+        at its own pin, not float at the pin's bare coordinate with nothing
+        underneath (see circuit-synth/mcp-kicad-sch-api#3, comment by
+        sebclaude-hub -- a schematic built that way looks fully wired but
+        reports zero ERC connections).
+        """
+        fn = _get_schematic_fn(sch_server)
+        sch = sch_module._current_schematic
+        pins = [("R1", "1"), ("R2", "1")]
+        pin_positions = []
+        for ref, pnum in pins:
+            comp = sch_module._find_component_for_pin(sch, ref, pnum)
+            pin_positions.append(sch_module._kicad_pin_position(comp, pnum))
+
+        result = _call(fn, "connect_pins_with_labels",
+                       comp1_ref="R1", pin1="1", comp2_ref="R2", pin2="1", net_name="VOUT")
+        label_uuids = result["label_uuids"]
+
+        for pin_pos, label_uuid in zip(pin_positions, label_uuids):
+            label = sch.labels.get(label_uuid)
+            label_pos = (label.position.x, label.position.y)
+
+            assert label_pos != (pin_pos.x, pin_pos.y)
+
+            matching_wires = [
+                w for w in sch.wires
+                if (w.start.x, w.start.y) == (pin_pos.x, pin_pos.y)
+                and (w.end.x, w.end.y) == label_pos
+            ]
+            assert len(matching_wires) == 1, (
+                f"expected exactly one wire from pin {pin_pos} to label {label_pos}, "
+                f"found {len(matching_wires)}"
+            )
 
     def test_bad_first_component(self, sch_server):
         fn = _get_schematic_fn(sch_server)
