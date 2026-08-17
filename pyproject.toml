@@ -35,7 +35,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "mcp-events>=0.1.0",
     "networkx>=3.0",
-    "filelock>=3.28.0",
+    "filelock>=3.32.3",
 ]
 
 [project.scripts]
