@@ -9,9 +9,18 @@ on:
   # queued PRs. cancel-in-progress below is gated to pull_request, so a queue
   # run is never cancelled.
   merge_group:
+  # Catches silent drift on the self-hosted runners (missing FreeRouter jar,
+  # stale KiCad install, etc.) during quiet periods when no PR happens to
+  # touch this workflow's trigger paths. Runs before check-upstream-releases
+  # (Monday 9am UTC) so a runner problem surfaces before that workflow would
+  # otherwise mask it as "everything's fine, just versions to bump."
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   # One in-flight integration run per PR; a new push to the same PR cancels the
@@ -64,3 +73,68 @@ jobs:
           KICAD_INTEGRATION=1 uv run pytest tests/integration/ -v \
             --tb=short \
             --timeout=120
+
+  notify-on-failure:
+    name: Notify on integration failure
+    needs: integration
+    # `integration` uses a matrix with continue-on-error: true on kicad-9.0,
+    # so its job-level result only reflects kicad-10.0 (the non-continued
+    # leg) — this fires on a genuine kicad-10.0 break, not the known-flaky
+    # kicad-9.0 leg. Skipped for plain pull_request runs: a failure there is
+    # already visible to whoever's iterating on that branch. Filed for
+    # push/schedule/merge_group instead — the cases where nothing else is
+    # watching, which is exactly how this broke silently for a month.
+    if: always() && needs.integration.result == 'failure' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Ensure label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create integration-failure \
+            --repo "${{ github.repository }}" \
+            --color B60205 \
+            --description "integration / kicad-10.0 is failing on main or a scheduled run" \
+            2>/dev/null || true
+
+      - name: File or update tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'integration / kicad-10.0 is failing';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const when = new Date().toISOString();
+            const note = `Still failing as of ${when} — [run](${runUrl}) ` +
+              `(${context.eventName} on \`${context.ref}\`).`;
+
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'integration-failure',
+            });
+            const existing = open.data.find(i => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: note,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                labels: ['integration-failure'],
+                body: `${note}\n\n` +
+                  `\`integration / kicad-10.0\` is **not** a required branch-protection ` +
+                  `status check on \`main\` (only \`pytest\` and \`check-docs\` are), so ` +
+                  `PRs — including Dependabot auto-merges — can still land while this is ` +
+                  `red. This issue exists so that doesn't happen silently; close it once ` +
+                  `the underlying break is fixed and a rerun is green.`,
+              });
+            }
