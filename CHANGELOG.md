@@ -2,6 +2,114 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.14.0] — 2026-09-14
+
+Maintenance release — dependency updates and CI hardening, no feature work.
+
+### Fixed
+
+- **CI:** the self-hosted KiCad integration suite had been failing silently
+  for over a month (last green run 2026-08-07) — `integration/kicad-10.0`
+  isn't a required branch-protection status check, so PRs (including
+  Dependabot auto-merges) kept landing through it unnoticed. Added a weekly
+  schedule + `workflow_dispatch`, plus a notify-on-failure job that files or
+  comments on a tracking issue so drift surfaces even during quiet periods.
+  Root cause of the actual break was a missing FreeRouter jar on the
+  runners' shared HOME, fixed out-of-band; this change is about making the
+  next one visible.
+
+### Changed
+
+- Dependency bumps: `fastmcp` 3.4.7 → 4.0.3 (major), `authlib` 1.7.2 →
+  1.8.0, `filelock`, `ruff`, `hypothesis`, `mypy`.
+
+## [0.13.0] — 2026-08-07
+
+### Fixed
+
+- **CI:** `check-upstream-releases.yml` hardcoded per-tool version baselines
+  in the workflow itself, so they silently drifted from what was actually
+  installed on the dev machine — either filing "update available" forever
+  or going quiet by coincidence. Baseline moved to
+  `.github/upstream-versions.env`, auto-synced by the local upstream-update
+  launchd job whenever KiCad/FreeRouter gets upgraded (closes #117).
+- **CI:** loading `upstream-versions.env` straight into `GITHUB_ENV` broke
+  the file-command parser on the header comment block, failing the workflow
+  outright before it could read `KICAD_VERSION`/`FREEROUTER_VERSION`.
+- **library-index:** two KiCad installs (the integration matrix's
+  kicad-9.0/kicad-10.0 jobs, running concurrently on one self-hosted
+  runner) shared a single `library_index.db` with no lock and no
+  per-install partitioning — one job's rebuild could be read mid-rebuild by
+  the other, surfacing as empty search results for a query that had worked
+  seconds earlier. Cache path is now keyed by a hash of the resolved
+  library paths; rebuilds hold a `filelock.FileLock` for their duration.
+- **test:** `add_label_to_pin`/`connect_pins_with_labels` draw a wire stub
+  from pin to label, but the existing tests only checked the returned
+  UUID/text, not that the wire actually exists — a label placed directly at
+  a bare pin coordinate looked fully wired in the schematic view but
+  produced zero connections under real KiCad ERC (surfaced by
+  circuit-synth/mcp-kicad-sch-api#3).
+
+### Note
+
+Version jumps straight from 0.11.0 to 0.13.0 in this file: the `v0.12.0`
+tag was cut against a commit where `pyproject.toml` still read `0.11.0` (a
+mislabeling bug), so its entry below reflects the intended content of that
+release rather than what the tag itself points at.
+
+## [0.12.0] — 2026-07-26
+
+A large release: the firmware front-end arc (Phases 1–3), MCU expansion,
+device cards, and CI/dependency hygiene — roughly 90 commits since v0.11.0.
+
+### Added — Firmware front end, Phases 1–3
+
+- `.ino`/`const`/`constexpr` pin-declaration parsing, multi-tab Arduino
+  sketch discovery, `board.yaml` `board_id` escape hatch (Phase 1a).
+- `import_intent` + `intent_template` + gap-parity, and `validate_intent` as
+  a trust gate for AI- or hand-authored intents (Phase 1b).
+- Generalized MCU wiring core, proven on RP2040/Pico (Phase 2); first 5V
+  MCU support — Arduino Nano v3 / ATmega328P — with full supply-rail
+  generalization (Phase 2b); Arduino analog pins A0–A7 resolved by symbol
+  pin name.
+- Cross-version symbol resolution for KiCad 9/10 renames;
+  `arduino_nano_esp32` no longer mis-resolves to classic WROOM-32E.
+- Phase 3 corpus harness: a nightly fail-safe sweep over real firmware
+  sketches (1,319 examples sampled — zero crashes, everything degrades to
+  an honest gap) plus a dependency-metadata-driven device-card backlog
+  ranker.
+
+### Added — MCU + device cards
+
+- 4 MCUs total: ESP32 family, RP2040 (Pico/Pico 2), Arduino Nano v3.
+- New cards: rotary encoder, DHT22, servo, ICS-43434 (buildable I2S mic),
+  MCP23017 `expander_terminals` (v2), and terminal-only off-board devices
+  (v1).
+
+### Fixed
+
+- **Release gate:** `release.yml`'s `release` job only depended on the
+  ubuntu unit-test matrix, not the self-hosted KiCad integration suite —
+  v0.11.0 had published over a red integration run. `release` now needs
+  both jobs.
+- A cluster of cold-review-driven fixes across the firmware pipeline:
+  silent-wrong-output holes across Phases 0/1a/1b/2/2b, analog-pin
+  silent-drop/conflict, chip-identity guard + bus-family ambiguity,
+  `mcu_pin_refs`' symmetric falsy-skip, and the config.h ambiguity warning.
+- `generate_schematic` now reports `partial`/`error` instead of always
+  `ok`; the generated schematic's paper size auto-fits the layout height
+  and reports overflow instead of silently clipping.
+- 5 weeks of dep-audit CVE fixes consolidated into one PR; default branch
+  switched `dev` → `main`; `test_track_geometry_to_routed_pcb`'s routing
+  bound re-baselined (2 → 6) to match the `audio_s3` precedent, fixing a
+  CI flake.
+
+### Docs
+
+- Examples gallery added (audio-node, audio-remote schematics + PCB
+  images); internal design/planning docs moved off `main` to the orphan
+  `specs` branch.
+
 ## [0.11.0] — 2026-06-03
 
 A large release: the tool-surface consolidation (below), an entire firmware
