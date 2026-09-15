@@ -220,8 +220,8 @@ def _fetch_gzip(url: str) -> bytes:
 # Database build
 # ---------------------------------------------------------------------------
 
-def _db_connect(path: Path = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+def _db_connect(path: Path | None = None) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path if path is not None else DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -422,14 +422,16 @@ def _decode_shard_rows(
 
 
 def build_db_from_jsonl(
-    db_path: Path = DB_PATH,
-    meta_path: Path = META_PATH,
+    db_path: Path | None = None,
+    meta_path: Path | None = None,
     progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Download jlcparts JSONL shards and build local SQLite.
 
     Returns metadata dict with snapshot_date, total_components, etc.
     """
+    db_path = db_path if db_path is not None else DB_PATH
+    meta_path = meta_path if meta_path is not None else META_PATH
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Fetch manifest
@@ -552,7 +554,8 @@ def build_db_from_jsonl(
 # Query API
 # ---------------------------------------------------------------------------
 
-def _read_meta(meta_path: Path = META_PATH) -> dict[str, Any]:
+def _read_meta(meta_path: Path | None = None) -> dict[str, Any]:
+    meta_path = meta_path if meta_path is not None else META_PATH
     try:
         result: dict[str, Any] = json.loads(meta_path.read_text())
         return result
@@ -560,7 +563,7 @@ def _read_meta(meta_path: Path = META_PATH) -> dict[str, Any]:
         return {}
 
 
-def get_snapshot_age_days(meta_path: Path = META_PATH) -> int | None:
+def get_snapshot_age_days(meta_path: Path | None = None) -> int | None:
     """Return age of local snapshot in days, or None if no snapshot."""
     meta = _read_meta(meta_path)
     downloaded_at = meta.get("downloaded_at")
@@ -574,17 +577,18 @@ def get_snapshot_age_days(meta_path: Path = META_PATH) -> int | None:
         return None
 
 
-def get_snapshot_date(meta_path: Path = META_PATH) -> str | None:
+def get_snapshot_date(meta_path: Path | None = None) -> str | None:
     return _read_meta(meta_path).get("snapshot_date")
 
 
-def db_exists(db_path: Path = DB_PATH) -> bool:
+def db_exists(db_path: Path | None = None) -> bool:
+    db_path = db_path if db_path is not None else DB_PATH
     return db_path.exists() and db_path.stat().st_size > 0
 
 
-def validate_schema(db_path: Path = DB_PATH) -> None:
+def validate_schema(db_path: Path | None = None) -> None:
     """Check that the local DB has the expected columns."""
-    conn = _db_connect(db_path)
+    conn = _db_connect(db_path if db_path is not None else DB_PATH)
     try:
         _validate_schema(conn)
     finally:
@@ -654,11 +658,12 @@ def search_components(
     assembly_tier: str = "basic",
     max_results: int = 3,
     include_unresolvable: bool = False,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Search the local jlcparts DB and return scored, ranked candidates."""
     return _ranked_candidates(
-        description, package, assembly_tier, include_unresolvable, db_path
+        description, package, assembly_tier, include_unresolvable,
+        db_path if db_path is not None else DB_PATH,
     )[:max_results]
 
 
@@ -668,7 +673,7 @@ def search_components_with_total(
     assembly_tier: str = "basic",
     max_results: int = 3,
     include_unresolvable: bool = False,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Like ``search_components`` but also return the pre-slice candidate count.
 
@@ -676,14 +681,15 @@ def search_components_with_total(
     so they can emit a truncation flag instead of silently capping.
     """
     ranked = _ranked_candidates(
-        description, package, assembly_tier, include_unresolvable, db_path
+        description, package, assembly_tier, include_unresolvable,
+        db_path if db_path is not None else DB_PATH,
     )
     return ranked[:max_results], len(ranked)
 
 
-def get_component(lcsc: str, db_path: Path = DB_PATH) -> dict[str, Any] | None:
+def get_component(lcsc: str, db_path: Path | None = None) -> dict[str, Any] | None:
     """Exact lookup by LCSC part number (e.g., 'C6186')."""
-    conn = _db_connect(db_path)
+    conn = _db_connect(db_path if db_path is not None else DB_PATH)
     try:
         row = conn.execute("SELECT * FROM components WHERE lcsc = ?", (lcsc,)).fetchone()
         return dict(row) if row else None
