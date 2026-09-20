@@ -26,7 +26,9 @@ from pathlib import Path
 import pytest
 
 from kicad_mcp.tools.pcb_board import _op_create
-from kicad_mcp.utils.pcbnew_bridge import _get_kicad_python, run_pcbnew_script
+from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+
+from .conftest import pcbnew_available
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "src" / "kicad_mcp" / "tools"
 
@@ -78,13 +80,10 @@ class TestEveryLoadBoardCallIsGuarded:
 class TestLoadBoardNoneReproducesCleanly:
     """Real KiCad-backed reproduction of the original bug report."""
 
-    def _kicad_available(self):
-        return _get_kicad_python() is not None
-
     @pytest.fixture(autouse=True)
     def skip_if_unavailable(self):
-        if not self._kicad_available():
-            pytest.skip("KiCad Python 3.9 not available")
+        if not pcbnew_available():
+            pytest.skip("pcbnew not importable under KiCad's Python")
 
     _LOAD_SCRIPT = """
 import pcbnew, json, sys
