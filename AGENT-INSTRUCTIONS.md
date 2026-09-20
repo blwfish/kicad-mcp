@@ -164,6 +164,7 @@ pcb(operation="auto_fix_silkscreen", pcb_path=...)                     # Silkscr
 | I need to... | Use this | Not this |
 |---|---|---|
 | Get best-practices/known-issues guidance before starting a session | `get_usage_guidance()` — costs nothing, call it first | Skipping straight to a design tool |
+| Search guidance by symptom instead of by topic name | `get_usage_guidance(operation="find", problem="...")` | Guessing which topic covers it |
 | Choose board size | `estimate_board_size` | Guessing dimensions |
 | Initial placement | `suggest_placement` | Manual coordinate math |
 | Route traces | `autoroute(operation="run")` | `pcb(operation="add_trace"/"add_via")` |

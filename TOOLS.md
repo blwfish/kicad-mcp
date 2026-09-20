@@ -87,7 +87,7 @@ firmware and authors a design-intent against the `intent_template` contract, the
 | `estimate_board_size` | Pre-PCB planning: estimate board dimensions from a footprint list |
 | `suggest_placement` | Connectivity-based component placement suggestions |
 | `analyze_placement_telemetry` | Read-only telemetry analysis for placement calibration |
-| `get_usage_guidance` | Known issues + best practices — call once at the start of a session |
+| `get_usage_guidance` | Known issues, best practices, workflow — `operation="strategy"` (default, optional `topic`), `"tactics"` (optional `topic`), or `"find"` (`problem="..."`) |
 
 ## Migration from v0.9.0
 

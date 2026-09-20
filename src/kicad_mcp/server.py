@@ -1,34 +1,34 @@
 """KiCad MCP server — entry point and tool registration."""
 
 import logging
+
 from fastmcp import FastMCP
+from mcp_agent_notes import render_instructions
+
+from kicad_mcp.tools.usage_guidance import (
+    CAPABILITY_STATEMENT,
+    NOTES,
+    QUERY_TOOL_NAME,
+    register_usage_guidance_tools,
+)
 
 logger = logging.getLogger(__name__)
 
 # Delivered to EVERY MCP client over the protocol (Claude, Gemini, Cursor, …) —
-# the one cross-agent channel that needs no file-reading. Keep it short: the
-# few can't-miss rules plus pointers to the full docs. The complete operating
-# guide lives in AGENT-INSTRUCTIONS.md; the operation reference in TOOLS.md.
-SERVER_INSTRUCTIONS = """\
-KiCad EDA — design schematics and lay out PCBs. Most tools are routers that \
-dispatch on an `operation=` argument (e.g. pcb(operation="place_footprint"), \
-drc(operation="autofix"), library(operation="search")); the rest are standalone \
-(build_pcb_from_schematic, estimate_board_size, suggest_placement, panelize_pcb).
-
-Critical rules:
-- NEVER hand-route. Don't use pcb add_trace/add_via to route a board — use \
-autoroute(operation="run") (wraps FreeRouter). LLM-placed traces short and \
-violate clearances.
-- NEVER guess library/footprint names — they change between KiCad versions. \
-Search first with library(operation="search").
-- NEVER modify one PCB file with concurrent calls. PCB ops are \
-load/modify/save subprocesses; parallel writes corrupt the file. Serialize them.
-- Verify with drc(operation="run") and audit(operation="all") before finishing.
-
-Call get_usage_guidance() once at the start of a session for known issues and \
-best practices — costs nothing, takes no arguments.
-
-See AGENT-INSTRUCTIONS.md for the full workflow, TOOLS.md for the operation reference."""
+# the one cross-agent channel that needs no file-reading. Built from NOTES
+# (kicad_mcp.tools.usage_guidance) via mcp-agent-notes so the same authored
+# knowledge backs both this bounded handshake blob and the full-detail/topic/
+# search query tool (see design-docs/mcp-agent-notes/SPEC.md). The complete
+# operating guide lives in AGENT-INSTRUCTIONS.md; the operation reference in
+# TOOLS.md.
+SERVER_INSTRUCTIONS = (
+    render_instructions(
+        NOTES,
+        capability_statement=CAPABILITY_STATEMENT,
+        query_tool_name=QUERY_TOOL_NAME,
+    )
+    + "\n\nSee AGENT-INSTRUCTIONS.md for the full workflow, TOOLS.md for the operation reference."
+)
 
 
 def create_server() -> FastMCP:
@@ -95,8 +95,6 @@ def create_server() -> FastMCP:
     register_design_tools(mcp)
 
     # Schema-visible usage guidance (fallback for clients that drop `instructions`)
-    from kicad_mcp.tools.usage_guidance import register_usage_guidance_tools
-
     register_usage_guidance_tools(mcp)
 
     logger.info("KiCad MCP server initialized with all tool modules")
