@@ -87,6 +87,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 """ + LIB_SEARCH_HELPER + """
 lib_name = params["library"]
@@ -203,6 +206,9 @@ reference = params["reference"]
 """ + _KEEPOUT_HELPER + """
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 fp = board.FindFootprintByReference(reference)
 if fp is None:
@@ -277,6 +283,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 PAD_SHAPE = {
     pcbnew.PAD_SHAPE_CIRCLE:    "circle",
@@ -357,6 +366,9 @@ pcb_path = params["pcb_path"]
 reference = params["reference"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 fp = board.FindFootprintByReference(reference)
 if fp is None:

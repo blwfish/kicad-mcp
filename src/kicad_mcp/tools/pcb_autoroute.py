@@ -169,6 +169,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 # Remove copper pour zones if requested (FreeRouter doesn't understand them)
 zones_removed = 0
@@ -239,6 +242,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 # Import Specctra SES
 pcbnew.ImportSpecctraSES(board, params["ses_path"])
@@ -284,6 +290,9 @@ import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 pcbnew.ImportSpecctraSES(board, params["ses_path"])
 # Deliberately NO board.Save — measure only.
 """ + _RATSNEST_COUNT_SNIPPET + """
@@ -591,6 +600,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 ds = board.GetDesignSettings()
 min_cl = pcbnew.ToMM(ds.m_MinClearance)
@@ -681,6 +693,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 spacing = params["spacing_mm"]
 
 """ + COURTYARD_BBOX_TUPLE_HELPER + NUDGE_PLACEMENT_HELPER + """
