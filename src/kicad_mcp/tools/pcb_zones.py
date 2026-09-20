@@ -36,6 +36,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 net = board.FindNet(params["net_name"])
 if net is None or net.GetNetCode() == 0:
@@ -136,6 +139,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 copper_zones = []
 for z in board.Zones():

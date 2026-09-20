@@ -181,6 +181,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 # Remove any existing Edge.Cuts
 to_remove = []
@@ -397,6 +400,9 @@ import pcbnew, json, os, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + LIB_SEARCH_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 lib = find_lib("MountingHole")
 if not lib:
     print(json.dumps({"error": "MountingHole footprint library not found"}))
@@ -513,6 +519,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + BODY_EXTENT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 edge_refs = set(params["edge_placed_refs"])
 
 def _ref_class(ref):
@@ -567,6 +576,9 @@ import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 def _ref_class(ref):
     for i, c in enumerate(ref):
@@ -795,6 +807,9 @@ import pcbnew, json, os, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 placements = params["placements"]
 
 """ + LIB_SEARCH_HELPER + """
@@ -942,6 +957,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 assignments = params["assignments"]
 assigned = []
 assign_errors = []
@@ -1026,6 +1044,9 @@ params = json.loads(open(sys.argv[1]).read())
 """ + KEEPOUT_HELPER + POWER_NET_HELPER + EDGE_TERMINAL_HELPER + WIRE_ENTRY_HELPER + BODY_EXTENT_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 spacing = params["spacing_mm"]
 corner_clear = params.get("corner_clear_mm", 0.0)  # corner space the mounting holes occupy
 terminal_anchor = params.get("anchor", "start")    # "start" | "center" along each edge
@@ -1735,6 +1756,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 ground_net = params["ground_net"]
 
 net = board.FindNet(ground_net)
@@ -1819,6 +1843,9 @@ import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 margin = pcbnew.FromMM(params["margin_mm"])
 size = pcbnew.FromMM(0.8)
 thick = pcbnew.FromMM(0.15)

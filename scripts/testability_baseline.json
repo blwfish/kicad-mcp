@@ -4,6 +4,7 @@
   "helperless_boundary_logic": [
     "src/kicad_mcp/tools/pcb_board.py",
     "src/kicad_mcp/tools/pcb_nets.py",
+    "src/kicad_mcp/tools/pcb_panelize.py",
     "src/kicad_mcp/tools/pcb_routing.py",
     "src/kicad_mcp/tools/pcb_zones.py"
   ],

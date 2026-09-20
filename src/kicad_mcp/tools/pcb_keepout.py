@@ -47,6 +47,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 keepouts = extract_keepouts(board)
 print(json.dumps({"status": "ok", "keepout_count": len(keepouts), "keepouts": keepouts}))
 """
@@ -64,6 +67,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 keepouts = extract_keepouts(board)
 outline = get_board_outline(board)
 
@@ -121,6 +127,9 @@ import pcbnew, json, os, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 """ + _LIB_SEARCH + """
 lib_path = find_lib(params["library"])
@@ -228,6 +237,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 min_clearance = params["min_clearance_mm"]
 use_courtyard = params["use_courtyard"]
 
@@ -358,6 +370,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 keepouts = extract_keepouts(board)
 outline = get_board_outline(board)
 
@@ -494,6 +509,9 @@ import pcbnew, json, math, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 min_cl = params["min_clearance_mm"]
 
 # Use board design rule if no explicit clearance given. Track source so the
@@ -621,6 +639,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + PAD_GAP_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 min_cl = params["min_clearance_mm"]
 
 # Use board design rule if no explicit clearance given. Track source so the
@@ -795,6 +816,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 spacing = params["spacing_mm"]
 max_passes = params["max_passes"]
 
@@ -958,6 +982,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 min_clearance = params["min_clearance_mm"]
 
 # --- 1. Footprint overlap check (courtyard-based) ---

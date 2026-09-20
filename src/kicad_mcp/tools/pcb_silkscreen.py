@@ -37,6 +37,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 txt = pcbnew.PCB_TEXT(board)
 txt.SetText(params["text"])
@@ -82,6 +85,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 items = []
 
@@ -168,6 +174,9 @@ pcb_path = params["pcb_path"]
 reference = params["reference"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 fp = board.FindFootprintByReference(reference)
 if fp is None:
@@ -266,6 +275,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 target_text = params["text"]
 near_x = params["near_x_mm"]
@@ -359,6 +371,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 """ + GEOMETRY_HELPER + """
 
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
@@ -486,6 +501,9 @@ pcb_path = params["pcb_path"]
 skip_refs = set(params.get("skip_refs") or [])
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
 

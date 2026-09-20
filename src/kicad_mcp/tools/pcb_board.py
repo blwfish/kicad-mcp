@@ -24,6 +24,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 footprints = board.GetFootprints()
 tracks = board.GetTracks()
 
@@ -92,6 +95,9 @@ width_mm = params["width_mm"]
 height_mm = params["height_mm"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 # Remove existing Edge.Cuts segments so outline can be replaced
 edge_cuts_id = pcbnew.Edge_Cuts
@@ -164,6 +170,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 ds = board.GetDesignSettings()
 
 # NOTE: do NOT set the copper layer count here. Layer count is a
@@ -270,6 +279,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 results = {}
 
 # ── Silkscreen fix ────────────────────────────────────────────────────────────

@@ -155,6 +155,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 
 """ + COURTYARD_BBOX_TUPLE_HELPER + NUDGE_PLACEMENT_HELPER + """
 
@@ -191,6 +194,9 @@ print(json.dumps({"status": "ok", "move_count": move_count}))
 import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 removed = 0
 to_remove = []
 for track in board.GetTracks():
@@ -230,6 +236,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 silk_layer_ids = [board.GetLayerID("F.SilkS"), board.GetLayerID("B.SilkS")]
 
 all_pads = []

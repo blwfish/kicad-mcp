@@ -199,6 +199,9 @@ params = json.loads(open(sys.argv[1]).read())
 """ + _KEEPOUT_HELPER + POWER_NET_HELPER + _SPIRAL_HELPER + """
 
 board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
 spacing = params["spacing_mm"]
 outline = get_board_outline(board)
 

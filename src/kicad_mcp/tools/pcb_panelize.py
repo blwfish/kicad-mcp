@@ -218,6 +218,9 @@ import pcbnew, json, sys
 params = json.loads(open(sys.argv[1]).read())
 
 board = pcbnew.LoadBoard(params["output_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["output_path"])}))
+    sys.exit(0)
 
 # Get board outline bounding box
 bbox = board.GetBoardEdgesBoundingBox()
