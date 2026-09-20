@@ -431,6 +431,10 @@ class TestAuditPlacement:
         assert result["violations_count"] == 0
         assert result["clean_count"] == 8
         assert "pass" in result["summary"]
+        # placement-clean is not board-clean: pad clearances and silkscreen
+        # overlap are separate sub-checks (see audit(operation="all")).
+        assert "note" in result
+        assert "audit(operation='all')" in result["note"]
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_violations_found(self, mock_run, audit_server, pcb_file):
@@ -489,6 +493,10 @@ class TestAuditPlacement:
         bz1 = result["violations"][1]
         assert bz1["reference"] == "BZ1"
         assert bz1["issues"][0]["type"] == "outside_board"
+        # The "placement alone isn't board-clean" note only applies when
+        # placement itself reports clean — an already-actionable violation
+        # list shouldn't also carry it.
+        assert "note" not in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_skips_own_keepout(self, mock_run, audit_server, pcb_file):

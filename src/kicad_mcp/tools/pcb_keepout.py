@@ -1279,7 +1279,16 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
         if operation == "placement":
             if pcb_path is None:
                 return {"error": "operation='placement' requires 'pcb_path'"}
-            return _op_placement(pcb_path)
+            result = _op_placement(pcb_path)
+            if result.get("violations_count") == 0:
+                result["note"] = (
+                    "placement checks keepout-zone overlap and board-outline "
+                    "overhang only, using each footprint's bounding box — it "
+                    "does not cover pad-to-pad clearance or silkscreen "
+                    "overlap. Use audit(operation='all') for a combined "
+                    "check before declaring the board clean."
+                )
+            return result
 
         if operation == "footprint_overlaps":
             if pcb_path is None:

@@ -7,7 +7,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.server import create_server
 
-EXPECTED_TOOL_COUNT = 17  # updated by scripts/sync_tool_count.py
+EXPECTED_TOOL_COUNT = 18  # updated by scripts/sync_tool_count.py
 
 
 class TestCreateServer:
@@ -80,6 +80,8 @@ class TestExpectedToolsExist:
         "analyze_placement_telemetry",
         # LCSC component intelligence router
         "lcsc",
+        # Schema-visible usage guidance (fallback for clients dropping `instructions`)
+        "get_usage_guidance",
     ]
 
     @pytest.fixture(autouse=True)

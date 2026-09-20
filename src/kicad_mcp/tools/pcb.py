@@ -58,6 +58,27 @@ from kicad_mcp.tools.pcb_silkscreen import (
 from kicad_mcp.tools.pcb_keepout import _op_constraints as _op_get_constraints
 
 
+_MANUAL_ROUTING_NOTE = (
+    "Manual routing is for touch-ups only — LLMs cannot compute spatial "
+    "clearances reliably by hand. If you're routing more than a single "
+    "trace/via, use autoroute(operation='run') instead."
+)
+
+
+def _with_manual_routing_note(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Append a reminder to a successful add_trace/add_via response.
+
+    add_trace/add_via have no guardrail against being used to hand-route a
+    whole board, which AGENT-INSTRUCTIONS.md forbids except for minor
+    touch-ups after autorouting. Surfacing the reminder in the same response
+    the agent just received is cheaper to notice than a rule stated only in
+    a separate doc.
+    """
+    if result.get("status") == "ok":
+        result["note"] = _MANUAL_ROUTING_NOTE
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -445,10 +466,10 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 return {"error": "operation='add_trace' requires 'end_x_mm'"}
             if end_y_mm is None:
                 return {"error": "operation='add_trace' requires 'end_y_mm'"}
-            return _op_add_trace(
+            return _with_manual_routing_note(_op_add_trace(
                 pcb_path, start_x_mm, start_y_mm, end_x_mm, end_y_mm,
                 width_mm=trace_width_mm, layer=layer, net_name=net_name,
-            )
+            ))
 
         if operation == "add_via":
             if pcb_path is None:
@@ -457,11 +478,11 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 return {"error": "operation='add_via' requires 'x_mm'"}
             if y_mm is None:
                 return {"error": "operation='add_via' requires 'y_mm'"}
-            return _op_add_via(
+            return _with_manual_routing_note(_op_add_via(
                 pcb_path, x_mm, y_mm,
                 drill_mm=drill_mm, size_mm=size_mm,
                 net_name=net_name, via_type=via_type,
-            )
+            ))
 
         if operation == "clear_routing":
             if pcb_path is None:
