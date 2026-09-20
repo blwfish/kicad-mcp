@@ -83,6 +83,32 @@ The boundary-coverage tests added in `test_component_utils.py`,
 `test_pcb_keepout.py`, and `test_keepout_rect_helpers.py` model this
 pattern.
 
+## Testing against non-Claude models
+
+`scripts/lm_studio_probe.py` is a minimal MCP client that drives a real
+`kicad-mcp` subprocess (same `initialize()`/`list_tools()`/`call_tool()` any
+client uses) from a local model running in [LM Studio](https://lmstudio.ai/),
+bridged over LM Studio's OpenAI-compatible local completions API. Useful
+whenever tool schemas, `SERVER_INSTRUCTIONS`, or `usage_guidance.NOTES`
+change materially — re-run it to check critical-rule adherence hasn't
+regressed for models that aren't Claude.
+
+```bash
+lms server start
+lms load qwen/qwen2.5-coder-14b   # load ONE model at a time — these are multi-GB
+uv run scripts/lm_studio_probe.py qwen/qwen2.5-coder-14b routing
+uv run scripts/lm_studio_probe.py --list-scenarios   # see what's available
+lms unload --all
+```
+
+Note: LM Studio's own CLI (`lms chat`) does not wire MCP tools into the
+model at all — only its GUI's "Program"/MCP integration does, and that
+isn't scriptable. This script is a standalone client, not a wrapper around
+`lms chat`.
+
+Last recorded results (2026-09-20, `qwen2.5-coder-14b`/`qwen3-32b`/
+`gemma-4-e4b`): see [AGENT-INSTALL.md](AGENT-INSTALL.md#client-compatibility).
+
 ## Will feature requests be accepted?
 
 Maybe. The project is scoped to what I personally need — small to medium hobbyist boards, microcontroller circuits, model-railroad-grade reliability. If your request overlaps with that (more component types, better DRC autofix, footprint discovery improvements), it's likely. If it's far outside (RF design tools, multi-board assemblies, complex panelization), I'll probably point you at a fork instead.
