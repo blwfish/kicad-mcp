@@ -2,6 +2,80 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.15.0] — 2026-09-20
+
+Onboarding-knowledge infrastructure, two pcbnew robustness fixes found via
+cross-model testing, and a real (not just tool-count-based) client
+compatibility claim.
+
+### Added
+
+- **`get_usage_guidance` tool + [mcp-agent-notes](https://github.com/blwfish/mcp-agent-notes) migration:** the
+  `SERVER_INSTRUCTIONS` string and a hand-rolled static-JSON guidance tool
+  from the previous pass are now both rendered from one authored `NOTES`
+  tuple via the real `mcp-agent-notes` package — the generalized version of
+  a mechanism this project and freecad-mcp had independently converged on.
+  `get_usage_guidance` is now a proper query router
+  (`operation="strategy"|"tactics"|"find"`) with topic-scoped detail and
+  free-text symptom search, not a single static payload.
+- **`docs/BOUNDARY_OPS.md`** — the previously-missing target of three
+  existing references (`AGENTS.md`, `CONTRIBUTING.md`, a `pcb_keepout.py`
+  comment). Full `*_HELPER`/thin-shell/exec-test pattern, grounded in the
+  repo's actual `GEOMETRY_HELPER` exemplar, plus the no-splice-needed
+  post-processing variant (`_truncate_violations`).
+- **`scripts/lm_studio_probe.py`** — a standalone MCP client for smoke-testing
+  this server's tool schemas and instructions against local, non-Claude
+  models via LM Studio (see Testing below).
+- **`scripts/sync_agent_notes_docs.py`** — generates `AGENT-INSTRUCTIONS.md`'s
+  "Mandatory Rules" and `AGENT-INSTALL.md`'s "Critical Rules" sections from
+  `NOTES`' `CRITICAL` entries, wired into `docs-check.yml`, so those two
+  sections can no longer drift from what the server actually says.
+
+### Fixed
+
+- **`bulk_assign_pad_nets`** now validates assignment dict keys
+  (`reference`/`pad`/`net`) before touching pcbnew, instead of surfacing a
+  malformed key (e.g. `pad_number` instead of `pad`) as a bare `KeyError`
+  wrapped in a confusing `wxApp`/`traits` subprocess assertion.
+- **Every `pcbnew.LoadBoard()` call site** (51 across 12 tool modules) now
+  checks for `None` — its only documented failure mode — instead of
+  crashing downstream with `AttributeError: 'NoneType' object has no
+  attribute 'GetFootprints'`. Root cause of the triggering case (a
+  hallucinated `"<new_pcb_path>"` path argument) turned out to be the
+  missing `.kicad_pcb` extension, not the bracket characters first
+  suspected — `pcbnew.LoadBoard()` selects its IO plugin by extension
+  internally.
+- **`mcp-agent-notes` dependency resolution under plain `pip`:** the
+  package isn't on PyPI yet; the original `[tool.uv.sources]` pin only
+  worked for `uv sync`, silently breaking `pip install -e .` (which
+  `docs-check.yml` and `check-upstream-releases.yml` both use) — caught by
+  this release's own PR CI, not before. Switched to a PEP 508 direct
+  reference plus the required `tool.hatch.metadata.allow-direct-references`
+  opt-in, verified this time with an actual `pip install -e .` in a clean
+  venv.
+- **`requires_kicad` test marker:** its Linux availability check only
+  verified `/usr/bin/python3` *exists* — true on every Linux box, KiCad or
+  not — so a `requires_kicad`-marked test with no other guard would run
+  (and fail with `ModuleNotFoundError`) on CI instead of skipping. Latent
+  bug predating this release; every prior `requires_kicad` test happened to
+  also depend on a maintainer-only fixture file that masked it. Caught by
+  this release's own PR CI, on the first `requires_kicad` test without that
+  incidental mask. Replaced with an actual `import pcbnew` subprocess check.
+
+### Testing
+
+- Smoke-tested critical-rule adherence and tool-schema usability against
+  three local, non-Claude models via LM Studio (`qwen2.5-coder-14b`,
+  `qwen3-32b`, `gemma-4-e4b`), using a real MCP client (not LM Studio's own
+  MCP handling, which turned out to need a GUI-granted permission its API
+  refuses by default). Every model, including the smallest (4B), correctly
+  reached for `autoroute(operation="run")` over manual routing and
+  `library(operation="search")` over guessing a symbol/footprint name.
+  `get_usage_guidance` was not spontaneously called by any model — the
+  existing in-response escalation notes on `audit(operation="placement")`
+  and `pcb(operation="add_trace"/"add_via")` remain the more load-bearing
+  channel for a model that hasn't read the docs.
+
 ## [0.14.0] — 2026-09-14
 
 Maintenance release — dependency updates and CI hardening, no feature work.
