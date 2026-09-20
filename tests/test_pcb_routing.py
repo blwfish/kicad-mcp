@@ -69,6 +69,16 @@ class TestAddTrace:
         assert result["status"] == "ok"
         assert result["trace"]["start"] == [100.0, 80.0]
         assert result["trace"]["net"] == "VCC"
+        assert "note" in result
+        assert "autoroute" in result["note"]
+
+    def test_error_response_carries_no_note(self, pcb_server):
+        """The routing-discipline reminder is only useful on success."""
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_trace",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    start_x_mm=0, start_y_mm=0, end_x_mm=10, end_y_mm=10)
+        assert "note" not in result
 
     @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
     def test_passes_all_params(self, mock_run, pcb_server, pcb_file):
@@ -126,6 +136,15 @@ class TestAddVia:
         assert result["status"] == "ok"
         assert result["via"]["x_mm"] == 50.0
         assert result["via"]["type"] == "through"
+        assert "note" in result
+        assert "autoroute" in result["note"]
+
+    def test_error_response_carries_no_note(self, pcb_server):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_via",
+                    pcb_path="/nonexistent/board.kicad_pcb",
+                    x_mm=50, y_mm=50)
+        assert "note" not in result
 
     @patch("kicad_mcp.tools.pcb_routing.run_pcbnew_script")
     def test_custom_via_params(self, mock_run, pcb_server, pcb_file):

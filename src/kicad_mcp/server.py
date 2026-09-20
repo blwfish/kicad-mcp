@@ -25,6 +25,9 @@ Search first with library(operation="search").
 load/modify/save subprocesses; parallel writes corrupt the file. Serialize them.
 - Verify with drc(operation="run") and audit(operation="all") before finishing.
 
+Call get_usage_guidance() once at the start of a session for known issues and \
+best practices — costs nothing, takes no arguments.
+
 See AGENT-INSTRUCTIONS.md for the full workflow, TOOLS.md for the operation reference."""
 
 
@@ -90,6 +93,11 @@ def create_server() -> FastMCP:
     from kicad_mcp.tools.design import register_design_tools
 
     register_design_tools(mcp)
+
+    # Schema-visible usage guidance (fallback for clients that drop `instructions`)
+    from kicad_mcp.tools.usage_guidance import register_usage_guidance_tools
+
+    register_usage_guidance_tools(mcp)
 
     logger.info("KiCad MCP server initialized with all tool modules")
     return mcp

@@ -1,6 +1,6 @@
 # Tool Summary
 
-This MCP server exposes <!-- tool-count -->17<!-- /tool-count --> MCP tools for KiCad EDA — 12 domain routers and 5 standalones.
+This MCP server exposes <!-- tool-count -->18<!-- /tool-count --> MCP tools for KiCad EDA — 12 domain routers and 6 standalones.
 
 Each router takes an `operation` parameter that selects the sub-operation.
 Unknown operations return an error listing valid choices.
@@ -87,6 +87,7 @@ firmware and authors a design-intent against the `intent_template` contract, the
 | `estimate_board_size` | Pre-PCB planning: estimate board dimensions from a footprint list |
 | `suggest_placement` | Connectivity-based component placement suggestions |
 | `analyze_placement_telemetry` | Read-only telemetry analysis for placement calibration |
+| `get_usage_guidance` | Known issues + best practices — call once at the start of a session |
 
 ## Migration from v0.9.0
 

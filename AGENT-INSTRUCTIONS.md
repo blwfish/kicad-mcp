@@ -5,7 +5,7 @@ instructions are agent-agnostic — they apply whether you are Claude, Gemini,
 Cursor, or any other MCP-capable agent. (Contributor/development conventions for
 hacking on this repo live in `AGENTS.md` and `CONTRIBUTING.md`, not here.)
 
-You have access to <!-- tool-count -->17<!-- /tool-count --> MCP tools. Most are **routers** that dispatch on an `operation=` argument (e.g. `pcb(operation="place_footprint", ...)`, `drc(operation="autofix", ...)`, `library(operation="search", ...)`); the rest are standalone tools (`build_pcb_from_schematic`, `estimate_board_size`, `suggest_placement`, `panelize_pcb`, `analyze_placement_telemetry`). See [TOOLS.md](TOOLS.md) for the full router/operation reference.
+You have access to <!-- tool-count -->18<!-- /tool-count --> MCP tools. Most are **routers** that dispatch on an `operation=` argument (e.g. `pcb(operation="place_footprint", ...)`, `drc(operation="autofix", ...)`, `library(operation="search", ...)`); the rest are standalone tools (`build_pcb_from_schematic`, `estimate_board_size`, `suggest_placement`, `panelize_pcb`, `analyze_placement_telemetry`, `get_usage_guidance`). See [TOOLS.md](TOOLS.md) for the full router/operation reference. Call `get_usage_guidance()` once at the start of a session — it costs nothing and surfaces known issues and best practices this document doesn't repeat inline.
 
 ## Mandatory Rules
 
@@ -163,6 +163,7 @@ pcb(operation="auto_fix_silkscreen", pcb_path=...)                     # Silkscr
 
 | I need to... | Use this | Not this |
 |---|---|---|
+| Get best-practices/known-issues guidance before starting a session | `get_usage_guidance()` — costs nothing, call it first | Skipping straight to a design tool |
 | Choose board size | `estimate_board_size` | Guessing dimensions |
 | Initial placement | `suggest_placement` | Manual coordinate math |
 | Route traces | `autoroute(operation="run")` | `pcb(operation="add_trace"/"add_via")` |

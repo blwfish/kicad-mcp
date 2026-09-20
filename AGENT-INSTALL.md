@@ -4,7 +4,7 @@ This file is for you, the AI agent. It tells you what needs to be true on this s
 
 ## What This Is
 
-kicad-mcp is a Model Context Protocol (MCP) server providing <!-- tool-count -->17<!-- /tool-count --> tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
+kicad-mcp is a Model Context Protocol (MCP) server providing <!-- tool-count -->18<!-- /tool-count --> tools for KiCad electronic design automation — schematic capture, PCB layout, autorouting, DRC, and more. Once installed and registered, these tools appear in your tool list and you can design circuit boards conversationally.
 
 **Origin:** Built by one person for personal use, on a Mac, with Claude Code. Other platforms *should* work (the code handles macOS, Windows, and Linux) but are untested. PRs for other agents and platforms will be considered.
 
@@ -159,11 +159,11 @@ The file `AGENT-INSTRUCTIONS.md` in the repo root is your primary reference for 
 - **Placement guidelines** — component grouping, spacing, pin numbering
 - **DRC interpretation** — which violations matter and which are cosmetic
 
-The critical rules are also delivered automatically to every MCP client through the server's `instructions` (no file-reading required), so you see them before opening any doc. (Claude Code users: the repo's local, git-ignored `CLAUDE.md` `@`-imports `AGENT-INSTRUCTIONS.md` and adds Claude-specific notes.)
+The critical rules are also delivered automatically to every MCP client through the server's `instructions` (no file-reading required), so you see them before opening any doc. Some MCP clients drop that field silently, though — call the `get_usage_guidance()` tool once at the start of a session as a schema-visible fallback that reaches every client, with the same known-issues/best-practices content. (Claude Code users: the repo's local, git-ignored `CLAUDE.md` `@`-imports `AGENT-INSTRUCTIONS.md` and adds Claude-specific notes.)
 
 ### Client Compatibility
 
-kicad-mcp exposes <!-- tool-count -->17<!-- /tool-count --> tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
+kicad-mcp exposes <!-- tool-count -->18<!-- /tool-count --> tools — well within every known MCP client limit. Claude Code, Cursor (~40-tool limit), and Gemini (~100-tool limit) are all supported.
 
 Claude Code is the recommended client: it provides automatic prompt caching (critical for iterative KiCad workflows) and subagent support for parallel exploration tasks.
 
