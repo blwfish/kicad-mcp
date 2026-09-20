@@ -34,7 +34,14 @@ dependencies = [
     "defusedxml>=0.7.1",
     "python-multipart>=0.0.32",
     "mcp-events>=0.1.0",
-    "mcp-agent-notes>=0.2.0",
+    # Not yet published to PyPI -- a PEP 508 direct reference (not a
+    # [tool.uv.sources] override) so plain `pip install -e .` resolves it
+    # too, not just `uv sync`. [tool.uv.sources] is uv-only; docs-check.yml
+    # and check-upstream-releases.yml both install via plain pip and don't
+    # know that table exists -- confirmed the hard way when it broke CI on
+    # first real PR after this was added. Switch to a plain version
+    # constraint once it's on PyPI.
+    "mcp-agent-notes @ git+https://github.com/blwfish/mcp-agent-notes.git@dd83adf8bb97755f91dbfcf857dbaeb987883f8f",
     "networkx>=3.0",
     "filelock>=3.32.6",
 ]
@@ -42,15 +49,14 @@ dependencies = [
 [project.scripts]
 kicad-mcp = "kicad_mcp.server:main"
 
-[tool.uv.sources]
-# Not yet published to PyPI -- pinned to a commit so external installs (via
-# uv sync / pip install .) still resolve without a local sibling checkout.
-# Switch to a plain version constraint once it's on PyPI.
-mcp-agent-notes = { git = "https://github.com/blwfish/mcp-agent-notes.git", rev = "dd83adf8bb97755f91dbfcf857dbaeb987883f8f" }
-
 [project.urls]
 Homepage = "https://github.com/blwfish/kicad-mcp"
 "Bug Tracker" = "https://github.com/blwfish/kicad-mcp/issues"
+
+[tool.hatch.metadata]
+# Required for the mcp-agent-notes PEP 508 direct reference above --
+# Hatchling refuses a `pkg @ url` dependency by default.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kicad_mcp"]
