@@ -118,7 +118,7 @@ class TestNotesContentCoversMandatoryRules:
         assert critical_ids == {
             "never-hand-route",
             "never-guess-library-names",
-            "never-concurrent-pcb-writes",
+            "no-concurrent-pcb-writes",
         }
 
     def test_at_least_one_strategy_and_one_tactic_note(self):

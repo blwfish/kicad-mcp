@@ -9,24 +9,33 @@ You have access to <!-- tool-count -->18<!-- /tool-count --> MCP tools. Most are
 
 ## Mandatory Rules
 
-### NEVER manually route traces
+The three rules below are authored once as `CRITICAL` entries in
+`src/kicad_mcp/tools/usage_guidance.py`'s `NOTES` — the same data that
+renders into the server's `instructions` handshake and the
+`get_usage_guidance()` tool. This section is a generated view of that data,
+not independently authored; run `python scripts/sync_agent_notes_docs.py`
+after changing a `CRITICAL` note and commit the result.
 
-Do not route with `pcb(operation="add_trace")` or `pcb(operation="add_via")`. LLMs cannot compute spatial clearances reliably — manual routing produces track crossings, shorts, and clearance violations. Always use `autoroute(operation="run")` instead. It wraps FreeRouter and solves routing in seconds with zero violations.
+<!-- agent-notes:critical -->
+### Never guess library names
 
-The only acceptable use of `add_trace`/`add_via` is minor touch-ups after autorouting, if specifically requested.
+Never guess library or footprint names from training data — they change between KiCad versions. Search first with library(operation='search').
 
-### NEVER guess library or footprint names
+### Never hand route
 
-KiCad library names change between versions. Always search first via the `library` router:
+LLMs cannot compute spatial clearances reliably by hand — manually placed traces routinely short nets or violate clearances. autoroute(operation='run') wraps FreeRouter and solves routing in seconds with zero violations. add_trace/add_via exist only for minor touch-ups after autorouting.
+
+### No concurrent PCB writes
+
+PCB tools load, modify, and save the file as subprocesses. Two concurrent mutating calls on the same file will corrupt it. Serialize mutating pcb/schematic/autoroute/drc(autofix) calls against one file. Read-only calls (get_pad_positions, list_nets, list_footprints, drc(run), audit(...)) are safe to run in parallel or delegate to subagents.
+<!-- /agent-notes:critical -->
+
+Example (library search, referenced above):
 
 ```
 library(operation="search", query="op amp", type="symbol")   → lib_id for schematic add_component
 library(operation="search", query="0603 resistor")            → library + name for pcb place_footprint (type="footprint" is default)
 ```
-
-### NEVER modify the same PCB file in parallel
-
-PCB tools run as subprocesses that load, modify, and save the file. Two concurrent writes will corrupt it. Always serialize PCB operations — never issue two mutating PCB calls against the same file at once.
 
 ### Delegate read-only work to keep your context lean
 
