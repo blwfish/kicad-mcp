@@ -13,18 +13,15 @@ import os
 
 import pytest
 
-from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script, _get_kicad_python
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER as _KEEPOUT_HELPER
+from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+
+from .conftest import pcbnew_available
 
 # Skip all tests in this module if KiCad Python is unavailable
 pytestmark = pytest.mark.requires_kicad
 
 PCB_PATH = "/Volumes/Files/claude/KiCAD-mcp-extensions/track_geometry_car.kicad_pcb"
-
-
-def _kicad_available():
-    """Check if KiCad Python interpreter exists."""
-    return _get_kicad_python() is not None
 
 
 def _pcb_exists():
@@ -34,8 +31,8 @@ def _pcb_exists():
 
 @pytest.fixture(autouse=True)
 def skip_if_unavailable():
-    if not _kicad_available():
-        pytest.skip("KiCad Python 3.9 not available")
+    if not pcbnew_available():
+        pytest.skip("pcbnew not importable under KiCad's Python")
     if not _pcb_exists():
         pytest.skip(f"PCB file not found: {PCB_PATH}")
 

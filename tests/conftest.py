@@ -1,12 +1,42 @@
 """Shared test fixtures for kicad-mcp tests."""
 
 import asyncio
+import functools
 import json
+import subprocess
 
 import pytest
 from fastmcp import FastMCP
 
 from kicad_mcp.server import create_server
+from kicad_mcp.utils.pcbnew_bridge import _get_kicad_python
+
+
+@functools.lru_cache(maxsize=1)
+def pcbnew_available() -> bool:
+    """Whether the discovered KiCad Python interpreter can actually import
+    pcbnew -- the real signal `requires_kicad` tests need.
+
+    `_get_kicad_python()` only checks that an interpreter *file exists* at a
+    platform-conventional path; on Linux that's a bare `/usr/bin/python3`
+    check, true on every Linux box whether or not KiCad (or pcbnew) is
+    installed. A `requires_kicad` test gated only on that check silently
+    runs (and fails with ModuleNotFoundError) on a CI runner with no real
+    KiCad, rather than skipping. Cached: this spawns a subprocess, and every
+    `requires_kicad` test's skip fixture calls it.
+    """
+    python = _get_kicad_python()
+    if not python:
+        return False
+    try:
+        result = subprocess.run(
+            [python, "-c", "import pcbnew"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 @pytest.fixture
