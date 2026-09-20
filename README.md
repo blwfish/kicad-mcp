@@ -18,7 +18,7 @@ Your agent will handle the rest — installing prerequisites, cloning the repo, 
 
 **For best results:** Use Claude Opus (not Haiku or Sonnet) with the ability to spawn subagents. For autorouting, use [FreeRouter v2.2.4+](https://github.com/freerouting/freerouting/releases) — v2.2.3+ is 10–30× faster than v2.1.0 and deterministic; see [AGENT-INSTALL.md](AGENT-INSTALL.md) for details. The combination of a capable model and parallel exploration (component research, placement suggestions) dramatically improves PCB design workflows. [Claude Code](https://claude.ai/code) provides automatic prompt caching that speeds up iterative design tasks.
 
-**Client compatibility:** kicad-mcp exposes <!-- tool-count -->18<!-- /tool-count --> tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support.
+**Client compatibility:** kicad-mcp exposes <!-- tool-count -->18<!-- /tool-count --> tools, well within every known MCP client limit. Claude Code, Cursor, and Gemini are all supported. Claude Code is recommended for its automatic prompt caching and subagent support. Smoke-tested against three local, non-Claude models via LM Studio (`qwen2.5-coder-14b`, `qwen3-32b`, `gemma-4-e4b`) — the critical safety rules (autoroute over hand-routing, library search over guessing names) held across every model size tested; see [AGENT-INSTALL.md](AGENT-INSTALL.md#client-compatibility) for details.
 
 ## What You Can Ask Your Agent To Do
 
