@@ -34,12 +34,19 @@ dependencies = [
     "defusedxml>=0.7.1",
     "python-multipart>=0.0.32",
     "mcp-events>=0.1.0",
+    "mcp-agent-notes>=0.2.0",
     "networkx>=3.0",
     "filelock>=3.32.6",
 ]
 
 [project.scripts]
 kicad-mcp = "kicad_mcp.server:main"
+
+[tool.uv.sources]
+# Not yet published to PyPI -- pinned to a commit so external installs (via
+# uv sync / pip install .) still resolve without a local sibling checkout.
+# Switch to a plain version constraint once it's on PyPI.
+mcp-agent-notes = { git = "https://github.com/blwfish/mcp-agent-notes.git", rev = "dd83adf8bb97755f91dbfcf857dbaeb987883f8f" }
 
 [project.urls]
 Homepage = "https://github.com/blwfish/kicad-mcp"
