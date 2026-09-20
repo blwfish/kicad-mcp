@@ -101,10 +101,17 @@ uv run scripts/lm_studio_probe.py --list-scenarios   # see what's available
 lms unload --all
 ```
 
-Note: LM Studio's own CLI (`lms chat`) does not wire MCP tools into the
-model at all — only its GUI's "Program"/MCP integration does, and that
-isn't scriptable. This script is a standalone client, not a wrapper around
-`lms chat`.
+Note: LM Studio's own MCP support isn't practically scriptable today. Its
+CLI (`lms chat`) talks to the OpenAI-compatible `/v1/chat/completions`
+endpoint, which has no way to reference an `mcp.json`-configured server at
+all. A newer native endpoint (`/api/v1/chat`) does accept an
+`integrations: [{"type": "plugin", "id": "<name>"}]` parameter that can
+invoke one — confirmed by testing it directly, including finding the real
+field name (`id`; the docs' own example shows `plugin_id`, which the live
+server rejects) — but a fresh local install returns `"Permission denied to
+use plugin '<name>'"` for it, with no CLI or `settings.json` toggle found to
+grant that permission; it looks GUI-only. This script is a standalone MCP
+client, not a wrapper around anything LM Studio provides.
 
 Last recorded results (2026-09-20, `qwen2.5-coder-14b`/`qwen3-32b`/
 `gemma-4-e4b`): see [AGENT-INSTALL.md](AGENT-INSTALL.md#client-compatibility).
