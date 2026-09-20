@@ -220,6 +220,37 @@ class TestBulkAssignPadNets:
         assert result["assigned"] == 3
         assert len(result["errors"]) == 0
 
+    @patch("kicad_mcp.tools.pcb_nets.run_pcbnew_script")
+    def test_wrong_key_names_rejected_before_subprocess(self, mock_run, pcb_server, pcb_file):
+        """Regression test: an assignment using 'pad_number'/'net_name' (a
+        real mistake observed from a local-LLM MCP client) instead of the
+        documented 'pad'/'net' must be rejected with a clear error *before*
+        run_pcbnew_script is called -- not surfaced as a bare KeyError inside
+        the embedded pcbnew script."""
+        fn = _get_pcb_fn(pcb_server)
+        assignments = [
+            {"reference": "U1", "pad_number": "3V3", "net_name": "VCC"},
+        ]
+        result = fn("bulk_assign_pad_nets", pcb_path=pcb_file, assignments=assignments)
+        assert "error" in result
+        assert "pad" in result["error"] and "net" in result["error"]
+        mock_run.assert_not_called()
+
+    @patch("kicad_mcp.tools.pcb_nets.run_pcbnew_script")
+    def test_partially_missing_key_rejected(self, mock_run, pcb_server, pcb_file):
+        """One malformed assignment among otherwise-valid ones still blocks
+        the whole batch before touching pcbnew -- no partial-execution
+        surprise."""
+        fn = _get_pcb_fn(pcb_server)
+        assignments = [
+            {"reference": "R1", "pad": "1", "net": "GND"},
+            {"reference": "R1", "pad": "2"},  # missing 'net'
+        ]
+        result = fn("bulk_assign_pad_nets", pcb_path=pcb_file, assignments=assignments)
+        assert "error" in result
+        assert "assignments[1]" in result["error"]
+        mock_run.assert_not_called()
+
 
 # -- list_nets tests ---------------------------------------------------------
 
