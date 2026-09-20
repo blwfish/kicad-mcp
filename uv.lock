@@ -1202,6 +1202,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "filelock" },
     { name = "kicad-sch-api" },
+    { name = "mcp-agent-notes" },
     { name = "mcp-events" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1229,6 +1230,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=4.0.3" },
     { name = "filelock", specifier = ">=3.32.6" },
     { name = "kicad-sch-api", specifier = ">=0.5.6" },
+    { name = "mcp-agent-notes", git = "https://github.com/blwfish/mcp-agent-notes.git?rev=dd83adf8bb97755f91dbfcf857dbaeb987883f8f" },
     { name = "mcp-events", specifier = ">=0.1.0" },
     { name = "networkx", specifier = ">=3.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },
@@ -1528,6 +1530,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/76/31/ac54fb0fdd5b37de7
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1b/ff/8e7eade68b8a28f7da0ed1085544341b51f9c935dbf6b95c76b7edfea6a0/mcp-2.2.0-py3-none-any.whl", hash = "sha256:bde982589473a060ae145e3406e9a5333fe538c97229ba841f5a7f92be004f81", size = 365656, upload-time = "2026-09-07T16:06:19.711Z" },
 ]
+
+[[package]]
+name = "mcp-agent-notes"
+version = "0.2.0"
+source = { git = "https://github.com/blwfish/mcp-agent-notes.git?rev=dd83adf8bb97755f91dbfcf857dbaeb987883f8f#dd83adf8bb97755f91dbfcf857dbaeb987883f8f" }
 
 [[package]]
 name = "mcp-events"
