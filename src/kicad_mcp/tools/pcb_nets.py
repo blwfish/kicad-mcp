@@ -78,6 +78,9 @@ pad_number = params["pad_number"]
 net_name = params["net_name"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 fp = board.FindFootprintByReference(reference)
 if fp is None:
@@ -117,6 +120,14 @@ print(json.dumps({
     })
 
 
+#: Required keys per assignment dict in _op_bulk_assign_pad_nets — single
+#: source of truth for the pre-flight validation and its test. Without this
+#: check a malformed key (e.g. 'pad_number' instead of 'pad') reaches the
+#: embedded script as a bare `a["pad"]` KeyError, which surfaces as a
+#: confusing pcbnew subprocess crash instead of a clean error.
+_BULK_ASSIGNMENT_KEYS = ("reference", "pad", "net")
+
+
 def _op_bulk_assign_pad_nets(
     pcb_path: str,
     assignments: Optional[List[Dict[str, str]]] = None,
@@ -128,6 +139,17 @@ def _op_bulk_assign_pad_nets(
     if not assignments:
         return {"error": "No assignments provided"}
 
+    for i, a in enumerate(assignments):
+        missing = [k for k in _BULK_ASSIGNMENT_KEYS if k not in a]
+        if missing:
+            return {
+                "error": (
+                    f"assignments[{i}] is missing required key(s) {missing} — "
+                    f"each assignment needs 'reference', 'pad', and 'net' "
+                    f"(got keys: {sorted(a.keys())})"
+                )
+            }
+
     script = """
 import pcbnew, json, sys
 
@@ -135,6 +157,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 assignments = params["assignments"]
 results = []
@@ -248,6 +273,9 @@ params = json.loads(open(sys.argv[1]).read())
 pcb_path = params["pcb_path"]
 
 board = pcbnew.LoadBoard(pcb_path)
+if board is None:
+    print(json.dumps({"error": f"Failed to load board: {pcb_path}"}))
+    sys.exit(0)
 
 nets = []
 for code, net in board.GetNetsByNetcode().items():
