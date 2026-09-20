@@ -31,3 +31,13 @@ jobs:
             echo "Run 'python scripts/sync_tool_count.py' locally and commit the result."
             exit 1
           fi
+
+      - name: Verify agent-notes critical-rules docs are in sync
+        run: |
+          python scripts/sync_agent_notes_docs.py
+          if ! git diff --exit-code; then
+            echo ""
+            echo "::error::Mandatory/Critical Rules sections are out of sync with usage_guidance.NOTES."
+            echo "Run 'python scripts/sync_agent_notes_docs.py' locally and commit the result."
+            exit 1
+          fi
