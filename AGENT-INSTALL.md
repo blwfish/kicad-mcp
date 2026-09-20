@@ -197,9 +197,14 @@ Claude Code is the recommended client: it provides automatic prompt caching (cri
 
 ### Critical Rules
 
-1. **Never route manually.** Do not use `pcb(operation="add_trace")`/`pcb(operation="add_via")` for routing. You cannot reliably compute spatial clearances. Use `autoroute(operation="run")`.
-2. **Never guess library names.** Always call `library(operation="search", type="symbol"|"footprint")` first. Library names change between KiCad versions.
-3. **Never write to the same PCB file in parallel.** Each PCB tool call loads, modifies, and saves the file. Concurrent writes corrupt it. Serialize all PCB operations.
+Generated from the same `CRITICAL` notes as `AGENT-INSTRUCTIONS.md`'s
+Mandatory Rules section — see there for the single-source-of-truth note.
+
+<!-- agent-notes:critical -->
+1. Never guess library or footprint names from training data — they change between KiCad versions. Search first with library(operation='search').
+2. Never hand-route with pcb(operation='add_trace'/'add_via') for more than a touch-up — use autoroute(operation='run') instead.
+3. Never issue two mutating calls against the same PCB file concurrently — serialize them.
+<!-- /agent-notes:critical -->
 
 ## Health and Debugging
 

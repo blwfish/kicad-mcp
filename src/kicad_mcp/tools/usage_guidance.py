@@ -84,7 +84,7 @@ NOTES: tuple[Note, ...] = (
         ),
     ),
     Note(
-        id="never-concurrent-pcb-writes",
+        id="no-concurrent-pcb-writes",
         added=_MIGRATED,
         priority=Priority.CRITICAL,
         kind=NoteKind.TACTIC,
