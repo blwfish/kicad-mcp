@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """Probe kicad-mcp's real MCP protocol output against a local LM Studio model.
 
-Why this exists: LM Studio's own MCP integration lives only in its GUI (its
-CLI, `lms chat`, does not wire MCP tools into the model at all), so there's
-no scriptable way to drive "a non-Claude model actually using this server"
-through LM Studio itself. This script is a minimal MCP client — it speaks
-the real protocol to a real `kicad-mcp` subprocess (same `initialize()`,
-same `list_tools()`, same `call_tool()` any client would use) — bridged to
-LM Studio's OpenAI-compatible local completions API (default port 1234) so
-a local model can drive it, with real tool calls executed against the real
-server.
+Why this exists: LM Studio's own MCP support isn't practically scriptable.
+Its CLI (`lms chat`) talks to the OpenAI-compatible `/v1/chat/completions`
+endpoint, which has no way to reference an `mcp.json`-configured server at
+all. A newer native endpoint (`/api/v1/chat`) does accept an
+`integrations: [{"type": "plugin", "id": "<name>"}]` parameter that can
+invoke one, but a fresh local install returns "Permission denied to use
+plugin '<name>'" for it, with no CLI/settings.json toggle found to grant
+that permission — it looks GUI-only (confirmed empirically against a real
+local server, not just from docs). So there's no scriptable way to drive "a
+non-Claude model actually using this server" through LM Studio itself. This
+script is a minimal MCP client instead — it speaks the real protocol to a
+real `kicad-mcp` subprocess (same `initialize()`, same `list_tools()`, same
+`call_tool()` any client would use) — bridged to LM Studio's
+OpenAI-compatible local completions API (default port 1234) so a local
+model can drive it, with real tool calls executed against the real server.
 
 Use it to re-verify critical-rule adherence (never hand-route, never guess
 library names, ...) and general tool-schema usability whenever tool
