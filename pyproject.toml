@@ -43,7 +43,7 @@ dependencies = [
     # constraint once it's on PyPI.
     "mcp-agent-notes @ git+https://github.com/blwfish/mcp-agent-notes.git@dd83adf8bb97755f91dbfcf857dbaeb987883f8f",
     "networkx>=3.0",
-    "filelock>=3.32.6",
+    "filelock>=4.0.0",
 ]
 
 [project.scripts]
