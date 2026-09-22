@@ -45,7 +45,7 @@ def register_analyze_tools(mcp: FastMCP) -> None:
 
         Operations:
           netlist(path, limit=100)
-              -> {success, component_count, net_count, components, nets,
+              -> {status, component_count, net_count, components, nets,
                   components_truncated, nets_truncated, analysis, ...}
               Extract netlist from a .kicad_sch or .kicad_pro file.
               components/nets are capped at `limit` entries each --
@@ -53,22 +53,22 @@ def register_analyze_tools(mcp: FastMCP) -> None:
               and analysis always covers the complete netlist.
 
           connections(schematic_path)
-              -> {success, analysis: {power_nets, signal_nets, potential_issues, ...}}
+              -> {status, analysis: {power_nets, signal_nets, potential_issues, ...}}
               Analyze schematic connections, including floating-net detection
               and power/signal net classification.
 
           circuit_patterns(schematic_path)
-              -> {success, identified_patterns: {power_supply_circuits, ...}}
+              -> {status, identified_patterns: {power_supply_circuits, ...}}
               Identify common circuit blocks (regulators, amplifiers, filters,
               digital interfaces, microcontrollers, etc.) in a schematic.
 
           project_patterns(project_path)
-              -> {success, identified_patterns: {...}}
+              -> {status, identified_patterns: {...}}
               Same as circuit_patterns, but resolves the schematic from a
               project file first.
 
           bom(project_path, column_map=None)
-              -> {success, bom_files, component_summary, ...}
+              -> {status, bom_files, component_summary, ...}
               Analyze the project's BOM file(s) — counts, categories, cost,
               supplier metadata. column_map overrides heuristic column-name
               detection per canonical field.

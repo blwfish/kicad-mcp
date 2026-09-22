@@ -69,7 +69,7 @@ async def run_drc_via_cli(
         Dictionary with DRC results
     """
     results: Dict[str, Any] = {
-        "success": False,
+        "status": "error",
         "method": "cli",
         "pcb_file": pcb_file,
     }
@@ -132,7 +132,7 @@ async def run_drc_via_cli(
                 await ctx.info(f"DRC completed with {violation_count} violations")
 
             results = {
-                "success": True,
+                "status": "ok",
                 "method": "cli",
                 "pcb_file": pcb_file,
                 **parsed,

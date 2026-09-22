@@ -73,7 +73,7 @@ class TestAnalyzeBom:
             operation="bom", ctx=None,
             project_path="/nonexistent/project.kicad_pro",
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_no_bom_files(self, analyze_server, tmp_path):
         pro = tmp_path / "empty.kicad_pro"
@@ -82,7 +82,7 @@ class TestAnalyzeBom:
         result = asyncio.run(fn(
             operation="bom", ctx=None, project_path=str(pro),
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "No BOM" in result["error"]
 
     def test_analyzes_bom(self, analyze_server, project_with_bom):
@@ -91,7 +91,7 @@ class TestAnalyzeBom:
             operation="bom", ctx=None,
             project_path=project_with_bom["project_path"],
         ))
-        assert result["success"] is True
+        assert result["status"] == "ok"
 
     def test_missing_project_path(self, analyze_server):
         fn = _get_tool_fn(analyze_server, "analyze")
@@ -110,7 +110,7 @@ class TestExportBomCsv:
             operation="bom_csv", ctx=None,
             project_path="/nonexistent/project.kicad_pro",
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_no_schematic(self, export_server, tmp_path):
         """bom_csv needs a schematic to generate from."""
@@ -120,7 +120,7 @@ class TestExportBomCsv:
         result = asyncio.run(fn(
             operation="bom_csv", ctx=None, project_path=str(pro),
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_missing_project_path(self, export_server):
         fn = _get_tool_fn(export_server, "export")

@@ -55,7 +55,7 @@ class TestKiCadCLINotFound:
         pcb = str(tmp_path / "board.kicad_pcb")
         with patch(f"{_MODULE}.get_kicad_cli_path", side_effect=KiCadCLIError("kicad-cli not found on this system")):
             result = _run(pcb)
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert result["method"] == "cli"
         assert result["pcb_file"] == pcb
 
@@ -87,7 +87,7 @@ class TestSubprocessFailure:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", return_value=fake_proc):
             result = _run(pcb)
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_error_contains_stderr(self, tmp_path):
         pcb = str(tmp_path / "board.kicad_pcb")
@@ -111,7 +111,7 @@ class TestOutputFileMissing:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", return_value=fake_proc):
             result = _run(pcb)
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "not created" in result["error"].lower() or "DRC report file" in result["error"]
 
 
@@ -146,7 +146,7 @@ class TestJsonParseFail:
              patch("subprocess.run", side_effect=_capturing_run):
             result = _run(pcb)
 
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "JSON" in result["error"]
 
 
@@ -175,7 +175,7 @@ class TestSuccessEmpty:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", side_effect=_patched_run_writing({"violations": []})):
             result = _run(pcb)
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert result["method"] == "cli"
         assert result["total_violations"] == 0
         assert result["violation_categories"] == {}
@@ -200,7 +200,7 @@ class TestSuccessMultipleViolations:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", side_effect=_patched_run_writing(drc_data)):
             result = _run(pcb)
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert result["total_violations"] == 3
         assert result["violation_categories"] == {"clearance": 2, "track_width": 1}
 
@@ -268,7 +268,7 @@ class TestExternalInterfaceDrift:
              patch("subprocess.run", side_effect=_patched_run_writing(future_format)):
             result = _run(pcb)
         # Current behaviour: silently succeeds with zero violations
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert result["total_violations"] == 0
         assert result["violations"] == []
         # NOTE: this is a known gap — a missing 'violations' key should ideally
@@ -344,7 +344,7 @@ class TestSubprocessException:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", side_effect=exc):
             result = _run(pcb)
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "Error in CLI DRC" in result["error"]
 
     def test_exception_error_contains_exception_text(self, tmp_path):
@@ -382,7 +382,7 @@ class TestProgressReporting:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", side_effect=_patched_run_writing({"violations": []})):
             result = _run(pcb, ctx=None)
-        assert result["success"] is True
+        assert result["status"] == "ok"
 
     def test_progress_reported_at_multiple_stages(self, tmp_path):
         """At least three progress calls: before CLI, after DRC, after parse."""

@@ -159,7 +159,7 @@ def register_schematic_router(mcp: FastMCP) -> None:
         # Component pins (read-only queries)
           get_component_pin_position(reference, pin_number) -> {status, reference, pin_number, x, y}
           list_component_pins(reference) -> {status, reference, count, pins}
-          find_component_connections(project_path, component_ref) -> {success, connections, ...}
+          find_component_connections(project_path, component_ref) -> {status, connections, ...}
               Netlist-based query; reads .kicad_pro + extracts schematic netlist.
 
         # Wires (verb-overlap pair — pick by what you have)
