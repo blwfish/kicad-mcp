@@ -91,7 +91,7 @@ def open_kicad_project(project_path: str) -> Dict[str, Any]:
         Dictionary with result information
     """
     if not os.path.exists(project_path):
-        return {"success": False, "error": f"Project not found: {project_path}"}
+        return {"status": "error", "error": f"Project not found: {project_path}"}
 
     try:
         cmd: list[str] = []
@@ -100,16 +100,16 @@ def open_kicad_project(project_path: str) -> Dict[str, Any]:
         elif sys.platform == "linux":
             cmd = ["xdg-open", project_path]
         else:
-            return {"success": False, "error": f"Unsupported operating system: {sys.platform}"}
+            return {"status": "error", "error": f"Unsupported operating system: {sys.platform}"}
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
         return {
-            "success": result.returncode == 0,
+            "status": "ok" if result.returncode == 0 else "error",
             "command": " ".join(cmd),
             "output": result.stdout,
             "error": result.stderr if result.returncode != 0 else None,
         }
 
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}

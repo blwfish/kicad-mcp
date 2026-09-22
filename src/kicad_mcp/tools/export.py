@@ -365,7 +365,7 @@ def register_export_tools(mcp: FastMCP) -> None:
               ready for JLCPCB / PCBWay / OSH Park upload.
 
           bom_csv(project_path)
-              -> {success, output_file, file_size, ...}
+              -> {status, output_file, file_size, ...}
               Export a CSV BOM from the project's schematic via kicad-cli.
 
           thumbnail(project_path)

@@ -21,11 +21,11 @@ from unittest.mock import patch
 from kicad_mcp.tools.pcb_drc_fix import _op_autofix
 
 _ROUTING_DRC = {
-    "success": True,
+    "status": "ok",
     "total_violations": 3,
     "violation_categories": {"clearance": 3},
 }
-_CLEAN_DRC = {"success": True, "total_violations": 0, "violation_categories": {}}
+_CLEAN_DRC = {"status": "ok", "total_violations": 0, "violation_categories": {}}
 
 
 def _run(pcb_path="/tmp/board.kicad_pcb", project_path="/tmp/board.kicad_pro", **kwargs):

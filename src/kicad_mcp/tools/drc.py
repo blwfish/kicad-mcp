@@ -25,7 +25,7 @@ def _op_history(project_path: str) -> Dict[str, Any]:
 
     if not os.path.exists(project_path):
         logger.warning("Project not found: %s", project_path)
-        return {"success": False, "error": f"Project not found: {project_path}"}
+        return {"status": "error", "error": f"Project not found: {project_path}"}
 
     history_entries = get_drc_history(project_path)
 
@@ -46,7 +46,7 @@ def _op_history(project_path: str) -> Dict[str, Any]:
             trend = "stable"
 
     return {
-        "success": True,
+        "status": "ok",
         "project_path": project_path,
         "history_entries": history_entries,
         "entry_count": len(history_entries),
@@ -59,12 +59,12 @@ async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
 
     if not os.path.exists(project_path):
         logger.warning("Project not found: %s", project_path)
-        return {"success": False, "error": f"Project not found: {project_path}"}
+        return {"status": "error", "error": f"Project not found: {project_path}"}
 
     files = get_project_files(project_path)
     if "pcb" not in files:
         logger.warning("PCB file not found in project")
-        return {"success": False, "error": "PCB file not found in project"}
+        return {"status": "error", "error": "PCB file not found in project"}
 
     pcb_file = files["pcb"]
     logger.debug("Found PCB file: %s", pcb_file)
@@ -81,7 +81,7 @@ async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
     drc_results = await run_drc_via_cli(pcb_file, ctx)
 
     # Process and save results if successful
-    if drc_results and drc_results.get("success", False):
+    if drc_results and drc_results.get("status") == "ok":
         save_drc_result(project_path, drc_results)
 
         comparison = compare_with_previous(project_path, drc_results)
@@ -108,7 +108,7 @@ async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
         await ctx.report_progress(100, 100)
 
     return drc_results or {
-        "success": False,
+        "status": "error",
         "error": "DRC check failed with an unknown error",
     }
 
@@ -143,7 +143,7 @@ def register_drc_tools(mcp: FastMCP) -> None:
 
         Operations:
           run(project_path)
-              -> {success, violations, violation_categories, comparison?, ...}
+              -> {status, violations, violation_categories, comparison?, ...}
               Run a full DRC check on a project's PCB via kicad-cli. Saves
               the result to history so subsequent runs can show a trend.
 
@@ -157,7 +157,7 @@ def register_drc_tools(mcp: FastMCP) -> None:
               verify improvement and returns a before/after comparison.
 
           history(project_path)
-              -> {success, history_entries, entry_count, trend}
+              -> {status, history_entries, entry_count, trend}
               Get the DRC check history for a KiCad project. trend is
               "improving"|"degrading"|"stable"|null (null if < 2 entries).
         """

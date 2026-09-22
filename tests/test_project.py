@@ -92,7 +92,7 @@ class TestOpenKicadProject:
 
     def test_missing_project(self):
         result = open_kicad_project("/nonexistent/project.kicad_pro")
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "not found" in result["error"].lower()
 
     @patch("kicad_mcp.utils.kicad_utils.subprocess.run")
@@ -105,7 +105,7 @@ class TestOpenKicadProject:
         with patch("kicad_mcp.utils.kicad_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = open_kicad_project(str(pro))
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert "open" in result["command"]
 
     @patch("kicad_mcp.utils.kicad_utils.subprocess.run")
@@ -118,7 +118,7 @@ class TestOpenKicadProject:
         with patch("kicad_mcp.utils.kicad_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = open_kicad_project(str(pro))
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert "xdg-open" in result["command"]
 
 
