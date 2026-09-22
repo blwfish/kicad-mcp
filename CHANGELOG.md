@@ -2,6 +2,100 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.16.0] — 2026-09-22
+
+Response-envelope standardization (breaking), an autoroute/drc-fix
+data-loss fix, tool annotations, pagination, and path-validation wiring —
+findings from an mcp-builder audit of this server, addressed in order of
+risk.
+
+### Breaking
+
+- **Every tool's success/error envelope now uses `{"status": "ok"|"error",
+  ...}`** — the majority convention already used by `library(search)`,
+  `lcsc`, and most of the codebase. Twelve functions previously used
+  `{"success": true|false, ...}` instead: `analyze(operation="netlist"
+  |"connections"|"circuit_patterns"|"project_patterns"|"bom")`,
+  `schematic(operation="find_component_connections")`,
+  `drc(operation="run"|"history")`, `export(operation="bom_csv")`,
+  `project(operation="open"|"validate")`. Any caller checking
+  `result["success"]` on these operations needs to check
+  `result["status"] == "ok"` instead.
+  `project(operation="validate")` also gained a genuinely new field in the
+  process: `success` there previously conflated "did the call complete"
+  with "did validation find zero issues" — a project missing its PCB file
+  was reported as `success: false`, indistinguishable from a real error.
+  It's now `{"status": "ok", "valid": false, ...}` — the call succeeded,
+  the project just isn't complete.
+- **`project(operation="list")`** now returns `{"status", "projects",
+  "count", "total", "truncated"}` instead of a bare list (see 0.15.0's
+  pagination work below — this was already noted there but is called out
+  again here since it's part of the same breaking-change surface).
+
+### Fixed
+
+- **`pcb_autoroute.py`'s `_export_dsn`** removed copper zones and saved
+  `pcb_path` to disk in step 1 of the autoroute pipeline, before
+  FreeRouter ever ran. If every pass then failed, that save had already
+  happened with no rollback and no mention of it in the error response.
+  Zone removal is now applied and persisted only by `_import_ses`, the
+  sole remaining write point, reached only once a route actually exists
+  to justify it — a total FreeRouter failure now leaves `pcb_path`
+  completely untouched, and both failure paths say so explicitly.
+- **`pcb_drc_fix.py`'s `_op_autofix`** clears all existing tracks/vias
+  (required so autoroute has a clean board to route against) and then
+  calls `_run_full_autoroute` with no check on the result — a failure
+  there was folded into an optimistic-looking `"routing: cleared N
+  tracks/vias, re-autorouted (2 passes, ? unconnected)"` action-log entry,
+  indistinguishable from a real, if incomplete, success. The board was
+  actually left with no routing at all. Now reports the regression
+  plainly and returns `status: "warning"` with an explicit
+  `routing_regressed` flag instead of `status: "ok"`.
+- **`jmri_logs`-style path traversal gap**: `path_validation.py`'s
+  `validate_project_path()` existed and was fully unit tested, but was
+  only actually called from `project.py` — every PCB-mutating tool
+  (`pcb_board`, `pcb_footprints`, `pcb_nets`, `pcb_routing`, `pcb_zones`,
+  `pcb_silkscreen`, `pcb_keepout`, `pcb_autoroute`, `pcb_drc_fix`,
+  `pcb_panelize`, `pcb_planning`, `export`) gated only on a bare
+  `os.path.exists(pcb_path)`. Now wired into all 41 of those call sites.
+  Behaviorally safe by default — `KICAD_MCP_STRICT_PATHS` stays warn-only
+  unless already opted into strict mode.
+
+### Added
+
+- **MCP tool annotations** (`readOnlyHint`/`destructiveHint`/
+  `idempotentHint`/`openWorldHint`) on all 18 registered tools — previously
+  none had any, despite most routers mixing read-only and destructive
+  operations under one tool name.
+- **Pagination** on `project(operation="list")` (`limit`/`total`/
+  `truncated`, default 50) and `analyze(operation="netlist")`
+  (`components`/`nets` capped at `limit=100`, `component_count`/
+  `net_count`/`analysis` always reflect the full, untruncated netlist).
+  `analyze(operation="bom")` was flagged by the originating audit as
+  needing the same treatment but turned out not to: the actual code only
+  returns aggregate counts/categories, no raw per-component list exists to
+  cap.
+
+### Testing
+
+- Added `tests/test_path_validation_wiring.py` — end-to-end proof that
+  `KICAD_MCP_STRICT_PATHS=1` traversal rejection reaches through real tool
+  calls (`pcb`/`autoroute`/`export`), not just `validate_project_path`'s
+  own unit tests, plus a control test proving the same path is allowed
+  when strict mode is off.
+- Added boundary-threshold tests for the autoroute zone-removal fix
+  (script-content assertions that `_export_dsn` never saves and
+  `_import_ses` saves last) and for `_op_autofix`'s three routing
+  outcomes (success, failure, FreeRouter unavailable).
+- Closed 19 genuine test-coverage gaps found by an audit of this suite's
+  177 loose `"error" in result`-style assertions — cases where the only
+  assertion in a test wouldn't have caught a `status`/`success` envelope
+  regression. The other ~90% of that raw count turned out to be either
+  already covered by a stronger assertion nearby, or hitting an error
+  branch with no status/success field to check in the first place (most
+  of this codebase's error returns are bare `{"error": ...}` with nothing
+  else to assert on).
+
 ## [0.15.0] — 2026-09-20
 
 Onboarding-knowledge infrastructure, two pcbnew robustness fixes found via
