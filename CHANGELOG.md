@@ -54,10 +54,33 @@ only — plus an honest, documented account of what it still doesn't cover.
   design), and the lock is released (not leaked) after a call completes
   regardless of whether that call's own business logic succeeded.
 
+### Fixed
+
+- **`pcb()` router let subprocess failures escape as raw exceptions
+  instead of the documented `{"status": "ok"|"error"}` envelope.**
+  `run_pcbnew_script` normalizes every KiCad-subprocess failure (missing
+  KiCad Python, a script traceback, a timeout) to `RuntimeError` — that's
+  its own documented contract — but none of `pcb.py`'s dispatch (nor any
+  of the `_op_*` helpers in `pcb_board.py`, `pcb_footprints.py`, etc.) ever
+  caught it, so it propagated straight out of the tool call. Caught this
+  release's own CI: the new `test_path_validation_wiring.py` test exercises
+  `pcb(operation="load")` against a real (if unavailable) KiCad Python and
+  hit exactly this path. `_dispatch()` is now wrapped in a single
+  `try/except RuntimeError` at the router's two call sites (read-only and
+  the `pcb_write_lock`-guarded mutating path), converting it to
+  `{"error": str(e)}`. Regression-tested in `test_pcb_board.py` (read path)
+  and `test_pcb_footprints.py` (mutating/locked path).
+
 Verified against `scripts/audit_testability.py` (no new violations) and
-the full suite (2639 passed).
+the full suite (2641 passed).
 
 ## [0.16.0] — 2026-09-22
+
+**Note:** this version was never tagged or released — `pyproject.toml` was
+bumped and this section written, but work continued straight into 0.17.0
+before the tag+release step happened. `v0.15.0` is the last version that
+actually shipped as a GitHub Release; this section is kept for the
+historical record of what changed, folded into the 0.17.0 release below.
 
 Response-envelope standardization (breaking), an autoroute/drc-fix
 data-loss fix, tool annotations, pagination, and path-validation wiring —
