@@ -39,13 +39,18 @@ def register_analyze_tools(mcp: FastMCP) -> None:
         schematic_path: Optional[str] = None,
         project_path: Optional[str] = None,
         column_map: Optional[Dict[str, str]] = None,
+        limit: int = 100,
     ) -> Dict[str, Any]:
         """Read-only analysis of schematics and projects.
 
         Operations:
-          netlist(path)
-              -> {success, components, nets, analysis, ...}
+          netlist(path, limit=100)
+              -> {success, component_count, net_count, components, nets,
+                  components_truncated, nets_truncated, analysis, ...}
               Extract netlist from a .kicad_sch or .kicad_pro file.
+              components/nets are capped at `limit` entries each --
+              component_count/net_count are always the true full counts,
+              and analysis always covers the complete netlist.
 
           connections(schematic_path)
               -> {success, analysis: {power_nets, signal_nets, potential_issues, ...}}
@@ -71,7 +76,9 @@ def register_analyze_tools(mcp: FastMCP) -> None:
         if operation == "netlist":
             if path is None:
                 return {"error": "operation='netlist' requires 'path'"}
-            return await _op_extract_netlist(path, ctx)
+            if limit <= 0:
+                return {"error": f"limit must be > 0, got {limit}"}
+            return await _op_extract_netlist(path, ctx, limit=limit)
         if operation == "connections":
             if schematic_path is None:
                 return {"error": "operation='connections' requires 'schematic_path'"}

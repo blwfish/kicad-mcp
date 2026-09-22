@@ -19,12 +19,19 @@ from kicad_mcp.utils.netlist_parser import analyze_netlist, extract_netlist as _
 
 
 async def _op_extract_netlist(
-    path: str, ctx: Context | None
+    path: str, ctx: Context | None, limit: int = 100
 ) -> Dict[str, Any]:
     """Extract netlist information from a KiCad schematic or project.
 
     Dispatches on file extension: ``.kicad_sch`` is parsed directly;
     ``.kicad_pro`` is resolved to its associated schematic first.
+
+    `components`/`nets` in the result are capped at `limit` entries each
+    (dict insertion order) -- `component_count`/`net_count` are always the
+    true full counts, and `analysis` is always computed from the complete,
+    untruncated netlist. Only the raw per-component/per-net echo-back is
+    capped, since an unbounded schematic can otherwise return an
+    arbitrarily large response.
     """
     if not os.path.exists(path):
         logger.warning(f"File not found: {path}")
@@ -95,8 +102,10 @@ async def _op_extract_netlist(
             "schematic_path": schematic_path,
             "component_count": netlist_data["component_count"],
             "net_count": netlist_data["net_count"],
-            "components": netlist_data["components"],
-            "nets": netlist_data["nets"],
+            "components": dict(list(netlist_data["components"].items())[:limit]),
+            "nets": dict(list(netlist_data["nets"].items())[:limit]),
+            "components_truncated": netlist_data["component_count"] > limit,
+            "nets_truncated": netlist_data["net_count"] > limit,
             "analysis": analysis_results,
         }
         # Forward incompleteness signals from the parser. The regex fallback
