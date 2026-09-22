@@ -156,6 +156,7 @@ class TestRowsColsBoundaries:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, rows=1, cols=2)
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_rows_100_accepted(self, panelize_server, pcb_file):
         """rows=100 is exactly at the upper bound — must be accepted."""
@@ -170,6 +171,7 @@ class TestRowsColsBoundaries:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, rows=100, cols=2)
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_rows_101_rejected(self, panelize_server, pcb_file):
         result = self._call(panelize_server, pcb_file, rows=101, cols=2)
@@ -196,6 +198,7 @@ class TestRowsColsBoundaries:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, rows=2, cols=1)
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_cols_100_accepted(self, panelize_server, pcb_file):
         """cols=100 is exactly at the upper bound — must be accepted."""
@@ -210,6 +213,7 @@ class TestRowsColsBoundaries:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, rows=2, cols=100)
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_cols_101_rejected(self, panelize_server, pcb_file):
         result = self._call(panelize_server, pcb_file, rows=2, cols=101)
@@ -244,6 +248,7 @@ class TestEnumValidation:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, cut_type="vcuts")
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_cut_type_mousebites_valid(self, panelize_server, pcb_file):
         run_result = MagicMock(returncode=0, stdout="", stderr="")
@@ -257,6 +262,7 @@ class TestEnumValidation:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, cut_type="mousebites")
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_cut_type_invalid_rejected(self, panelize_server, pcb_file):
         result = self._call_with_enums(panelize_server, pcb_file, cut_type="laser")
@@ -283,6 +289,7 @@ class TestEnumValidation:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, framing="none")
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_framing_invalid_rejected(self, panelize_server, pcb_file):
         result = self._call_with_enums(panelize_server, pcb_file, framing="rails")
@@ -309,6 +316,7 @@ class TestEnumValidation:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file, tooling="4hole")
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_tooling_invalid_rejected(self, panelize_server, pcb_file):
         result = self._call_with_enums(panelize_server, pcb_file, tooling="5hole")
@@ -381,6 +389,7 @@ class TestKikitDiscovery:
             fn = _get_tool_fn(panelize_server, "panelize_pcb")
             result = fn(pcb_file)
         assert "error" not in result
+        assert result["status"] == "ok"
 
     def test_darwin_glob_finds_kikit(self, tmp_path):
         """_find_kikit on Darwin: if glob returns a path containing kikit, it's returned."""
