@@ -4,7 +4,7 @@ See docs/SPEC_Tool_Consolidation.md.
 """
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastmcp import FastMCP
 
@@ -15,11 +15,19 @@ from kicad_mcp.utils.path_validation import validate_project_path
 logger = logging.getLogger(__name__)
 
 
-def _op_list() -> List[Dict[str, Any]]:
+def _op_list(limit: int = 50) -> Dict[str, Any]:
     logger.info("Executing project list...")
     projects = find_kicad_projects()
-    logger.info("project list returning %d projects.", len(projects))
-    return projects
+    total = len(projects)
+    page = projects[:limit]
+    logger.info("project list returning %d of %d projects.", len(page), total)
+    return {
+        "status": "ok",
+        "projects": page,
+        "count": len(page),
+        "total": total,
+        "truncated": total > limit,
+    }
 
 
 def _op_get_structure(project_path: str) -> Dict[str, Any]:
@@ -93,13 +101,19 @@ def register_project_tools(mcp: FastMCP) -> None:
         operation: str,
         *,
         project_path: Optional[str] = None,
+        limit: int = 50,
     ) -> Any:
         """KiCad project management operations.
 
         Operations:
-          list()
-              -> [{name, path, ...}, ...]
+          list(limit=50)
+              -> {status, projects: [{name, path, ...}, ...], count, total,
+                  truncated}
               Find and list all KiCad projects on this system.
+              BREAKING CHANGE (was a bare list): now returns a paginated
+              envelope, matching library(search)/lcsc's convention --
+              `total` is always the true count, `projects` is capped at
+              `limit`, `truncated` says whether more exist.
 
           get_structure(project_path)
               -> {name, path, directory, files, metadata}
@@ -115,7 +129,9 @@ def register_project_tools(mcp: FastMCP) -> None:
               and PCB files are present.
         """
         if operation == "list":
-            return _op_list()
+            if limit <= 0:
+                return {"error": f"limit must be > 0, got {limit}"}
+            return _op_list(limit=limit)
         if operation == "get_structure":
             if project_path is None:
                 return {"error": "operation='get_structure' requires 'project_path'"}

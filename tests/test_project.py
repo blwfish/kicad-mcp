@@ -9,6 +9,7 @@ import os
 from unittest.mock import patch
 
 
+from kicad_mcp.tools.project import _op_list
 from kicad_mcp.utils.file_utils import get_project_files, load_project_json
 from kicad_mcp.utils.kicad_utils import get_project_name_from_path, open_kicad_project
 
@@ -119,6 +120,74 @@ class TestOpenKicadProject:
             result = open_kicad_project(str(pro))
         assert result["success"] is True
         assert "xdg-open" in result["command"]
+
+
+# -- project(operation="list") pagination -------------------------------------
+
+class TestOpListPagination:
+    """project(list) previously returned a bare, unbounded list -- now a
+    paginated envelope matching library(search)/lcsc's convention. Threshold
+    boundary per CLAUDE.md's Testing rule: total == limit (not truncated)
+    and total == limit + 1 (truncated, smallest case)."""
+
+    def _projects(self, n):
+        return [{"name": f"proj{i}", "path": f"/tmp/proj{i}.kicad_pro"} for i in range(n)]
+
+    @patch("kicad_mcp.tools.project.find_kicad_projects")
+    def test_default_limit_is_fifty(self, mock_find):
+        mock_find.return_value = self._projects(75)
+        result = _op_list()
+        assert result["status"] == "ok"
+        assert result["count"] == 50
+        assert result["total"] == 75
+        assert result["truncated"] is True
+        assert len(result["projects"]) == 50
+
+    @patch("kicad_mcp.tools.project.find_kicad_projects")
+    def test_total_exactly_equal_to_limit_is_not_truncated(self, mock_find):
+        mock_find.return_value = self._projects(50)
+        result = _op_list()
+        assert result["count"] == 50
+        assert result["truncated"] is False
+
+    @patch("kicad_mcp.tools.project.find_kicad_projects")
+    def test_total_one_more_than_limit_is_truncated(self, mock_find):
+        mock_find.return_value = self._projects(51)
+        result = _op_list(limit=50)
+        assert result["count"] == 50
+        assert result["truncated"] is True
+
+    @patch("kicad_mcp.tools.project.find_kicad_projects")
+    def test_custom_limit_is_honored(self, mock_find):
+        mock_find.return_value = self._projects(10)
+        result = _op_list(limit=3)
+        assert result["count"] == 3
+        assert result["total"] == 10
+        assert result["truncated"] is True
+
+    @patch("kicad_mcp.tools.project.find_kicad_projects")
+    def test_no_projects_found(self, mock_find):
+        mock_find.return_value = []
+        result = _op_list()
+        assert result == {
+            "status": "ok", "projects": [], "count": 0, "total": 0, "truncated": False,
+        }
+
+    def test_limit_zero_is_rejected_via_tool(self):
+        from kicad_mcp.server import create_server
+        import asyncio
+        mcp = create_server()
+        tool = asyncio.run(mcp.get_tool("project"))
+        result = tool.fn(operation="list", limit=0)
+        assert "error" in result
+
+    def test_negative_limit_is_rejected_via_tool(self):
+        from kicad_mcp.server import create_server
+        import asyncio
+        mcp = create_server()
+        tool = asyncio.run(mcp.get_tool("project"))
+        result = tool.fn(operation="list", limit=-1)
+        assert "error" in result
 
 
 # -- validate_project tool tests (via project.py) ----------------------------
