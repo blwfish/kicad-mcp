@@ -79,7 +79,18 @@ def _op_rebuild_index(kind: str = "both") -> Dict[str, Any]:
 def register_library_tools(mcp: FastMCP) -> None:
     """Register the library domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # `search` is pure read; `rebuild_index` persists a rewritten
+            # SQLite cache to disk (~/.cache/kicad-mcp/) -- not a design
+            # file, but a real write, so the tool as a whole isn't
+            # readOnlyHint=True.
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     def library(
         operation: str,
         *,

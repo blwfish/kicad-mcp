@@ -2150,7 +2150,17 @@ def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
 def register_pipeline_tools(mcp: FastMCP) -> None:
     """Register PCB pipeline tools."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # Unconditionally creates an empty board and overwrites any
+            # existing .kicad_pcb at the derived path, including prior
+            # routing/placement; the autoroute step is non-deterministic.
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def build_pcb_from_schematic(
         project_path: str,
         board_width_mm: float = 0,

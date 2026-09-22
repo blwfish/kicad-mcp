@@ -116,7 +116,18 @@ async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
 def register_drc_tools(mcp: FastMCP) -> None:
     """Register the DRC domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # `run`/`history` only read; `autofix` clears tracks/vias and
+            # re-routes -- can leave the board with less routing than it
+            # started with if re-autoroute fails (see
+            # _op_autofix's routing_regressed handling).
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     async def drc(
         operation: str,
         ctx: Context | None,

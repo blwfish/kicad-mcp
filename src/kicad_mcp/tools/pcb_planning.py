@@ -19,7 +19,14 @@ def register_pcb_planning_tools(mcp: FastMCP) -> None:
 
     _KEEPOUT_HELPER = KEEPOUT_HELPER
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     def estimate_board_size(
         footprints: List[Dict[str, str]],
         padding_mm: float = 2.0,
@@ -161,7 +168,14 @@ print(json.dumps({
             "routing_factor": routing_factor,
         })
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     def suggest_placement(
         pcb_path: str,
         spacing_mm: float = 1.0,

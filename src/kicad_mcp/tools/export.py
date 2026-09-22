@@ -334,7 +334,17 @@ async def _generate_thumbnail_with_cli(
 def register_export_tools(mcp: FastMCP) -> None:
     """Register the export domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # All three operations write new files to disk (gerbers+zip,
+            # BOM CSV, thumbnail) -- never the input board/schematic, but
+            # a real filesystem write, so not readOnlyHint=True.
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     async def export(
         operation: str,
         ctx: Context | None,

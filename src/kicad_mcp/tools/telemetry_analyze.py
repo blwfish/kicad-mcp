@@ -25,7 +25,14 @@ _SUPPORTED_QUERIES = ("calibration_table", "convergence_stats", "system_events")
 def register_telemetry_analyze_tools(mcp: FastMCP) -> None:
     """Register the `analyze_placement_telemetry` tool."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     async def analyze_placement_telemetry(
         query: str,
         filters: dict[str, Any] | None = None,
