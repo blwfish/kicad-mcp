@@ -121,6 +121,7 @@ async def _op_autofix(
     from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 
     actions_taken = []
+    routing_regressed = False
 
     # --- Run initial DRC ---
     before_drc = await run_drc_via_cli(pcb_path, ctx=None)
@@ -221,11 +222,27 @@ print(json.dumps({"status": "ok", "removed": removed}))
                 passes=autoroute_passes,
                 remove_zones=True,
             )
-            incomplete = route_result.get("unconnected_after_routing", "?")
-            actions_taken.append(
-                f"routing: cleared {tracks_cleared} tracks/vias, "
-                f"re-autorouted ({autoroute_passes} passes, {incomplete} unconnected)"
-            )
+            if "error" in route_result:
+                # Routing was already cleared and saved above (required so
+                # _run_full_autoroute has a clean board to route against) --
+                # if it then fails, the board now has NO routing at all,
+                # strictly worse than the input. Report this plainly rather
+                # than logging "re-autorouted" with a "?" unconnected count,
+                # which reads as a qualified success instead of a real
+                # regression the caller needs to act on.
+                routing_regressed = True
+                actions_taken.append(
+                    f"routing: cleared {tracks_cleared} tracks/vias, but re-autoroute "
+                    f"FAILED ({route_result['error']}) -- the board now has NO routing. "
+                    "Run autoroute(operation='run') to recover."
+                )
+            else:
+                routing_regressed = False
+                incomplete = route_result.get("unconnected_after_routing", "?")
+                actions_taken.append(
+                    f"routing: cleared {tracks_cleared} tracks/vias, "
+                    f"re-autorouted ({autoroute_passes} passes, {incomplete} unconnected)"
+                )
 
     # --- 3. Fix silkscreen ---
     if fix_silkscreen and groups["silkscreen"]:
@@ -369,10 +386,15 @@ print(json.dumps({"status": "ok", "moved": moved, "hidden": hidden_count,
     after_cats = after_drc.get("violation_categories", {}) if after_drc.get("success") else {}
 
     return {
-        "status": "ok",
+        # "warning" when the routing-fix step left the board strictly
+        # worse than it found it (cleared, then failed to re-route) --
+        # "ok" would read as "this completed successfully" to a caller
+        # that only checks status, which is exactly wrong here.
+        "status": "warning" if routing_regressed else "ok",
         "before": {"total": before_total, "categories": before_cats},
         "after": {"total": after_total, "categories": after_cats},
         "actions_taken": actions_taken,
+        "routing_regressed": routing_regressed,
         "improvement": before_total - after_total if isinstance(after_total, int) else None,
     }
 
