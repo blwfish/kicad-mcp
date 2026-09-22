@@ -8,6 +8,7 @@ import os
 from typing import Any, Dict
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,9 @@ def _op_add_trace(
     net_name: str = "",
 ) -> Dict[str, Any]:
     """Add a copper trace between two points on the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
     if width_mm <= 0:
         return {"error": f"width_mm must be positive (got {width_mm})"}
 
@@ -93,8 +95,9 @@ def _op_add_via(
     via_type: str = "through",
 ) -> Dict[str, Any]:
     """Add a via to the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
     if drill_mm <= 0:
         return {"error": f"drill_mm must be positive (got {drill_mm})"}
     if size_mm <= 0:
@@ -170,8 +173,9 @@ def _op_edit_trace_width(
     layer: str = "",
 ) -> Dict[str, Any]:
     """Change the width of existing traces."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
     if new_width_mm <= 0:
         return {"error": f"new_width_mm must be positive (got {new_width_mm})"}
     if net_name and net_name != net_name.strip():
@@ -235,8 +239,9 @@ def _op_clear_routing(
     clear_zones: bool = False,
 ) -> Dict[str, Any]:
     """Remove tracks, vias, and/or copper zones from the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,9 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
             preset: Path to a KiKit preset JSON file. When provided,
                     overrides all other layout parameters.
         """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
+        _pv_err = validate_project_path(pcb_path)
+        if _pv_err:
+            return {"error": _pv_err}
 
         # Validate string enum parameters
         VALID_CUT_TYPES = {"vcuts", "mousebites"}

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from kicad_mcp.utils.net_injection import inject_net_definitions
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,9 @@ def _op_add_net(pcb_path: str, net_name: str) -> Dict[str, Any]:
     """Add a named net to the PCB (direct file editing)."""
     import re as _re
 
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
     if not net_name:
         return {"error": "net_name must not be empty"}
     if '"' in net_name or "\\" in net_name or "\n" in net_name or "\r" in net_name:
@@ -65,8 +67,9 @@ def _op_assign_pad_net(
     net_name: str,
 ) -> Dict[str, Any]:
     """Assign a net to a specific pad on a footprint."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -133,8 +136,9 @@ def _op_bulk_assign_pad_nets(
     assignments: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Assign nets to multiple pads in a single operation."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     if not assignments:
         return {"error": "No assignments provided"}
@@ -224,8 +228,9 @@ def _op_rename_net(pcb_path: str, old_name: str, new_name: str) -> Dict[str, Any
     """Rename a net across the entire PCB."""
     import re as _re
 
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
     for name, label in [(old_name, "old_name"), (new_name, "new_name")]:
         if not name:
             return {"error": f"{label} must not be empty"}
@@ -263,8 +268,9 @@ def _op_rename_net(pcb_path: str, old_name: str, new_name: str) -> Dict[str, Any
 
 def _op_list_nets(pcb_path: str) -> Dict[str, Any]:
     """List all nets in the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -304,8 +310,9 @@ def _op_set_net_class(
     via_drill_mm: float = 0.3,
 ) -> Dict[str, Any]:
     """Create or update a net class and assign nets to it."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     stem = os.path.splitext(pcb_path)[0]
     pro_path = stem + ".kicad_pro"

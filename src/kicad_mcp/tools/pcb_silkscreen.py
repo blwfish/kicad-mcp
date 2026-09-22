@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,9 @@ def _op_add_text(
     rotation_deg: float = 0.0,
 ) -> Dict[str, Any]:
     """Add text to the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -75,8 +77,9 @@ print(json.dumps({
 
 def _op_list_silkscreen(pcb_path: str) -> Dict[str, Any]:
     """List all silkscreen text items on the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -156,8 +159,9 @@ def _op_update_silkscreen(
     layer: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Update a silkscreen text item's properties."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     if field not in ("reference", "value"):
         return {"error": f"field must be 'reference' or 'value', got {field!r}"}
@@ -262,8 +266,9 @@ def _op_edit_text(
     requiring delete-and-recreate.  If multiple items share the same
     text, supply near_x_mm / near_y_mm to pick the closest one.
     """
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     if all(v is None for v in (new_text, x_mm, y_mm, layer, size_mm, thickness_mm, rotation_deg)):
         return {"error": "No modifications specified"}
@@ -361,8 +366,9 @@ def _op_check_silkscreen_overlaps(pcb_path: str) -> Dict[str, Any]:
       - pcb router (operation='check_silkscreen_overlaps')
       - audit router (operation='check_silkscreen_overlaps') via import in pcb_keepout.py
     """
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -490,8 +496,9 @@ def _op_auto_fix_silkscreen(
     tidied — only the hand-placed refdes is protected. The skipped refdes still
     participate as overlap OBSTACLES for everything else (it remains in ``all_silk``),
     so other text is moved clear of it rather than the reverse."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
