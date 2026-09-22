@@ -29,7 +29,7 @@ async def _op_identify_circuit_patterns(
         if ctx:
             await ctx.info(f"Schematic file not found: {schematic_path}")
         return {
-            "success": False,
+            "status": "error",
             "error": f"Schematic file not found: {schematic_path}",
         }
 
@@ -51,7 +51,7 @@ async def _op_identify_circuit_patterns(
                 await ctx.info(
                     f"Error extracting netlist: {netlist_data['error']}"
                 )
-            return {"success": False, "error": netlist_data["error"]}
+            return {"status": "error", "error": netlist_data["error"]}
 
         if ctx:
             await ctx.report_progress(30, 100)
@@ -118,7 +118,7 @@ async def _op_identify_circuit_patterns(
         )
 
         result = {
-            "success": True,
+            "status": "ok",
             "schematic_path": schematic_path,
             "component_count": netlist_data["component_count"],
             "identified_patterns": identified_patterns,
@@ -141,7 +141,7 @@ async def _op_identify_circuit_patterns(
     except Exception as e:
         if ctx:
             await ctx.info(f"Error identifying circuit patterns: {e}")
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}
 
 
 async def _op_analyze_project_circuit_patterns(
@@ -152,7 +152,7 @@ async def _op_analyze_project_circuit_patterns(
         if ctx:
             await ctx.info(f"Project not found: {project_path}")
         return {
-            "success": False,
+            "status": "error",
             "error": f"Project not found: {project_path}",
         }
 
@@ -166,7 +166,7 @@ async def _op_analyze_project_circuit_patterns(
             if ctx:
                 await ctx.info("Schematic file not found in project")
             return {
-                "success": False,
+                "status": "error",
                 "error": "Schematic file not found in project",
             }
 
@@ -178,7 +178,7 @@ async def _op_analyze_project_circuit_patterns(
 
         result = await _op_identify_circuit_patterns(schematic_path, ctx)
 
-        if "success" in result and result["success"]:
+        if result.get("status") == "ok":
             result["project_path"] = project_path
 
         return result
@@ -186,4 +186,4 @@ async def _op_analyze_project_circuit_patterns(
     except Exception as e:
         if ctx:
             await ctx.info(f"Error analyzing project circuit patterns: {e}")
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}

@@ -221,7 +221,7 @@ class TestDrcHistoryOperation:
     def test_project_not_found(self, drc_server):
         fn = _get_tool_fn(drc_server, "drc")
         result = asyncio.run(fn("history", None, project_path="/nonexistent/project.kicad_pro"))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_requires_project_path(self, drc_server):
         fn = _get_tool_fn(drc_server, "drc")
@@ -239,7 +239,7 @@ class TestDrcHistoryOperation:
         ]
         fn = _get_tool_fn(drc_server, "drc")
         result = asyncio.run(fn("history", None, project_path=str(pro)))
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert result["entry_count"] == 2
         assert result["trend"] == "improving"
 
@@ -260,7 +260,7 @@ class TestDrcRunOperation:
     def test_project_not_found(self, drc_server):
         fn = _get_tool_fn(drc_server, "drc")
         result = asyncio.run(fn("run", None, project_path="/nonexistent/project.kicad_pro"))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_requires_project_path(self, drc_server):
         fn = _get_tool_fn(drc_server, "drc")
@@ -273,7 +273,7 @@ class TestDrcRunOperation:
         pro.write_text("{}")
         fn = _get_tool_fn(drc_server, "drc")
         result = asyncio.run(fn("run", None, project_path=str(pro)))
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "PCB file not found" in result["error"]
 
 

@@ -62,9 +62,19 @@ def _op_open(project_path: str) -> Dict[str, Any]:
 
 
 def _op_validate(project_path: str) -> Dict[str, Any]:
+    """Basic validation of a KiCad project's file set.
+
+    `status` reports whether the CALL succeeded (path resolved, files were
+    readable) -- always "ok" once past the path-validation error case below.
+    `valid` is the actual business-logic result (schematic and PCB both
+    present); these are deliberately separate fields, not folded into one
+    True/False the way "did the call succeed" is elsewhere, since a project
+    missing its PCB file is a completely successful, informative call, not
+    a failed one.
+    """
     err = validate_project_path(project_path)
     if err:
-        return {"success": False, "error": err}
+        return {"status": "error", "error": err}
 
     files = get_project_files(project_path)
     issues: list[str] = []
@@ -75,7 +85,8 @@ def _op_validate(project_path: str) -> Dict[str, Any]:
         issues.append("No PCB file found")
 
     return {
-        "success": len(issues) == 0,
+        "status": "ok",
+        "valid": len(issues) == 0,
         "project_path": project_path,
         "files_found": list(files.keys()),
         "issues": issues,
@@ -120,13 +131,16 @@ def register_project_tools(mcp: FastMCP) -> None:
               Get the structure and files of a KiCad project.
 
           open(project_path)
-              -> {success, command, ...}
+              -> {status, command, ...}
               Open a KiCad project in KiCad.
 
           validate(project_path)
-              -> {success, project_path, files_found, issues}
+              -> {status, valid, project_path, files_found, issues}
               Basic validation of a KiCad project — checks that schematic
-              and PCB files are present.
+              and PCB files are present. `status` reports whether the call
+              itself succeeded; `valid` is the actual result (both files
+              present) — a project missing its PCB is a successful call
+              with valid=False, not a failed one.
         """
         if operation == "list":
             if limit <= 0:

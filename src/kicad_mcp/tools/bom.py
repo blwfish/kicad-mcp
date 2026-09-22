@@ -35,7 +35,7 @@ async def _op_analyze_bom(
         logger.warning("Project not found: %s", project_path)
         if ctx:
             await ctx.info(f"Project not found: {project_path}")
-        return {"success": False, "error": f"Project not found: {project_path}"}
+        return {"status": "error", "error": f"Project not found: {project_path}"}
 
     if ctx:
         await ctx.report_progress(10, 100)
@@ -56,7 +56,7 @@ async def _op_analyze_bom(
         if ctx:
             await ctx.info("No BOM files found for project")
         return {
-            "success": False,
+            "status": "error",
             "error": "No BOM files found. Export a BOM from KiCad first.",
             "project_path": project_path,
         }
@@ -65,7 +65,7 @@ async def _op_analyze_bom(
         await ctx.report_progress(30, 100)
 
     results: Dict[str, Any] = {
-        "success": True,
+        "status": "ok",
         "project_path": project_path,
         "bom_files": {},
         "component_summary": {},
@@ -176,7 +176,7 @@ async def _op_export_bom_csv(
         logger.warning("Project not found: %s", project_path)
         if ctx:
             await ctx.info(f"Project not found: {project_path}")
-        return {"success": False, "error": f"Project not found: {project_path}"}
+        return {"status": "error", "error": f"Project not found: {project_path}"}
 
     if ctx:
         await ctx.report_progress(10, 100)
@@ -187,7 +187,7 @@ async def _op_export_bom_csv(
         logger.warning("Schematic file not found in project")
         if ctx:
             await ctx.info("Schematic file not found in project")
-        return {"success": False, "error": "Schematic file not found"}
+        return {"status": "error", "error": "Schematic file not found"}
 
     schematic_file = files["schematic"]
     project_dir = os.path.dirname(project_path)
@@ -207,12 +207,12 @@ async def _op_export_bom_csv(
         logger.error("Error exporting BOM with CLI: %s", e)
         if ctx:
             await ctx.info(f"Error using command-line tools: {e}")
-        export_result = {"success": False, "error": str(e)}
+        export_result = {"status": "error", "error": str(e)}
 
     if ctx:
         await ctx.report_progress(100, 100)
 
-    if export_result.get("success", False):
+    if export_result.get("status") == "ok":
         if ctx:
             await ctx.info(
                 f"BOM exported successfully to "
@@ -625,7 +625,7 @@ async def _export_bom_with_cli(
 
         if not os.path.exists(kicad_cli):
             return {
-                "success": False,
+                "status": "error",
                 "error": f"KiCad CLI tool not found at {kicad_cli}",
                 "schematic_file": schematic_file,
             }
@@ -647,7 +647,7 @@ async def _export_bom_with_cli(
 
         if not os.path.exists(kicad_cli):
             return {
-                "success": False,
+                "status": "error",
                 "error": f"KiCad CLI tool not found at {kicad_cli}",
                 "schematic_file": schematic_file,
             }
@@ -676,7 +676,7 @@ async def _export_bom_with_cli(
 
     else:
         return {
-            "success": False,
+            "status": "error",
             "error": f"Unsupported operating system: {system}",
             "schematic_file": schematic_file,
         }
@@ -693,7 +693,7 @@ async def _export_bom_with_cli(
             logger.warning("Error output: %s", process.stderr)
 
             return {
-                "success": False,
+                "status": "error",
                 "error": f"BOM export command failed: {process.stderr}",
                 "schematic_file": schematic_file,
                 "command": " ".join(cmd),
@@ -701,7 +701,7 @@ async def _export_bom_with_cli(
 
         if not os.path.exists(output_file):
             return {
-                "success": False,
+                "status": "error",
                 "error": "BOM file was not created",
                 "schematic_file": schematic_file,
                 "output_file": output_file,
@@ -715,14 +715,14 @@ async def _export_bom_with_cli(
 
         if len(bom_content.strip()) == 0:
             return {
-                "success": False,
+                "status": "error",
                 "error": "Generated BOM file is empty",
                 "schematic_file": schematic_file,
                 "output_file": output_file,
             }
 
         return {
-            "success": True,
+            "status": "ok",
             "schematic_file": schematic_file,
             "output_file": output_file,
             "file_size": os.path.getsize(output_file),
@@ -732,7 +732,7 @@ async def _export_bom_with_cli(
     except subprocess.TimeoutExpired:
         logger.warning("BOM export command timed out after 30 seconds")
         return {
-            "success": False,
+            "status": "error",
             "error": "BOM export command timed out after 30 seconds",
             "schematic_file": schematic_file,
         }
@@ -740,7 +740,7 @@ async def _export_bom_with_cli(
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         logger.error("Error exporting BOM: %s", e)
         return {
-            "success": False,
+            "status": "error",
             "error": f"Error exporting BOM: {e}",
             "schematic_file": schematic_file,
         }

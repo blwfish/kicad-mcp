@@ -127,10 +127,10 @@ async def _op_autofix(
 
     # --- Run initial DRC ---
     before_drc = await run_drc_via_cli(pcb_path, ctx=None)
-    if not before_drc.get("success"):
+    if before_drc.get("status") != "ok":
         return {"error": f"Initial DRC failed: {before_drc.get('error', 'unknown')}"}
 
-    # DRC result schema: success=True implies total_violations present.
+    # DRC result schema: status="ok" implies total_violations present.
     # Default 0 here would silently misreport "fully clean" if the key
     # ever goes missing (schema change, partial result, etc.).
     if "total_violations" not in before_drc:
@@ -384,8 +384,9 @@ print(json.dumps({"status": "ok", "moved": moved, "hidden": hidden_count,
 
     # --- 4. Re-run DRC to verify ---
     after_drc = await run_drc_via_cli(pcb_path, ctx=None)
-    after_total = after_drc.get("total_violations", 0) if after_drc.get("success") else "error"
-    after_cats = after_drc.get("violation_categories", {}) if after_drc.get("success") else {}
+    after_ok = after_drc.get("status") == "ok"
+    after_total = after_drc.get("total_violations", 0) if after_ok else "error"
+    after_cats = after_drc.get("violation_categories", {}) if after_ok else {}
 
     return {
         # "warning" when the routing-fix step left the board strictly

@@ -37,7 +37,7 @@ async def _op_extract_netlist(
         logger.warning(f"File not found: {path}")
         if ctx:
             await ctx.info(f"File not found: {path}")
-        return {"success": False, "error": f"File not found: {path}"}
+        return {"status": "error", "error": f"File not found: {path}"}
 
     ext = os.path.splitext(path)[1].lower()
     project_path: str | None = None
@@ -51,15 +51,15 @@ async def _op_extract_netlist(
             logger.warning(f"Error reading project: {e}")
             if ctx:
                 await ctx.info(f"Error reading project: {e}")
-            return {"success": False, "error": str(e)}
+            return {"status": "error", "error": str(e)}
         if "schematic" not in files:
-            return {"success": False, "error": "Schematic file not found in project"}
+            return {"status": "error", "error": "Schematic file not found in project"}
         schematic_path = files["schematic"]
     elif ext == ".kicad_sch":
         schematic_path = path
     else:
         return {
-            "success": False,
+            "status": "error",
             "error": f"Unsupported file type {ext!r} (expected .kicad_sch or .kicad_pro)",
         }
 
@@ -79,7 +79,7 @@ async def _op_extract_netlist(
             logger.warning(f"Error extracting netlist: {netlist_data['error']}")
             if ctx:
                 await ctx.info(f"Error extracting netlist: {netlist_data['error']}")
-            return {"success": False, "error": netlist_data["error"]}
+            return {"status": "error", "error": netlist_data["error"]}
 
         if ctx:
             await ctx.report_progress(60, 100)
@@ -98,7 +98,7 @@ async def _op_extract_netlist(
             await ctx.report_progress(90, 100)
 
         result: Dict[str, Any] = {
-            "success": True,
+            "status": "ok",
             "schematic_path": schematic_path,
             "component_count": netlist_data["component_count"],
             "net_count": netlist_data["net_count"],
@@ -128,7 +128,7 @@ async def _op_extract_netlist(
         logger.warning(f"Error extracting netlist: {e}")
         if ctx:
             await ctx.info(f"Error extracting netlist: {e}")
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}
 
 
 async def _op_analyze_schematic_connections(
@@ -142,7 +142,7 @@ async def _op_analyze_schematic_connections(
         if ctx:
             await ctx.info(f"Schematic file not found: {schematic_path}")
         return {
-            "success": False,
+            "status": "error",
             "error": f"Schematic file not found: {schematic_path}",
         }
 
@@ -159,7 +159,7 @@ async def _op_analyze_schematic_connections(
             logger.warning(f"Error extracting netlist: {netlist_data['error']}")
             if ctx:
                 await ctx.info(f"Error extracting netlist: {netlist_data['error']}")
-            return {"success": False, "error": netlist_data["error"]}
+            return {"status": "error", "error": netlist_data["error"]}
 
         if ctx:
             await ctx.report_progress(40, 100)
@@ -220,7 +220,7 @@ async def _op_analyze_schematic_connections(
             await ctx.report_progress(90, 100)
 
         result = {
-            "success": True,
+            "status": "ok",
             "schematic_path": schematic_path,
             "analysis": analysis,
         }
@@ -242,7 +242,7 @@ async def _op_analyze_schematic_connections(
         logger.warning(f"Error analyzing connections: {e}")
         if ctx:
             await ctx.info(f"Error analyzing connections: {e}")
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}
 
 
 async def _op_find_component_connections(
@@ -265,7 +265,7 @@ async def _op_find_component_connections(
         if ctx:
             await ctx.info(f"Project not found: {project_path}")
         return {
-            "success": False,
+            "status": "error",
             "error": f"Project not found: {project_path}",
         }
 
@@ -280,7 +280,7 @@ async def _op_find_component_connections(
             if ctx:
                 await ctx.info("Schematic file not found in project")
             return {
-                "success": False,
+                "status": "error",
                 "error": "Schematic file not found in project",
             }
 
@@ -305,7 +305,7 @@ async def _op_find_component_connections(
                 await ctx.info(
                     f"Failed to extract netlist: {netlist_data['error']}"
                 )
-            return {"success": False, "error": netlist_data["error"]}
+            return {"status": "error", "error": netlist_data["error"]}
 
         components = netlist_data.get("components", {})
         if component_ref not in components:
@@ -315,7 +315,7 @@ async def _op_find_component_connections(
                     f"Component {component_ref} not found in schematic"
                 )
             return {
-                "success": False,
+                "status": "error",
                 "error": f"Component {component_ref} not found in schematic",
                 "available_components": list(components.keys()),
             }
@@ -411,7 +411,7 @@ async def _op_find_component_connections(
                 }
 
         result = {
-            "success": True,
+            "status": "ok",
             "project_path": project_path,
             "schematic_path": schematic_path,
             "component": component_ref,
@@ -436,6 +436,6 @@ async def _op_find_component_connections(
         logger.warning(f"Error finding component connections: {e}")
         if ctx:
             await ctx.info(f"Error finding component connections: {e}")
-        return {"success": False, "error": str(e)}
+        return {"status": "error", "error": str(e)}
 
 

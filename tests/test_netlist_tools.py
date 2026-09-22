@@ -56,7 +56,7 @@ class TestExtractNetlistSchematic:
             operation="netlist", ctx=None,
             path="/nonexistent/test.kicad_sch",
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "not found" in result["error"]
 
     @patch("kicad_mcp.tools.netlist.analyze_netlist")
@@ -75,7 +75,7 @@ class TestExtractNetlistSchematic:
         mock_analyze.return_value = {"summary": "3 components, 5 nets"}
         fn = _get_tool_fn(analyze_server, "analyze")
         result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert result["components"] == {"R1": {"reference": "R1", "value": "10k"}}
         assert result["components_truncated"] is False
         assert result["nets_truncated"] is False
@@ -85,7 +85,7 @@ class TestExtractNetlistSchematic:
         mock_extract.return_value = {"error": "Failed to parse schematic"}
         fn = _get_tool_fn(analyze_server, "analyze")
         result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     @patch("kicad_mcp.tools.netlist.analyze_netlist")
     @patch("kicad_mcp.tools.netlist._parse_netlist")
@@ -106,7 +106,7 @@ class TestExtractNetlistSchematic:
         mock_analyze.return_value = {"summary": "incomplete"}
         fn = _get_tool_fn(analyze_server, "analyze")
         result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
-        assert result["success"] is True
+        assert result["status"] == "ok"
         assert result["parser_path"] == "regex"
         assert result["incomplete"] is True
         assert "hierarchical" in result["incomplete_reason"]
@@ -211,14 +211,14 @@ class TestExtractNetlistProject:
             operation="netlist", ctx=None,
             path="/nonexistent/project.kicad_pro",
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_no_schematic(self, analyze_server, tmp_path):
         pro = tmp_path / "test.kicad_pro"
         pro.write_text("{}")
         fn = _get_tool_fn(analyze_server, "analyze")
         result = asyncio.run(fn(operation="netlist", ctx=None, path=str(pro)))
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "schematic" in result["error"].lower()
 
     def test_unsupported_extension(self, analyze_server, tmp_path):
@@ -226,7 +226,7 @@ class TestExtractNetlistProject:
         other.write_text("not a kicad file")
         fn = _get_tool_fn(analyze_server, "analyze")
         result = asyncio.run(fn(operation="netlist", ctx=None, path=str(other)))
-        assert result["success"] is False
+        assert result["status"] == "error"
         assert "Unsupported" in result["error"]
 
 
@@ -240,7 +240,7 @@ class TestIdentifyCircuitPatterns:
             operation="circuit_patterns", ctx=None,
             schematic_path="/nonexistent/test.kicad_sch",
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     @patch("kicad_mcp.tools.patterns.extract_netlist")
     def test_identifies_patterns(self, mock_extract, analyze_server, sch_file):
@@ -260,7 +260,7 @@ class TestIdentifyCircuitPatterns:
         result = asyncio.run(fn(
             operation="circuit_patterns", ctx=None, schematic_path=sch_file,
         ))
-        assert result["success"] is True
+        assert result["status"] == "ok"
 
     @patch("kicad_mcp.tools.patterns.extract_netlist")
     def test_handles_extraction_error(self, mock_extract, analyze_server, sch_file):
@@ -269,7 +269,7 @@ class TestIdentifyCircuitPatterns:
         result = asyncio.run(fn(
             operation="circuit_patterns", ctx=None, schematic_path=sch_file,
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
 
 # -- analyze.project_patterns (was: analyze_project_circuit_patterns) -------
@@ -282,7 +282,7 @@ class TestAnalyzeProjectPatterns:
             operation="project_patterns", ctx=None,
             project_path="/nonexistent/project.kicad_pro",
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
     def test_no_schematic(self, analyze_server, tmp_path):
         pro = tmp_path / "test.kicad_pro"
@@ -291,7 +291,7 @@ class TestAnalyzeProjectPatterns:
         result = asyncio.run(fn(
             operation="project_patterns", ctx=None, project_path=str(pro),
         ))
-        assert result["success"] is False
+        assert result["status"] == "error"
 
 
 # -- _unescape_sexpr unit tests ----------------------------------------------
