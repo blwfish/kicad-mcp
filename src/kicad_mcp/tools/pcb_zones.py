@@ -8,6 +8,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,9 @@ def _op_add_zone(
 ) -> Dict[str, Any]:
     """Add a copper zone (pour/fill) to the PCB. An empty/None ``corners`` list
     auto-derives the zone outline from the board edge."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
     if corners is None:
         corners = []
 
@@ -129,8 +131,9 @@ print(json.dumps(result))
 
 def _op_fill_zones(pcb_path: str) -> Dict[str, Any]:
     """Fill all copper zones on the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys

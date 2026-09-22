@@ -10,6 +10,7 @@ from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.keepout_helpers import KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER
 from kicad_mcp.utils.spiral_placement import SPIRAL_HELPER
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -201,8 +202,9 @@ print(json.dumps({
                 use pcb(operation="add_net") + pcb(operation="bulk_assign_pad_nets")).
             spacing_mm: Minimum gap between component courtyards in mm (default 1.0).
         """
-        if not os.path.exists(pcb_path):
-            return {"error": f"PCB file not found: {pcb_path}"}
+        _pv_err = validate_project_path(pcb_path)
+        if _pv_err:
+            return {"error": _pv_err}
 
         _SPIRAL_HELPER = SPIRAL_HELPER
 

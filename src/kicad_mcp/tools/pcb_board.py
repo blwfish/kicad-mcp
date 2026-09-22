@@ -8,14 +8,16 @@ import os
 from typing import Any, Dict, Optional
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
 
 def _op_load(pcb_path: str) -> Dict[str, Any]:
     """Load a .kicad_pcb file and return its summary."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"File not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -81,8 +83,9 @@ def _op_set_outline(
     height_mm: float,
 ) -> Dict[str, Any]:
     """Add a rectangular board outline (Edge.Cuts) to the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -160,8 +163,9 @@ def _op_set_design_rules(
     min_copper_edge_clearance_mm: float = 0.5,
 ) -> Dict[str, Any]:
     """Set PCB design rules (DRC constraints)."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -269,8 +273,9 @@ def _op_finalize(
     fill_zones: bool = True,
 ) -> Dict[str, Any]:
     """Fix silkscreen overlaps and fill copper zones in one operation."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
