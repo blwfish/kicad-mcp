@@ -23,7 +23,14 @@ logger = logging.getLogger(__name__)
 def register_analyze_tools(mcp: FastMCP) -> None:
     """Register the analyze domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     async def analyze(
         operation: str,
         ctx: Context | None,

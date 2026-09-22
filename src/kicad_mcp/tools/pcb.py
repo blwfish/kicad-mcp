@@ -86,7 +86,17 @@ def _with_manual_routing_note(result: Dict[str, Any]) -> Dict[str, Any]:
 def register_pcb_tools(mcp: FastMCP) -> None:
     """Register the pcb domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # clear_routing removes tracks/vias/zones; set_outline replaces
+            # the existing outline; rename_net/bulk_assign_pad_nets etc.
+            # also mutate the board in place.
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def pcb(
         operation: str,
         *,

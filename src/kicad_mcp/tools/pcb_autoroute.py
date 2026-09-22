@@ -1107,7 +1107,19 @@ def _op_list_jobs() -> Dict[str, Any]:
 def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
     """Register the autoroute domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # run/start clear zones and replace routing with FreeRouter's
+            # (non-deterministic) output; a total FreeRouter failure now
+            # leaves pcb_path untouched (see _import_ses), but a partial/
+            # worse-than-input result is a real possible outcome, not a
+            # pure read.
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def autoroute(
         operation: str,
         *,

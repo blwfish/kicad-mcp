@@ -197,7 +197,17 @@ def _gaps_list(intent: DesignIntent) -> list[dict[str, str]]:
 def register_design_tools(mcp: FastMCP) -> None:
     """Register the ``design`` router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # `generate_schematic` unconditionally overwrites
+            # `schematic_path` with a freshly-built schematic, no merge --
+            # clobbers hand edits.
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def design(
         operation: str,
         firmware_path: str | None = None,

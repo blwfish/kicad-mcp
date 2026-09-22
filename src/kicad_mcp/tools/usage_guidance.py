@@ -237,7 +237,14 @@ NOTES: tuple[Note, ...] = (
 def register_usage_guidance_tools(mcp: FastMCP) -> None:
     """Register the `get_usage_guidance` query tool (mcp-agent-notes §8b)."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     def get_usage_guidance(
         operation: str = "strategy",
         *,
