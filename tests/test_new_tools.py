@@ -779,6 +779,7 @@ class TestBuildPcbFromSchematic:
         fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
         result = fn("/nonexistent/path.kicad_pro")
         assert "error" in result
+        assert "status" not in result or result.get("status") != "ok"
 
     def test_missing_schematic(self, mcp_server, tmp_path):
         """Project exists but schematic missing returns error."""
@@ -788,6 +789,7 @@ class TestBuildPcbFromSchematic:
         result = fn(str(pro))
         assert "error" in result
         assert "Schematic not found" in result["error"]
+        assert "status" not in result or result.get("status") != "ok"
 
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
@@ -952,6 +954,7 @@ class TestBuildPcbFromSchematic:
         assert "error" in result
         assert "No components with footprints" in result["error"]
         assert any("2 component(s) skipped" in w for w in result.get("warnings", []))
+        assert "status" not in result or result.get("status") != "ok"
 
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
@@ -1077,6 +1080,7 @@ class TestBuildPcbFromSchematic:
         result = fn(str(tmp_path / "test.kicad_pro"))
         assert "error" in result
         assert "load" in result["error"].lower()
+        assert "status" not in result or result.get("status") != "ok"
         mock_nets.assert_not_called()       # halted right after the load step
         mock_route.assert_not_called()      # never routed an incomplete board
 
