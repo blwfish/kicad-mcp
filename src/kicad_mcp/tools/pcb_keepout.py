@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # router can use the same function without duplicating it.
 from kicad_mcp.tools.pcb_silkscreen import _op_check_silkscreen_overlaps  # noqa: E402
 from kicad_mcp.utils.path_validation import validate_project_path
+from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
 
 # ---------------------------------------------------------------------------
 # Module-level helper string constants (embedded in pcbnew subprocess scripts)
@@ -1371,9 +1372,12 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
         if operation == "auto_fix_placement":
             if pcb_path is None:
                 return {"error": "operation='auto_fix_placement' requires 'pcb_path'"}
-            return _op_auto_fix_placement(
-                pcb_path, spacing_mm=spacing_mm, max_passes=max_passes
-            )
+            with pcb_write_lock(pcb_path) as _acquired:
+                if not _acquired:
+                    return busy_error(pcb_path)
+                return _op_auto_fix_placement(
+                    pcb_path, spacing_mm=spacing_mm, max_passes=max_passes
+                )
 
         if operation == "keepouts":
             if pcb_path is None:

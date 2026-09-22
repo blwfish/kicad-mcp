@@ -18,6 +18,7 @@ from kicad_mcp.utils.keepout_helpers import BODY_EXTENT_HELPER, KEEPOUT_HELPER, 
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
+from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.placement.edge_terminal import (
     EDGE_TERMINAL_HELPER,
@@ -2162,6 +2163,43 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         }
     )
     def build_pcb_from_schematic(
+        project_path: str,
+        board_width_mm: float = 0,
+        board_height_mm: float = 0,
+        ground_net: str = "GND",
+        autoroute_passes: int = 1,
+        export_gerbers: bool = False,
+        intent_path: str = "",
+        placement_hints: Optional[Dict[str, Dict[str, Any]]] = None,
+        add_mounting_holes: bool = True,
+        approved: bool = True,
+    ) -> Dict[str, Any]:
+        """Thin wrapper: derive pcb_path the same way the impl does, hold
+        the write-lock for the whole pipeline (it creates AND mutates
+        pcb_path through many steps), then delegate. See
+        _build_pcb_from_schematic_impl for the real docstring/behavior.
+        """
+        project_dir = os.path.dirname(os.path.abspath(project_path))
+        project_name = os.path.splitext(os.path.basename(project_path))[0]
+        pcb_path = os.path.join(project_dir, project_name + ".kicad_pcb")
+
+        with pcb_write_lock(pcb_path) as _acquired:
+            if not _acquired:
+                return busy_error(pcb_path)
+            return _build_pcb_from_schematic_impl(
+                project_path,
+                board_width_mm=board_width_mm,
+                board_height_mm=board_height_mm,
+                ground_net=ground_net,
+                autoroute_passes=autoroute_passes,
+                export_gerbers=export_gerbers,
+                intent_path=intent_path,
+                placement_hints=placement_hints,
+                add_mounting_holes=add_mounting_holes,
+                approved=approved,
+            )
+
+    def _build_pcb_from_schematic_impl(
         project_path: str,
         board_width_mm: float = 0,
         board_height_mm: float = 0,
