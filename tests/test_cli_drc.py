@@ -63,6 +63,7 @@ class TestKiCadCLINotFound:
         pcb = str(tmp_path / "board.kicad_pcb")
         with patch(f"{_MODULE}.get_kicad_cli_path", side_effect=KiCadCLIError("kicad-cli not found on this system")):
             result = _run(pcb)
+        assert result["status"] == "error"
         assert "error" in result
         assert len(result["error"]) > 0
 
