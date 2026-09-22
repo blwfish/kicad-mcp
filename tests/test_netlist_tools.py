@@ -62,16 +62,23 @@ class TestExtractNetlistSchematic:
     @patch("kicad_mcp.tools.netlist.analyze_netlist")
     @patch("kicad_mcp.tools.netlist._parse_netlist")
     def test_returns_netlist(self, mock_extract, mock_analyze, analyze_server, sch_file):
+        # components/nets are dicts keyed by reference/net name in both real
+        # parser paths (SchematicParser.component_info, the cli-path
+        # component_info/nets in netlist_parser.py) -- match that shape,
+        # not a list, so this mock stays representative of production data.
         mock_extract.return_value = {
             "component_count": 3,
             "net_count": 5,
-            "components": [{"reference": "R1", "value": "10k"}],
+            "components": {"R1": {"reference": "R1", "value": "10k"}},
             "nets": {"GND": [], "VCC": []},
         }
         mock_analyze.return_value = {"summary": "3 components, 5 nets"}
         fn = _get_tool_fn(analyze_server, "analyze")
         result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
         assert result["success"] is True
+        assert result["components"] == {"R1": {"reference": "R1", "value": "10k"}}
+        assert result["components_truncated"] is False
+        assert result["nets_truncated"] is False
 
     @patch("kicad_mcp.tools.netlist._parse_netlist")
     def test_handles_extraction_error(self, mock_extract, analyze_server, sch_file):
@@ -103,6 +110,95 @@ class TestExtractNetlistSchematic:
         assert result["parser_path"] == "regex"
         assert result["incomplete"] is True
         assert "hierarchical" in result["incomplete_reason"]
+
+
+# -- analyze.netlist — pagination (components/nets capped at `limit`) -------
+
+class TestExtractNetlistPagination:
+    """components/nets are capped at `limit` entries -- component_count/
+    net_count/analysis must always reflect the TRUE, untruncated netlist.
+    Threshold boundary per CLAUDE.md's Testing rule: total == limit (not
+    truncated) and total == limit + 1 (truncated, smallest case)."""
+
+    def _mock_netlist(self, n):
+        return {
+            "component_count": n,
+            "net_count": n,
+            "components": {f"R{i}": {"reference": f"R{i}", "value": "10k"} for i in range(n)},
+            "nets": {f"NET{i}": [] for i in range(n)},
+        }
+
+    @patch("kicad_mcp.tools.netlist.analyze_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_default_limit_is_one_hundred(self, mock_extract, mock_analyze, analyze_server, sch_file):
+        mock_extract.return_value = self._mock_netlist(150)
+        mock_analyze.return_value = {}
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
+        assert len(result["components"]) == 100
+        assert len(result["nets"]) == 100
+        assert result["components_truncated"] is True
+        assert result["nets_truncated"] is True
+        # Full counts and analysis are NEVER truncated, only the raw echo-back.
+        assert result["component_count"] == 150
+        assert result["net_count"] == 150
+
+    @patch("kicad_mcp.tools.netlist.analyze_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_total_exactly_equal_to_limit_is_not_truncated(self, mock_extract, mock_analyze, analyze_server, sch_file):
+        mock_extract.return_value = self._mock_netlist(100)
+        mock_analyze.return_value = {}
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
+        assert len(result["components"]) == 100
+        assert result["components_truncated"] is False
+        assert result["nets_truncated"] is False
+
+    @patch("kicad_mcp.tools.netlist.analyze_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_total_one_more_than_limit_is_truncated(self, mock_extract, mock_analyze, analyze_server, sch_file):
+        mock_extract.return_value = self._mock_netlist(101)
+        mock_analyze.return_value = {}
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file))
+        assert len(result["components"]) == 100
+        assert result["components_truncated"] is True
+
+    @patch("kicad_mcp.tools.netlist.analyze_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_custom_limit_is_honored(self, mock_extract, mock_analyze, analyze_server, sch_file):
+        mock_extract.return_value = self._mock_netlist(10)
+        mock_analyze.return_value = {}
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file, limit=3))
+        assert len(result["components"]) == 3
+        assert result["components_truncated"] is True
+
+    def test_limit_zero_is_rejected(self, analyze_server, sch_file):
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file, limit=0))
+        assert "error" in result
+
+    def test_negative_limit_is_rejected(self, analyze_server, sch_file):
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=sch_file, limit=-5))
+        assert "error" in result
+
+    @patch("kicad_mcp.tools.netlist.analyze_netlist")
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_analysis_covers_the_full_netlist_not_the_truncated_view(
+        self, mock_extract, mock_analyze, analyze_server, sch_file,
+    ):
+        """analyze_netlist() must be called with the FULL netlist_data,
+        not a pre-truncated copy -- truncation is only applied to the
+        response's raw components/nets echo-back."""
+        full = self._mock_netlist(150)
+        mock_extract.return_value = full
+        mock_analyze.return_value = {"summary": "ok"}
+        fn = _get_tool_fn(analyze_server, "analyze")
+        asyncio.run(fn(operation="netlist", ctx=None, path=sch_file, limit=3))
+        called_with = mock_analyze.call_args[0][0]
+        assert len(called_with["components"]) == 150
 
 
 # -- analyze.netlist — project input ----------------------------------------
