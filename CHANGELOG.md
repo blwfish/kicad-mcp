@@ -2,6 +2,61 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.17.0] — 2026-09-22
+
+Makes AGENT-INSTRUCTIONS.md's "no concurrent PCB writes" rule actually
+enforced within one server process, instead of caller-enforced discipline
+only — plus an honest, documented account of what it still doesn't cover.
+
+### Added
+
+- **`utils/pcb_lock.py`**: a per-resolved-path, in-process, non-blocking
+  lock. A second mutating call against a PCB path another call already
+  holds returns `{"status": "error", "error": "...already in progress..."}`
+  immediately — it never blocks and waits, since a queued autoroute pass
+  can legitimately hold the lock for up to 30 minutes and a caller
+  silently hanging that long is worse than an immediate, actionable error.
+  Wired into every operation AGENT-INSTRUCTIONS.md already documented as
+  needing serialization: `pcb.py`'s 21 mutating operations (of 29 —
+  read-only operations deliberately never acquire it, so they stay safe
+  to run in parallel per that same document), `autoroute(run|start)`
+  (including the async background-worker path), `drc(autofix)`,
+  `audit(auto_fix_placement)`, `panelize_pcb`, and
+  `build_pcb_from_schematic`.
+- Documented, not silently assumed away: this is genuinely an in-process
+  fix, not a general one. It does not cover two separate kicad-mcp server
+  processes (e.g. two agent sessions, each with their own
+  stdio-connected server) writing the same file — a lock held in one
+  process's memory is invisible to another process, and real
+  cross-process file locking would need OS-level primitives
+  (flock/fcntl/LockFileEx — three different models) that don't even agree
+  with each other over NFS/SMB, and don't apply at all to a board in a
+  Dropbox/OneDrive/iCloud-synced folder. Nor does it cover
+  `schematic(...)` operations, which mutate an in-memory module-level
+  object, not a file, until `save()` — a different concurrency model
+  entirely. See `utils/pcb_lock.py`'s module docstring, the updated
+  `no-concurrent-pcb-writes` CRITICAL note in `usage_guidance.py` (synced
+  into AGENT-INSTRUCTIONS.md/AGENT-INSTALL.md), and a new AGENTS.md
+  section for contributors adding future mutating tools.
+
+### Testing
+
+- `tests/test_pcb_lock.py`: the lock primitive itself — uncontended
+  acquire, release on both normal exit and exception, non-blocking
+  contention (asserted to return in under 0.5s, not wait), realpath-based
+  keying (relative vs. absolute path, and a symlink vs. its target, both
+  correctly contend for the same lock), and genuine multi-threaded
+  contention via a `threading.Barrier`.
+- `tests/test_pcb_lock_wiring.py` and additions to `tests/test_new_tools.py`:
+  end-to-end proof through the real tool dispatch — a mutating operation
+  is rejected while another holds the lock on the same path, a read-only
+  operation is NOT (serializing it would defeat the parallel-reads
+  design), and the lock is released (not leaked) after a call completes
+  regardless of whether that call's own business logic succeeded.
+
+Verified against `scripts/audit_testability.py` (no new violations) and
+the full suite (2639 passed).
+
 ## [0.16.0] — 2026-09-22
 
 Response-envelope standardization (breaking), an autoroute/drc-fix
