@@ -88,6 +88,22 @@ class TestLoadPcb:
         params = mock_run.call_args[1]["params"]
         assert params["pcb_path"] == pcb_file
 
+    @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
+    def test_pcbnew_runtime_error_returns_error_envelope(self, mock_run, pcb_server, pcb_file):
+        """run_pcbnew_script normalizes every subprocess failure (missing
+        KiCad Python, script traceback, timeout) to RuntimeError -- that's
+        its documented contract. The pcb() router must convert that into the
+        {"status": "ok"|"error"} envelope every other failure path already
+        returns, not let it escape the tool call as a raw exception."""
+        mock_run.side_effect = RuntimeError(
+            "pcbnew script failed (exit 1): ModuleNotFoundError: No module named 'pcbnew'"
+        )
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("load", pcb_path=pcb_file)
+        assert result == {
+            "error": "pcbnew script failed (exit 1): ModuleNotFoundError: No module named 'pcbnew'"
+        }
+
 
 # -- create tests ------------------------------------------------------------
 

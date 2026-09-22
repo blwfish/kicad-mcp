@@ -99,6 +99,19 @@ class TestPlaceFootprint:
         assert "bounding_box" in result
 
     @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
+    def test_pcbnew_runtime_error_returns_error_envelope(self, mock_run, pcb_server, pcb_file):
+        """place_footprint is a _MUTATING_OPS entry, routed through the
+        pcb_write_lock context manager -- confirm the RuntimeError->{"error"}
+        conversion applies on that path too, not just the read-only load path."""
+        mock_run.side_effect = RuntimeError("pcbnew script failed (exit 1): boom")
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("place_footprint",
+                    pcb_path=pcb_file,
+                    library="Resistor_SMD", footprint_name="R_0805",
+                    reference="R1", value="10k", x_mm=100, y_mm=80)
+        assert result == {"error": "pcbnew script failed (exit 1): boom"}
+
+    @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
     def test_passes_all_params(self, mock_run, pcb_server, pcb_file):
         mock_run.return_value = {"status": "ok", "placed": {}, "bounding_box": {}}
         fn = _get_pcb_fn(pcb_server)

@@ -635,12 +635,26 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 )
             }
 
+        def _safe_dispatch() -> Any:
+            # run_pcbnew_script normalizes every subprocess failure (missing
+            # KiCad Python, script traceback, timeout, unparseable output) to
+            # RuntimeError -- that's its documented contract. Every _op_*
+            # helper below calls it directly with no try/except of its own,
+            # so without this the exception would escape the tool call
+            # entirely instead of the {"status": "ok"|"error"} envelope
+            # every other failure path in this router already returns.
+            try:
+                return _dispatch()
+            except RuntimeError as e:
+                logger.error("pcb(%r) failed: %s", operation, e)
+                return {"error": str(e)}
+
         if operation in _MUTATING_OPS:
             if pcb_path is None:
                 return {"error": f"operation={operation!r} requires 'pcb_path'"}
             with pcb_write_lock(pcb_path) as _pcb_lock_acquired:
                 if not _pcb_lock_acquired:
                     return busy_error(pcb_path)
-                return _dispatch()
+                return _safe_dispatch()
 
-        return _dispatch()
+        return _safe_dispatch()
