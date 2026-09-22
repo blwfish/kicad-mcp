@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Shared impl: check_silkscreen_overlaps lives in pcb_silkscreen so the pcb
 # router can use the same function without duplicating it.
 from kicad_mcp.tools.pcb_silkscreen import _op_check_silkscreen_overlaps  # noqa: E402
+from kicad_mcp.utils.path_validation import validate_project_path
 
 # ---------------------------------------------------------------------------
 # Module-level helper string constants (embedded in pcbnew subprocess scripts)
@@ -38,8 +39,9 @@ _LIB_SEARCH = LIB_SEARCH_HELPER
 
 def _op_keepouts(pcb_path: str) -> Dict[str, Any]:
     """List all keepout/rule areas on the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -58,8 +60,9 @@ print(json.dumps({"status": "ok", "keepout_count": len(keepouts), "keepouts": ke
 
 def _op_constraints(pcb_path: str) -> Dict[str, Any]:
     """Get a complete summary of board outline, keepout zones, design rules, and placement area."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -118,8 +121,9 @@ def _op_validate_one(
     rotation_deg: float = 0.0,
 ) -> Dict[str, Any]:
     """Check if placing a footprint at a given position would violate keepout zones or board boundaries."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, os, sys
@@ -228,8 +232,9 @@ def _op_footprint_overlaps(
     use_courtyard: bool = True,
 ) -> Dict[str, Any]:
     """Audit all footprint pairs for physical overlap or insufficient clearance."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -361,8 +366,9 @@ print(json.dumps({
 
 def _op_placement(pcb_path: str) -> Dict[str, Any]:
     """Audit all footprint placements for keepout zone violations and board boundary issues."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -500,8 +506,9 @@ def _op_pad_clearances(
     min_clearance_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Check pad-to-pad clearances between all footprints on the PCB."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, math, sys
@@ -630,8 +637,9 @@ def _op_pre_route_check(
     min_clearance_mm: float = 0.0,
 ) -> Dict[str, Any]:
     """Single 'is this board ready to route?' check combining all placement audits."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -807,8 +815,9 @@ def _op_auto_fix_placement(
     max_passes: int = 3,
 ) -> Dict[str, Any]:
     """Resolve courtyard overlaps by nudging footprints apart."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     script = """
 import pcbnew, json, sys
@@ -1309,8 +1318,9 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
         if operation == "all":
             if pcb_path is None:
                 return {"error": "operation='all' requires 'pcb_path'"}
-            if not os.path.exists(pcb_path):
-                return {"error": f"PCB file not found: {pcb_path}"}
+            _pv_err = validate_project_path(pcb_path)
+            if _pv_err:
+                return {"error": _pv_err}
             if detail == "full":
                 return _op_all_full(pcb_path, min_clearance_mm=min_clearance_mm)
             return _op_all_summary(pcb_path, min_clearance_mm=min_clearance_mm)

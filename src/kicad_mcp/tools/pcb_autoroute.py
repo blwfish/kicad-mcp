@@ -29,6 +29,7 @@ from kicad_mcp.utils.keepout_helpers import (
     COURTYARD_BBOX_TUPLE_HELPER,
     NUDGE_PLACEMENT_HELPER,
 )
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -815,8 +816,9 @@ def _op_run(
     net_classes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Synchronous autoroute — runs the full pipeline and waits for completion."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     if not (1 <= passes <= 10):
         return {"error": f"passes must be between 1 and 10, got {passes}"}
@@ -937,8 +939,9 @@ def _op_start(
     remove_zones: bool = True,
 ) -> Dict[str, Any]:
     """Start autorouting in the background. Returns a job_id immediately."""
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     if not (1 <= passes <= 10):
         return {"error": f"passes must be between 1 and 10, got {passes}"}

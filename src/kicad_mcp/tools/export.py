@@ -15,6 +15,7 @@ from fastmcp import FastMCP, Context
 from kicad_mcp.config import KICAD_APP_PATH, system
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.kicad_cli import get_kicad_cli_path
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,9 @@ def _op_gerbers(
     output_dir: str = "",
     create_zip: bool = True,
 ) -> Dict[str, Any]:
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     try:
         kicad_cli = get_kicad_cli_path(required=True)

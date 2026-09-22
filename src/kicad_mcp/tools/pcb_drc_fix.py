@@ -10,6 +10,7 @@ from kicad_mcp.utils.keepout_helpers import (
     COURTYARD_BBOX_TUPLE_HELPER,
     NUDGE_PLACEMENT_HELPER,
 )
+from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,9 @@ async def _op_autofix(
 
     Used by the drc router's autofix operation.
     """
-    if not os.path.exists(pcb_path):
-        return {"error": f"PCB file not found: {pcb_path}"}
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
     # Derive project_path if not provided
     if not project_path:
