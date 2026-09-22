@@ -205,7 +205,7 @@ Mandatory Rules section — see there for the single-source-of-truth note.
 <!-- agent-notes:critical -->
 1. Never guess library or footprint names from training data — they change between KiCad versions. Search first with library(operation='search').
 2. Never hand-route with pcb(operation='add_trace'/'add_via') for more than a touch-up — use autoroute(operation='run') instead.
-3. Never issue two mutating calls against the same PCB file concurrently — serialize them.
+3. Two mutating calls against the same PCB file within ONE server process now fail fast instead of corrupting it — but you must still serialize yourself across TWO separate kicad-mcp server processes (e.g. two agent sessions); that case is not protected.
 <!-- /agent-notes:critical -->
 
 ## Health and Debugging

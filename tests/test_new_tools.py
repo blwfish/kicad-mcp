@@ -6,6 +6,7 @@ pre_route_check, set_design_rules project file updates, and export_gerbers.
 import asyncio
 import json
 import os
+import time
 import zipfile
 from unittest.mock import patch, MagicMock
 
@@ -540,6 +541,56 @@ class TestExportGerbers:
 
 # -- autoroute preflight tests ----------------------------------------------
 
+class TestAutorouteLockContention:
+    """autoroute(run) and the async worker must both refuse to proceed --
+    not block and wait -- when another mutating call already holds the
+    write-lock for the same pcb_path. See utils/pcb_lock.py."""
+
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar")
+    def test_run_returns_busy_error_without_running_pipeline(
+        self, mock_jar, mock_java, mcp_server, pcb_file,
+    ):
+        from kicad_mcp.utils.pcb_lock import pcb_write_lock
+        mock_jar.return_value = "/fake/freerouter.jar"
+        mock_java.return_value = "/usr/bin/java"
+
+        fn = _get_tool_fn(mcp_server, "autoroute")
+        with pcb_write_lock(pcb_file) as held:
+            assert held is True
+            with patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute") as mock_route:
+                result = fn("run", pcb_path=pcb_file)
+                mock_route.assert_not_called()
+
+        assert result["status"] == "error"
+        assert "already in progress" in result["error"]
+
+    def test_worker_records_busy_result_without_running_pipeline(self, tmp_path):
+        from kicad_mcp.tools import pcb_autoroute as ar
+        from kicad_mcp.utils.pcb_lock import pcb_write_lock
+        pcb_path = str(tmp_path / "board.kicad_pcb")
+
+        ar._autoroute_jobs["busy-test-job"] = {
+            "status": "running", "started": time.time(), "pcb_path": pcb_path,
+        }
+        try:
+            with pcb_write_lock(pcb_path) as held:
+                assert held is True
+                with patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute") as mock_route:
+                    ar._autoroute_worker(
+                        job_id="busy-test-job", pcb_path=pcb_path,
+                        jar_path="/fake.jar", java_path="/usr/bin/java",
+                        passes=1, remove_zones=True,
+                    )
+                    mock_route.assert_not_called()
+
+            job = ar._autoroute_jobs["busy-test-job"]
+            assert job["status"] == "error"
+            assert "already in progress" in job["result"]["error"]
+        finally:
+            ar._autoroute_jobs.pop("busy-test-job", None)
+
+
 class TestAutorouteZoneRemovalSafety:
     """A total FreeRouter failure (or an SES-import failure) must leave
     pcb_path completely untouched on disk. Previously, _export_dsn removed
@@ -773,6 +824,28 @@ class TestAutoroutePreflight:
 
 class TestBuildPcbFromSchematic:
     """Tests for the build_pcb_from_schematic pipeline tool."""
+
+    def test_rejected_while_lock_held_on_derived_pcb_path(self, mcp_server, tmp_path):
+        """The wrapper derives pcb_path the same way the pipeline impl does
+        (project_dir/project_name + '.kicad_pcb') and must hold that same
+        lock -- externally acquiring it on the derived path must block the
+        call before it ever reaches the pipeline."""
+        from kicad_mcp.utils.pcb_lock import pcb_write_lock
+
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        (tmp_path / "test.kicad_sch").write_text("(kicad_sch)")
+        derived_pcb_path = str(tmp_path / "test.kicad_pcb")
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        with pcb_write_lock(derived_pcb_path) as held:
+            assert held is True
+            with patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist") as mock_netlist:
+                result = fn(str(pro))
+                mock_netlist.assert_not_called()
+
+        assert result["status"] == "error"
+        assert "already in progress" in result["error"]
 
     def test_missing_project_file(self, mcp_server):
         """Non-existent project path returns error."""

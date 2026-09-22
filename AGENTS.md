@@ -39,6 +39,41 @@ Pre-existing violations are grandfathered in `scripts/testability_baseline.json`
 extracting one ratchets the count down. Refresh after an intentional change with
 `--update-baseline`.
 
+## New mutating PCB tool? Wire it into utils/pcb_lock.py
+
+Any tool that loads, modifies, and saves `pcb_path` (or a sibling
+`.kicad_pro`/derived output the operation is documented as needing
+serialized — see AGENT-INSTRUCTIONS.md's "No concurrent PCB writes")
+must acquire `utils/pcb_lock.py`'s `pcb_write_lock(pcb_path)` before doing
+its actual work, and return `busy_error(pcb_path)` immediately if it
+comes back `False` — never block and wait (a queued autoroute pass can
+legitimately hold this for up to 30 minutes; a caller silently hanging
+that long is worse than an immediate, actionable error).
+
+Two established patterns, pick whichever fits:
+
+- **One dispatch branch mutates, most don't** (e.g. `audit`'s
+  `auto_fix_placement`, `drc`'s `autofix`): wrap just that branch/function
+  body inline. See `pcb_keepout.py`'s `auto_fix_placement` dispatch for
+  the shortest example.
+- **Many operations in one router, several mutate** (`pcb.py`'s 21 of 29
+  operations): classify every operation up front into a `_MUTATING_OPS`
+  frozenset, and wrap the WHOLE dispatch chain in one lock acquisition
+  keyed off that set — not a lock call repeated per branch. See `pcb.py`'s
+  `_dispatch()` closure. Do **not** acquire the lock inside individual
+  `_op_*` implementation functions if they're also called internally by
+  another already-locked caller (e.g. `_run_full_autoroute` is called by
+  both `pcb_autoroute._op_run` and `pcb_drc_fix._op_autofix`, both of
+  which already hold the lock themselves) — locking inside a shared
+  helper that a lock-holding caller also calls is a self-deadlock.
+
+Never wrap a READ-ONLY operation. Doing so defeats the "read-only calls
+are safe to run in parallel or delegate to subagents" design
+AGENT-INSTRUCTIONS.md documents — see `pcb_lock.py`'s own module
+docstring for what this mechanism does and does not cover (in particular:
+it is in-process only, and does not protect against two separate
+kicad-mcp server processes writing the same file).
+
 ## Report which guarantee you hold — don't let "verified E2E" stand in for "tested"
 
 When you report a change as done, name *which* guarantee you actually have. They
