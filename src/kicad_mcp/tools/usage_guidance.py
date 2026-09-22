@@ -85,26 +85,49 @@ NOTES: tuple[Note, ...] = (
     ),
     Note(
         id="no-concurrent-pcb-writes",
-        added=_MIGRATED,
+        added=date(2026, 9, 22),
         priority=Priority.CRITICAL,
         kind=NoteKind.TACTIC,
         summary=(
-            "Never issue two mutating calls against the same PCB file "
-            "concurrently — serialize them."
+            "Two mutating calls against the same PCB file within ONE server "
+            "process now fail fast instead of corrupting it — but you must "
+            "still serialize yourself across TWO separate kicad-mcp server "
+            "processes (e.g. two agent sessions); that case is not protected."
         ),
         detail=(
-            "PCB tools load, modify, and save the file as subprocesses. Two "
-            "concurrent mutating calls on the same file will corrupt it. "
-            "Serialize mutating pcb/schematic/autoroute/drc(autofix) calls "
-            "against one file. Read-only calls (get_pad_positions, "
-            "list_nets, list_footprints, drc(run), audit(...)) are safe to "
-            "run in parallel or delegate to subagents."
+            "A per-resolved-path in-process lock (utils/pcb_lock.py) now "
+            "guards every mutating pcb/autoroute/drc(autofix)/"
+            "audit(auto_fix_placement)/panelize_pcb/build_pcb_from_schematic "
+            "call: a second mutating call on a path already locked returns "
+            "{\"status\": \"error\", \"error\": \"...already in progress...\"} "
+            "immediately (never blocks and waits — a queued autoroute pass "
+            "can legitimately hold the lock for up to 30 minutes). Read-only "
+            "calls (get_pad_positions, list_nets, list_footprints, drc(run), "
+            "most audit(...) operations) never acquire it and stay safe to "
+            "run in parallel or delegate to subagents, same as before.\n\n"
+            "This is genuinely an in-process fix, not a general one. It "
+            "does NOT cover: (1) two separate kicad-mcp server processes "
+            "(e.g. two Claude Code sessions, each with their own "
+            "stdio-connected server) pointed at the same file — a lock held "
+            "in one process's memory is invisible to another process, and "
+            "real cross-process file locking would need OS-level primitives "
+            "(flock/fcntl/LockFileEx — three different models) that don't "
+            "even agree with each other over NFS/SMB, and don't apply at "
+            "all to a board in a Dropbox/OneDrive/iCloud-synced folder; (2) "
+            "schematic(...) operations, which mutate an in-memory "
+            "module-level object, not a file, until save() -- a different "
+            "concurrency model, not locked by this mechanism at all. Across "
+            "either of those boundaries, the original rule still applies: "
+            "serialize yourself."
         ),
         tags=("pcb",),
         addresses=(
             "PCB file corrupted",
             "board file unreadable after edit",
             "parallel PCB edits",
+            "already in progress",
+            "lock busy",
+            "two agent sessions same board",
         ),
     ),
     Note(

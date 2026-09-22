@@ -30,6 +30,7 @@ from kicad_mcp.utils.keepout_helpers import (
     NUDGE_PLACEMENT_HELPER,
 )
 from kicad_mcp.utils.path_validation import validate_project_path
+from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -601,37 +602,56 @@ def _run_full_autoroute(
 
 
 def _autoroute_worker(job_id: str, **kwargs: Any) -> None:
-    """Background thread worker for async autorouting."""
-    try:
-        # Match the synchronous `run` path: pre-flight placement check +
-        # courtyard auto-fix before launching FreeRouter, so async routing
-        # doesn't skip a correction `run` would have applied.
-        preflight_info = _run_preflight(kwargs["pcb_path"])
-        result = _run_full_autoroute(job_id=job_id, **kwargs)
-        if preflight_info:
-            result["preflight"] = preflight_info
-        with _autoroute_lock:
-            job = _autoroute_jobs.get(job_id)
-            if job and job.get("status") != "cancelled":
-                job["status"] = "done" if "error" not in result else "error"
-                job["result"] = result
-                job["elapsed"] = round(time.time() - job["started"], 1)
-    except Exception as exc:
-        with _autoroute_lock:
-            job = _autoroute_jobs.get(job_id)
-            if job:
-                job["status"] = "error"
-                job["result"] = {"error": str(exc)}
-                job["elapsed"] = round(time.time() - job["started"], 1)
-    finally:
-        # Clean up work_dir
-        with _autoroute_lock:
-            job = _autoroute_jobs.get(job_id)
-            if job and "work_dir" in job:
-                try:
-                    shutil.rmtree(job["work_dir"], ignore_errors=True)
-                except Exception:
-                    pass
+    """Background thread worker for async autorouting.
+
+    Acquires the PCB write-lock itself, entirely within this thread --
+    _op_start returns "submitted" without knowing whether the lock is
+    free, so a busy path/board only surfaces once the caller polls. That's
+    an acceptable delay (this is already an async, poll-based tool) in
+    exchange for not having to hand a threading.Lock across the thread
+    boundary from _op_start.
+    """
+    pcb_path = kwargs["pcb_path"]
+    with pcb_write_lock(pcb_path) as acquired:
+        if not acquired:
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job:
+                    job["status"] = "error"
+                    job["result"] = busy_error(pcb_path)
+                    job["elapsed"] = round(time.time() - job["started"], 1)
+            return
+
+        try:
+            # Match the synchronous `run` path: pre-flight placement check +
+            # courtyard auto-fix before launching FreeRouter, so async routing
+            # doesn't skip a correction `run` would have applied.
+            preflight_info = _run_preflight(pcb_path)
+            result = _run_full_autoroute(job_id=job_id, **kwargs)
+            if preflight_info:
+                result["preflight"] = preflight_info
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job and job.get("status") != "cancelled":
+                    job["status"] = "done" if "error" not in result else "error"
+                    job["result"] = result
+                    job["elapsed"] = round(time.time() - job["started"], 1)
+        except Exception as exc:
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job:
+                    job["status"] = "error"
+                    job["result"] = {"error": str(exc)}
+                    job["elapsed"] = round(time.time() - job["started"], 1)
+        finally:
+            # Clean up work_dir
+            with _autoroute_lock:
+                job = _autoroute_jobs.get(job_id)
+                if job and "work_dir" in job:
+                    try:
+                        shutil.rmtree(job["work_dir"], ignore_errors=True)
+                    except Exception:
+                        pass
 
 
 def _run_pre_route_check(pcb_path: str) -> Dict[str, Any]:
@@ -837,6 +857,25 @@ def _op_run(
     if not java_path:
         return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
 
+    with pcb_write_lock(pcb_path) as _acquired:
+        if not _acquired:
+            return busy_error(pcb_path)
+        return _op_run_locked(
+            pcb_path, jar_path, java_path, passes, remove_zones, net_classes,
+        )
+
+
+def _op_run_locked(
+    pcb_path: str,
+    jar_path: str,
+    java_path: str,
+    passes: int,
+    remove_zones: bool,
+    net_classes: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """The lock-held body of _op_run -- split out so the lock's scope is
+    exactly "everything that touches pcb_path or its sibling .kicad_pro",
+    not accidentally narrower or wider."""
     # Apply net classes before routing (so DSN export includes them)
     net_class_results = []
     if net_classes:

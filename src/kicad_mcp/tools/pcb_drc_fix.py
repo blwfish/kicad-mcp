@@ -11,6 +11,7 @@ from kicad_mcp.utils.keepout_helpers import (
     NUDGE_PLACEMENT_HELPER,
 )
 from kicad_mcp.utils.path_validation import validate_project_path
+from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,26 @@ async def _op_autofix(
     if _pv_err:
         return {"error": _pv_err}
 
+    with pcb_write_lock(pcb_path) as _acquired:
+        if not _acquired:
+            return busy_error(pcb_path)
+        return await _op_autofix_locked(
+            pcb_path, project_path, fix_routing, fix_silkscreen,
+            fix_placement, autoroute_passes,
+        )
+
+
+async def _op_autofix_locked(
+    pcb_path: str,
+    project_path: str,
+    fix_routing: bool,
+    fix_silkscreen: bool,
+    fix_placement: bool,
+    autoroute_passes: int,
+) -> Dict[str, Any]:
+    """The lock-held body of _op_autofix -- split out the same way
+    pcb_autoroute._op_run is, so the lock's scope is exactly "everything
+    that touches pcb_path," not accidentally narrower."""
     # Derive project_path if not provided
     if not project_path:
         base = os.path.splitext(pcb_path)[0]

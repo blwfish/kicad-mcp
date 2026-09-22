@@ -56,6 +56,24 @@ from kicad_mcp.tools.pcb_silkscreen import (
 )
 # get_constraints shares impl with audit router (single source of truth)
 from kicad_mcp.tools.pcb_keepout import _op_constraints as _op_get_constraints
+from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
+
+
+# Every operation that loads, modifies, and saves pcb_path (or a sibling
+# .kicad_pro derived from it) -- see utils/pcb_lock.py. Read-only operations
+# (load, get_constraints, list_footprints, get_pad_positions,
+# get_footprint_dimensions, list_nets, list_silkscreen,
+# check_silkscreen_overlaps) deliberately do NOT acquire the write-lock, so
+# they stay safe to run in parallel per AGENT-INSTRUCTIONS.md.
+_MUTATING_OPS = frozenset({
+    "create", "finalize",
+    "set_outline", "set_design_rules",
+    "place_footprint", "move_footprint",
+    "add_net", "rename_net", "set_net_class", "assign_pad_net", "bulk_assign_pad_nets",
+    "add_trace", "add_via", "clear_routing", "edit_trace_width",
+    "add_zone", "fill_zones",
+    "add_text", "update_silkscreen", "edit_text", "auto_fix_silkscreen",
+})
 
 
 _MANUAL_ROUTING_NOTE = (
@@ -300,318 +318,329 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                   text_overlap_count, text_overlaps}
                  Shared impl with audit.check_silkscreen_overlaps.
         """
-        # ── Lifecycle ──────────────────────────────────────────────────────
+        def _dispatch() -> Any:
+            # ── Lifecycle ──────────────────────────────────────────────────────
 
-        if operation == "create":
+            if operation == "create":
+                if pcb_path is None:
+                    return {"error": "operation='create' requires 'pcb_path'"}
+                return _op_create(pcb_path)
+
+            if operation == "load":
+                if pcb_path is None:
+                    return {"error": "operation='load' requires 'pcb_path'"}
+                return _op_load(pcb_path)
+
+            if operation == "finalize":
+                if pcb_path is None:
+                    return {"error": "operation='finalize' requires 'pcb_path'"}
+                return _op_finalize(pcb_path, fix_silkscreen=fix_silkscreen, fill_zones=fill_zones_flag)
+
+            # ── Board ──────────────────────────────────────────────────────────
+
+            if operation == "set_outline":
+                if pcb_path is None:
+                    return {"error": "operation='set_outline' requires 'pcb_path'"}
+                if x_mm is None:
+                    return {"error": "operation='set_outline' requires 'x_mm'"}
+                if y_mm is None:
+                    return {"error": "operation='set_outline' requires 'y_mm'"}
+                if width_mm is None:
+                    return {"error": "operation='set_outline' requires 'width_mm'"}
+                if height_mm is None:
+                    return {"error": "operation='set_outline' requires 'height_mm'"}
+                return _op_set_outline(pcb_path, x_mm, y_mm, width_mm, height_mm)
+
+            if operation == "set_design_rules":
+                if pcb_path is None:
+                    return {"error": "operation='set_design_rules' requires 'pcb_path'"}
+                return _op_set_design_rules(
+                    pcb_path,
+                    min_track_width_mm=min_track_width_mm,
+                    min_clearance_mm=min_clearance_mm,
+                    min_via_diameter_mm=min_via_diameter_mm,
+                    min_via_drill_mm=min_via_drill_mm,
+                    min_hole_to_hole_mm=min_hole_to_hole_mm,
+                    min_through_hole_diameter_mm=min_through_hole_diameter_mm,
+                    min_copper_edge_clearance_mm=min_copper_edge_clearance_mm,
+                )
+
+            if operation == "get_constraints":
+                if pcb_path is None:
+                    return {"error": "operation='get_constraints' requires 'pcb_path'"}
+                return _op_get_constraints(pcb_path)
+
+            # ── Footprints ─────────────────────────────────────────────────────
+
+            if operation == "place_footprint":
+                if pcb_path is None:
+                    return {"error": "operation='place_footprint' requires 'pcb_path'"}
+                if library is None:
+                    return {"error": "operation='place_footprint' requires 'library'"}
+                if footprint_name is None:
+                    return {"error": "operation='place_footprint' requires 'footprint_name'"}
+                if reference is None:
+                    return {"error": "operation='place_footprint' requires 'reference'"}
+                if value is None:
+                    return {"error": "operation='place_footprint' requires 'value'"}
+                if x_mm is None:
+                    return {"error": "operation='place_footprint' requires 'x_mm'"}
+                if y_mm is None:
+                    return {"error": "operation='place_footprint' requires 'y_mm'"}
+                return _op_place_footprint(
+                    pcb_path, library, footprint_name, reference, value,
+                    x_mm, y_mm, rotation_deg=rotation_deg or 0.0, layer=layer,
+                    check_keepouts=check_keepouts,
+                )
+
+            if operation == "move_footprint":
+                if pcb_path is None:
+                    return {"error": "operation='move_footprint' requires 'pcb_path'"}
+                if reference is None:
+                    return {"error": "operation='move_footprint' requires 'reference'"}
+                if x_mm is None:
+                    return {"error": "operation='move_footprint' requires 'x_mm'"}
+                if y_mm is None:
+                    return {"error": "operation='move_footprint' requires 'y_mm'"}
+                return _op_move_footprint(
+                    pcb_path, reference, x_mm, y_mm,
+                    rotation_deg=rotation_deg,
+                )
+
+            if operation == "list_footprints":
+                if pcb_path is None:
+                    return {"error": "operation='list_footprints' requires 'pcb_path'"}
+                return _op_list_footprints(pcb_path)
+
+            if operation == "get_pad_positions":
+                if pcb_path is None:
+                    return {"error": "operation='get_pad_positions' requires 'pcb_path'"}
+                if reference is None:
+                    return {"error": "operation='get_pad_positions' requires 'reference'"}
+                return _op_get_pad_positions(pcb_path, reference)
+
+            if operation == "get_footprint_dimensions":
+                if library is None:
+                    return {"error": "operation='get_footprint_dimensions' requires 'library'"}
+                if footprint_name is None:
+                    return {"error": "operation='get_footprint_dimensions' requires 'footprint_name'"}
+                return _op_get_footprint_dimensions(library, footprint_name, rotation_deg=rotation_deg or 0.0)
+
+            # ── Nets ───────────────────────────────────────────────────────────
+
+            if operation == "add_net":
+                if pcb_path is None:
+                    return {"error": "operation='add_net' requires 'pcb_path'"}
+                if not net_name:
+                    return {"error": "operation='add_net' requires 'net_name'"}
+                return _op_add_net(pcb_path, net_name)
+
+            if operation == "rename_net":
+                if pcb_path is None:
+                    return {"error": "operation='rename_net' requires 'pcb_path'"}
+                if old_name is None:
+                    return {"error": "operation='rename_net' requires 'old_name'"}
+                if new_name is None:
+                    return {"error": "operation='rename_net' requires 'new_name'"}
+                return _op_rename_net(pcb_path, old_name, new_name)
+
+            if operation == "list_nets":
+                if pcb_path is None:
+                    return {"error": "operation='list_nets' requires 'pcb_path'"}
+                return _op_list_nets(pcb_path)
+
+            if operation == "set_net_class":
+                if pcb_path is None:
+                    return {"error": "operation='set_net_class' requires 'pcb_path'"}
+                if class_name is None:
+                    return {"error": "operation='set_net_class' requires 'class_name'"}
+                if nets is None:
+                    return {"error": "operation='set_net_class' requires 'nets'"}
+                return _op_set_net_class(
+                    pcb_path, class_name, nets,
+                    track_width_mm=track_width_mm,
+                    clearance_mm=clearance_mm,
+                    via_diameter_mm=via_diameter_mm,
+                    via_drill_mm=via_drill_mm,
+                )
+
+            if operation == "assign_pad_net":
+                if pcb_path is None:
+                    return {"error": "operation='assign_pad_net' requires 'pcb_path'"}
+                if reference is None:
+                    return {"error": "operation='assign_pad_net' requires 'reference'"}
+                if pad_number is None:
+                    return {"error": "operation='assign_pad_net' requires 'pad_number'"}
+                if not net_name:
+                    return {"error": "operation='assign_pad_net' requires 'net_name'"}
+                return _op_assign_pad_net(pcb_path, reference, pad_number, net_name)
+
+            if operation == "bulk_assign_pad_nets":
+                if pcb_path is None:
+                    return {"error": "operation='bulk_assign_pad_nets' requires 'pcb_path'"}
+                if not assignments:
+                    return {"error": "operation='bulk_assign_pad_nets' requires 'assignments'"}
+                return _op_bulk_assign_pad_nets(pcb_path, assignments)
+
+            # ── Routing ────────────────────────────────────────────────────────
+
+            if operation == "add_trace":
+                if pcb_path is None:
+                    return {"error": "operation='add_trace' requires 'pcb_path'"}
+                if start_x_mm is None:
+                    return {"error": "operation='add_trace' requires 'start_x_mm'"}
+                if start_y_mm is None:
+                    return {"error": "operation='add_trace' requires 'start_y_mm'"}
+                if end_x_mm is None:
+                    return {"error": "operation='add_trace' requires 'end_x_mm'"}
+                if end_y_mm is None:
+                    return {"error": "operation='add_trace' requires 'end_y_mm'"}
+                return _with_manual_routing_note(_op_add_trace(
+                    pcb_path, start_x_mm, start_y_mm, end_x_mm, end_y_mm,
+                    width_mm=trace_width_mm, layer=layer, net_name=net_name,
+                ))
+
+            if operation == "add_via":
+                if pcb_path is None:
+                    return {"error": "operation='add_via' requires 'pcb_path'"}
+                if x_mm is None:
+                    return {"error": "operation='add_via' requires 'x_mm'"}
+                if y_mm is None:
+                    return {"error": "operation='add_via' requires 'y_mm'"}
+                return _with_manual_routing_note(_op_add_via(
+                    pcb_path, x_mm, y_mm,
+                    drill_mm=drill_mm, size_mm=size_mm,
+                    net_name=net_name, via_type=via_type,
+                ))
+
+            if operation == "clear_routing":
+                if pcb_path is None:
+                    return {"error": "operation='clear_routing' requires 'pcb_path'"}
+                return _op_clear_routing(
+                    pcb_path,
+                    clear_tracks=clear_tracks,
+                    clear_vias=clear_vias,
+                    clear_zones=clear_zones_flag,
+                )
+
+            if operation == "edit_trace_width":
+                if pcb_path is None:
+                    return {"error": "operation='edit_trace_width' requires 'pcb_path'"}
+                if new_width_mm is None:
+                    return {"error": "operation='edit_trace_width' requires 'new_width_mm'"}
+                return _op_edit_trace_width(
+                    pcb_path, new_width_mm, net_name=net_filter, layer=layer_filter
+                )
+
+            # ── Zones ──────────────────────────────────────────────────────────
+
+            if operation == "add_zone":
+                if pcb_path is None:
+                    return {"error": "operation='add_zone' requires 'pcb_path'"}
+                if not net_name:
+                    return {"error": "operation='add_zone' requires 'net_name'"}
+                return _op_add_zone(
+                    pcb_path, net_name,
+                    layer=layer,
+                    corners=corners if corners is not None else [],
+                    clearance_mm=zone_clearance_mm,
+                    min_width_mm=min_width_mm,
+                    connect_pads=connect_pads,
+                    priority=priority,
+                )
+
+            if operation == "fill_zones":
+                if pcb_path is None:
+                    return {"error": "operation='fill_zones' requires 'pcb_path'"}
+                return _op_fill_zones(pcb_path)
+
+            # ── Silkscreen / text ──────────────────────────────────────────────
+
+            if operation == "add_text":
+                if pcb_path is None:
+                    return {"error": "operation='add_text' requires 'pcb_path'"}
+                if text is None:
+                    return {"error": "operation='add_text' requires 'text'"}
+                if x_mm is None:
+                    return {"error": "operation='add_text' requires 'x_mm'"}
+                if y_mm is None:
+                    return {"error": "operation='add_text' requires 'y_mm'"}
+                return _op_add_text(
+                    pcb_path, text, x_mm, y_mm,
+                    layer=layer, size_mm=text_size_mm,
+                    thickness_mm=thickness_mm, rotation_deg=rotation_deg or 0.0,
+                )
+
+            if operation == "list_silkscreen":
+                if pcb_path is None:
+                    return {"error": "operation='list_silkscreen' requires 'pcb_path'"}
+                return _op_list_silkscreen(pcb_path)
+
+            if operation == "update_silkscreen":
+                if pcb_path is None:
+                    return {"error": "operation='update_silkscreen' requires 'pcb_path'"}
+                if reference is None:
+                    return {"error": "operation='update_silkscreen' requires 'reference'"}
+                return _op_update_silkscreen(
+                    pcb_path, reference,
+                    field=silk_field,
+                    visible=visible,
+                    x_mm=x_mm, y_mm=y_mm,
+                    rel_x_mm=rel_x_mm, rel_y_mm=rel_y_mm,
+                    size_mm=silk_size_mm,
+                    thickness_mm=silk_thickness_mm,
+                    angle_deg=angle_deg,
+                    layer=silk_layer,
+                )
+
+            if operation == "edit_text":
+                if pcb_path is None:
+                    return {"error": "operation='edit_text' requires 'pcb_path'"}
+                if text is None:
+                    return {"error": "operation='edit_text' requires 'text'"}
+                return _op_edit_text(
+                    pcb_path, text,
+                    new_text=new_text,
+                    x_mm=x_mm, y_mm=y_mm,
+                    layer=layer,
+                    size_mm=edit_size_mm,
+                    thickness_mm=edit_thickness_mm,
+                    rotation_deg=edit_rotation_deg,
+                    near_x_mm=near_x_mm, near_y_mm=near_y_mm,
+                )
+
+            if operation == "auto_fix_silkscreen":
+                if pcb_path is None:
+                    return {"error": "operation='auto_fix_silkscreen' requires 'pcb_path'"}
+                return _op_auto_fix_silkscreen(pcb_path)
+
+            if operation == "check_silkscreen_overlaps":
+                if pcb_path is None:
+                    return {"error": "operation='check_silkscreen_overlaps' requires 'pcb_path'"}
+                return _op_check_silkscreen_overlaps(pcb_path)
+
+            return {
+                "error": (
+                    f"unknown operation {operation!r}; "
+                    f"valid: create|load|finalize|"
+                    f"set_outline|set_design_rules|get_constraints|"
+                    f"place_footprint|move_footprint|list_footprints|"
+                    f"get_pad_positions|get_footprint_dimensions|"
+                    f"add_net|rename_net|list_nets|set_net_class|"
+                    f"assign_pad_net|bulk_assign_pad_nets|"
+                    f"add_trace|add_via|clear_routing|edit_trace_width|"
+                    f"add_zone|fill_zones|"
+                    f"add_text|list_silkscreen|update_silkscreen|"
+                    f"edit_text|auto_fix_silkscreen|check_silkscreen_overlaps"
+                )
+            }
+
+        if operation in _MUTATING_OPS:
             if pcb_path is None:
-                return {"error": "operation='create' requires 'pcb_path'"}
-            return _op_create(pcb_path)
+                return {"error": f"operation={operation!r} requires 'pcb_path'"}
+            with pcb_write_lock(pcb_path) as _pcb_lock_acquired:
+                if not _pcb_lock_acquired:
+                    return busy_error(pcb_path)
+                return _dispatch()
 
-        if operation == "load":
-            if pcb_path is None:
-                return {"error": "operation='load' requires 'pcb_path'"}
-            return _op_load(pcb_path)
-
-        if operation == "finalize":
-            if pcb_path is None:
-                return {"error": "operation='finalize' requires 'pcb_path'"}
-            return _op_finalize(pcb_path, fix_silkscreen=fix_silkscreen, fill_zones=fill_zones_flag)
-
-        # ── Board ──────────────────────────────────────────────────────────
-
-        if operation == "set_outline":
-            if pcb_path is None:
-                return {"error": "operation='set_outline' requires 'pcb_path'"}
-            if x_mm is None:
-                return {"error": "operation='set_outline' requires 'x_mm'"}
-            if y_mm is None:
-                return {"error": "operation='set_outline' requires 'y_mm'"}
-            if width_mm is None:
-                return {"error": "operation='set_outline' requires 'width_mm'"}
-            if height_mm is None:
-                return {"error": "operation='set_outline' requires 'height_mm'"}
-            return _op_set_outline(pcb_path, x_mm, y_mm, width_mm, height_mm)
-
-        if operation == "set_design_rules":
-            if pcb_path is None:
-                return {"error": "operation='set_design_rules' requires 'pcb_path'"}
-            return _op_set_design_rules(
-                pcb_path,
-                min_track_width_mm=min_track_width_mm,
-                min_clearance_mm=min_clearance_mm,
-                min_via_diameter_mm=min_via_diameter_mm,
-                min_via_drill_mm=min_via_drill_mm,
-                min_hole_to_hole_mm=min_hole_to_hole_mm,
-                min_through_hole_diameter_mm=min_through_hole_diameter_mm,
-                min_copper_edge_clearance_mm=min_copper_edge_clearance_mm,
-            )
-
-        if operation == "get_constraints":
-            if pcb_path is None:
-                return {"error": "operation='get_constraints' requires 'pcb_path'"}
-            return _op_get_constraints(pcb_path)
-
-        # ── Footprints ─────────────────────────────────────────────────────
-
-        if operation == "place_footprint":
-            if pcb_path is None:
-                return {"error": "operation='place_footprint' requires 'pcb_path'"}
-            if library is None:
-                return {"error": "operation='place_footprint' requires 'library'"}
-            if footprint_name is None:
-                return {"error": "operation='place_footprint' requires 'footprint_name'"}
-            if reference is None:
-                return {"error": "operation='place_footprint' requires 'reference'"}
-            if value is None:
-                return {"error": "operation='place_footprint' requires 'value'"}
-            if x_mm is None:
-                return {"error": "operation='place_footprint' requires 'x_mm'"}
-            if y_mm is None:
-                return {"error": "operation='place_footprint' requires 'y_mm'"}
-            return _op_place_footprint(
-                pcb_path, library, footprint_name, reference, value,
-                x_mm, y_mm, rotation_deg=rotation_deg or 0.0, layer=layer,
-                check_keepouts=check_keepouts,
-            )
-
-        if operation == "move_footprint":
-            if pcb_path is None:
-                return {"error": "operation='move_footprint' requires 'pcb_path'"}
-            if reference is None:
-                return {"error": "operation='move_footprint' requires 'reference'"}
-            if x_mm is None:
-                return {"error": "operation='move_footprint' requires 'x_mm'"}
-            if y_mm is None:
-                return {"error": "operation='move_footprint' requires 'y_mm'"}
-            return _op_move_footprint(
-                pcb_path, reference, x_mm, y_mm,
-                rotation_deg=rotation_deg,
-            )
-
-        if operation == "list_footprints":
-            if pcb_path is None:
-                return {"error": "operation='list_footprints' requires 'pcb_path'"}
-            return _op_list_footprints(pcb_path)
-
-        if operation == "get_pad_positions":
-            if pcb_path is None:
-                return {"error": "operation='get_pad_positions' requires 'pcb_path'"}
-            if reference is None:
-                return {"error": "operation='get_pad_positions' requires 'reference'"}
-            return _op_get_pad_positions(pcb_path, reference)
-
-        if operation == "get_footprint_dimensions":
-            if library is None:
-                return {"error": "operation='get_footprint_dimensions' requires 'library'"}
-            if footprint_name is None:
-                return {"error": "operation='get_footprint_dimensions' requires 'footprint_name'"}
-            return _op_get_footprint_dimensions(library, footprint_name, rotation_deg=rotation_deg or 0.0)
-
-        # ── Nets ───────────────────────────────────────────────────────────
-
-        if operation == "add_net":
-            if pcb_path is None:
-                return {"error": "operation='add_net' requires 'pcb_path'"}
-            if not net_name:
-                return {"error": "operation='add_net' requires 'net_name'"}
-            return _op_add_net(pcb_path, net_name)
-
-        if operation == "rename_net":
-            if pcb_path is None:
-                return {"error": "operation='rename_net' requires 'pcb_path'"}
-            if old_name is None:
-                return {"error": "operation='rename_net' requires 'old_name'"}
-            if new_name is None:
-                return {"error": "operation='rename_net' requires 'new_name'"}
-            return _op_rename_net(pcb_path, old_name, new_name)
-
-        if operation == "list_nets":
-            if pcb_path is None:
-                return {"error": "operation='list_nets' requires 'pcb_path'"}
-            return _op_list_nets(pcb_path)
-
-        if operation == "set_net_class":
-            if pcb_path is None:
-                return {"error": "operation='set_net_class' requires 'pcb_path'"}
-            if class_name is None:
-                return {"error": "operation='set_net_class' requires 'class_name'"}
-            if nets is None:
-                return {"error": "operation='set_net_class' requires 'nets'"}
-            return _op_set_net_class(
-                pcb_path, class_name, nets,
-                track_width_mm=track_width_mm,
-                clearance_mm=clearance_mm,
-                via_diameter_mm=via_diameter_mm,
-                via_drill_mm=via_drill_mm,
-            )
-
-        if operation == "assign_pad_net":
-            if pcb_path is None:
-                return {"error": "operation='assign_pad_net' requires 'pcb_path'"}
-            if reference is None:
-                return {"error": "operation='assign_pad_net' requires 'reference'"}
-            if pad_number is None:
-                return {"error": "operation='assign_pad_net' requires 'pad_number'"}
-            if not net_name:
-                return {"error": "operation='assign_pad_net' requires 'net_name'"}
-            return _op_assign_pad_net(pcb_path, reference, pad_number, net_name)
-
-        if operation == "bulk_assign_pad_nets":
-            if pcb_path is None:
-                return {"error": "operation='bulk_assign_pad_nets' requires 'pcb_path'"}
-            if not assignments:
-                return {"error": "operation='bulk_assign_pad_nets' requires 'assignments'"}
-            return _op_bulk_assign_pad_nets(pcb_path, assignments)
-
-        # ── Routing ────────────────────────────────────────────────────────
-
-        if operation == "add_trace":
-            if pcb_path is None:
-                return {"error": "operation='add_trace' requires 'pcb_path'"}
-            if start_x_mm is None:
-                return {"error": "operation='add_trace' requires 'start_x_mm'"}
-            if start_y_mm is None:
-                return {"error": "operation='add_trace' requires 'start_y_mm'"}
-            if end_x_mm is None:
-                return {"error": "operation='add_trace' requires 'end_x_mm'"}
-            if end_y_mm is None:
-                return {"error": "operation='add_trace' requires 'end_y_mm'"}
-            return _with_manual_routing_note(_op_add_trace(
-                pcb_path, start_x_mm, start_y_mm, end_x_mm, end_y_mm,
-                width_mm=trace_width_mm, layer=layer, net_name=net_name,
-            ))
-
-        if operation == "add_via":
-            if pcb_path is None:
-                return {"error": "operation='add_via' requires 'pcb_path'"}
-            if x_mm is None:
-                return {"error": "operation='add_via' requires 'x_mm'"}
-            if y_mm is None:
-                return {"error": "operation='add_via' requires 'y_mm'"}
-            return _with_manual_routing_note(_op_add_via(
-                pcb_path, x_mm, y_mm,
-                drill_mm=drill_mm, size_mm=size_mm,
-                net_name=net_name, via_type=via_type,
-            ))
-
-        if operation == "clear_routing":
-            if pcb_path is None:
-                return {"error": "operation='clear_routing' requires 'pcb_path'"}
-            return _op_clear_routing(
-                pcb_path,
-                clear_tracks=clear_tracks,
-                clear_vias=clear_vias,
-                clear_zones=clear_zones_flag,
-            )
-
-        if operation == "edit_trace_width":
-            if pcb_path is None:
-                return {"error": "operation='edit_trace_width' requires 'pcb_path'"}
-            if new_width_mm is None:
-                return {"error": "operation='edit_trace_width' requires 'new_width_mm'"}
-            return _op_edit_trace_width(
-                pcb_path, new_width_mm, net_name=net_filter, layer=layer_filter
-            )
-
-        # ── Zones ──────────────────────────────────────────────────────────
-
-        if operation == "add_zone":
-            if pcb_path is None:
-                return {"error": "operation='add_zone' requires 'pcb_path'"}
-            if not net_name:
-                return {"error": "operation='add_zone' requires 'net_name'"}
-            return _op_add_zone(
-                pcb_path, net_name,
-                layer=layer,
-                corners=corners if corners is not None else [],
-                clearance_mm=zone_clearance_mm,
-                min_width_mm=min_width_mm,
-                connect_pads=connect_pads,
-                priority=priority,
-            )
-
-        if operation == "fill_zones":
-            if pcb_path is None:
-                return {"error": "operation='fill_zones' requires 'pcb_path'"}
-            return _op_fill_zones(pcb_path)
-
-        # ── Silkscreen / text ──────────────────────────────────────────────
-
-        if operation == "add_text":
-            if pcb_path is None:
-                return {"error": "operation='add_text' requires 'pcb_path'"}
-            if text is None:
-                return {"error": "operation='add_text' requires 'text'"}
-            if x_mm is None:
-                return {"error": "operation='add_text' requires 'x_mm'"}
-            if y_mm is None:
-                return {"error": "operation='add_text' requires 'y_mm'"}
-            return _op_add_text(
-                pcb_path, text, x_mm, y_mm,
-                layer=layer, size_mm=text_size_mm,
-                thickness_mm=thickness_mm, rotation_deg=rotation_deg or 0.0,
-            )
-
-        if operation == "list_silkscreen":
-            if pcb_path is None:
-                return {"error": "operation='list_silkscreen' requires 'pcb_path'"}
-            return _op_list_silkscreen(pcb_path)
-
-        if operation == "update_silkscreen":
-            if pcb_path is None:
-                return {"error": "operation='update_silkscreen' requires 'pcb_path'"}
-            if reference is None:
-                return {"error": "operation='update_silkscreen' requires 'reference'"}
-            return _op_update_silkscreen(
-                pcb_path, reference,
-                field=silk_field,
-                visible=visible,
-                x_mm=x_mm, y_mm=y_mm,
-                rel_x_mm=rel_x_mm, rel_y_mm=rel_y_mm,
-                size_mm=silk_size_mm,
-                thickness_mm=silk_thickness_mm,
-                angle_deg=angle_deg,
-                layer=silk_layer,
-            )
-
-        if operation == "edit_text":
-            if pcb_path is None:
-                return {"error": "operation='edit_text' requires 'pcb_path'"}
-            if text is None:
-                return {"error": "operation='edit_text' requires 'text'"}
-            return _op_edit_text(
-                pcb_path, text,
-                new_text=new_text,
-                x_mm=x_mm, y_mm=y_mm,
-                layer=layer,
-                size_mm=edit_size_mm,
-                thickness_mm=edit_thickness_mm,
-                rotation_deg=edit_rotation_deg,
-                near_x_mm=near_x_mm, near_y_mm=near_y_mm,
-            )
-
-        if operation == "auto_fix_silkscreen":
-            if pcb_path is None:
-                return {"error": "operation='auto_fix_silkscreen' requires 'pcb_path'"}
-            return _op_auto_fix_silkscreen(pcb_path)
-
-        if operation == "check_silkscreen_overlaps":
-            if pcb_path is None:
-                return {"error": "operation='check_silkscreen_overlaps' requires 'pcb_path'"}
-            return _op_check_silkscreen_overlaps(pcb_path)
-
-        return {
-            "error": (
-                f"unknown operation {operation!r}; "
-                f"valid: create|load|finalize|"
-                f"set_outline|set_design_rules|get_constraints|"
-                f"place_footprint|move_footprint|list_footprints|"
-                f"get_pad_positions|get_footprint_dimensions|"
-                f"add_net|rename_net|list_nets|set_net_class|"
-                f"assign_pad_net|bulk_assign_pad_nets|"
-                f"add_trace|add_via|clear_routing|edit_trace_width|"
-                f"add_zone|fill_zones|"
-                f"add_text|list_silkscreen|update_silkscreen|"
-                f"edit_text|auto_fix_silkscreen|check_silkscreen_overlaps"
-            )
-        }
+        return _dispatch()

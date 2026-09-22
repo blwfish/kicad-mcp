@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.path_validation import validate_project_path
+from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -122,108 +123,134 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
         if not (1 <= cols <= 100):
             return {"error": f"cols must be between 1 and 100, got {cols}"}
 
-        kikit_bin = _find_kikit()
-        if not kikit_bin:
-            return {
-                "error": (
-                    "KiKit CLI not found. Install with: "
-                    "pip install kikit (into KiCad's Python on macOS)"
-                )
-            }
-
-        # Determine output path
-        if not output_path:
-            base, ext = os.path.splitext(pcb_path)
-            output_path = f"{base}-panel{ext}"
-
-        # Build CLI command
-        cmd = [kikit_bin, "panelize"]
-
-        if preset:
-            # Explicit preset specified — require it to exist, don't silently
-            # fall through to grid mode (which would ship a wrong layout to fab).
-            if not os.path.exists(preset):
-                return {"error": f"Preset file not found: {preset}"}
-            cmd.extend(["--preset", preset])
-        else:
-            # Layout
-            cmd.extend([
-                "--layout",
-                f"grid; rows: {rows}; cols: {cols}; space: {space}mm",
-            ])
-
-            # Tabs and cuts — single cut_type dispatch instead of two
-            # parallel if/else blocks (vcuts don't need tabs; mousebites do).
-            if cut_type == "mousebites":
-                cmd.extend(["--tabs", "fixed; width: 3mm; vcount: 1"])
-                cmd.extend([
-                    "--cuts",
-                    "mousebites; drill: 0.5mm; spacing: 0.8mm; offset: -0.1mm",
-                ])
-            else:
-                cmd.extend(["--tabs", "none"])
-                cmd.extend(["--cuts", "vcuts"])
-
-            # Framing
-            if framing != "none":
-                cmd.extend([
-                    "--framing",
-                    f"{framing}; width: {rail_width}mm",
-                ])
-            else:
-                cmd.extend(["--framing", "none"])
-
-            # Tooling
-            if tooling != "none":
-                cmd.extend([
-                    "--tooling",
-                    f"{tooling}; hoffset: 2.5mm; voffset: 2.5mm; size: 1.152mm",
-                ])
-            else:
-                cmd.extend(["--tooling", "none"])
-
-            # Fiducials
-            if fiducials != "none":
-                cmd.extend([
-                    "--fiducials",
-                    f"{fiducials}; hoffset: 5mm; voffset: 2.5mm; "
-                    f"coppersize: 2mm; opening: 1mm",
-                ])
-            else:
-                cmd.extend(["--fiducials", "none"])
-
-            # Post-processing
-            cmd.extend(["--post", f"millradius: {mill_radius}mm"])
-
-        # Input and output
-        cmd.extend([pcb_path, output_path])
-
-        logger.info("Running KiKit: %s", " ".join(cmd))
-
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60,
+        with pcb_write_lock(pcb_path) as _acquired:
+            if not _acquired:
+                return busy_error(pcb_path)
+            return _op_panelize_locked(
+                pcb_path, output_path, rows, cols, space, cut_type,
+                framing, rail_width, tooling, fiducials, mill_radius, preset,
             )
-        except subprocess.TimeoutExpired:
-            return {"error": "KiKit panelization timed out after 60s"}
 
-        if result.returncode != 0:
-            # Concatenate both streams — `or` would drop stderr entirely when
-            # empty, hiding stdout-only error reports.
-            stderr = result.stderr.strip()
-            stdout = result.stdout.strip()
-            error_msg = "\n".join(p for p in (stderr, stdout) if p) or "(no output)"
-            truncated = "  (...truncated)" if len(error_msg) > 2000 else ""
-            return {"error": f"KiKit failed: {error_msg[:2000]}{truncated}"}
 
-        if not os.path.exists(output_path):
-            return {"error": f"Panel file was not created at {output_path}"}
+def _op_panelize_locked(
+    pcb_path: str,
+    output_path: str,
+    rows: int,
+    cols: int,
+    space: float,
+    cut_type: str,
+    framing: str,
+    rail_width: float,
+    tooling: str,
+    fiducials: str,
+    mill_radius: float,
+    preset: str,
+) -> Dict[str, Any]:
+    """The lock-held body of panelize_pcb -- split out the same way
+    pcb_autoroute._op_run is, so the lock's scope is exactly
+    "everything from KiKit discovery through reading the output panel."""
+    kikit_bin = _find_kikit()
+    if not kikit_bin:
+        return {
+            "error": (
+                "KiKit CLI not found. Install with: "
+                "pip install kikit (into KiCad's Python on macOS)"
+            )
+        }
 
-        # Read back panel dimensions using pcbnew
-        info_script = """
+    # Determine output path
+    if not output_path:
+        base, ext = os.path.splitext(pcb_path)
+        output_path = f"{base}-panel{ext}"
+
+    # Build CLI command
+    cmd = [kikit_bin, "panelize"]
+
+    if preset:
+        # Explicit preset specified — require it to exist, don't silently
+        # fall through to grid mode (which would ship a wrong layout to fab).
+        if not os.path.exists(preset):
+            return {"error": f"Preset file not found: {preset}"}
+        cmd.extend(["--preset", preset])
+    else:
+        # Layout
+        cmd.extend([
+            "--layout",
+            f"grid; rows: {rows}; cols: {cols}; space: {space}mm",
+        ])
+
+        # Tabs and cuts — single cut_type dispatch instead of two
+        # parallel if/else blocks (vcuts don't need tabs; mousebites do).
+        if cut_type == "mousebites":
+            cmd.extend(["--tabs", "fixed; width: 3mm; vcount: 1"])
+            cmd.extend([
+                "--cuts",
+                "mousebites; drill: 0.5mm; spacing: 0.8mm; offset: -0.1mm",
+            ])
+        else:
+            cmd.extend(["--tabs", "none"])
+            cmd.extend(["--cuts", "vcuts"])
+
+        # Framing
+        if framing != "none":
+            cmd.extend([
+                "--framing",
+                f"{framing}; width: {rail_width}mm",
+            ])
+        else:
+            cmd.extend(["--framing", "none"])
+
+        # Tooling
+        if tooling != "none":
+            cmd.extend([
+                "--tooling",
+                f"{tooling}; hoffset: 2.5mm; voffset: 2.5mm; size: 1.152mm",
+            ])
+        else:
+            cmd.extend(["--tooling", "none"])
+
+        # Fiducials
+        if fiducials != "none":
+            cmd.extend([
+                "--fiducials",
+                f"{fiducials}; hoffset: 5mm; voffset: 2.5mm; "
+                f"coppersize: 2mm; opening: 1mm",
+            ])
+        else:
+            cmd.extend(["--fiducials", "none"])
+
+        # Post-processing
+        cmd.extend(["--post", f"millradius: {mill_radius}mm"])
+
+    # Input and output
+    cmd.extend([pcb_path, output_path])
+
+    logger.info("Running KiKit: %s", " ".join(cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "KiKit panelization timed out after 60s"}
+
+    if result.returncode != 0:
+        # Concatenate both streams — `or` would drop stderr entirely when
+        # empty, hiding stdout-only error reports.
+        stderr = result.stderr.strip()
+        stdout = result.stdout.strip()
+        error_msg = "\n".join(p for p in (stderr, stdout) if p) or "(no output)"
+        truncated = "  (...truncated)" if len(error_msg) > 2000 else ""
+        return {"error": f"KiKit failed: {error_msg[:2000]}{truncated}"}
+
+    if not os.path.exists(output_path):
+        return {"error": f"Panel file was not created at {output_path}"}
+
+    # Read back panel dimensions using pcbnew
+    info_script = """
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
@@ -251,31 +278,31 @@ print(json.dumps({
     "track_count": track_count,
 }))
 """
-        # Panel info read. If this fails, we still produced the panel file
-        # successfully (KiKit ran + output exists), so surface the read
-        # failure as a warning rather than silently returning None for
-        # width/height/counts — a None for footprint_count would let a
-        # caller's assertion `count == rows*cols*orig` pass on bad data.
-        info_warning: Optional[str] = None
-        try:
-            panel_info = run_pcbnew_script(info_script, params={"output_path": output_path}, timeout=15.0)
-        except (RuntimeError, subprocess.TimeoutExpired) as e:
-            info_warning = f"Panel info read failed ({type(e).__name__}): {e}"
-            logger.warning(info_warning)
-            panel_info = {}
+    # Panel info read. If this fails, we still produced the panel file
+    # successfully (KiKit ran + output exists), so surface the read
+    # failure as a warning rather than silently returning None for
+    # width/height/counts — a None for footprint_count would let a
+    # caller's assertion `count == rows*cols*orig` pass on bad data.
+    info_warning: Optional[str] = None
+    try:
+        panel_info = run_pcbnew_script(info_script, params={"output_path": output_path}, timeout=15.0)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        info_warning = f"Panel info read failed ({type(e).__name__}): {e}"
+        logger.warning(info_warning)
+        panel_info = {}
 
-        result_dict = {
-            "status": "ok",
-            "input_pcb": pcb_path,
-            "output_pcb": output_path,
-            "grid": f"{cols}x{rows}",
-            "cut_type": cut_type,
-            "framing": framing,
-            "width_mm": panel_info.get("width_mm"),
-            "height_mm": panel_info.get("height_mm"),
-            "footprint_count": panel_info.get("footprint_count"),
-            "track_count": panel_info.get("track_count"),
-        }
-        if info_warning is not None:
-            result_dict["info_read_warning"] = info_warning
-        return result_dict
+    result_dict = {
+        "status": "ok",
+        "input_pcb": pcb_path,
+        "output_pcb": output_path,
+        "grid": f"{cols}x{rows}",
+        "cut_type": cut_type,
+        "framing": framing,
+        "width_mm": panel_info.get("width_mm"),
+        "height_mm": panel_info.get("height_mm"),
+        "footprint_count": panel_info.get("footprint_count"),
+        "track_count": panel_info.get("track_count"),
+    }
+    if info_warning is not None:
+        result_dict["info_read_warning"] = info_warning
+    return result_dict
