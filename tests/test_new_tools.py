@@ -540,6 +540,129 @@ class TestExportGerbers:
 
 # -- autoroute preflight tests ----------------------------------------------
 
+class TestAutorouteZoneRemovalSafety:
+    """A total FreeRouter failure (or an SES-import failure) must leave
+    pcb_path completely untouched on disk. Previously, _export_dsn removed
+    zones and saved pcb_path in step 1, before FreeRouter ever ran -- if
+    every pass then failed, that save had already happened with no way
+    back. Zone removal is now only persisted by _import_ses, the sole
+    write point, reached only once a route actually exists to justify it."""
+
+    @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
+    def test_export_dsn_script_never_saves_the_board(self, mock_run):
+        """_export_dsn must not write pcb_path under any circumstance --
+        it only removes zones in-memory to produce a clean DSN."""
+        from kicad_mcp.tools.pcb_autoroute import _export_dsn
+        mock_run.return_value = {"status": "ok", "zones_removed": 2}
+
+        _export_dsn("/tmp/board.kicad_pcb", "/tmp/board.dsn", remove_zones=True)
+
+        script = mock_run.call_args[0][0]
+        assert "board.Save" not in script
+
+    @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
+    def test_import_ses_script_saves_last_and_forwards_remove_zones(self, mock_run):
+        """_import_ses is the only write point -- its script must save
+        AFTER every measurement that could still fail, and must forward
+        remove_zones so it (not _export_dsn) applies+persists the removal."""
+        from kicad_mcp.tools.pcb_autoroute import _import_ses
+        mock_run.return_value = {"status": "ok", "zones_removed": 2, "unconnected_after_routing": 0}
+
+        _import_ses("/tmp/board.kicad_pcb", "/tmp/board.ses", remove_zones=True)
+
+        script, kwargs = mock_run.call_args[0][0], mock_run.call_args[1]
+        assert kwargs["params"]["remove_zones"] is True
+        save_pos = script.index("board.Save")
+        ratsnest_pos = script.index("GetConnectivity")
+        assert save_pos > ratsnest_pos, "save must happen after the ratsnest measurement, not before"
+
+    @staticmethod
+    def _touch_dsn_path(pcb_path, dsn_path, remove_zones):
+        """_run_full_autoroute creates its own tempdir and checks
+        os.path.exists(dsn_path) after _export_dsn -- the mock must
+        actually create that file, at whatever path was passed, not a
+        path the test pre-guessed."""
+        open(dsn_path, "w").close()
+        return {"status": "ok", "dsn_exported": True, "zones_removed": 1}
+
+    @patch("kicad_mcp.tools.pcb_autoroute._import_ses")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_freerouter_pass")
+    @patch("kicad_mcp.tools.pcb_autoroute._export_dsn")
+    def test_all_passes_failing_never_calls_import_ses(self, mock_export, mock_pass, mock_import, tmp_path):
+        """If every FreeRouter pass fails, _import_ses (the only write
+        point) must never be called -- pcb_path stays untouched."""
+        from kicad_mcp.tools.pcb_autoroute import _run_full_autoroute
+        mock_export.side_effect = self._touch_dsn_path
+        mock_pass.return_value = {"status": "error", "error": "FreeRouter crashed"}
+
+        result = _run_full_autoroute(
+            pcb_path=str(tmp_path / "board.kicad_pcb"),
+            jar_path="/fake.jar", java_path="/usr/bin/java",
+            passes=2, remove_zones=True,
+        )
+
+        mock_import.assert_not_called()
+        assert result["error"] == "All FreeRouter passes failed"
+        assert "untouched" in result["note"]
+
+    @patch("kicad_mcp.tools.pcb_autoroute._import_ses")
+    @patch("kicad_mcp.tools.pcb_autoroute._measure_ses_unconnected")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_freerouter_pass")
+    @patch("kicad_mcp.tools.pcb_autoroute._export_dsn")
+    def test_successful_pass_calls_import_ses_with_remove_zones(
+        self, mock_export, mock_pass, mock_measure, mock_import, tmp_path,
+    ):
+        """The success path must forward remove_zones through to the one
+        function that's actually allowed to persist it."""
+        from kicad_mcp.tools.pcb_autoroute import _run_full_autoroute
+        mock_export.side_effect = self._touch_dsn_path
+        mock_pass.return_value = {"status": "ok"}
+        mock_measure.return_value = 0
+        mock_import.return_value = {
+            "status": "ok", "ses_imported": True, "zones_removed": 3,
+            "tracks": 10, "vias": 2, "net_count": 5, "unconnected_after_routing": 0,
+        }
+
+        pcb_path = str(tmp_path / "board.kicad_pcb")
+        result = _run_full_autoroute(
+            pcb_path=pcb_path, jar_path="/fake.jar", java_path="/usr/bin/java",
+            passes=1, remove_zones=True,
+        )
+
+        mock_import.assert_called_once()
+        call_args = mock_import.call_args[0]
+        assert call_args[0] == pcb_path
+        assert call_args[2] is True  # remove_zones forwarded
+        assert result["status"] == "ok"
+        assert "Re-add them" in result["note"]
+
+    @patch("kicad_mcp.tools.pcb_autoroute._import_ses")
+    @patch("kicad_mcp.tools.pcb_autoroute._measure_ses_unconnected")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_freerouter_pass")
+    @patch("kicad_mcp.tools.pcb_autoroute._export_dsn")
+    def test_ses_import_failure_reports_board_untouched(
+        self, mock_export, mock_pass, mock_measure, mock_import, tmp_path,
+    ):
+        """_import_ses's own script saves last (see the script-ordering
+        test above), so an import failure means the save was never
+        reached -- the returned note must say so, not just report the
+        bare error."""
+        from kicad_mcp.tools.pcb_autoroute import _run_full_autoroute
+        mock_export.side_effect = self._touch_dsn_path
+        mock_pass.return_value = {"status": "ok"}
+        mock_measure.return_value = 0
+        mock_import.return_value = {"error": "ImportSpecctraSES raised"}
+
+        result = _run_full_autoroute(
+            pcb_path=str(tmp_path / "board.kicad_pcb"),
+            jar_path="/fake.jar", java_path="/usr/bin/java",
+            passes=1, remove_zones=True,
+        )
+
+        assert "SES import failed" in result["error"]
+        assert "untouched" in result["note"]
+
+
 class TestAutoroutePreflight:
 
     @patch("kicad_mcp.tools.pcb_autoroute._run_auto_fix_placement")

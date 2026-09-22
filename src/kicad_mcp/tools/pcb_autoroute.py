@@ -162,7 +162,17 @@ def _select_best_pass(
 def _export_dsn(
     pcb_path: str, dsn_path: str, remove_zones: bool
 ) -> Dict[str, Any]:
-    """Export a PCB to Specctra DSN format (step 1 of the pipeline)."""
+    """Export a PCB to Specctra DSN format (step 1 of the pipeline).
+
+    Deliberately does NOT save `pcb_path`, even when `remove_zones` is set.
+    Zone removal here is applied to the in-memory board only, purely so
+    ExportSpecctraDSN produces a clean DSN (FreeRouter doesn't understand
+    zones) -- persisting that removal to disk is `_import_ses`'s job, at
+    the point a route actually exists to justify it. If every FreeRouter
+    pass fails, this function having run must leave `pcb_path` completely
+    untouched on disk; see `_import_ses`'s docstring for the other half of
+    this contract.
+    """
     export_script = """
 import pcbnew, json, sys
 
@@ -173,7 +183,9 @@ if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
 
-# Remove copper pour zones if requested (FreeRouter doesn't understand them)
+# Remove copper pour zones from the in-memory board only (FreeRouter
+# doesn't understand them) -- NOT saved to disk here. See this function's
+# docstring: the removal is only persisted by _import_ses.
 zones_removed = 0
 if params["remove_zones"]:
     zones_to_remove = []
@@ -186,9 +198,6 @@ if params["remove_zones"]:
 
 # Export Specctra DSN
 pcbnew.ExportSpecctraDSN(board, params["dsn_path"])
-
-# Save board (with zones removed if applicable)
-board.Save(params["pcb_path"])
 
 # Count tracks/vias before routing
 tracks = sum(1 for t in board.GetTracks() if t.GetClass() == params["track_class"])
@@ -234,8 +243,18 @@ except TypeError:
 """
 
 
-def _import_ses(pcb_path: str, ses_path: str) -> Dict[str, Any]:
-    """Import a Specctra SES file back into the PCB (step 3 of the pipeline)."""
+def _import_ses(pcb_path: str, ses_path: str, remove_zones: bool) -> Dict[str, Any]:
+    """Import a Specctra SES file back into the PCB (step 3 of the pipeline).
+
+    This is the ONLY point in the autoroute pipeline that writes `pcb_path`
+    to disk. If `remove_zones` was requested, the removal is applied AND
+    persisted here, not in `_export_dsn` -- so a total FreeRouter failure
+    (nothing ever reaches this function) leaves the on-disk board
+    completely untouched, zones included. The save itself is deliberately
+    the last thing the script does, after every measurement that could
+    still fail (net/track counts, ratsnest) -- so a bug in the measurement
+    step can't silently save a board while reporting the import a failure.
+    """
     import_script = """
 import pcbnew, json, sys
 
@@ -246,9 +265,22 @@ if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
 
+# Same in-memory-only removal criteria as _export_dsn -- deterministic over
+# the same unmodified on-disk board, so this reproduces exactly what the
+# DSN export already accounted for. Persisted below, since we now have a
+# route to justify it.
+zones_removed = 0
+if params["remove_zones"]:
+    zones_to_remove = []
+    for z in board.Zones():
+        if not z.GetIsRuleArea():
+            zones_to_remove.append(z)
+    for z in zones_to_remove:
+        board.Remove(z)
+        zones_removed += 1
+
 # Import Specctra SES
 pcbnew.ImportSpecctraSES(board, params["ses_path"])
-board.Save(params["pcb_path"])
 
 # Count results
 tracks = sum(1 for t in board.GetTracks() if t.GetClass() == params["track_class"])
@@ -258,9 +290,14 @@ vias = sum(1 for t in board.GetTracks() if t.GetClass() == params["via_class"])
 netinfo = board.GetNetInfo()
 net_count = netinfo.GetNetCount()
 """ + _RATSNEST_COUNT_SNIPPET + """
+
+# Save last, after every measurement above has already succeeded.
+board.Save(params["pcb_path"])
+
 print(json.dumps({
     "status": "ok",
     "ses_imported": True,
+    "zones_removed": zones_removed,
     "tracks": tracks,
     "vias": vias,
     "net_count": net_count,
@@ -270,6 +307,7 @@ print(json.dumps({
     return run_pcbnew_script(import_script, params={
         "pcb_path": pcb_path,
         "ses_path": ses_path,
+        "remove_zones": remove_zones,
         "track_class": _PCB_TRACK_CLASS,
         "via_class": _PCB_VIA_CLASS,
     }, timeout=30.0)
@@ -492,9 +530,13 @@ def _run_full_autoroute(
 
         best_ses, best_unconnected = _select_best_pass(pass_meas)
         if best_ses is None:
+            # Nothing was ever written to pcb_path -- _export_dsn's zone
+            # removal (if any) was in-memory only. The board on disk is
+            # exactly as it was before this call.
             return {
                 "error": "All FreeRouter passes failed",
                 "passes": pass_results,
+                "note": f"No changes were made to {pcb_path} -- the board on disk is untouched.",
             }
 
         # Update job phase
@@ -506,10 +548,13 @@ def _run_full_autoroute(
 
         # Step 3: Import SES
         logger.info("Importing SES into %s", pcb_path)
-        import_result = _import_ses(pcb_path, best_ses)
+        import_result = _import_ses(pcb_path, best_ses, remove_zones)
 
         if "error" in import_result:
-            return {"error": f"SES import failed: {import_result['error']}"}
+            return {
+                "error": f"SES import failed: {import_result['error']}",
+                "note": f"No changes were made to {pcb_path} -- the board on disk is untouched.",
+            }
 
         if "unconnected_after_routing" not in import_result:
             return {"error": "SES import did not report unconnected count — routing result unknown"}
@@ -520,7 +565,7 @@ def _run_full_autoroute(
                 "Check for pads outside the board outline or other placement errors. "
                 "Run run_drc_check and audit_pcb_placement to investigate."
             )
-        elif remove_zones and export_result.get("zones_removed", 0) > 0:
+        elif remove_zones and import_result.get("zones_removed", 0) > 0:
             note = (
                 "Copper zones were removed before routing. "
                 "Re-add them with add_copper_zone + fill_zones."
