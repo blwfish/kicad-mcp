@@ -269,7 +269,18 @@ def _ensure_db_ready() -> None:
 def register_lcsc_tools(mcp: FastMCP) -> None:
     """Register the lcsc router tool."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # `assign` writes the schematic; `resolve` (and transitively
+            # `assign`, on a local cache miss) falls back to a live LCSC
+            # API call -- the network dependency is broader than just
+            # `refresh_snapshot`.
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+    )
     def lcsc(
         operation: str,
         description: str | None = None,

@@ -1209,7 +1209,19 @@ def _op_all_full(pcb_path: str, min_clearance_mm: float = 0.0) -> Dict[str, Any]
 def register_pcb_keepout_tools(mcp: FastMCP) -> None:
     """Register the audit domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # 8 of 9 operations (all/placement/footprint_overlaps/
+            # pad_clearances/validate_one/keepouts/pre_route_check/
+            # constraints/check_silkscreen_overlaps) are pure read/query;
+            # only auto_fix_placement writes, and only nudges footprints
+            # apart (non-destructive, reversible).
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def audit(
         operation: str,
         *,

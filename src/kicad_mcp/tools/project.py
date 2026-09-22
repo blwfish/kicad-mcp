@@ -77,7 +77,18 @@ def _op_validate(project_path: str) -> Dict[str, Any]:
 def register_project_tools(mcp: FastMCP) -> None:
     """Register the project domain router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # `open` launches KiCad's GUI as a subprocess -- a real side
+            # effect, but writes no file and isn't confirmed idempotent
+            # (repeated calls may focus an existing window or spawn a new
+            # one; not verified either way).
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def project(
         operation: str,
         *,

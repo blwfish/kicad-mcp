@@ -48,7 +48,16 @@ def _find_kikit() -> Optional[str]:
 def register_pcb_panelize_tools(mcp: FastMCP) -> None:
     """Register PCB panelization tools."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # Writes a NEW output panel file via KiKit; never touches the
+            # input PCB. Deterministic given identical inputs.
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
     def panelize_pcb(
         pcb_path: str,
         output_path: str = "",

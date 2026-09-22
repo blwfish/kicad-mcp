@@ -53,7 +53,18 @@ def register_schematic_router(mcp: FastMCP) -> None:
         )
         return
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            # remove_component/remove_wire/remove_label/bulk_update_* are
+            # irreversible against the in-memory schematic (persisted only
+            # on an explicit `save`, which is itself one of this tool's
+            # own operations).
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     async def schematic(
         operation: str,
         *,

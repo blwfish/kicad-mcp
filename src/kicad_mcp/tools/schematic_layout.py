@@ -87,7 +87,16 @@ def _lcsc_lookup(lcsc_id: str) -> dict[str, Any] | None:
 def register_schematic_layout_tools(mcp: FastMCP) -> None:
     """Register the ``schematic_layout`` router."""
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            # `apply` repeated on schematic state that's drifted since the
+            # last `suggest` isn't guaranteed a no-op.
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
     def schematic_layout(
         operation: str,
         schematic_path: str | None = None,
