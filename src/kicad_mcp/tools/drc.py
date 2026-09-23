@@ -82,9 +82,13 @@ async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
 
     # Process and save results if successful
     if drc_results and drc_results.get("status") == "ok":
+        # Compare against history BEFORE saving the current result -- otherwise
+        # save_drc_result would already have appended drc_results as the newest
+        # entry, and compare_with_previous would diff it against itself (always
+        # zero change, no new/resolved categories).
+        comparison = compare_with_previous(project_path, drc_results)
         save_drc_result(project_path, drc_results)
 
-        comparison = compare_with_previous(project_path, drc_results)
         if comparison:
             drc_results["comparison"] = comparison
 
