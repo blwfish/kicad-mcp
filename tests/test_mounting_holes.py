@@ -75,3 +75,29 @@ def test_count_zero_emits_no_script():
         r = _step_add_mounting_holes("/tmp/x.kicad_pcb", {"count": 0})
         assert r["holes_added"] == 0
         mock_run.assert_not_called()
+
+
+def test_invalid_count_rejected_not_silently_placing_two():
+    """Regression: sidecar._validate_mounting_holes enforces count in
+    {0, 2, 4} on the board.yaml path, but _step_add_mounting_holes itself
+    (called directly by design(operation="import_intent"), which has no
+    sidecar validation at all) used to fall through its count==4/else branch
+    for ANY other value -- count:3 silently placed 2 holes and reported
+    status="ok", with nothing to show fewer holes were placed than asked
+    for. Validated at the point of use so both callers are covered."""
+    for bad_count in (1, 3, 5, -1, True, "4"):
+        with patch("kicad_mcp.tools.pcb_pipeline.run_pcbnew_script") as mock_run:
+            r = _step_add_mounting_holes("/tmp/x.kicad_pcb", {"count": bad_count})
+            assert r["status"] == "error", f"count={bad_count!r} should be rejected"
+            assert str(bad_count) in r["error"] or repr(bad_count) in r["error"]
+            mock_run.assert_not_called()
+
+
+def test_valid_counts_still_accepted():
+    for good_count in (0, 2, 4):
+        with patch("kicad_mcp.tools.pcb_pipeline.run_pcbnew_script") as mock_run:
+            mock_run.return_value = {"status": "ok", "holes_added": good_count, "positions": []}
+            r = _step_add_mounting_holes("/tmp/x.kicad_pcb", {
+                "count": good_count, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5,
+            })
+            assert r["status"] == "ok"
