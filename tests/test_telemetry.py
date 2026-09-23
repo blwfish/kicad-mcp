@@ -109,6 +109,58 @@ def _now_minus(days: float = 0, hours: float = 0, minutes: float = 0, seconds: f
 
 
 # ---------------------------------------------------------------------------
+# TestRecordCallConcurrency
+# ---------------------------------------------------------------------------
+
+
+class TestRecordCallConcurrency:
+    """iteration_index used to be computed via a separate SELECT COUNT(*)
+    executed before the INSERT -- this module's own docstring claims safety
+    "under multi-process concurrency via SQLite file locking," but file
+    locking only serializes the writes, not a read that already happened
+    before either writer took the lock. Two concurrent record_call()s for
+    the SAME schematic_hash could both read the same count and hand out a
+    duplicate iteration_index. Real threads + a real sqlite file (not a
+    mock) are needed to exercise this -- a single-threaded test can't."""
+
+    def test_concurrent_calls_same_schematic_hash_get_distinct_iteration_index(
+        self, isolated_db: Path,
+    ):
+        import threading
+
+        n = 20
+        call_ids: list[int | None] = [None] * n
+        barrier = threading.Barrier(n)
+
+        def worker(i: int) -> None:
+            barrier.wait()  # maximize actual overlap, not just thread-start skew
+            call_ids[i] = record_call(
+                tool_name="suggest_schematic_placement",
+                schematic_hash="shared-hash",
+                inputs_summary={"i": i},
+            )
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert all(cid is not None for cid in call_ids), \
+            "a record_call() failed under concurrency instead of serializing"
+
+        conn = sqlite3.connect(str(isolated_db))
+        rows = conn.execute(
+            "SELECT iteration_index FROM calls WHERE schematic_hash = ?",
+            ("shared-hash",),
+        ).fetchall()
+        conn.close()
+        indices = sorted(r[0] for r in rows)
+        assert indices == list(range(n)), \
+            f"expected {list(range(n))} with no duplicates/gaps, got {indices}"
+
+
+# ---------------------------------------------------------------------------
 # TestAttribution
 # ---------------------------------------------------------------------------
 

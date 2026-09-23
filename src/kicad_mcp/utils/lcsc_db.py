@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -267,7 +267,10 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def _decode_attributes(attr_indices: list[int], lut: list[list]) -> dict[str, str]:
+def _decode_attributes(
+    attr_indices: list[int], lut: list[list],
+    drops: Optional[dict[str, int]] = None,
+) -> dict[str, str]:
     """Decode a row's LUT attribute indices into a flat name->value dict.
 
     Single source of truth for the LUT walk. Takes each attribute's primary
@@ -275,16 +278,29 @@ def _decode_attributes(attr_indices: list[int], lut: list[list]) -> dict[str, st
     duplicate attribute name, matching the prior short-circuit decoders. This
     is the full parametric-attribute capture: nothing the LUT resolves is
     dropped.
+
+    A malformed LUT entry (bad index, wrong shape, wrong types) is silently
+    skipped by necessity -- there's no value to recover -- but that used to be
+    invisible: no counter anywhere recorded that it happened. If `drops` is
+    given, every skip increments ``drops["bad_attr_index"]`` (auto-vivified),
+    matching the counting convention _decode_shard_rows already uses for
+    row-level drops.
     """
     out: dict[str, str] = {}
     for idx in attr_indices:
         if not isinstance(idx, int) or idx < 0 or idx >= len(lut):
+            if drops is not None:
+                drops["bad_attr_index"] = drops.get("bad_attr_index", 0) + 1
             continue
         entry = lut[idx]
         if not isinstance(entry, list) or len(entry) < 2:
+            if drops is not None:
+                drops["bad_attr_index"] = drops.get("bad_attr_index", 0) + 1
             continue
         name, data = entry[0], entry[1]
         if not isinstance(name, str) or not isinstance(data, dict):
+            if drops is not None:
+                drops["bad_attr_index"] = drops.get("bad_attr_index", 0) + 1
             continue
         values = data.get("values", {})
         primary = data.get("primary", "default")
@@ -294,20 +310,36 @@ def _decode_attributes(attr_indices: list[int], lut: list[list]) -> dict[str, st
     return out
 
 
-def _tier_from_attributes(attr_indices: list[int], lut: list[list]) -> str:
-    """Derive assembly_tier from resolved LUT attributes."""
+def _tier_from_attributes(
+    attr_indices: list[int], lut: list[list],
+    drops: Optional[dict[str, int]] = None,
+) -> str:
+    """Derive assembly_tier from resolved LUT attributes.
+
+    Scans attr_indices independently of _decode_attributes (priority here is
+    strict INDEX order across both matched attribute names, not a
+    first-occurrence-per-name map), so a malformed entry is counted under its
+    own key -- ``drops["bad_tier_index"]``, not ``"bad_attr_index"`` -- rather
+    than conflating two different scans' skip counts into one number.
+    """
     for idx in attr_indices:
         # Same guards as _decode_attributes: a float index passes a bare
         # `>= len(lut)` check but raises TypeError on lut[idx]; a negative index
         # silently reads the wrong entry. Either aborts/poisons the DB build.
         if not isinstance(idx, int) or idx < 0 or idx >= len(lut):
+            if drops is not None:
+                drops["bad_tier_index"] = drops.get("bad_tier_index", 0) + 1
             continue
         entry = lut[idx]
         if not isinstance(entry, list) or len(entry) < 2:
+            if drops is not None:
+                drops["bad_tier_index"] = drops.get("bad_tier_index", 0) + 1
             continue
         name = entry[0]
         data = entry[1]
         if not isinstance(data, dict):
+            if drops is not None:
+                drops["bad_tier_index"] = drops.get("bad_tier_index", 0) + 1
             continue
         values = data.get("values", {})
         primary = data.get("primary", "default")
@@ -343,8 +375,18 @@ def _manufacturer_from_attributes(attr_indices: list[int], lut: list[list]) -> s
     return _decode_attributes(attr_indices, lut).get("Manufacturer", "")
 
 
-def _parse_price(price_raw: Any) -> list[dict]:
-    """Normalize price to [{qFrom, qTo, price}] list."""
+def _parse_price(
+    price_raw: Any, drops: Optional[dict[str, int]] = None,
+) -> list[dict]:
+    """Normalize price to [{qFrom, qTo, price}] list.
+
+    Malformed price JSON used to be swallowed by a bare `except Exception`
+    with no counter -- a component would silently get an empty price list
+    and nothing anywhere recorded that it happened. `json.loads` on a `str`
+    input can only raise `json.JSONDecodeError`; catch that specifically
+    (not `Exception`) and, if `drops` is given, increment
+    ``drops["bad_price"]`` (auto-vivified).
+    """
     if not price_raw:
         return []
     if isinstance(price_raw, list):
@@ -353,7 +395,9 @@ def _parse_price(price_raw: Any) -> list[dict]:
         try:
             parsed = json.loads(price_raw)
             return list(parsed) if isinstance(parsed, list) else []
-        except Exception:
+        except json.JSONDecodeError:
+            if drops is not None:
+                drops["bad_price"] = drops.get("bad_price", 0) + 1
             return []
     return []
 
@@ -366,13 +410,25 @@ def _decode_shard_rows(
     """Decode one shard's data lines into INSERT tuples + a drop counter.
 
     Pure (no I/O) so the row-level drop accounting is unit-testable. Every
-    dropped row is counted by reason; none are silently skipped. Reasons:
+    dropped ROW is counted by reason; none are silently skipped. Row-drop
+    reasons (sum to roughly len(data_lines) - len(batch), modulo blank lines):
       bad_json — line is not valid JSON
       not_list — row is JSON but not the expected positional list
       no_lcsc  — row lacks the LCSC part number (the primary key)
+
+    The same dict also carries FIELD-level degradation counts for rows that
+    ARE still included in `batch` (a malformed sub-value, not a reason to
+    drop the whole row) -- these do NOT sum against len(batch); they're a
+    count of partial-data events within retained rows:
+      bad_attr_index — a LUT attribute index was malformed (_decode_attributes)
+      bad_tier_index — same, encountered during the separate _tier_from_attributes scan
+      bad_price      — the price column wasn't valid JSON (_parse_price)
     """
     batch: list[tuple] = []
-    drops = {"bad_json": 0, "not_list": 0, "no_lcsc": 0}
+    drops = {
+        "bad_json": 0, "not_list": 0, "no_lcsc": 0,
+        "bad_attr_index": 0, "bad_tier_index": 0, "bad_price": 0,
+    }
     for line in data_lines:
         if not line.strip():
             continue
@@ -393,11 +449,11 @@ def _decode_shard_rows(
         if not isinstance(attr_indices, list):
             attr_indices = []
 
-        attributes = _decode_attributes(attr_indices, lut)
+        attributes = _decode_attributes(attr_indices, lut, drops=drops)
         package = attributes.get("Package", "")
         manufacturer = attributes.get("Manufacturer", "")
-        assembly_tier = _tier_from_attributes(attr_indices, lut)
-        price_list = _parse_price(get("price"))
+        assembly_tier = _tier_from_attributes(attr_indices, lut, drops=drops)
+        price_list = _parse_price(get("price"), drops=drops)
 
         lcsc_raw = get("lcsc")
         if lcsc_raw is None:
@@ -732,12 +788,26 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
     else:
         price_list = []
     tier = "basic" if data.get("componentLibraryType") == "base" else "extended"
+    # solderJoint comes straight from the live API with no type guarantee --
+    # unlike the local-DB path (jlcparts's own JSONL shards, where `joints`
+    # lands in a SQLite INTEGER column via _decode_shard_rows), this is the
+    # first point anything validates it. The sole consumer (lcsc.py's
+    # _row_to_resolved) used to do a bare `int(joints)` on whatever came
+    # through here -- a non-numeric value from the API would raise
+    # uncaught, crashing that tool call.
+    solder_joint_raw = data.get("solderJoint")
+    try:
+        joints = int(solder_joint_raw) if solder_joint_raw is not None else None
+    except (TypeError, ValueError):
+        logger.debug("Live API returned non-numeric solderJoint %r for %s; "
+                     "treating pin count as unknown", solder_joint_raw, part_number)
+        joints = None
     return {
         "lcsc": part_number,
         "mfr": data.get("componentModelEn") or data.get("erpMpn") or "",
         "manufacturer": data.get("brandNameEn") or "",
         "package": data.get("componentSpecificationEn") or "",
-        "joints": data.get("solderJoint"),
+        "joints": joints,
         "assembly_tier": tier,
         "description": data.get("describe") or data.get("description") or "",
         "datasheet": data.get("dataManualUrl") or "",

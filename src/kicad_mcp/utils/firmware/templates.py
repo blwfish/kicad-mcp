@@ -866,13 +866,21 @@ _SCREW_MAX = 16
 
 _RAIL_FOR_POWER = {"3v3": "+3V3", "5v": "+5V", "none": None}
 
-# The peripherals that SOURCE the +5V rail — power_tree's regulator and the USB
-# programming block (the only two sites that emit ("+5V", ...) onto ex.power).
-# Used to detect +5V availability: those templates run BEFORE expander_terminals
+# The peripherals that SOURCE the +5V rail. AMS1117 does NOT belong here even
+# though its template also emits ("+5V", ...) onto ex.power (line ~235): that
+# entry is the LDO's OWN VIN pin joining the +5V net as a CONSUMER (it steps
+# 5V DOWN to +3V3 -- see the "AMS1117 5V→3V3" note above), not a source of it.
+# Only the USB programming block genuinely sources +5V (from the host's USB
+# port). Including AMS1117 here used to make has_5v true whenever an AMS1117
+# was placed at all -- e.g. an ESP32-S3 board with needs_3v3+native_usb places
+# an AMS1117 for the logic rail but no USB_C/CP2102 (native USB needs neither),
+# so expander_terminals would offer a "+5V" tap with nothing actually driving
+# that net to 5V.
+# Used to detect +5V availability: these templates run BEFORE expander_terminals
 # and have already been added to intent.peripherals, but the rail NETS aren't
 # merged until after the template loop, so checking intent.nets would always
 # (wrongly) see no +5V.
-_FIVE_V_SOURCES = frozenset({"AMS1117", "USB_C", "CP2102"})
+_FIVE_V_SOURCES = frozenset({"USB_C", "CP2102"})
 
 
 def _emit_expander_terminal(

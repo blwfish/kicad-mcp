@@ -256,14 +256,28 @@ def _parse_bom_file(
                 sample = "".join([f.readline() for _ in range(10)])
                 f.seek(0)
 
-                if "," in sample:
-                    delimiter = ","
-                elif ";" in sample:
-                    delimiter = ";"
-                elif "\t" in sample:
-                    delimiter = "\t"
-                else:
-                    delimiter = ","
+                # csv.Sniffer actually parses quoting, so a comma sitting
+                # inside a quoted text field (a semicolon- or tab-delimited
+                # BOM whose Description column contains "10k, 5%") doesn't
+                # falsely win just because it's present somewhere in the
+                # sample -- the old substring-presence check picked "," any
+                # time it appeared ANYWHERE, misaligning every column on a
+                # genuinely semicolon/tab-delimited file.
+                try:
+                    delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
+                except csv.Error:
+                    # Sniffer needs a large-enough / structurally consistent
+                    # sample (fails on a single row, or wildly inconsistent
+                    # rows); fall back to substring presence rather than
+                    # failing the whole BOM.
+                    if "," in sample:
+                        delimiter = ","
+                    elif ";" in sample:
+                        delimiter = ";"
+                    elif "\t" in sample:
+                        delimiter = "\t"
+                    else:
+                        delimiter = ","
 
                 format_info["delimiter"] = delimiter
 
@@ -307,6 +321,19 @@ def _parse_bom_file(
                     for child in elem:
                         component[child.tag] = child.text
                     components.append(component)
+            else:
+                # A populated XML BOM using a different vendor's tag name
+                # (<Part>, <Item>, ...) used to look identical to a genuinely
+                # empty file -- silent zero components with nothing to tell a
+                # caller why. Surface the tags that ARE present (mirrors the
+                # JSON path's unrecognized_json_keys below).
+                seen_tags = sorted({el.tag for el in root.iter() if el is not root})
+                if seen_tags:
+                    format_info["unrecognized_xml_tags"] = seen_tags
+                    logger.warning(
+                        "XML BOM %s: no <component>/<Component> tags found; "
+                        "tags present=%s", file_path, seen_tags,
+                    )
 
         elif ext == ".json":
             with open(file_path, "r") as f:
@@ -382,6 +409,21 @@ _BOM_FIELD_PROBES: Dict[str, List[str]] = {
                      "jlcpcb part #", "jlcpcb part number"],
     "datasheet":    ["datasheet", "data sheet", "documentation", "datasheet url"],
     "description":  ["description", "desc", "long description", "component description"],
+    # These weren't even in the probe list at all (not "detected but not
+    # extracted" like mpn/manufacturer/etc. were -- never looked for, so a
+    # BOM carrying them showed no sign anything was missed).
+    "dnp":            ["dnp", "do not populate", "do not place", "not fitted", "nf"],
+    "notes":          ["notes", "note", "comment", "comments", "remarks"],
+    # "vendor" is already a "manufacturer" candidate above -- avoid rescanning
+    # the same header under two field names, ambiguous which one it means.
+    "supplier":       ["supplier", "distributor", "supplier name"],
+    "vendor_code":    ["vendor code", "vendor_code", "vendor part number",
+                       "vendor part #", "supplier part number", "supplier part #"],
+    "installed":      ["installed", "install", "populate", "fitted", "assembly status"],
+    "revision":       ["revision", "rev", "board revision"],
+    "tolerance":      ["tolerance", "tol", "component tolerance"],
+    "alternate_mpn":  ["alternate mpn", "alternate_mpn", "alt mpn", "substitute mpn",
+                       "alternate manufacturer part number", "alt part number"],
 }
 
 
@@ -459,9 +501,18 @@ def _analyze_bom_data(
     # --- Counts -----------------------------------------------------------
     try:
         if quantity_col:
-            df[quantity_col] = pd.to_numeric(
-                df[quantity_col], errors="coerce"
-            ).fillna(1)
+            numeric_qty = pd.to_numeric(df[quantity_col], errors="coerce")
+            # A non-numeric/blank quantity used to silently become 1 via
+            # fillna(1) with no counter anywhere -- total_component_count
+            # (a sum) could be quietly wrong with no sign anything was
+            # defaulted, for a BOM with even one malformed quantity cell.
+            unparseable_qty = int(numeric_qty.isna().sum())
+            if unparseable_qty:
+                results["stage_errors"]["quantity"] = (
+                    f"{unparseable_qty} row(s) had a missing/non-numeric "
+                    "quantity; defaulted to 1 for the total count"
+                )
+            df[quantity_col] = numeric_qty.fillna(1)
             results["total_component_count"] = int(df[quantity_col].sum())
         else:
             results["total_component_count"] = len(df)
@@ -475,11 +526,16 @@ def _analyze_bom_data(
 
     # --- Categories ---------------------------------------------------------
     try:
+        # value_counts() drops NaN by default -- a component with no
+        # category/footprint value used to just vanish from the summary
+        # instead of being tallied, so sum(categories.values()) could be
+        # less than the actual component count with nothing to explain the
+        # gap. fillna gives the missing bucket an explicit, visible label.
         if category_col:
-            categories = df[category_col].value_counts().to_dict()
+            categories = df[category_col].fillna("(unknown)").value_counts().to_dict()
             results["categories"] = {str(k): int(v) for k, v in categories.items()}
         elif footprint_col:
-            categories = df[footprint_col].value_counts().to_dict()
+            categories = df[footprint_col].fillna("(unknown)").value_counts().to_dict()
             results["categories"] = {str(k): int(v) for k, v in categories.items()}
         elif ref_col:
 
@@ -549,6 +605,18 @@ def _analyze_bom_data(
             )
             df[cost_col] = pd.to_numeric(df[cost_col], errors="coerce")
 
+            # Rows with a missing/unparseable cost are excluded from the sum
+            # below -- that used to happen with no signal at all, silently
+            # under-reporting total_cost for a BOM with even one malformed
+            # cost cell (the only symptom being a number that's quietly too
+            # low, indistinguishable from "these parts are just free").
+            unparseable_cost = int(df[cost_col].isna().sum())
+            if unparseable_cost:
+                results["stage_errors"]["cost"] = (
+                    f"{unparseable_cost} row(s) had a missing/unparseable "
+                    "cost; excluded from total_cost"
+                )
+
             df_with_cost = df.dropna(subset=[cost_col])
 
             if not df_with_cost.empty:
@@ -584,7 +652,10 @@ def _analyze_bom_data(
     # --- Most-common values -------------------------------------------------
     if ref_col and value_col:
         try:
-            value_counts = df[value_col].value_counts()
+            # Same NaN-dropped-silently gap as categories/footprint above: a
+            # component with no Value cell used to just vanish from both the
+            # top-5 ranking and distinct_value_count.
+            value_counts = df[value_col].fillna("(unknown)").value_counts()
             most_common = value_counts.head(5).to_dict()
             results["most_common_values"] = {
                 str(k): int(v) for k, v in most_common.items()
@@ -606,7 +677,11 @@ def _analyze_bom_data(
     # fields were actually detected.
     supplier_cols = {
         field: detected[field]
-        for field in ("mpn", "manufacturer", "lcsc", "datasheet", "description")
+        for field in (
+            "mpn", "manufacturer", "lcsc", "datasheet", "description",
+            "dnp", "notes", "supplier", "vendor_code", "installed",
+            "revision", "tolerance", "alternate_mpn",
+        )
         if detected[field]
     }
     if supplier_cols:

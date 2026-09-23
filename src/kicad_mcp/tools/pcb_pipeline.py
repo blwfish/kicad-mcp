@@ -1821,6 +1821,165 @@ print(json.dumps({
     }, timeout=60.0)
 
 
+# ---------------------------------------------------------------------------
+# Silkscreen-legend PLACEMENT decisions for _step_silkscreen_legends, extracted
+# per the boundary-ops pattern (docs/BOUNDARY_OPS.md, AGENTS.md) instead of
+# welded directly into the embedded pcbnew script -- these were previously
+# untestable without a live pcbnew process (h-silkscreen-legends). Pure: they
+# take plain tuples/numbers (the embedded shell marshals pcbnew bbox/pad
+# objects into these before calling), so the SAME code, unit-agnostic, runs
+# both in-process (mm floats, tests) and inside the embedded script (KiCad's
+# internal integer units) -- fbb is always (left, top, right, bottom).
+# _SILKSCREEN_LEGEND_HELPER below MUST stay byte-equivalent to these four.
+# ---------------------------------------------------------------------------
+
+def _band_clear(own_ref: str, band: Tuple[float, float, float, float],
+                 all_pads: List[Tuple[str, float, float, float, float]]) -> bool:
+    """True if rectangle `band` (x0, y0, x1, y1) overlaps no OTHER footprint's
+    pad bbox in `all_pads` (each (ref, x0, y0, x1, y1))."""
+    x0, y0, x1, y1 = band
+    for ref, px0, py0, px1, py1 in all_pads:
+        if ref == own_ref:
+            continue
+        if not (px1 < x0 or px0 > x1 or py1 < y0 or py0 > y1):
+            return False
+    return True
+
+
+def _choose_interior_side(
+    fbb: Tuple[float, float, float, float], positions: List[str],
+    margin: float, size: float, own_ref: str,
+    all_pads: List[Tuple[str, float, float, float, float]],
+) -> Optional[str]:
+    """An interior module header (no edge normal) picks the side ("R"/"L" for
+    a vertical pad column, "U"/"D" for a horizontal row) whose label band is
+    clear of every OTHER footprint's pads, or None if no side is clear (the
+    header is boxed into the cluster -- its silk is skipped, never drawn over
+    a neighbour)."""
+    left, top, right, bottom = fbb
+    maxw = max((len(p) for p in positions if p), default=1) * size
+    d = margin + maxw + size // 2
+    if (bottom - top) >= (right - left):
+        cands = [("R", right + margin, top, right + d, bottom),
+                 ("L", left - d, top, left - margin, bottom)]
+    else:
+        cands = [("U", left, top - d, right, top - margin),
+                 ("D", left, bottom + margin, right, bottom + d)]
+    for side, x0, y0, x1, y1 in cands:
+        if _band_clear(own_ref, (x0, y0, x1, y1), all_pads):
+            return side
+    return None
+
+
+def _label_offset(
+    ix: int, iy: int, side: Optional[str],
+    fbb: Tuple[float, float, float, float], pad_pos: Tuple[float, float],
+    lw: float, margin: float, size: float,
+) -> Tuple[float, float]:
+    """Position for one pad's label. (ix, iy) is the terminal's inboard
+    (inward-normal) unit step for an EDGE terminal, (0, 0) for an interior
+    header (in which case `side`, from _choose_interior_side, applies
+    instead). Cross-axis follows the pad's own position; the offset axis
+    clears the footprint's body envelope (fbb)."""
+    left, top, right, bottom = fbb
+    px, py = pad_pos
+    if ix > 0:          # edge terminal, inboard right (terminal on the left edge)
+        return right + margin + size // 2, py
+    if ix < 0:          # inboard left (right edge)
+        return left - margin - size // 2, py
+    if iy > 0:          # inboard down (top edge)
+        return px, bottom + margin + size // 2
+    if iy < 0:          # inboard up (bottom edge)
+        return px, top - margin - size // 2
+    if side == "R":
+        return right + margin + lw // 2, py
+    if side == "L":
+        return left - margin - lw // 2, py
+    if side == "U":
+        return px, top - margin - size // 2
+    return px, bottom + margin + size // 2  # "D"
+
+
+def _refdes_offset(
+    ix: int, iy: int, fbb: Tuple[float, float, float, float],
+    margin: float, size: float,
+) -> Tuple[float, float]:
+    """Reference-designator callout position, one row beyond the legend
+    labels on the inboard side. Only meaningful when (ix, iy) != (0, 0)
+    (an edge terminal) -- callers must not invoke this for interior headers."""
+    left, top, right, bottom = fbb
+    cxb, cyb = (left + right) // 2, (top + bottom) // 2
+    roff = margin + 2 * size
+    if iy < 0:
+        return cxb, top - roff
+    if iy > 0:
+        return cxb, bottom + roff
+    if ix > 0:
+        return right + roff, cyb
+    return left - roff, cyb
+
+
+# Embedded scripts run inside pcbnew's Python and cannot `import` from this
+# module; they string-concatenate this helper into their source instead. Must
+# stay byte-equivalent (module-level names/logic) to the four functions above.
+_SILKSCREEN_LEGEND_HELPER = """
+def _band_clear(own_ref, band, all_pads):
+    x0, y0, x1, y1 = band
+    for ref, px0, py0, px1, py1 in all_pads:
+        if ref == own_ref:
+            continue
+        if not (px1 < x0 or px0 > x1 or py1 < y0 or py0 > y1):
+            return False
+    return True
+
+def _choose_interior_side(fbb, positions, margin, size, own_ref, all_pads):
+    left, top, right, bottom = fbb
+    maxw = max((len(p) for p in positions if p), default=1) * size
+    d = margin + maxw + size // 2
+    if (bottom - top) >= (right - left):
+        cands = [("R", right + margin, top, right + d, bottom),
+                 ("L", left - d, top, left - margin, bottom)]
+    else:
+        cands = [("U", left, top - d, right, top - margin),
+                 ("D", left, bottom + margin, right, bottom + d)]
+    for side, x0, y0, x1, y1 in cands:
+        if _band_clear(own_ref, (x0, y0, x1, y1), all_pads):
+            return side
+    return None
+
+def _label_offset(ix, iy, side, fbb, pad_pos, lw, margin, size):
+    left, top, right, bottom = fbb
+    px, py = pad_pos
+    if ix > 0:
+        return right + margin + size // 2, py
+    if ix < 0:
+        return left - margin - size // 2, py
+    if iy > 0:
+        return px, bottom + margin + size // 2
+    if iy < 0:
+        return px, top - margin - size // 2
+    if side == "R":
+        return right + margin + lw // 2, py
+    if side == "L":
+        return left - margin - lw // 2, py
+    if side == "U":
+        return px, top - margin - size // 2
+    return px, bottom + margin + size // 2
+
+def _refdes_offset(ix, iy, fbb, margin, size):
+    left, top, right, bottom = fbb
+    cxb, cyb = (left + right) // 2, (top + bottom) // 2
+    roff = margin + 2 * size
+    if iy < 0:
+        return cxb, top - roff
+    if iy > 0:
+        return cxb, bottom + roff
+    if ix > 0:
+        return right + roff, cyb
+    return left - roff, cyb
+"""
+
+
 def _step_silkscreen_legends(
     pcb_path: str, legends: List[Dict[str, Any]], margin_mm: float = 0.5,
     terminal_edges: Optional[Dict[str, str]] = None,
@@ -1849,6 +2008,7 @@ board = pcbnew.LoadBoard(params["pcb_path"])
 if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
+""" + _SILKSCREEN_LEGEND_HELPER + r"""
 margin = pcbnew.FromMM(params["margin_mm"])
 size = pcbnew.FromMM(0.8)
 thick = pcbnew.FromMM(0.15)
@@ -1864,24 +2024,17 @@ by_ref = {fp.GetReference(): fp for fp in board.GetFootprints()}
 terminal_edges = params.get("terminal_edges") or {}
 # edge -> inboard (inward-normal) unit step. (0,0) marks "no edge" (interior).
 _INBOARD = {"top": (0, 1), "bottom": (0, -1), "left": (1, 0), "right": (-1, 0)}
-# Every pad bbox on the board (ref, x0, y0, x1, y1). An interior module header has
-# no inboard normal and is packed into the cluster, so we pick the SIDE whose label
-# band is CLEAR of all OTHER pads — and skip the header's silk if no side is clear,
-# rather than draw a label on a neighbour's pad.
+# Every pad bbox on the board (ref, x0, y0, x1, y1), marshaled to plain tuples
+# for _band_clear/_choose_interior_side (an interior module header has no
+# inboard normal and is packed into the cluster, so we pick the SIDE whose
+# label band is CLEAR of all OTHER pads -- and skip the header's silk if no
+# side is clear, rather than draw a label on a neighbour's pad).
 _all_pads = []
 for f in board.GetFootprints():
     for pd in f.Pads():
         pb = pd.GetBoundingBox()
         _all_pads.append((f.GetReference(), pb.GetLeft(), pb.GetTop(),
                           pb.GetRight(), pb.GetBottom()))
-
-def _band_clear(own, x0, y0, x1, y1):
-    for ref, px0, py0, px1, py1 in _all_pads:
-        if ref == own:
-            continue
-        if not (px1 < x0 or px0 > x1 or py1 < y0 or py0 > y1):
-            return False
-    return True
 
 labels_added = 0
 missing = []
@@ -1898,27 +2051,17 @@ for leg in params["legends"]:
     # plastic body extends ~3mm past the pads on the inboard (foot) side, so a
     # label merely past the pad edge sits UNDER the block. Offset past the body
     # edge so the label lands on exposed board, beyond the block, in the open gap.
-    fbb = fp.GetBoundingBox(False, False)
+    fbb_obj = fp.GetBoundingBox(False, False)
+    fbb = (fbb_obj.GetLeft(), fbb_obj.GetTop(), fbb_obj.GetRight(), fbb_obj.GetBottom())
 
     # Interior module header (no edge normal): choose the side whose label band is
-    # clear of every other pad. A VERTICAL pad column -> labels go left/right (each
-    # beside its own pad); a HORIZONTAL row -> up/down. "Above the pad" (the old
-    # default) lands ON the pad above for a vertical header. If neither valid side
+    # clear of every other pad -- see _choose_interior_side. If neither valid side
     # is clear (the header is boxed into the cluster) the per-pad silk is SKIPPED,
     # not drawn over a neighbour — the pinout still lives in the connector legend
     # data; rendering it would need a placement-level silk clearance.
     side = None
     if (ix, iy) == (0, 0):
-        maxw = max((len(positions[i]) for i in range(len(positions)) if positions[i]),
-                   default=1) * size
-        d = margin + maxw + size // 2      # band depth (+ a glyph of safety)
-        if (fbb.GetBottom() - fbb.GetTop()) >= (fbb.GetRight() - fbb.GetLeft()):
-            cands = [("R", fbb.GetRight() + margin, fbb.GetTop(), fbb.GetRight() + d, fbb.GetBottom()),
-                     ("L", fbb.GetLeft() - d, fbb.GetTop(), fbb.GetLeft() - margin, fbb.GetBottom())]
-        else:
-            cands = [("U", fbb.GetLeft(), fbb.GetTop() - d, fbb.GetRight(), fbb.GetTop() - margin),
-                     ("D", fbb.GetLeft(), fbb.GetBottom() + margin, fbb.GetRight(), fbb.GetBottom() + d)]
-        side = next((s for s, a, b, c, e in cands if _band_clear(leg["ref"], a, b, c, e)), None)
+        side = _choose_interior_side(fbb, positions, margin, size, leg["ref"], _all_pads)
         if side is None:
             legends_unplaced.append(leg["ref"])
             continue
@@ -1932,27 +2075,7 @@ for leg in params["legends"]:
             continue
         p = pad.GetPosition()
         lw = len(positions[idx]) * size    # this label's width (centre-justified)
-        # Cross-axis = the pad's own position (label stays over its pad); the offset
-        # axis clears the BODY envelope (fbb). Edge terminals push the centre out by
-        # half a glyph (their body already extends past the pads); interior headers
-        # push by half the LABEL width so the whole centre-justified glyph clears the
-        # thin header body.
-        if ix > 0:        # edge terminal, inboard right (terminal on the left edge)
-            tx, ty = fbb.GetRight() + margin + size // 2, p.y
-        elif ix < 0:      # inboard left (right edge)
-            tx, ty = fbb.GetLeft() - margin - size // 2, p.y
-        elif iy > 0:      # inboard down (top edge)
-            tx, ty = p.x, fbb.GetBottom() + margin + size // 2
-        elif iy < 0:      # inboard up (bottom edge)
-            tx, ty = p.x, fbb.GetTop() - margin - size // 2
-        elif side == "R":
-            tx, ty = fbb.GetRight() + margin + lw // 2, p.y
-        elif side == "L":
-            tx, ty = fbb.GetLeft() - margin - lw // 2, p.y
-        elif side == "U":
-            tx, ty = p.x, fbb.GetTop() - margin - size // 2
-        else:             # "D"
-            tx, ty = p.x, fbb.GetBottom() + margin + size // 2
+        tx, ty = _label_offset(ix, iy, side, fbb, (p.x, p.y), lw, margin, size)
         txt = pcbnew.PCB_TEXT(board)
         txt.SetText(positions[idx])
         txt.SetPosition(pcbnew.VECTOR2I(int(tx), int(ty)))
@@ -1967,17 +2090,7 @@ for leg in params["legends"]:
     # auto-fixer does inconsistently for WIDE terminals — it shoves their refdes to
     # the SIDE at pad level instead of above-centre like the narrow ones.
     if (ix, iy) != (0, 0):
-        cxb = (fbb.GetLeft() + fbb.GetRight()) // 2
-        cyb = (fbb.GetTop() + fbb.GetBottom()) // 2
-        roff = margin + 2 * size      # clear the label row + a gap
-        if iy < 0:
-            rx, ry = cxb, fbb.GetTop() - roff
-        elif iy > 0:
-            rx, ry = cxb, fbb.GetBottom() + roff
-        elif ix > 0:
-            rx, ry = fbb.GetRight() + roff, cyb
-        else:
-            rx, ry = fbb.GetLeft() - roff, cyb
+        rx, ry = _refdes_offset(ix, iy, fbb, margin, size)
         ref = fp.Reference()
         ref.SetPosition(pcbnew.VECTOR2I(int(rx), int(ry)))
         ref.SetTextSize(pcbnew.VECTOR2I(size, size))

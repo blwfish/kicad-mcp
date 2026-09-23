@@ -139,7 +139,14 @@ def _row_to_resolved(
         price_tiers = []
 
     joints = row.get("joints")
-    pin_count = int(joints) if joints is not None else None
+    # _live_part_to_row now coerces solderJoint at ingestion, but this
+    # function is the single consumer for BOTH the local-DB row shape and the
+    # live-API row shape -- guard here too (same style as price_tiers above)
+    # rather than trust every producer forever.
+    try:
+        pin_count = int(joints) if joints is not None else None
+    except (TypeError, ValueError):
+        pin_count = None
 
     attributes = _parse_attributes(row.get("attributes"))
 
