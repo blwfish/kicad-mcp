@@ -140,7 +140,10 @@ def compare_with_previous(
     """
     history = get_drc_history(project_path)
 
-    if not history or len(history) < 2:
+    # Caller must pass history that does NOT already include current_result
+    # (i.e. call this before save_drc_result) -- one prior entry is enough
+    # for a real comparison.
+    if not history:
         return None
 
     previous = history[0]
