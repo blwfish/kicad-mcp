@@ -159,13 +159,27 @@ class SchematicParser:
         for pos in positions:
             current_pos = pos
             depth = 0
+            in_string = False
             s_exp = ""
 
             while current_pos < len(self.content):
                 char = self.content[current_pos]
                 s_exp += char
 
-                if char == "(":
+                if in_string:
+                    # A literal "(" or ")" inside a quoted property value
+                    # (e.g. a Value of "10k (± 5%)") must NOT affect depth --
+                    # only unescaped-quote handling matters while in a string.
+                    # \" must not end the string early; consume the escaped
+                    # character verbatim, matching _unescape_sexpr's rule.
+                    if char == "\\" and current_pos + 1 < len(self.content):
+                        current_pos += 1
+                        s_exp += self.content[current_pos]
+                    elif char == '"':
+                        in_string = False
+                elif char == '"':
+                    in_string = True
+                elif char == "(":
                     depth += 1
                 elif char == ")":
                     depth -= 1

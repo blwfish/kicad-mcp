@@ -280,25 +280,32 @@ def record_call(
 
     try:
         with conn:
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM calls WHERE schematic_hash = ?",
-                (schematic_hash,),
-            )
-            row = cur.fetchone()
-            iteration_index = row[0] if row else 0
-
+            # iteration_index used to be computed via a separate SELECT
+            # COUNT(*) executed BEFORE this INSERT -- two concurrent writers
+            # for the SAME schematic_hash could both read the same count
+            # before either inserted, handing out a duplicate iteration_index
+            # (this module's docstring claims multi-process safety "via
+            # SQLite file locking", but file locking only serializes the
+            # WRITES; it does nothing to a read that happened before either
+            # writer took the lock). Folding the count into a scalar subquery
+            # inside the INSERT's own VALUES makes the read+write one atomic
+            # statement, evaluated entirely under the write lock this
+            # statement itself acquires -- no other writer's INSERT can land
+            # between the subquery and this row's insert.
             cur = conn.execute(
                 """INSERT INTO calls
                    (tool_name, schematic_hash, timestamp, iteration_index,
                     state_id, is_fresh_state, inputs_summary, output_summary,
                     elapsed_ms, phase_breakdown_ms, kicad_cli_version,
                     netlist_schema_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?,
+                           (SELECT COUNT(*) FROM calls WHERE schematic_hash = ?),
+                           ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     tool_name,
                     schematic_hash,
                     _now_iso(),
-                    iteration_index,
+                    schematic_hash,
                     state_id,
                     1 if is_fresh_state else 0,
                     json.dumps(inputs_summary, sort_keys=True),

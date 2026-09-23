@@ -149,6 +149,57 @@ def test_json_bom_refdes_mapping_is_accepted(tmp_path):
     assert len(comps) == 2 and {c["value"] for c in comps} == {"10k", "1k"}
 
 
+def test_csv_semicolon_delimiter_with_comma_in_text_field_not_misdetected(tmp_path):
+    """Regression: the delimiter was picked by character presence in the
+    sample, not the actual separator -- a semicolon-delimited BOM whose
+    Description field contains a comma used to always misdetect "," as the
+    delimiter (comma is present SOMEWHERE in the sample), misaligning every
+    column. csv.Sniffer actually parses quoting, so it isn't fooled by that."""
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.csv"
+    p.write_text(
+        'Reference;Value;Description\n'
+        'R1;10k;"Resistor, 5% tolerance"\n'
+        'R2;1k;"Resistor, 1% tolerance"\n'
+    )
+    comps, info = _parse_bom_file(str(p))
+    assert info["delimiter"] == ";"
+    assert len(comps) == 2
+    assert comps[0]["Reference"] == "R1"
+    assert comps[0]["Value"] == "10k"
+
+
+def test_csv_sniffer_failure_falls_back_to_substring_heuristic(tmp_path):
+    """A single-row (no structural repetition for Sniffer to key off of) CSV
+    must still parse via the substring fallback, not raise."""
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.csv"
+    p.write_text("R1\n")
+    comps, info = _parse_bom_file(str(p))
+    assert info["delimiter"] == ","  # no delimiter char present -> default
+
+
+def test_xml_unrecognized_tags_surfaced_not_silently_empty(tmp_path):
+    """Regression: an XML BOM using a different vendor's tag name (<Part>
+    instead of <component>/<Component>) used to silently yield zero
+    components, indistinguishable from a genuinely empty file."""
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.xml"
+    p.write_text("<BOM><Part><Reference>R1</Reference></Part></BOM>")
+    comps, info = _parse_bom_file(str(p))
+    assert comps == []
+    assert "Part" in info["unrecognized_xml_tags"]
+
+
+def test_xml_recognized_tags_no_unrecognized_key(tmp_path):
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.xml"
+    p.write_text('<BOM><component ref="R1"><value>10k</value></component></BOM>')
+    comps, info = _parse_bom_file(str(p))
+    assert len(comps) == 1
+    assert "unrecognized_xml_tags" not in info
+
+
 # -- _analyze_bom_data: the real pandas path, and supplier-info extraction ---
 #
 # Regression for two review findings on the SAME underlying gap: pandas is a
@@ -239,3 +290,87 @@ class TestAnalyzeBomDataPandasPath:
         by_ref = {e["reference"]: e for e in results["supplier_info"]}
         assert "lcsc" not in by_ref["R1"]
         assert by_ref["R2"]["lcsc"] == "C17414"
+
+    def test_new_field_probes_detected_and_extracted(self):
+        """Regression: dnp/notes/supplier/vendor_code/installed/revision/
+        tolerance/alternate_mpn weren't even in the probe list -- not
+        detected at all, unlike mpn/manufacturer (detected but not
+        extracted, a different bug). Now both detected AND extracted."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k", "dnp": "Y", "notes": "hand-select",
+             "supplier": "Digi-Key", "vendor_code": "DK-123", "installed": "yes",
+             "revision": "B", "tolerance": "1%", "alternate_mpn": "RC0805-ALT"},
+        ]
+        results = _analyze_bom_data(components, {})
+        for field in ("dnp", "notes", "supplier", "vendor_code", "installed",
+                      "revision", "tolerance", "alternate_mpn"):
+            assert results["detected_fields"][field] == field
+        entry = results["supplier_info"][0]
+        assert entry["dnp"] == "Y"
+        assert entry["supplier"] == "Digi-Key"
+        assert entry["alternate_mpn"] == "RC0805-ALT"
+
+    def test_unparseable_quantity_counted_not_silent(self):
+        """Regression: a non-numeric quantity silently became 1 via
+        fillna(1) with no counter -- total_component_count (a sum) could be
+        quietly wrong with nothing to show a value was defaulted."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k", "quantity": "2"},
+            {"reference": "R2", "value": "10k", "quantity": "N/A"},
+        ]
+        results = _analyze_bom_data(components, {})
+        assert "quantity" in results["stage_errors"]
+        assert "1 row" in results["stage_errors"]["quantity"]
+        assert results["total_component_count"] == 3  # 2 + defaulted 1
+
+    def test_wellformed_quantity_no_stage_error(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [{"reference": "R1", "value": "10k", "quantity": "2"}]
+        results = _analyze_bom_data(components, {})
+        assert "quantity" not in results.get("stage_errors", {})
+
+    def test_unparseable_cost_counted_and_excluded(self):
+        """Regression: a malformed cost value was silently dropped via
+        dropna() before summing total_cost, with no stage_errors signal --
+        the only symptom was a total_cost that was quietly too low."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k", "cost": "0.10"},
+            {"reference": "R2", "value": "10k", "cost": "quote-required"},
+        ]
+        results = _analyze_bom_data(components, {})
+        assert "cost" in results["stage_errors"]
+        assert "1 row" in results["stage_errors"]["cost"]
+        assert results["total_cost"] == 0.10  # R2's cost excluded, not zero-filled
+
+    def test_wellformed_cost_no_stage_error(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [{"reference": "R1", "value": "10k", "cost": "0.10"}]
+        results = _analyze_bom_data(components, {})
+        assert "cost" not in results.get("stage_errors", {})
+
+    def test_missing_category_tallied_as_unknown_not_dropped(self):
+        """Regression: value_counts() drops NaN by default -- a component
+        with no category value used to vanish from the summary instead of
+        being tallied, so sum(categories.values()) could undercount the
+        true component total with nothing to explain the gap."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k", "category": "Resistor"},
+            {"reference": "R2", "value": "10k", "category": None},
+        ]
+        results = _analyze_bom_data(components, {})
+        assert results["categories"]["(unknown)"] == 1
+        assert sum(results["categories"].values()) == 2
+
+    def test_missing_value_tallied_as_unknown_in_most_common(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k"},
+            {"reference": "R2", "value": None},
+        ]
+        results = _analyze_bom_data(components, {})
+        assert results["most_common_values"]["(unknown)"] == 1
+        assert results["distinct_value_count"] == 2

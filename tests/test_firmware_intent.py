@@ -186,6 +186,50 @@ def test_from_dict_logs_dropped_unknown_top_level_field(caplog):
     assert intent.peripherals == []                   # value silently vanished
 
 
+def test_from_dict_non_dict_list_item_skipped_with_warning_not_a_crash(caplog):
+    """Regression: a malformed YAML sequence item (a stray string where a
+    mapping was expected -- a misindented block, a missing '- ' before a
+    nested mapping, etc.) used to raise a generic AttributeError/TypeError
+    deep inside _only_fields ('str' object has no attribute 'items') with no
+    indication of which item or why. Both real call sites already catch
+    broadly around from_dict, so this was a diagnostics-quality gap, not an
+    unhandled crash -- but from_dict itself must not raise, and the log must
+    say which field/index was bad."""
+    import logging
+    doc = to_dict(_intent())
+    assert len(doc["peripherals"]) >= 2, "fixture must have >=2 peripherals"
+    good = doc["peripherals"][0]
+    doc["peripherals"] = ["not-a-mapping", good]
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.firmware.intent"):
+        intent = from_dict(doc)
+    assert len(intent.peripherals) == 1                # the malformed item was dropped
+    assert intent.peripherals[0].ref == good["ref"]     # the good one still loaded
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "peripherals[0]" in msg and "str" in msg
+
+
+def test_from_dict_non_dict_mcu_treated_as_absent(caplog):
+    import logging
+    doc = to_dict(_intent())
+    doc["mcu"] = "esp32"  # malformed: a bare string instead of a mapping
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.firmware.intent"):
+        intent = from_dict(doc)
+    assert intent.mcu is None
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "mcu" in msg
+
+
+def test_from_dict_non_dict_placement_value_skipped_with_warning(caplog):
+    import logging
+    doc = to_dict(_intent())
+    doc["placements"] = {"bad_key": "not-a-mapping"}
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.firmware.intent"):
+        intent = from_dict(doc)
+    assert intent.placements == {}
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "placements" in msg and "bad_key" in msg
+
+
 def test_from_dict_null_factory_field_coerced_to_empty():
     """A hand-edited doc with a default_factory field (Bus.signals: dict) set to
     null must NOT override the factory with None — templates then crash on

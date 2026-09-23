@@ -396,6 +396,22 @@ class TestParsePrice:
         result = _parse_price(raw)
         assert result[0]["qTo"] is None
 
+    def test_malformed_json_counts_drop_when_given(self):
+        """Regression: malformed price JSON was swallowed by a bare
+        `except Exception: return []` with no counter anywhere."""
+        drops: dict[str, int] = {}
+        assert _parse_price("not-valid-json{", drops=drops) == []
+        assert drops["bad_price"] == 1
+
+    def test_malformed_json_without_drops_arg_still_returns_empty(self):
+        """`drops` is optional -- omitting it must not change behavior."""
+        assert _parse_price("not-valid-json{") == []
+
+    def test_wellformed_json_does_not_count_drop(self):
+        drops: dict[str, int] = {}
+        _parse_price('[{"qFrom":1,"qTo":9,"price":0.1}]', drops=drops)
+        assert drops.get("bad_price", 0) == 0
+
 
 # ---------------------------------------------------------------------------
 # Attribute LUT helpers
@@ -436,6 +452,14 @@ class TestAttributeLutHelpers:
     def test_out_of_range_index_ignored(self):
         tier = _tier_from_attributes([99999], self.SAMPLE_LUT)
         assert tier == "extended"
+
+    def test_out_of_range_index_counts_drop_when_given(self):
+        """Regression: a malformed LUT index used to be silently skipped with
+        no counter -- package/manufacturer/tier feed real scoring, so a
+        silently-degraded attribute set is a data-loss risk."""
+        drops: dict[str, int] = {}
+        _tier_from_attributes([99999], self.SAMPLE_LUT, drops=drops)
+        assert drops["bad_tier_index"] == 1
 
     def test_empty_attributes_list(self):
         assert _package_from_attributes([], self.SAMPLE_LUT) == ""
@@ -493,6 +517,15 @@ class TestParametricAttributeCapture:
     def test_decode_ignores_out_of_range_and_malformed(self):
         assert _decode_attributes([999, -1, 0], [["X", "not-a-dict"]]) == {}
 
+    def test_decode_counts_each_malformed_entry_when_drops_given(self):
+        """Regression: _decode_attributes silently skipped malformed LUT
+        entries with no counter. All three of these indices are bad for
+        different reasons (out of range, negative, wrong data shape) and
+        each must be counted."""
+        drops: dict[str, int] = {}
+        _decode_attributes([999, -1, 0], [["X", "not-a-dict"]], drops=drops)
+        assert drops["bad_attr_index"] == 3
+
     def test_parse_attributes_json_string(self):
         assert _parse_attributes('{"Resistance": "10k"}') == {"Resistance": "10k"}
 
@@ -536,6 +569,29 @@ class TestParametricAttributeCapture:
             fetched_live=False, kicad_symbol_lib_id=None)
         assert rp.attributes == {}
 
+    def test_row_to_resolved_valid_joints_becomes_pin_count(self):
+        rp = _row_to_resolved(
+            self._row(joints=8), match_score=None, deviations=[],
+            snapshot_date="", fetched_live=False, kicad_symbol_lib_id=None)
+        assert rp.pin_count == 8
+
+    def test_row_to_resolved_none_joints_is_none_pin_count(self):
+        rp = _row_to_resolved(
+            self._row(joints=None), match_score=None, deviations=[],
+            snapshot_date="", fetched_live=False, kicad_symbol_lib_id=None)
+        assert rp.pin_count is None
+
+    def test_row_to_resolved_non_numeric_joints_does_not_crash(self):
+        """Regression: `int(joints)` was unguarded here. _live_part_to_row now
+        coerces solderJoint at ingestion, but this function is the single
+        consumer for both the local-DB and live-API row shapes -- a
+        non-numeric value from either must degrade to an unknown pin count,
+        not raise ValueError uncaught."""
+        rp = _row_to_resolved(
+            self._row(joints="N/A"), match_score=None, deviations=[],
+            snapshot_date="", fetched_live=True, kicad_symbol_lib_id=None)
+        assert rp.pin_count is None
+
     def test_live_attributes_list_shape(self):
         data = {"attributes": [
             {"attribute_name_en": "Resistance", "attribute_value_name": "10kΩ"},
@@ -552,6 +608,25 @@ class TestParametricAttributeCapture:
         row = _live_part_to_row(data, "C1")
         assert row is not None
         assert row["attributes"] == {"Power": "0.125W"}
+
+    def test_live_part_to_row_numeric_solder_joint_coerced_to_int(self):
+        row = _live_part_to_row({"solderJoint": "8"}, "C1")
+        assert row is not None
+        assert row["joints"] == 8 and isinstance(row["joints"], int)
+
+    def test_live_part_to_row_missing_solder_joint_is_none(self):
+        row = _live_part_to_row({"componentModelEn": "RT0805"}, "C1")
+        assert row is not None
+        assert row["joints"] is None
+
+    def test_live_part_to_row_non_numeric_solder_joint_becomes_none_not_a_crash(self):
+        """Regression: solderJoint came from the live API with no type
+        guarantee -- the sole consumer (lcsc.py's _row_to_resolved) did a
+        bare `int(joints)` on whatever this returned, so a non-numeric value
+        from the API would crash that tool call uncaught."""
+        row = _live_part_to_row({"solderJoint": "N/A"}, "C1")
+        assert row is not None
+        assert row["joints"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +680,37 @@ class TestDecodeShardRows:
                  json.dumps([None] + ["y"] * 7)]
         batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
         assert len(batch) == 1
-        assert drops == {"bad_json": 1, "not_list": 1, "no_lcsc": 1}
+        # The no_lcsc row's price column ("y", from ["y"] * 7) isn't valid
+        # JSON either -- _parse_price runs (and counts bad_price) BEFORE the
+        # no_lcsc check drops the row, so both fire on the same input.
+        assert drops == {
+            "bad_json": 1, "not_list": 1, "no_lcsc": 1,
+            "bad_attr_index": 0, "bad_tier_index": 0, "bad_price": 1,
+        }
+
+    def test_bad_price_counted_but_row_still_kept(self):
+        """Regression: _parse_price's malformed-JSON fallback used to be a
+        bare `except Exception: return []` with no counter anywhere -- a
+        component silently got an empty price list. The row itself is still
+        valid (has an lcsc) and must still be inserted; only the field-level
+        drop is counted."""
+        lines = [json.dumps(["C1", "MFR", 2, "desc", "not-json", [], 100, "http"])]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, self.LUT)
+        assert len(batch) == 1
+        assert drops["bad_price"] == 1
+        assert drops["bad_json"] == 0 and drops["no_lcsc"] == 0  # row-level: unaffected
+
+    def test_bad_attr_index_counted_but_row_still_kept(self):
+        """Regression: _decode_attributes silently skipped a malformed LUT
+        index/entry with no counter -- package/manufacturer/tier feed real
+        scoring, so a silently-degraded attribute set is a data-loss risk,
+        not just cosmetic."""
+        lut: list[list] = []  # any index is "malformed" (out of range) against []
+        lines = [json.dumps(["C1", "MFR", 2, "desc", "[]", [0, 1], 100, "http"])]
+        batch, drops = _decode_shard_rows(lines, self.COL_MAP, lut)
+        assert len(batch) == 1
+        assert drops["bad_attr_index"] == 2  # both indices are out of range
+        assert drops["bad_tier_index"] == 2  # _tier_from_attributes scans the same indices
 
     def test_attributes_captured_in_tuple(self):
         lut = [["Resistance", {"primary": "default",
