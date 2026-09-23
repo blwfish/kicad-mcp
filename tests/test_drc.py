@@ -276,6 +276,46 @@ class TestDrcRunOperation:
         assert result["status"] == "error"
         assert "PCB file not found" in result["error"]
 
+    @patch("kicad_mcp.tools.drc.run_drc_via_cli")
+    def test_comparison_reflects_change_from_prior_run_not_self(
+        self, mock_cli, drc_server, pcb_file_with_project, monkeypatch
+    ):
+        """Regression for the CRITICAL finding: compare_with_previous must diff
+        against the PRIOR run, not the run that was just saved. save_drc_result
+        and compare_with_previous were called in the wrong order, so every real
+        `drc(operation="run")` diffed the just-computed result against itself --
+        change was always 0 and new/resolved_categories were always empty, even
+        though the violation count and categories genuinely changed between the
+        two runs below (10 -> 3, clearance/unconnected -> clearance/shorting)."""
+        monkeypatch.setattr(
+            "kicad_mcp.utils.drc_history.DRC_HISTORY_DIR", str(pcb_file_with_project["tmp_path"])
+        )
+        fn = _get_tool_fn(drc_server, "drc")
+        pro_path = pcb_file_with_project["pro_path"]
+
+        mock_cli.return_value = {
+            "status": "ok",
+            "total_violations": 10,
+            "violation_categories": {"clearance": 6, "unconnected": 4},
+        }
+        first = asyncio.run(fn("run", None, project_path=pro_path))
+        assert first["status"] == "ok"
+        assert "comparison" not in first  # no prior run to compare against yet
+
+        mock_cli.return_value = {
+            "status": "ok",
+            "total_violations": 3,
+            "violation_categories": {"clearance": 2, "shorting": 1},
+        }
+        second = asyncio.run(fn("run", None, project_path=pro_path))
+        assert second["status"] == "ok"
+        comparison = second["comparison"]
+        assert comparison["current_violations"] == 3
+        assert comparison["previous_violations"] == 10
+        assert comparison["change"] == -7
+        assert comparison["resolved_categories"] == {"unconnected": 4}
+        assert comparison["new_categories"] == {"shorting": 1}
+
 
 # -- drc router: unknown operation -------------------------------------------
 
