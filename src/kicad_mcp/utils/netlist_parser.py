@@ -639,6 +639,26 @@ def _parse_kicadxml(xml_text: str) -> Dict[str, Any]:
                     pins.append(entry)
             nets[clean_name] = pins
 
+    # Mirror the regex-fallback parser's per-component "pins" field so callers
+    # (e.g. netlist.py's pin_functions classification) don't silently see an
+    # empty result on this, the default, parser path. kicad-cli's netlist XML
+    # organizes pin info per-net rather than per-component, so reconstruct it
+    # by walking the nets above; "pinfunction" (the schematic-assigned pin
+    # name) stands in for the regex parser's <pin><name>. A pin whose net was
+    # excluded above (auto-generated "unconnected-(...)" nets) has no entry
+    # here — kicad-cli's netlist export doesn't report fully unconnected pins
+    # at all, only connectivity, so this is necessarily connectivity-derived
+    # rather than a full symbol pin enumeration like the regex path's.
+    for net_pins in nets.values():
+        for entry in net_pins:
+            ref = entry["component"]
+            comp = component_info.get(ref)
+            if comp is None:
+                continue
+            comp.setdefault("pins", []).append(
+                {"num": entry["pin"], "name": entry.get("pinfunction", "")}
+            )
+
     return {
         "parser_path": "cli",
         "components": component_info,

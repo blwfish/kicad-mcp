@@ -581,6 +581,21 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             "design-intent schema_version %s != current %s; loading anyway "
             "(fields may default-fill).", ver, SCHEMA_VERSION,
         )
+    # Every nested dataclass built below goes through _only_fields (or
+    # _net_from_dict's equivalent _NET_KEYS check), which flags a typo'd key
+    # with a warning before dropping it. DesignIntent itself is built
+    # field-by-field here instead (its nested fields need conversion, so it
+    # can't go through _only_fields directly) and that construction used to
+    # skip the same unknown-key check entirely -- a typo'd TOP-LEVEL key
+    # (`peripheral` for `peripherals`, `mcus` for `mcu`) silently vanished
+    # with no warning, unlike every field one level down.
+    _known_top_level = {f.name for f in dataclasses.fields(DesignIntent)}
+    unknown_top_level = sorted(set(d) - _known_top_level)
+    if unknown_top_level:
+        logger.warning(
+            "design-intent: dropped unknown top-level field(s) %s — typo, or "
+            "a newer schema's field?", unknown_top_level,
+        )
     mcu_d = d.get("mcu")
     # `d.get(k, [])` returns None when k is PRESENT with a null value (a
     # hand-edited `buses: null`), and `[X(..) for x in None]` raises TypeError.

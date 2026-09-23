@@ -596,6 +596,37 @@ def _analyze_bom_data(
         except (KeyError, ValueError) as e:
             results["stage_errors"]["most_common_values"] = f"{type(e).__name__}: {e}"
 
+    # --- Supplier / part-info extraction ------------------------------------
+    # mpn/manufacturer/lcsc/datasheet/description are detected above (the
+    # JLCPCB/Octopart fix noted on _BOM_FIELD_PROBES) but that fix only ever
+    # populated detected_fields (WHICH column holds the MPN) -- the actual
+    # per-component values were never pulled out of the DataFrame into the
+    # output, so a caller could tell an MPN column existed but never read a
+    # single MPN. Reconstruct a per-component list from whichever of these
+    # fields were actually detected.
+    supplier_cols = {
+        field: detected[field]
+        for field in ("mpn", "manufacturer", "lcsc", "datasheet", "description")
+        if detected[field]
+    }
+    if supplier_cols:
+        try:
+            supplier_info = []
+            for _, row in df.iterrows():
+                entry: Dict[str, Any] = {}
+                if ref_col:
+                    entry["reference"] = row.get(ref_col)
+                for field, col in supplier_cols.items():
+                    val = row.get(col)
+                    if pd.notna(val) and str(val).strip():
+                        entry[field] = val
+                if len(entry) > (1 if ref_col else 0):
+                    supplier_info.append(entry)
+            if supplier_info:
+                results["supplier_info"] = supplier_info
+        except (KeyError, ValueError) as e:
+            results["stage_errors"]["supplier_info"] = f"{type(e).__name__}: {e}"
+
     if not results["stage_errors"]:
         del results["stage_errors"]
 

@@ -860,9 +860,19 @@ def _op_run(
     with pcb_write_lock(pcb_path) as _acquired:
         if not _acquired:
             return busy_error(pcb_path)
-        return _op_run_locked(
-            pcb_path, jar_path, java_path, passes, remove_zones, net_classes,
-        )
+        try:
+            return _op_run_locked(
+                pcb_path, jar_path, java_path, passes, remove_zones, net_classes,
+            )
+        except Exception as exc:
+            # _autoroute_worker (the async path) already catches broadly here
+            # and reports {"error": str(exc)} -- this sync path called
+            # _run_full_autoroute with no wrapper at all, so the identical
+            # failure mode (a subprocess error, a malformed .kicad_pro, etc.)
+            # escaped the tool call as a raw exception instead of the
+            # {"error": ...} envelope every other failure path returns.
+            logger.error("autoroute run failed for %s: %s", pcb_path, exc)
+            return {"error": str(exc)}
 
 
 def _op_run_locked(

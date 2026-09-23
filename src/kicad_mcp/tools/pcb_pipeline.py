@@ -14,6 +14,7 @@ from mcp_events import emit_event, event_context
 
 from kicad_mcp.tools.pcb_silkscreen import _op_auto_fix_silkscreen
 from kicad_mcp.utils.firmware.intent import load_intent
+from kicad_mcp.utils.firmware.sidecar import _HOLE_DEFAULTS
 from kicad_mcp.utils.keepout_helpers import BODY_EXTENT_HELPER, KEEPOUT_HELPER, LIB_SEARCH_HELPER
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
@@ -325,7 +326,8 @@ _EDGE_DESIGNATOR_CLASSES = ("J", "SW", "USB")
 
 # Corner mounting-hole defaults (board.yaml `mounting_holes:` overrides these;
 # see sidecar._validate_mounting_holes). count=0 disables holes entirely.
-_HOLE_DEFAULTS = {"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5}
+# _HOLE_DEFAULTS itself lives in sidecar.py -- imported above -- as the single
+# source of truth shared with sidecar._KNOWN_MOUNTING_HOLES_KEYS.
 
 # Board re-fit routing slack (SPEC_Post_Placement_Board_Refit §4 / R1). The measured
 # interior-cluster bbox already reflects the spacing the placer used, so pass 2

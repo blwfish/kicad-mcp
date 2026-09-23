@@ -33,6 +33,22 @@ def test_unknown_keys_ignored_only_known_merged():
         {"count": 2, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5}
 
 
+def test_defaults_and_known_keys_share_one_source_of_truth():
+    """Regression: pcb_pipeline._HOLE_DEFAULTS (what _resolve_mounting_holes
+    merges over) and sidecar._KNOWN_MOUNTING_HOLES_KEYS (what
+    _validate_mounting_holes accepts) used to be two independently-typed
+    literals with no import tying them together and no test referencing
+    either -- a key added to one would silently leave the other unaware
+    (an accepted-but-undefaulted key, or a defaulted-but-rejected one).
+    pcb_pipeline now imports _HOLE_DEFAULTS from sidecar.py; this pins that
+    they stay the same object, not just equal by coincidence."""
+    from kicad_mcp.tools import pcb_pipeline
+    from kicad_mcp.utils.firmware import sidecar
+
+    assert pcb_pipeline._HOLE_DEFAULTS is sidecar._HOLE_DEFAULTS
+    assert sidecar._KNOWN_MOUNTING_HOLES_KEYS == frozenset(pcb_pipeline._HOLE_DEFAULTS)
+
+
 @patch("kicad_mcp.tools.pcb_pipeline.run_pcbnew_script")
 def test_keepout_allows_pads_blocks_pour(mock_run):
     """The per-hole keepout must NOT disallow pads — the mounting hole's own NPTH

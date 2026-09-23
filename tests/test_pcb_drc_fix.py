@@ -201,3 +201,12 @@ class TestCategorizeViolations:
 
     def test_unknown_type_is_other(self):
         assert _group_of("some_future_violation") == "other"
+
+    def test_unconnected_is_routing_not_other(self):
+        """Regression: cli_drc.py's parse_drc_report emits the exact category
+        key "unconnected" for kicad-cli's unconnected_items (unrouted nets).
+        It used to match no keyword/exact-set entry and fall into "other",
+        which autofix's routing step never handles -- so a board whose only
+        DRC violations were unrouted nets never got re-autorouted by
+        drc(operation="autofix")."""
+        assert _group_of("unconnected") == "routing"
