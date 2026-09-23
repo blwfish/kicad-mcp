@@ -167,6 +167,25 @@ def test_from_dict_logs_dropped_unknown_fields(caplog):
     assert "priority" in msg and "Net" in msg         # _net_from_dict path
 
 
+def test_from_dict_logs_dropped_unknown_top_level_field(caplog):
+    """Regression: every nested dataclass (Mcu, Peripheral, Net, ...) goes
+    through _only_fields or _net_from_dict, both of which warn on a typo'd
+    key before dropping it. DesignIntent itself is built field-by-field in
+    from_dict (its nested fields need conversion, so it can't go through
+    _only_fields directly), and that top-level construction used to skip the
+    same check entirely -- a typo'd TOP-LEVEL key (`peripheral` for
+    `peripherals`) silently vanished with no warning, unlike every field one
+    level down."""
+    import logging
+    doc = to_dict(_intent())
+    doc["peripheral"] = doc.pop("peripherals")        # typo'd top-level key
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.firmware.intent"):
+        intent = from_dict(doc)
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "peripheral" in msg
+    assert intent.peripherals == []                   # value silently vanished
+
+
 def test_from_dict_null_factory_field_coerced_to_empty():
     """A hand-edited doc with a default_factory field (Bus.signals: dict) set to
     null must NOT override the factory with None — templates then crash on

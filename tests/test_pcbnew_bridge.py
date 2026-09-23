@@ -4,6 +4,7 @@ Tests for the pcbnew bridge utility.
 Tests the bridge functions that manage subprocess execution to KiCad's Python.
 """
 
+import logging
 import os
 from unittest.mock import patch, MagicMock
 
@@ -160,6 +161,60 @@ class TestRunPcbnewScript:
         import subprocess
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="python", timeout=30)
         with pytest.raises(RuntimeError, match="timed out"):
+            run_pcbnew_script('import time; time.sleep(60)', timeout=30)
+
+    @patch("kicad_mcp.utils.pcbnew_bridge._get_kicad_python",
+           return_value="/usr/bin/python3")
+    @patch("kicad_mcp.utils.pcbnew_bridge.subprocess.run")
+    def test_stderr_logged_on_success_not_silently_discarded(
+        self, mock_run, mock_python, caplog
+    ):
+        """Regression: on exit 0, stderr was never touched at all -- only the
+        failure branch read it. The module's own docstring tells embedded
+        scripts to "use stderr for logging," so this silently dropped any
+        warning a successful script deliberately wrote there, on every single
+        pcbnew call (universal exposure, not an edge case)."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"status": "ok"}\n',
+            stderr="WARNING: footprint library 'Old_Lib' not found, using cache\n",
+        )
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.pcbnew_bridge"):
+            result = run_pcbnew_script('pass')
+        assert result["status"] == "ok"          # success path still returns normally
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "Old_Lib" in msg
+
+    @patch("kicad_mcp.utils.pcbnew_bridge._get_kicad_python",
+           return_value="/usr/bin/python3")
+    @patch("kicad_mcp.utils.pcbnew_bridge.subprocess.run")
+    def test_success_with_only_safe_stderr_noise_does_not_warn(
+        self, mock_run, mock_python, caplog
+    ):
+        """Known-benign KiCad chatter (already filtered by _filter_stderr on
+        the failure path) must not spam a warning on every successful call."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"status": "ok"}\n',
+            stderr="Gtk-WARNING **: cannot open display\n",
+        )
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.pcbnew_bridge"):
+            run_pcbnew_script('pass')
+        assert caplog.records == []
+
+    @patch("kicad_mcp.utils.pcbnew_bridge._get_kicad_python",
+           return_value="/usr/bin/python3")
+    @patch("kicad_mcp.utils.pcbnew_bridge.subprocess.run")
+    def test_timeout_includes_captured_stderr_detail(self, mock_run, mock_python):
+        """Regression: subprocess.run's TimeoutExpired carries whatever
+        communicate() captured before the kill (e.g. which step it was stuck
+        on), but the old code raised a bare "timed out" message and dropped
+        it -- the same discard-on-timeout gap as the success path."""
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            cmd="python", timeout=30, output="", stderr="stuck loading board...\n",
+        )
+        with pytest.raises(RuntimeError, match="stuck loading board"):
             run_pcbnew_script('import time; time.sleep(60)', timeout=30)
 
     @patch("kicad_mcp.utils.pcbnew_bridge._get_kicad_python",

@@ -24,6 +24,12 @@ ROUTING_VIOLATIONS = {
     "Track too close",
     "Tracks crossing",
     "Items shorting",
+    # cli_drc.py's parse_drc_report emits this exact key for kicad-cli's
+    # unconnected_items array (unrouted nets). It needs the same fix
+    # strategy as routing violations (clear + re-autoroute) -- without it
+    # here, a board whose ONLY violations are unrouted nets has an empty
+    # groups["routing"], so autofix's routing step never runs at all.
+    "unconnected",
 }
 
 SILKSCREEN_VIOLATIONS = {

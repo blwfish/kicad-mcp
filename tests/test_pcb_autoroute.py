@@ -196,6 +196,24 @@ class TestAutorouteRun:
         assert "error" in result
         assert "FreeRouter" in result["error"] or "freerouter" in result["error"].lower()
 
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_preflight", return_value=None)
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouting.jar")
+    def test_exception_in_locked_body_returns_error_envelope_not_raises(
+        self, mock_jar, mock_java, mock_preflight, mock_full_route, route_server, pcb_file
+    ):
+        """Regression: the sync run path called _run_full_autoroute with no
+        try/except of its own, unlike _autoroute_worker (the async path) which
+        wraps the identical call in `except Exception`. Any exception here
+        (a subprocess error, a malformed .kicad_pro, ...) used to escape the
+        tool call as a raw exception instead of the {"error": ...} envelope
+        every other failure path in this router already returns."""
+        mock_full_route.side_effect = RuntimeError("freerouter subprocess exploded")
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("run", pcb_path=pcb_file)
+        assert result == {"error": "freerouter subprocess exploded"}
+
 
 # -- autoroute router: list_jobs operation tests -----------------------------
 

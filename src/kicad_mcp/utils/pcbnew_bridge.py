@@ -274,12 +274,36 @@ def run_pcbnew_script(
                 f"Output was: {stdout[:2000]}{truncated}"
             )
 
+        # The failure branch above filters+logs stderr; the success branch
+        # never touched it at all, so any warning the script deliberately
+        # wrote there (the docstring above tells scripts to "use stderr for
+        # logging") was silently discarded on every successful pcbnew call —
+        # universal exposure, not a rare edge case.
+        stderr_msg = _filter_stderr(result.stderr) if result.stderr else ""
+        if stderr_msg:
+            truncated = "  (...truncated)" if len(stderr_msg) > 2000 else ""
+            logger.warning(
+                "pcbnew script succeeded but wrote to stderr (exit 0, %.2fs): %s%s",
+                elapsed, stderr_msg[:2000], truncated,
+            )
+
         logger.debug("pcbnew script completed in %.2fs", elapsed)
         return parsed
 
-    except subprocess.TimeoutExpired:
-        logger.error("pcbnew script timed out after %.1fs", timeout)
-        raise RuntimeError(f"pcbnew script timed out after {timeout}s")
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run captures whatever communicate() collected before the
+        # kill, so exc.stderr can hold a genuinely useful partial message
+        # (e.g. which step it was stuck on) — previously dropped here too.
+        # exc.stderr is typed bytes|None (subprocess.run's own text=True
+        # doesn't narrow TimeoutExpired's stub); we always pass text=True
+        # above so it's str at runtime, but decode defensively either way.
+        raw_stderr = exc.stderr
+        stderr_str: str = raw_stderr.decode("utf-8", errors="replace") \
+            if isinstance(raw_stderr, bytes) else (raw_stderr or "")
+        timeout_stderr = _filter_stderr(stderr_str) if stderr_str else ""
+        detail = f": {timeout_stderr[:2000]}" if timeout_stderr else ""
+        logger.error("pcbnew script timed out after %.1fs%s", timeout, detail)
+        raise RuntimeError(f"pcbnew script timed out after {timeout}s{detail}")
     finally:
         os.unlink(script_path)
         if params_path:

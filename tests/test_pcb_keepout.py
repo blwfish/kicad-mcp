@@ -9,6 +9,7 @@ KiCad's Python 3.9 / pcbnew bindings.
 """
 
 import asyncio
+import types
 from unittest.mock import patch
 
 import pytest
@@ -1083,3 +1084,205 @@ class TestAuditAllDetailFlag:
         # full result has per-footprint detail (violations list)
         assert "violations" in result_full["placement"]
         assert "overlaps" in result_full["footprint_overlaps"]
+
+
+# ---------------------------------------------------------------------------
+# Exec-based parity tests for COURTYARD_BBOX_HELPER / LIB_SEARCH_HELPER /
+# BODY_EXTENT_HELPER. These were extracted per the boundary-ops pattern
+# (docs/BOUNDARY_OPS.md) but, unlike every sibling helper in
+# keepout_helpers.py (KEEPOUT_HELPER, NUDGE_PLACEMENT_HELPER, GEOMETRY_HELPER),
+# had zero test references anywhere — exec'd against a duck-typed pcbnew so
+# the no-KiCad suite reaches their decision logic directly.
+# ---------------------------------------------------------------------------
+
+class _FakeGraphicalItem:
+    """A footprint's courtyard/silk/fab outline item. `text` mirrors real
+    pcbnew: text objects on FP_TEXT expose GetText(); graphic shapes don't —
+    body_bbox uses `hasattr(it, "GetText")` to skip text-layer bloat."""
+    def __init__(self, layer, bbox, text=None):
+        self._layer, self._bbox = layer, bbox
+        if text is not None:
+            self.GetText = lambda: text
+    def GetLayer(self): return self._layer
+    def GetBoundingBox(self): return self._bbox
+
+
+class _FakePad:
+    def __init__(self, x, y, w, h):
+        self._pos = types.SimpleNamespace(x=x, y=y)
+        self._size = types.SimpleNamespace(x=w, y=h)
+    def GetPosition(self): return self._pos
+    def GetSize(self): return self._size
+    def GetBoundingBox(self):
+        return _FakeBBox(self._pos.x - self._size.x / 2, self._pos.y - self._size.y / 2,
+                          self._pos.x + self._size.x / 2, self._pos.y + self._size.y / 2)
+
+
+class _FakeFootprint:
+    def __init__(self, graphical_items=None, pads=None):
+        self._items = graphical_items or []
+        self._pads = pads or []
+    def GraphicalItems(self): return list(self._items)
+    def Pads(self): return list(self._pads)
+
+
+class TestCourtyardBboxHelper:
+    """_get_courtyard_bbox_tuple (shared by COURTYARD_BBOX_HELPER and
+    COURTYARD_BBOX_TUPLE_HELPER) reads `board` as a free variable — the
+    composed embedded script always defines `board = pcbnew.LoadBoard(...)`
+    at module scope before splicing this in, so the exec namespace needs one
+    too, set as a global before the call (Python resolves it at call time)."""
+
+    @pytest.fixture(autouse=True)
+    def _exec_helper(self):
+        from kicad_mcp.utils.keepout_helpers import COURTYARD_BBOX_HELPER
+        self.ns: dict = {
+            "pcbnew": types.SimpleNamespace(ToMM=lambda v: v / 1_000_000.0),
+        }
+        exec(COURTYARD_BBOX_HELPER, self.ns)
+        self.get_courtyard_bbox = self.ns["get_courtyard_bbox"]
+
+    def _board(self, crtyd_layer_name="F.CrtYd"):
+        # get_courtyard_bbox_tuple checks `"CrtYd" in layer_name`.
+        self.ns["board"] = types.SimpleNamespace(
+            GetLayerName=lambda lid: {0: crtyd_layer_name, 1: "F.Fab"}.get(lid, "?")
+        )
+
+    def test_courtyard_item_defines_bbox(self):
+        self._board()
+        fp = _FakeFootprint(graphical_items=[
+            _FakeGraphicalItem(layer=0, bbox=_FakeBBox(1_000_000, 2_000_000, 3_000_000, 4_000_000)),
+        ])
+        assert self.get_courtyard_bbox(fp) == {
+            "x_min_mm": 1.0, "y_min_mm": 2.0, "x_max_mm": 3.0, "y_max_mm": 4.0,
+        }
+
+    def test_no_courtyard_falls_back_to_pads(self):
+        self._board()
+        fp = _FakeFootprint(
+            graphical_items=[_FakeGraphicalItem(layer=1, bbox=_FakeBBox(0, 0, 1, 1))],
+            pads=[_FakePad(x=5_000_000, y=5_000_000, w=1_000_000, h=1_000_000)],
+        )
+        bbox = self.get_courtyard_bbox(fp)
+        assert bbox == {"x_min_mm": 4.5, "y_min_mm": 4.5, "x_max_mm": 5.5, "y_max_mm": 5.5}
+
+    def test_courtyard_present_wins_over_pads_not_a_union(self):
+        """Ambiguous-input pin: a footprint with BOTH a courtyard graphic and
+        pads must use the courtyard extent alone (the function returns as
+        soon as the courtyard loop finds anything) — not a union of both."""
+        self._board()
+        fp = _FakeFootprint(
+            graphical_items=[
+                _FakeGraphicalItem(layer=0, bbox=_FakeBBox(1_000_000, 1_000_000, 2_000_000, 2_000_000)),
+            ],
+            pads=[_FakePad(x=50_000_000, y=50_000_000, w=1_000_000, h=1_000_000)],
+        )
+        bbox = self.get_courtyard_bbox(fp)
+        assert bbox == {"x_min_mm": 1.0, "y_min_mm": 1.0, "x_max_mm": 2.0, "y_max_mm": 2.0}
+
+    def test_no_courtyard_no_pads_returns_none(self):
+        self._board()
+        assert self.get_courtyard_bbox(_FakeFootprint()) is None
+
+
+class TestLibSearchHelper:
+    """find_lib(lib_name) walks lib_search_paths (built once at exec time
+    from KICAD_APP_PATH) and returns the first existing '<name>.pretty' dir,
+    or None. Requires: os in scope (no `import os` inside the helper string
+    itself — the embedded script provides it) — inject the real os module so
+    monkeypatching os.path.isdir affects the exec'd code too."""
+
+    def _exec_helper(self, monkeypatch, kicad_app_path=None):
+        import os
+        if kicad_app_path is not None:
+            monkeypatch.setenv("KICAD_APP_PATH", kicad_app_path)
+        else:
+            monkeypatch.delenv("KICAD_APP_PATH", raising=False)
+        from kicad_mcp.utils.keepout_helpers import LIB_SEARCH_HELPER
+        ns = {"os": os}
+        exec(LIB_SEARCH_HELPER, ns)
+        return ns["find_lib"], ns["lib_search_paths"]
+
+    def test_no_path_exists_returns_none(self, monkeypatch):
+        find_lib, _ = self._exec_helper(monkeypatch)
+        monkeypatch.setattr("os.path.isdir", lambda p: False)
+        assert find_lib("Resistor_SMD") is None
+
+    def test_first_search_path_match_wins(self, monkeypatch):
+        find_lib, paths = self._exec_helper(monkeypatch)
+        expected = paths[0] + "/Resistor_SMD.pretty"
+        monkeypatch.setattr("os.path.isdir", lambda p: p == expected)
+        assert find_lib("Resistor_SMD") == expected
+
+    def test_second_search_path_used_when_first_misses(self, monkeypatch):
+        """Iteration must continue past a miss, not stop at the first path."""
+        find_lib, paths = self._exec_helper(monkeypatch)
+        expected = paths[1] + "/Resistor_SMD.pretty"
+        monkeypatch.setattr("os.path.isdir", lambda p: p == expected)
+        assert find_lib("Resistor_SMD") == expected
+
+    def test_kicad_app_path_env_var_changes_first_search_path(self, monkeypatch):
+        """The env var is read once at exec time into _kicad_app -- confirm it
+        actually drives lib_search_paths[0], not just a default that's never
+        wired up."""
+        _, paths = self._exec_helper(monkeypatch, kicad_app_path="/custom/KiCad.app")
+        assert paths[0] == "/custom/KiCad.app/Contents/SharedSupport/footprints"
+
+
+class TestBodyExtentHelper:
+    """body_bbox(fp, has_keepout) unions pads + Fab/Silk[/Courtyard] graphics,
+    excluding text items and (when has_keepout) the courtyard layers, falling
+    back to the footprint's own full bbox when neither pads nor graphics
+    contribute anything."""
+
+    _LAYERS = types.SimpleNamespace(F_Fab=0, B_Fab=1, F_SilkS=2, B_SilkS=3,
+                                     F_CrtYd=4, B_CrtYd=5)
+
+    @pytest.fixture(autouse=True)
+    def _exec_helper(self):
+        from kicad_mcp.utils.keepout_helpers import BODY_EXTENT_HELPER
+        ns = {"pcbnew": types.SimpleNamespace(ToMM=lambda v: v, **vars(self._LAYERS))}
+        exec(BODY_EXTENT_HELPER, ns)
+        self.body_bbox = ns["body_bbox"]
+
+    def test_courtyard_included_when_no_keepout(self):
+        fp = _FakeFootprint(graphical_items=[
+            _FakeGraphicalItem(layer=self._LAYERS.F_CrtYd, bbox=_FakeBBox(0, 0, 10, 10)),
+        ])
+        assert self.body_bbox(fp, has_keepout=False) == (0, 0, 10, 10)
+
+    def test_courtyard_excluded_when_has_keepout(self):
+        """Same footprint, has_keepout=True: the courtyard item must NOT
+        contribute -- with no other pads/graphics, falls back to the
+        footprint's own bounding box instead."""
+        fp = _FakeFootprint(graphical_items=[
+            _FakeGraphicalItem(layer=self._LAYERS.F_CrtYd, bbox=_FakeBBox(0, 0, 10, 10)),
+        ])
+        fp.GetBoundingBox = lambda inc_text, inc_invis: _FakeBBox(-1, -1, 1, 1)
+        assert self.body_bbox(fp, has_keepout=True) == (-1, -1, 1, 1)
+
+    def test_text_item_on_included_layer_is_skipped(self):
+        """A GetText()-bearing item on F.SilkS (always in `body`, regardless
+        of has_keepout) must not bloat the bbox — pads set the real extent."""
+        fp = _FakeFootprint(
+            graphical_items=[
+                _FakeGraphicalItem(layer=self._LAYERS.F_SilkS,
+                                    bbox=_FakeBBox(-50, -50, 50, 50), text="R1"),
+            ],
+            pads=[_FakePad(x=0, y=0, w=2, h=2)],
+        )
+        assert self.body_bbox(fp, has_keepout=False) == (-1, -1, 1, 1)
+
+    def test_no_pads_no_graphics_falls_back_to_full_bbox(self):
+        fp = _FakeFootprint()
+        fp.GetBoundingBox = lambda inc_text, inc_invis: _FakeBBox(-2, -3, 2, 3)
+        assert self.body_bbox(fp, has_keepout=False) == (-2, -3, 2, 3)
+
+    def test_pads_contribute_alongside_graphics(self):
+        fp = _FakeFootprint(
+            graphical_items=[
+                _FakeGraphicalItem(layer=self._LAYERS.F_Fab, bbox=_FakeBBox(-1, -1, 1, 1)),
+            ],
+            pads=[_FakePad(x=10, y=10, w=2, h=2)],
+        )
+        assert self.body_bbox(fp, has_keepout=False) == (-1, -1, 11, 11)
