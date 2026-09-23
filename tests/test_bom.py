@@ -147,3 +147,95 @@ def test_json_bom_refdes_mapping_is_accepted(tmp_path):
     p.write_text(json.dumps({"components": {"R1": {"value": "10k"}, "R2": {"value": "1k"}}}))
     comps, _ = _parse_bom_file(str(p))
     assert len(comps) == 2 and {c["value"] for c in comps} == {"10k", "1k"}
+
+
+# -- _analyze_bom_data: the real pandas path, and supplier-info extraction ---
+#
+# Regression for two review findings on the SAME underlying gap: pandas is a
+# soft runtime dependency (try/except ImportError, degrades to basic counts
+# for end users who skip it) -- but that also meant this whole DataFrame-based
+# branch never ran in this repo's OWN dev/test environment (pandas wasn't
+# installed here either), so it had zero real coverage. Now a dev dependency
+# (see pyproject.toml) specifically so these tests exercise the real path
+# instead of a mock or a hand-rolled fake pandas.
+
+class TestAnalyzeBomDataPandasPath:
+
+    def _components(self):
+        return [
+            {"reference": "R1", "value": "10k", "mpn": "RC0805FR-0710KL",
+             "manufacturer": "Yageo", "lcsc": "C17414"},
+            {"reference": "R2", "value": "10k", "mpn": "RC0805FR-0710KL",
+             "manufacturer": "Yageo", "lcsc": "C17414"},
+            {"reference": "C1", "value": "100nF"},  # no supplier fields at all
+        ]
+
+    def test_pandas_path_actually_runs_not_the_fallback(self):
+        """Pin that this test suite exercises the real DataFrame branch, not
+        the "pandas not installed" degrade-to-counts-only fallback -- the
+        exact gap review finding #09 flagged (this file used to pass either
+        way, silently, because pandas was never installed here at all)."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(self._components(), {})
+        assert "pandas" not in results.get("stage_errors", {})
+        assert results["detected_fields"]["mpn"] == "mpn"
+
+    def test_supplier_info_extracted_for_rows_with_detected_columns(self):
+        """Regression for #08: mpn/manufacturer/lcsc were detected into
+        detected_fields even before this fix, but the actual values were
+        never pulled out of the DataFrame into the analysis output at all."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(self._components(), {})
+        by_ref = {e["reference"]: e for e in results["supplier_info"]}
+        assert by_ref["R1"] == {
+            "reference": "R1", "mpn": "RC0805FR-0710KL",
+            "manufacturer": "Yageo", "lcsc": "C17414",
+        }
+        assert by_ref["R2"]["mpn"] == "RC0805FR-0710KL"
+
+    def test_row_with_no_supplier_values_excluded_not_a_bare_reference_stub(self):
+        """C1 has a reference but none of the detected supplier columns
+        populated -- it must not show up as a content-free {"reference": ...}
+        stub crowding out the rows that actually have supplier data."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(self._components(), {})
+        refs = {e["reference"] for e in results["supplier_info"]}
+        assert "C1" not in refs
+
+    def test_no_supplier_columns_detected_key_absent_not_empty_list(self):
+        """When no BOM column matches mpn/manufacturer/lcsc/datasheet/
+        description at all, supplier_info must be absent entirely (matching
+        the pattern of every other optional results key here), not an
+        always-present empty list."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [{"reference": "R1", "value": "10k"},
+                      {"reference": "C1", "value": "100nF"}]
+        results = _analyze_bom_data(components, {})
+        assert "supplier_info" not in results
+
+    def test_pandas_none_fallback_still_works(self, monkeypatch):
+        """The graceful-degradation contract for end users who don't install
+        pandas (a soft dependency) must keep working now that pandas is a dev
+        dependency here -- otherwise every test in this class would silently
+        stop covering the fallback path the same way they silently stopped
+        covering the real path before pandas was added to the dev group."""
+        import kicad_mcp.tools.bom as bom_mod
+        monkeypatch.setattr(bom_mod, "pd", None)
+        results = bom_mod._analyze_bom_data(self._components(), {})
+        assert results["stage_errors"]["pandas"] == "pandas not installed; counts only"
+        assert results["total_component_count"] == 3
+        assert "supplier_info" not in results
+
+    def test_blank_supplier_value_not_included_as_empty_string(self):
+        """A detected column present in the BOM but blank for a given row
+        (common when only some rows have LCSC/JLCPCB data filled in) must be
+        omitted from that row's entry, not carried through as ""."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k", "mpn": "RC0805FR-0710KL", "lcsc": ""},
+            {"reference": "R2", "value": "10k", "mpn": "RC0805FR-0710KL", "lcsc": "C17414"},
+        ]
+        results = _analyze_bom_data(components, {})
+        by_ref = {e["reference"]: e for e in results["supplier_info"]}
+        assert "lcsc" not in by_ref["R1"]
+        assert by_ref["R2"]["lcsc"] == "C17414"

@@ -164,7 +164,14 @@ _EXPANDER_POWER = frozenset({"3v3", "5v", "none"})
 # template (a deliberate follow-up feature, not a silent partial one).
 _KNOWN_BUS_OVERRIDE_KEYS = frozenset({"part"})
 
-_KNOWN_MOUNTING_HOLES_KEYS = frozenset({"count", "drill_mm", "inset_mm", "keepout_mm"})
+# Single source of truth for the mounting_holes key set: pcb_pipeline.py's
+# _resolve_mounting_holes imports _HOLE_DEFAULTS from here instead of keeping
+# its own independently-maintained copy. Previously the two were separate
+# literals with no shared import and no test referencing either, so a key
+# added to one silently left the other unaware of it (a default with no
+# validation, or an accepted key with no default).
+_HOLE_DEFAULTS = {"count": 4, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5}
+_KNOWN_MOUNTING_HOLES_KEYS = frozenset(_HOLE_DEFAULTS)
 
 # Per-entry sub-keys for placement[] and extra_connectors[]. The header promises
 # "unknown keys are REJECTED", but that only covered TOP-LEVEL keys — a typo'd

@@ -426,11 +426,71 @@ class TestParseKicadxml:
     def test_unconnected_nets_excluded(self, parsed):
         assert not any(k.startswith("unconnected-") for k in parsed["nets"])
 
+    def test_pins_aggregated_per_component_from_nets(self, parsed):
+        """Regression: tools/netlist.py's pin_functions classification reads
+        component_info[ref]["pins"], but this parser (the default path whenever
+        kicad-cli is available) used to never set that key at all -- only the
+        regex-fallback parser did -- so pin_functions silently came back {} on
+        the common path. "pinfunction" (KiCad's schematic-assigned pin name)
+        stands in for the regex parser's <pin><name>."""
+        r1 = parsed["components"]["R1"]
+        assert r1["pins"] == [{"num": "1", "name": "A"}]
+        # node present but no pinfunction attribute -> name is "", not omitted
+        c1 = parsed["components"]["C1"]
+        assert c1["pins"] == [{"num": "2", "name": ""}]
+
     def test_malformed_xml_raises_parse_error(self):
         import xml.etree.ElementTree as ET
         from kicad_mcp.utils.netlist_parser import _parse_kicadxml
         with pytest.raises(ET.ParseError):
             _parse_kicadxml("<export><components></export>")  # unclosed tag
+
+
+# -- find_component_connections: pin_functions on the default (cli) path -----
+
+class TestPinFunctionsClassificationOnCliPath:
+    """End-to-end regression for the same finding as
+    TestParseKicadxml.test_pins_aggregated_per_component_from_nets: confirm
+    pin_functions actually comes back populated (not {}) when the netlist data
+    has the shape _parse_kicadxml now produces, exercising the full
+    _op_find_component_connections classification logic in tools/netlist.py."""
+
+    @pytest.fixture
+    def project(self, tmp_project_dir):
+        return tmp_project_dir
+
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_pin_functions_populated_from_cli_shaped_netlist(self, mock_parse, project):
+        from kicad_mcp.tools.netlist import _op_find_component_connections
+
+        mock_parse.return_value = {
+            "parser_path": "cli",
+            "components": {
+                "U1": {
+                    "reference": "U1",
+                    "pins": [
+                        {"num": "1", "name": "VCC"},
+                        {"num": "2", "name": "GND"},
+                        {"num": "3", "name": "MISO"},
+                    ],
+                },
+            },
+            "nets": {
+                "VCC": [{"component": "U1", "pin": "1"}, {"component": "R1", "pin": "1"}],
+                "GND": [{"component": "U1", "pin": "2"}],
+                "SPI_MISO": [{"component": "U1", "pin": "3"}],
+            },
+        }
+
+        result = asyncio.run(
+            _op_find_component_connections(project["project_path"], "U1", None)
+        )
+        assert result["status"] == "ok"
+        assert result["pin_functions"] == {
+            "1": {"name": "VCC", "type": "power"},
+            "2": {"name": "GND", "type": "power"},
+            "3": {"name": "MISO", "type": "unknown"},
+        }
 
 
 # -- is_power_net: signed VOLTAGE rails vs signed SIGNAL nets -----------------

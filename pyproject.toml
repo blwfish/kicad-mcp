@@ -72,6 +72,14 @@ dev = [
     "pip-audit>=2.10.1",
     "pytest-timeout>=2.3.0",
     "hypothesis>=6.168.0",
+    # bom.py's rich analysis (counts/categories/cost/supplier-info) is a soft
+    # runtime dependency -- try/except ImportError, degrades to basic counts
+    # for end users who don't install it. But that meant the entire
+    # pandas-backed branch never ran in THIS repo's own dev/CI environment
+    # either, so it had zero real test coverage (review finding
+    # kicad-mcp-20260721-af1a#09). Dev-only so end users still get the
+    # lightweight default; tests import it directly to exercise the real path.
+    "pandas>=2.0",
 ]
 
 [tool.ruff]
