@@ -554,6 +554,44 @@ def _only_fields(cls: type, d: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _filter_dict_items(field_name: str, items: list) -> list[dict]:
+    """Keep only dict items from a list field meant to hold mappings, warning
+    (not crashing) on anything else.
+
+    Malformed YAML (a stray string/int/None/nested list where a sequence of
+    mappings was expected -- a misindented block, a missing `- ` on a list
+    item, etc.) used to raise a generic AttributeError/TypeError deep inside
+    _only_fields (`'str' object has no attribute 'items'`) with no
+    indication of WHICH item or WHY. Both real call sites already catch
+    broadly around from_dict, so this was a diagnostics-quality gap, not an
+    unhandled crash -- but the failure told you nothing actionable."""
+    out: list[dict] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            logger.warning(
+                "design-intent: %s[%d] is not a mapping (got %s); skipping",
+                field_name, i, type(item).__name__,
+            )
+            continue
+        out.append(item)
+    return out
+
+
+def _filter_dict_values(field_name: str, mapping: dict) -> dict:
+    """Same as _filter_dict_items, for a dict-of-mappings field (placements,
+    expander_terminals): keep only entries whose VALUE is itself a dict."""
+    out: dict = {}
+    for k, v in mapping.items():
+        if not isinstance(v, dict):
+            logger.warning(
+                "design-intent: %s[%r] is not a mapping (got %s); skipping",
+                field_name, k, type(v).__name__,
+            )
+            continue
+        out[k] = v
+    return out
+
+
 # Net is built field-by-field (its nested endpoints need conversion), so it can't
 # go through _only_fields directly — this set lets us flag a typo'd Net key with the
 # same honesty as _only_fields does for the other dataclasses.
@@ -597,6 +635,10 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
             "a newer schema's field?", unknown_top_level,
         )
     mcu_d = d.get("mcu")
+    if mcu_d is not None and not isinstance(mcu_d, dict):
+        logger.warning("design-intent: mcu is not a mapping (got %s); "
+                       "treating as absent", type(mcu_d).__name__)
+        mcu_d = None
     # `d.get(k, [])` returns None when k is PRESENT with a null value (a
     # hand-edited `buses: null`), and `[X(..) for x in None]` raises TypeError.
     # Use `or []` like placements/placement_hints below so an explicit null
@@ -605,22 +647,33 @@ def from_dict(d: dict[str, Any]) -> DesignIntent:
         schema_version=d.get("schema_version", SCHEMA_VERSION),
         source=d.get("source", {}),
         mcu=Mcu(**_only_fields(Mcu, mcu_d)) if mcu_d else None,
-        peripherals=[Peripheral(**_only_fields(Peripheral, p)) for p in (d.get("peripherals") or [])],
-        buses=[Bus(**_only_fields(Bus, b)) for b in (d.get("buses") or [])],
-        nets=[_net_from_dict(n) for n in (d.get("nets") or [])],
-        gaps=[Gap(**_only_fields(Gap, g)) for g in (d.get("gaps") or [])],
+        peripherals=[
+            Peripheral(**_only_fields(Peripheral, p))
+            for p in _filter_dict_items("peripherals", d.get("peripherals") or [])
+        ],
+        buses=[
+            Bus(**_only_fields(Bus, b))
+            for b in _filter_dict_items("buses", d.get("buses") or [])
+        ],
+        nets=[_net_from_dict(n) for n in _filter_dict_items("nets", d.get("nets") or [])],
+        gaps=[
+            Gap(**_only_fields(Gap, g))
+            for g in _filter_dict_items("gaps", d.get("gaps") or [])
+        ],
         connector_legends=[
             ConnectorLegend(**_only_fields(ConnectorLegend, c))
-            for c in (d.get("connector_legends") or [])
+            for c in _filter_dict_items("connector_legends", d.get("connector_legends") or [])
         ],
         placements={
             k: Placement(**_only_fields(Placement, v))
-            for k, v in (d.get("placements", {}) or {}).items()
+            for k, v in _filter_dict_values("placements", d.get("placements", {}) or {}).items()
         },
         placement_hints=d.get("placement_hints", {}) or {},
         expander_terminals={
             k: ExpanderSpec(**_only_fields(ExpanderSpec, v))
-            for k, v in (d.get("expander_terminals", {}) or {}).items()
+            for k, v in _filter_dict_values(
+                "expander_terminals", d.get("expander_terminals", {}) or {}
+            ).items()
         },
         provenance=d.get("provenance", {}),
     )

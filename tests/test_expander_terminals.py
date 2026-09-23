@@ -118,12 +118,37 @@ def test_power_none_two_position_terminals():
 
 
 def test_power_5v_with_rail_emits_5v_position():
-    # ESP32 board -> power_tree adds the AMS1117 (+5V regulator input) BEFORE this
-    # template runs, so power: 5v is honored: a +5V terminal position is emitted.
+    # ESP32-WROOM-32E isn't native-USB, so BOTH power_tree's AMS1117 (3v3 logic,
+    # NOT a +5V source -- see _FIVE_V_SOURCES) and the USB block's CP2102/USB_C
+    # (the genuine +5V source, from the host's USB port) get placed before this
+    # template runs. power: 5v is honored because of the CP2102, not the AMS1117.
     it = _mcp_intent(device="S", ports=2, group="per_sensor", power="5v")
     expand_intent(it)
     assert not any(g.kind == "expander_terminals_power" for g in it.gaps)
     assert any("+5V" in lg.positions for lg in it.connector_legends)
+
+
+def test_power_5v_native_usb_board_with_only_ams1117_downgrades_with_gap():
+    """Regression for _FIVE_V_SOURCES including AMS1117: an ESP32-S3 board
+    (needs_3v3=true, native_usb=true) places an AMS1117 for the 3v3 logic
+    rail, but native USB means NO CP2102/USB_C block runs at all -- there is
+    no genuine +5V source anywhere on this board. AMS1117 being wrongly
+    classified as a +5V source used to make has_5v true anyway, offering a
+    "+5V" terminal tap with nothing actually driving that net to 5V."""
+    it = DesignIntent()
+    it.mcu = Mcu(ref="U1", part="ESP32-S3-WROOM-1", lib_id="RF_Module:ESP32-S3-WROOM-1")
+    it.peripherals = [Peripheral(
+        ref="U3", type="MCP23017", lib_id="Interface_Expansion:MCP23017x-x-SO",
+        alt_lib_ids=["Interface_Expansion:MCP23017_SO"], value="MCP23017", bus="I2C")]
+    it.nets = [Net("I2C_SDA", "peripheral", "high",
+                   [Endpoint(ref="U1", gpio=21), Endpoint(ref="U3", role="SDA")])]
+    apply_sidecar(it, BoardSidecar(
+        expander_terminals={"U3": {"device": "S", "ports": 2, "power": "5v"}}))
+    expand_intent(it)
+    assert not any(p.type in ("CP2102", "USB_C") for p in it.peripherals)  # native USB
+    assert any(p.type == "AMS1117" for p in it.peripherals)                # 3v3 logic rail
+    assert any(g.kind == "expander_terminals_power" for g in it.gaps)
+    assert all("+5V" not in lg.positions for lg in it.connector_legends)
 
 
 def test_power_5v_without_rail_downgrades_with_gap():
