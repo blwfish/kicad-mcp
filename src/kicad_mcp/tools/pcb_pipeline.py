@@ -394,6 +394,17 @@ def _step_add_mounting_holes(pcb_path: str, holes: Dict[str, Any]) -> Dict[str, 
     fail), and the ``Outline().NewOutline()/Append`` zone build.
     """
     count = holes.get("count", 0)
+    # sidecar._validate_mounting_holes enforces count in {0, 2, 4} on the
+    # board.yaml path, but design(operation="import_intent") hands
+    # DesignIntent.source["mounting_holes"] straight to
+    # _resolve_mounting_holes with no validation at all -- an invalid count
+    # (e.g. 3) used to fall through to the `else` branch below and silently
+    # place only 2 holes while reporting status="ok", never surfacing that
+    # fewer holes were placed than requested. Validate here too, at the
+    # actual point of use, so both paths are covered by one check.
+    if isinstance(count, bool) or count not in (0, 2, 4):
+        return {"status": "error",
+                "error": f"mounting_holes.count must be 0, 2, or 4 (got {count!r})"}
     if count == 0:
         return {"status": "ok", "holes_added": 0, "skipped": "count=0"}
 
