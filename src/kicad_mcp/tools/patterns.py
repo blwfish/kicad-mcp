@@ -10,6 +10,7 @@ from fastmcp import Context
 
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.netlist_parser import extract_netlist
+from kicad_mcp.utils.path_validation import validate_project_path
 from kicad_mcp.utils.pattern_recognition import (
     identify_amplifiers,
     identify_digital_interfaces,
@@ -25,13 +26,14 @@ async def _op_identify_circuit_patterns(
     schematic_path: str, ctx: Context | None
 ) -> Dict[str, Any]:
     """Identify common circuit patterns in a KiCad schematic."""
-    if not os.path.exists(schematic_path):
+    # os.path.exists() only checked existence -- unlike every _op_* in the
+    # pcb_*.py routers, it never went through validate_project_path, so this
+    # entry point bypassed the path-traversal defense (KICAD_MCP_STRICT_PATHS).
+    _pv_err = validate_project_path(schematic_path)
+    if _pv_err:
         if ctx:
-            await ctx.info(f"Schematic file not found: {schematic_path}")
-        return {
-            "status": "error",
-            "error": f"Schematic file not found: {schematic_path}",
-        }
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     if ctx:
         await ctx.report_progress(10, 100)
@@ -159,13 +161,11 @@ async def _op_analyze_project_circuit_patterns(
     project_path: str, ctx: Context | None
 ) -> Dict[str, Any]:
     """Identify circuit patterns in a KiCad project's schematic."""
-    if not os.path.exists(project_path):
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
         if ctx:
-            await ctx.info(f"Project not found: {project_path}")
-        return {
-            "status": "error",
-            "error": f"Project not found: {project_path}",
-        }
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     if ctx:
         await ctx.report_progress(10, 100)
