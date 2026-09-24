@@ -308,6 +308,30 @@ def test_meta_gate_is_not_vacuous():
     assert set(dict(_GOOD_PERIPHERAL, mystery_pins=["X"])) - known == {"mystery_pins"}
 
 
+def test_mcu_field_registries_match_mcuinfo_typeddict():
+    """finding #19 (Phase 1.5, 2026-09-23 full review): cards.py's field
+    registries (_MCU_REQUIRED, MCU_PIN_FIELDS, MCU_NONPIN_FIELDS — what real
+    MCU cards actually carry, enforced by the meta-gate above) and
+    knowledge.py's McuInfo/_McuInfoBase TypedDict (what resolve_mcu's callers
+    are told they can rely on) had nothing tying them together. They'd
+    silently drifted: board_match is required on every MCU card and read
+    unconditionally by resolve_mcu, but was absent from _McuInfoBase entirely
+    -- a caller typing its result as McuInfo could not reference the one field
+    resolve_mcu's own docstring calls out as the trusted-match key."""
+    from typing import get_type_hints
+
+    from kicad_mcp.utils.firmware.cards import (
+        MCU_NONPIN_FIELDS,
+        MCU_PIN_FIELDS,
+        _MCU_REQUIRED,
+    )
+    from kicad_mcp.utils.firmware.knowledge import McuInfo
+
+    assert frozenset(_MCU_REQUIRED) == McuInfo.__required_keys__
+    assert frozenset(MCU_PIN_FIELDS) | frozenset(MCU_NONPIN_FIELDS) == \
+        frozenset(get_type_hints(McuInfo).keys())
+
+
 def test_port_pins_collected_regression():
     """The original bug: port_pins was added to the card schema but omitted from
     the integration collector, so its pins went unvalidated. Pin it: port_pins is
