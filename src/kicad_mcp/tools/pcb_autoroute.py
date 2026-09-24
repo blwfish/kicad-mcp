@@ -919,7 +919,18 @@ def _op_run_locked(
         _raw_assignments = ns.get("netclass_assignments")
         assignments = _raw_assignments if _raw_assignments is not None else {}
 
+        _KNOWN_NET_CLASS_KEYS = frozenset({
+            "nets", "track_width_mm", "clearance_mm", "via_diameter_mm", "via_drill_mm",
+        })
         for cls_name, cls_def in net_classes.items():
+            # A misspelled key (e.g. "trackWidthMm") used to be silently
+            # replaced by the hardcoded default below via .get(key, default)
+            # -- the caller's override had no effect and no signal it was
+            # ignored. Reject unknown keys instead of guessing what was meant.
+            unknown = sorted(set(cls_def) - _KNOWN_NET_CLASS_KEYS)
+            if unknown:
+                return {"error": f"net_classes[{cls_name!r}] has unrecognized key(s) "
+                                  f"{unknown}; valid keys: {sorted(_KNOWN_NET_CLASS_KEYS)}"}
             nets = cls_def.get("nets", [])
             tw = cls_def.get("track_width_mm", 0.25)
             cl = cls_def.get("clearance_mm", 0.2)

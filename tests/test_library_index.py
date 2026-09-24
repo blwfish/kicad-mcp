@@ -344,6 +344,70 @@ class TestLibraryIndex:
         conn.close()
 
 
+class TestRebuildSurvivesOneBadRow:
+    """Regression: a single INSERT failure (a NULL where NOT NULL is
+    required, a disk error, etc.) used to have no try/except at all and
+    aborted the ENTIRE rebuild, losing every entry indexed before it and
+    leaving no record of how many had already succeeded."""
+
+    class _FlakyConn:
+        """Wraps a real sqlite3.Connection; sqlite3.Connection is a C type
+        and can't be monkeypatched directly, so a delegating proxy is used
+        to make exactly the Nth matching INSERT raise."""
+
+        def __init__(self, real_conn, fail_sql_prefix, fail_on_call):
+            self._real = real_conn
+            self._fail_sql_prefix = fail_sql_prefix
+            self._fail_on_call = fail_on_call
+            self._calls = 0
+
+        def execute(self, sql, params=()):
+            if sql.startswith(self._fail_sql_prefix):
+                self._calls += 1
+                if self._calls == self._fail_on_call:
+                    import sqlite3
+                    raise sqlite3.IntegrityError("forced test failure")
+            return self._real.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def test_rebuild_footprints_skips_bad_row_not_whole_rebuild(
+        self, index, monkeypatch, caplog,
+    ):
+        import logging
+
+        real_connect = index._connect
+        flaky = self._FlakyConn(real_connect(), "INSERT INTO footprints ", fail_on_call=2)
+        monkeypatch.setattr(index, "_connect", lambda: flaky)
+
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.library_index"):
+            count = index.rebuild_footprints()
+
+        assert count == 3  # 4 real footprints, 1 skipped
+        assert any("INSERT failed" in r.message for r in caplog.records)
+        assert any("skipped 1 malformed" in r.message for r in caplog.records)
+        # the rebuild actually completed (fts5 table populated, no crash)
+        conn = real_connect()
+        assert conn.execute("SELECT COUNT(*) FROM footprints").fetchone()[0] == 3
+        conn.close()
+
+    def test_rebuild_symbols_skips_bad_row_not_whole_rebuild(
+        self, index, monkeypatch, caplog,
+    ):
+        import logging
+
+        real_connect = index._connect
+        flaky = self._FlakyConn(real_connect(), "INSERT INTO symbols ", fail_on_call=1)
+        monkeypatch.setattr(index, "_connect", lambda: flaky)
+
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.library_index"):
+            count = index.rebuild_symbols()
+
+        assert count == 2  # 3 real symbols, 1 skipped
+        assert any("INSERT failed" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Footprint search tests
 # ---------------------------------------------------------------------------

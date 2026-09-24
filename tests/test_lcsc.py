@@ -764,6 +764,21 @@ class TestDbQueries:
                                    max_results=10, db_path=db)
         assert all(r.get("package") == "SOT-223" for r in results)
 
+    def test_search_package_filter_case_insensitive(self, tmp_path):
+        """Regression: the SQL prefilter used exact `package = ?` (case
+        sensitive), while _score_package (the Python-side scorer) normalizes
+        case before comparing -- package="sot-223" scores a "SOT-223" row as
+        a perfect match (1.0), but the SQL prefilter had already excluded
+        that row before the scorer ever saw it, returning zero results for a
+        query the scorer itself considers a perfect match."""
+        db, meta = _mock_db(tmp_path)
+        exact_case = search_components("regulator", package="SOT-223",
+                                       assembly_tier="any", max_results=10, db_path=db)
+        lower_case = search_components("regulator", package="sot-223",
+                                       assembly_tier="any", max_results=10, db_path=db)
+        assert len(exact_case) >= 1
+        assert {r["lcsc"] for r in lower_case} == {r["lcsc"] for r in exact_case}
+
     def test_search_respects_max_results(self, tmp_path):
         db, meta = _mock_db(tmp_path)
         results = search_components("regulator", assembly_tier="any", max_results=2, db_path=db)
