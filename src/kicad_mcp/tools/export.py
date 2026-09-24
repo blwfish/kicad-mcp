@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 import zipfile
 from typing import Any, Dict, Optional
 
@@ -44,6 +45,15 @@ def _op_gerbers(
         output_dir = os.path.join(pcb_dir, "gerbers")
 
     os.makedirs(output_dir, exist_ok=True)
+
+    # output_dir is reused across runs (exist_ok=True); a stale file left
+    # over from a PREVIOUS export -- e.g. a different board's gerber that
+    # doesn't share a filename with anything this run writes -- used to be
+    # silently swept into "all_files" below (whose comment assumed the
+    # directory "is freshly created per export and contains only kicad-cli
+    # output") and shipped into the fab-package ZIP. Record the start time
+    # so only files this run actually wrote/touched are treated as output.
+    export_start_time = time.time()
 
     errors = []
 
@@ -97,17 +107,25 @@ def _op_gerbers(
         # retry per-step instead of parsing a joined string.
         return {"error": f"{len(errors)} export step(s) failed", "errors": errors, "error_count": len(errors)}
 
-    # output_dir is freshly created per export and contains only kicad-cli
-    # output, so globbing everything is correct — picks up *.gbr (modern
-    # KiCad), *.gtl/.gbl/.gto/etc. (RS-274X layer extensions), *.drl/.xln
-    # (drill), *.gbrjob (fab job manifest), and anything else kicad-cli
-    # produces. The earlier *.gbr-only glob silently shipped fab packages
-    # missing layers.
+    # Glob everything in output_dir — picks up *.gbr (modern KiCad),
+    # *.gtl/.gbl/.gto/etc. (RS-274X layer extensions), *.drl/.xln (drill),
+    # *.gbrjob (fab job manifest), and anything else kicad-cli produces (the
+    # earlier *.gbr-only glob silently shipped fab packages missing layers).
+    # output_dir is reused across runs (exist_ok=True above), so filter to
+    # files this run actually wrote/touched -- a small tolerance covers
+    # coarse filesystem mtime resolution (e.g. FAT32's 2s granularity).
+    all_paths = [os.path.join(output_dir, f) for f in os.listdir(output_dir)]
     all_files = sorted(
-        os.path.join(output_dir, f)
-        for f in os.listdir(output_dir)
-        if os.path.isfile(os.path.join(output_dir, f))
+        p for p in all_paths
+        if os.path.isfile(p) and os.path.getmtime(p) >= export_start_time - 1.0
     )
+    stale_files = sorted(
+        os.path.basename(p) for p in all_paths
+        if os.path.isfile(p) and os.path.getmtime(p) < export_start_time - 1.0
+    )
+    if stale_files:
+        logger.warning("Ignoring %d stale file(s) in %s left over from a "
+                        "previous export: %s", len(stale_files), output_dir, stale_files)
     gerber_files = [f for f in all_files if not (f.endswith(".drl") or f.endswith(".xln"))]
     drill_files = [f for f in all_files if f.endswith(".drl") or f.endswith(".xln")]
 
@@ -133,6 +151,8 @@ def _op_gerbers(
         "drill_count": len(drill_files),
         "total_files": len(all_files),
     }
+    if stale_files:
+        result["ignored_stale_files"] = stale_files
 
     if create_zip:
         pcb_name = os.path.splitext(os.path.basename(pcb_path))[0]
