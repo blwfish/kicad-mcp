@@ -73,6 +73,65 @@ def _events_by_rule(events, rule: str):
 
 
 # ---------------------------------------------------------------------------
+# _looks_like_crystal / _power_symbol_kind classification drift
+# ---------------------------------------------------------------------------
+
+class TestLooksLikeCrystalDrift:
+    """Regression: pattern_recognition.py's identify_oscillators checks
+    BOTH "CRYSTAL" and "XTAL" in a component's lib_id, but this module's
+    own _looks_like_crystal only checked "crystal" -- a real drift between
+    the two classifiers for a lib_id like "Device:XTAL_HC49" with a
+    reference that doesn't start with Y/X."""
+
+    def test_crystal_lib_id_detected(self):
+        from kicad_mcp.utils.placement.conventions import _looks_like_crystal
+        components = {"Q1": _comp("Q1", lib_id="Device:Crystal")}
+        assert _looks_like_crystal("Q1", components) is True
+
+    def test_xtal_lib_id_detected(self):
+        from kicad_mcp.utils.placement.conventions import _looks_like_crystal
+        components = {"Q1": _comp("Q1", lib_id="Device:XTAL_HC49")}
+        assert _looks_like_crystal("Q1", components) is True
+
+    def test_y_prefix_ref_detected_regardless_of_lib_id(self):
+        from kicad_mcp.utils.placement.conventions import _looks_like_crystal
+        components = {"Y1": _comp("Y1", lib_id="Device:Resonator")}
+        assert _looks_like_crystal("Y1", components) is True
+
+    def test_unrelated_component_not_detected(self):
+        from kicad_mcp.utils.placement.conventions import _looks_like_crystal
+        components = {"R1": _comp("R1", lib_id="Device:R")}
+        assert _looks_like_crystal("R1", components) is False
+
+
+class TestPowerSymbolKindDrift:
+    """Regression: pattern_recognition.py's own ground-net keyword list is
+    ["GND", "AGND", "DGND", "VSS"] -- this module's _power_symbol_kind
+    checked "GND"/"EARTH" but not "VSS", a real drift for that one keyword
+    (AGND/DGND are already covered as substrings of "GND")."""
+
+    def test_gnd_is_ground(self):
+        from kicad_mcp.utils.placement.conventions import _power_symbol_kind
+        components = {"PWR1": _comp("PWR1", lib_id="power:GND")}
+        assert _power_symbol_kind("PWR1", components) == "ground"
+
+    def test_earth_is_ground(self):
+        from kicad_mcp.utils.placement.conventions import _power_symbol_kind
+        components = {"PWR1": _comp("PWR1", lib_id="power:EARTH")}
+        assert _power_symbol_kind("PWR1", components) == "ground"
+
+    def test_vss_is_ground(self):
+        from kicad_mcp.utils.placement.conventions import _power_symbol_kind
+        components = {"PWR1": _comp("PWR1", lib_id="power:VSS")}
+        assert _power_symbol_kind("PWR1", components) == "ground"
+
+    def test_vcc_is_rail_not_ground(self):
+        from kicad_mcp.utils.placement.conventions import _power_symbol_kind
+        components = {"PWR1": _comp("PWR1", lib_id="power:+3V3")}
+        assert _power_symbol_kind("PWR1", components) == "rail"
+
+
+# ---------------------------------------------------------------------------
 # Rule 1 — decap_below_ic
 # ---------------------------------------------------------------------------
 
