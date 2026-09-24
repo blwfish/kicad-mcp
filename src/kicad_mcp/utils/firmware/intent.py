@@ -370,6 +370,7 @@ def candidate_devices(parsed: ParsedFirmware) -> list[tuple[str, Optional[int]]]
 
 def build_intent(
     parsed: ParsedFirmware, *, firmware_path: str, board_id: Optional[str],
+    parse_skip_counts: Optional[dict[str, int]] = None,
 ) -> DesignIntent:
     """Assemble a DesignIntent from parsed firmware. Deterministic ordering."""
     intent = DesignIntent()
@@ -528,6 +529,11 @@ def build_intent(
             for m in parsed.other
         ],
         "unparsed_count": len(parsed.other),
+        # Fragments the const-decl feeder couldn't attach to any Macro at all
+        # (e.g. a bare array declarator) -- see parse_const_decls's docstring.
+        # Always present (even empty) so a caller can tell "genuinely none"
+        # from "the caller didn't pass skip_counts".
+        "parse_skip_counts": dict(parse_skip_counts or {}),
     }
     return intent
 

@@ -289,8 +289,10 @@ def _op_import(*, firmware_path: Optional[str], out_path: Optional[str]) -> dict
     # Select the active #if branch for this MCU target before extracting macros
     # (firmware wraps per-target pin maps in `#if CONFIG_IDF_TARGET_*`).
     text = select_active_branches(src.text, idf_target_defines(board))
-    parsed = partition(parse_macros(text))
-    intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
+    parse_skip_counts: dict[str, int] = {}
+    parsed = partition(parse_macros(text, skip_counts=parse_skip_counts))
+    intent = build_intent(parsed, firmware_path=str(cfg), board_id=board,
+                          parse_skip_counts=parse_skip_counts)
 
     # board.yaml sidecar (Phase 6b): firmware-blind facts (connectors, power
     # source, board size). Applied AFTER build_intent so the importer core stays
@@ -430,8 +432,10 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
         return sidecar_err
     board, _ = _resolve_board(cfg, sidecar)
     text = select_active_branches(src.text, idf_target_defines(board))
-    parsed = partition(parse_macros(text))
-    intent = build_intent(parsed, firmware_path=str(cfg), board_id=board)
+    parse_skip_counts: dict[str, int] = {}
+    parsed = partition(parse_macros(text, skip_counts=parse_skip_counts))
+    intent = build_intent(parsed, firmware_path=str(cfg), board_id=board,
+                          parse_skip_counts=parse_skip_counts)
     whoami = extract_whoami(intent.provenance)
 
     drafts: list[dict] = []
