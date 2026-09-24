@@ -517,11 +517,26 @@ class TestAuditPlacement:
         assert "continue" in script
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_script_error_propagated(self, mock_run, audit_server, pcb_file):
+    def test_script_error_returns_error_envelope_not_raises(self, mock_run, audit_server, pcb_file):
+        """Regression: run_pcbnew_script normalizes every subprocess failure to
+        RuntimeError (its documented contract), but audit() had no try/except
+        of its own -- the exception used to escape the tool call raw instead
+        of the {"status": "ok"|"error"} envelope every other failure path in
+        this router returns (same class of bug as pcb.py's ef58890 fix). This
+        test used to actively PIN the wrong (raw-propagation) behavior."""
         mock_run.side_effect = RuntimeError("pcbnew crashed")
         fn = _get_audit_fn(audit_server)
-        with pytest.raises(RuntimeError, match="pcbnew crashed"):
-            fn("placement", pcb_path=pcb_file)
+        result = fn("placement", pcb_path=pcb_file)
+        assert result == {"error": "pcbnew crashed"}
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_script_error_returns_error_envelope_for_all_operation(self, mock_run, audit_server, pcb_file):
+        """Same guarantee for operation='all', which dispatches to a
+        different _op_* helper than 'placement' above."""
+        mock_run.side_effect = RuntimeError("pcbnew crashed")
+        fn = _get_audit_fn(audit_server)
+        result = fn("all", pcb_path=pcb_file)
+        assert result == {"error": "pcbnew crashed"}
 
 
 # -- Shared helper logic tests (pure Python, no mocking needed) ---------------

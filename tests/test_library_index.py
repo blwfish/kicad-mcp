@@ -504,6 +504,40 @@ class TestSearchTruncatedBoundary:
         assert result["truncated"] is True
 
 
+class TestSearchLimitValidation:
+    """Regression: limit was forwarded straight into a SQL LIMIT clause with
+    no validation. limit=0 made SQLite return zero rows, and the truncated
+    heuristic (len(results) == limit) then read 0 == 0 -> True, falsely
+    reporting "truncated" for a query with no matches at all. limit=-1 hits
+    SQLite's "LIMIT -1 means no limit" semantics -- an unbounded query with
+    no cap, silently defeating pagination. Both are now rejected outright."""
+
+    def test_limit_zero_rejected(self, index):
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            result = _op_search("resistor", type="footprint", limit=0)
+        assert "error" in result
+        assert "limit" in result["error"]
+
+    def test_negative_limit_rejected(self, index):
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            result = _op_search("resistor", type="footprint", limit=-1)
+        assert "error" in result
+
+    def test_positive_limit_still_accepted(self, index):
+        from unittest.mock import patch
+        from kicad_mcp.tools.library import _op_search
+
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            result = _op_search("resistor", type="footprint", limit=1)
+        assert "error" not in result
+
+
 # ---------------------------------------------------------------------------
 # Multi-install cache partitioning (regression: confirmed CI bug where the
 # kicad-9.0 and kicad-10.0 integration matrix jobs, running concurrently on

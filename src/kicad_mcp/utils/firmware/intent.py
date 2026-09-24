@@ -13,7 +13,20 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional, get_args
+
+# The closed vocabulary for Bus.part_provenance -- 4 real producer sites
+# (bus_part_resolver.py sets "corpus"/"ambiguous", sidecar.py sets "user",
+# templates.py sets "assumed"), one bare string-equality consumer
+# (templates.py checking == "ambiguous"). A typo in any producer would
+# silently fall through templates.py's resolution logic into the "assume a
+# default part" branch -- exactly the part-substitution bug class this
+# feature exists to prevent. Literal[...] makes mypy catch a typo'd producer
+# value at type-check time; _PART_PROVENANCE_VALUES (derived from it, not
+# hand-duplicated) is the runtime check for a Bus built from external dict
+# data, where the Literal type hint alone is unenforced.
+PartProvenance = Literal["corpus", "user", "ambiguous", "assumed"]
+_PART_PROVENANCE_VALUES = frozenset(get_args(PartProvenance))
 
 import yaml
 
@@ -180,11 +193,14 @@ class Bus:
     # Part resolution (C4): the SPECIFIC part the user declared for this bus,
     # determined from the firmware corpus — NEVER invented. ``resolved_part`` is a
     # canonical key (e.g. "INMP441"); None = unresolved (no/ambiguous evidence).
-    # ``part_provenance``: "corpus" (found in firmware) | "user" (board.yaml).
+    # ``part_provenance`` (see PartProvenance above for the full 4-value
+    # vocabulary): "corpus" (found in firmware) | "user" (board.yaml) |
+    # "ambiguous" (firmware named more than one candidate) | "assumed" (a
+    # template fell back to a default part).
     # ``part_is_assumption``: set True only when a template falls back to a default
     # part because the resolved one is absent (then a gap discloses it).
     resolved_part: Optional[str] = None
-    part_provenance: Optional[str] = None
+    part_provenance: Optional[PartProvenance] = None
     part_is_assumption: bool = False
 
 
@@ -962,6 +978,16 @@ def validate_intent(intent: DesignIntent) -> list[str]:
             elif not (GPIO_MIN <= gpio <= GPIO_MAX):
                 errs.append(f"{where}: signal {role!r} gpio {gpio} out of range "
                             f"[{GPIO_MIN},{GPIO_MAX}]")
+        # part_provenance is a closed vocabulary (PartProvenance) but is only
+        # a Literal type hint -- unenforced at runtime for a Bus built from
+        # external dict data (from_dict's Bus(**_only_fields(Bus, b))). A
+        # typo'd value here would never match templates.py's bare
+        # `== "ambiguous"` check and silently fall through to the "assume a
+        # default part" branch -- the exact part-substitution bug class this
+        # feature exists to prevent.
+        if b.part_provenance is not None and b.part_provenance not in _PART_PROVENANCE_VALUES:
+            errs.append(f"{where}: part_provenance {b.part_provenance!r} not in "
+                        f"{sorted(_PART_PROVENANCE_VALUES)}")
 
     # --- honesty: the always-on gap manifest must be present (explicit) ---
     gap_kinds = {g.kind for g in intent.gaps}

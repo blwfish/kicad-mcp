@@ -12,6 +12,7 @@ import pytest
 from fastmcp import FastMCP
 
 from kicad_mcp.tools.pcb import register_pcb_tools
+from kicad_mcp.tools.pcb_silkscreen import _op_add_text, _op_edit_text, _op_update_silkscreen
 
 
 # -- Fixtures ----------------------------------------------------------------
@@ -295,3 +296,41 @@ class TestEditText:
         fn("edit_text", pcb_path=pcb_file, text="Rev 1.0", layer="B.SilkS")
         params = mock_run.call_args[1]["params"]
         assert params["layer"] == "B.SilkS"
+
+
+# ---------------------------------------------------------------------------
+# Layer-name validation guard (add_text / update_silkscreen / edit_text)
+# ---------------------------------------------------------------------------
+
+class TestLayerValidationGuard:
+    """Regression: board.GetLayerID(name) returns -1 for an unknown/misspelled
+    layer name, and SetLayer(-1) does NOT raise -- an unrecognized layer used
+    to be silently accepted and saved as UNDEFINED_LAYER with status=ok. A
+    sibling fix (0d79135) added this guard to pcb_zones.py/pcb_routing.py but
+    never to these three pcb_silkscreen.py call sites. Can't run pcbnew here,
+    so this pins the guard's presence in the emitted script -- matching this
+    repo's usual boundary-ops test approach for embedded-script logic."""
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_add_text_script_guards_unknown_layer(self, mock_run, pcb_file):
+        mock_run.return_value = {"status": "ok", "text": "X", "x_mm": 0, "y_mm": 0, "layer": "F.SilkS"}
+        _op_add_text(pcb_file, "X", 0, 0, layer="F.SilkS")
+        script = mock_run.call_args[0][0]
+        assert "_layer_id < 0" in script
+        assert "unknown layer" in script
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_update_silkscreen_script_guards_unknown_layer(self, mock_run, pcb_file):
+        mock_run.return_value = {"status": "ok"}
+        _op_update_silkscreen(pcb_file, "R1", layer="F.SilkS")
+        script = mock_run.call_args[0][0]
+        assert "_layer_id < 0" in script
+        assert "unknown layer" in script
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_edit_text_script_guards_unknown_layer(self, mock_run, pcb_file):
+        mock_run.return_value = {"status": "ok", "old_text": "X", "new_text": "X", "items_updated": 1}
+        _op_edit_text(pcb_file, "X", layer="F.SilkS")
+        script = mock_run.call_args[0][0]
+        assert "_layer_id < 0" in script
+        assert "unknown layer" in script

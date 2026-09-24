@@ -120,10 +120,20 @@ async def _op_autofix(
     with pcb_write_lock(pcb_path) as _acquired:
         if not _acquired:
             return busy_error(pcb_path)
-        return await _op_autofix_locked(
-            pcb_path, project_path, fix_routing, fix_silkscreen,
-            fix_placement, autoroute_passes,
-        )
+        try:
+            return await _op_autofix_locked(
+                pcb_path, project_path, fix_routing, fix_silkscreen,
+                fix_placement, autoroute_passes,
+            )
+        except RuntimeError as exc:
+            # run_pcbnew_script normalizes every subprocess failure to
+            # RuntimeError (its documented contract) -- this locked body
+            # calls it 3 separate times with no wrapper of its own, so any
+            # one of those failures escaped the tool call raw instead of the
+            # {"status": "ok"|"error"} envelope every other failure path
+            # here returns (same class of bug as pcb_autoroute.py's fix).
+            logger.error("drc autofix failed for %s: %s", pcb_path, exc)
+            return {"error": str(exc)}
 
 
 async def _op_autofix_locked(

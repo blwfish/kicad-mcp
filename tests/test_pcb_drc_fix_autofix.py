@@ -18,6 +18,8 @@ module each name is imported FROM, not kicad_mcp.tools.pcb_drc_fix.
 import asyncio
 from unittest.mock import patch
 
+import pytest
+
 from kicad_mcp.tools.pcb_drc_fix import _op_autofix
 
 _ROUTING_DRC = {
@@ -117,3 +119,31 @@ class TestRoutingFixFailure:
         assert result["status"] == "ok"
         assert result["routing_regressed"] is False
         assert any("skipped" in a for a in result["actions_taken"])
+
+
+class TestAutofixSubprocessErrorEnvelope:
+    """Regression: run_pcbnew_script normalizes every subprocess failure to
+    RuntimeError (its documented contract), but _op_autofix's locked body
+    calls it 3 separate times with no try/except of its own -- the exception
+    used to escape the tool call raw instead of the {"error": ...} envelope
+    every other failure path in this router returns (same class of bug as
+    pcb_autoroute.py's _op_run_locked fix)."""
+
+    _PLACEMENT_DRC = {
+        "status": "ok",
+        "total_violations": 2,
+        "violation_categories": {"courtyards_overlap": 2},
+    }
+
+    @patch("kicad_mcp.utils.pcbnew_bridge.run_pcbnew_script")
+    @patch("kicad_mcp.tools.drc_impl.cli_drc.run_drc_via_cli")
+    @patch("os.path.exists", return_value=True)
+    def test_placement_fix_subprocess_crash_returns_error_not_raises(
+        self, mock_exists, mock_drc, mock_script,
+    ):
+        mock_drc.return_value = self._PLACEMENT_DRC
+        mock_script.side_effect = RuntimeError("pcbnew crashed")
+
+        result = _run(fix_routing=False, fix_silkscreen=False)
+
+        assert result == {"error": "pcbnew crashed"}

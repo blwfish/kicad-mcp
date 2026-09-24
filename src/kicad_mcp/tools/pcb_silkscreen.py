@@ -46,7 +46,11 @@ if board is None:
 txt = pcbnew.PCB_TEXT(board)
 txt.SetText(params["text"])
 txt.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(params["x_mm"]), pcbnew.FromMM(params["y_mm"])))
-txt.SetLayer(board.GetLayerID(params["layer"]))
+_layer_id = board.GetLayerID(params["layer"])
+if _layer_id < 0:   # GetLayerID returns -1 for an unknown name; SetLayer(-1) won't raise
+    print(json.dumps({"error": f"unknown layer {params['layer']!r}"}))
+    sys.exit(0)
+txt.SetLayer(_layer_id)
 txt.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(params["size_mm"]), pcbnew.FromMM(params["size_mm"])))
 txt.SetTextThickness(pcbnew.FromMM(params["thickness_mm"]))
 if params["rotation_deg"] != 0:
@@ -208,7 +212,11 @@ if params["thickness_mm"] is not None:
 if params["angle_deg"] is not None:
     text.SetTextAngle(pcbnew.EDA_ANGLE(params["angle_deg"], pcbnew.DEGREES_T))
 if params["layer"] is not None:
-    text.SetLayer(board.GetLayerID(params["layer"]))
+    _layer_id = board.GetLayerID(params["layer"])
+    if _layer_id < 0:   # GetLayerID returns -1 for an unknown name; SetLayer(-1) won't raise
+        print(json.dumps({"error": f"unknown layer {params['layer']!r}"}))
+        sys.exit(0)
+    text.SetLayer(_layer_id)
 
 board.Save(pcb_path)
 
@@ -320,7 +328,11 @@ elif params["y_mm"] is not None:
     pos = item.GetPosition()
     item.SetPosition(pcbnew.VECTOR2I(pos.x, pcbnew.FromMM(params["y_mm"])))
 if params["layer"] is not None:
-    item.SetLayer(board.GetLayerID(params["layer"]))
+    _layer_id = board.GetLayerID(params["layer"])
+    if _layer_id < 0:   # GetLayerID returns -1 for an unknown name; SetLayer(-1) won't raise
+        print(json.dumps({"error": f"unknown layer {params['layer']!r}"}))
+        sys.exit(0)
+    item.SetLayer(_layer_id)
 if params["size_mm"] is not None:
     item.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(params["size_mm"]), pcbnew.FromMM(params["size_mm"])))
 if params["thickness_mm"] is not None:
