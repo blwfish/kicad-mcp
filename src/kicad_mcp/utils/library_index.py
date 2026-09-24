@@ -396,6 +396,7 @@ class LibraryIndex:
             """)
 
             count = 0
+            insert_errors = 0
             scan_dirs = [self.footprint_lib_path] + [
                 d for d in self.extra_footprint_dirs if os.path.isdir(d)
             ]
@@ -414,11 +415,24 @@ class LibraryIndex:
                         meta = _parse_kicad_mod(mod_file.path)
                         if not meta["name"]:
                             meta["name"] = mod_file.name[:-10]
-                        conn.execute(
-                            "INSERT INTO footprints (library, name, description, tags, pad_count) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (library, meta["name"], meta["description"], meta["tags"], meta["pad_count"]),
-                        )
+                        try:
+                            conn.execute(
+                                "INSERT INTO footprints (library, name, description, tags, pad_count) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                (library, meta["name"], meta["description"], meta["tags"], meta["pad_count"]),
+                            )
+                        except sqlite3.Error as e:
+                            # One bad row (a NULL where NOT NULL is required,
+                            # a corrupt .kicad_mod producing an unexpected
+                            # type, etc.) used to abort the ENTIRE rebuild
+                            # with no record of how many entries had already
+                            # been inserted successfully.
+                            insert_errors += 1
+                            logger.warning(
+                                "Skipping footprint %s:%s -- INSERT failed: %s",
+                                library, meta["name"], e,
+                            )
+                            continue
                         count += 1
 
             conn.execute("""
@@ -431,6 +445,10 @@ class LibraryIndex:
             conn.commit()
             conn.close()
 
+        if insert_errors:
+            logger.warning("Footprint index rebuild skipped %d malformed entr%s "
+                            "(see preceding warnings for details)",
+                            insert_errors, "y" if insert_errors == 1 else "ies")
         logger.info("Indexed %d footprints in %.2fs", count, time.monotonic() - start)
         return count
 
@@ -536,6 +554,7 @@ class LibraryIndex:
             """)
 
             count = 0
+            insert_errors = 0
             scan_dirs = [self.symbol_lib_path] + [
                 d for d in self.extra_symbol_dirs if os.path.isdir(d)
             ]
@@ -550,18 +569,29 @@ class LibraryIndex:
                     seen_libs.add(lib_name)
                     for sym in _parse_kicad_sym(entry.path):
                         lib_id = f"{sym['library']}:{sym['name']}"
-                        conn.execute(
-                            "INSERT INTO symbols (library, name, lib_id, description, keywords, pin_count) "
-                            "VALUES (?, ?, ?, ?, ?, ?)",
-                            (
-                                sym["library"],
-                                sym["name"],
-                                lib_id,
-                                sym["description"],
-                                sym["keywords"],
-                                sym["pin_count"],
-                            ),
-                        )
+                        try:
+                            conn.execute(
+                                "INSERT INTO symbols (library, name, lib_id, description, keywords, pin_count) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                (
+                                    sym["library"],
+                                    sym["name"],
+                                    lib_id,
+                                    sym["description"],
+                                    sym["keywords"],
+                                    sym["pin_count"],
+                                ),
+                            )
+                        except sqlite3.Error as e:
+                            # Same rationale as rebuild_footprints: one bad
+                            # row used to abort the entire rebuild with no
+                            # record of how many entries had already been
+                            # inserted successfully.
+                            insert_errors += 1
+                            logger.warning(
+                                "Skipping symbol %s -- INSERT failed: %s", lib_id, e,
+                            )
+                            continue
                         count += 1
 
             conn.execute("""
@@ -574,6 +604,10 @@ class LibraryIndex:
             conn.commit()
             conn.close()
 
+        if insert_errors:
+            logger.warning("Symbol index rebuild skipped %d malformed entr%s "
+                            "(see preceding warnings for details)",
+                            insert_errors, "y" if insert_errors == 1 else "ies")
         logger.info("Indexed %d symbols in %.2fs", count, time.monotonic() - start)
         return count
 

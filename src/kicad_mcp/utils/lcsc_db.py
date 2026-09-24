@@ -679,7 +679,14 @@ def _ranked_candidates(
             pass
 
         if package:
-            where_clauses.append("package = ?")
+            # Case-insensitive: the Python-side scorer below (_score_package)
+            # normalizes case (and hyphens) before comparing, so a request
+            # like package="sot-223" scores a "SOT-223" row as a perfect
+            # match -- but an exact `package = ?` SQL prefilter is
+            # case-sensitive and would have already excluded that row before
+            # the scorer ever saw it, silently returning zero results for a
+            # query the scorer itself considers a perfect match.
+            where_clauses.append("UPPER(package) = UPPER(?)")
             params.append(package)
 
         sql = f"SELECT * FROM components WHERE {' AND '.join(where_clauses)}"
