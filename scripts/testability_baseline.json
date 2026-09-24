@@ -26,7 +26,6 @@
     "tests/test_pcb_footprints.py::test_returns_placement_info",
     "tests/test_pcb_footprints.py::test_with_keepout_zones",
     "tests/test_pcb_keepout.py::test_all_clean",
-    "tests/test_pcb_keepout.py::test_all_full_calls_each_sub_op",
     "tests/test_pcb_keepout.py::test_all_summary_default",
     "tests/test_pcb_keepout.py::test_clearance_violation_at_threshold_produces_no_warning",
     "tests/test_pcb_keepout.py::test_clearance_warning",
