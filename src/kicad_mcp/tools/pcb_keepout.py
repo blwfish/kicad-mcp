@@ -1313,97 +1313,111 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
                   text_overlap_count, text_overlaps}
                  Shared implementation with pcb.check_silkscreen_overlaps.
         """
-        if detail not in ("summary", "full"):
-            return {"error": f"detail must be 'summary' or 'full', got {detail!r}"}
+        def _dispatch() -> Dict[str, Any]:
+            if detail not in ("summary", "full"):
+                return {"error": f"detail must be 'summary' or 'full', got {detail!r}"}
 
-        if operation == "all":
-            if pcb_path is None:
-                return {"error": "operation='all' requires 'pcb_path'"}
-            _pv_err = validate_project_path(pcb_path)
-            if _pv_err:
-                return {"error": _pv_err}
-            if detail == "full":
-                return _op_all_full(pcb_path, min_clearance_mm=min_clearance_mm)
-            return _op_all_summary(pcb_path, min_clearance_mm=min_clearance_mm)
+            if operation == "all":
+                if pcb_path is None:
+                    return {"error": "operation='all' requires 'pcb_path'"}
+                _pv_err = validate_project_path(pcb_path)
+                if _pv_err:
+                    return {"error": _pv_err}
+                if detail == "full":
+                    return _op_all_full(pcb_path, min_clearance_mm=min_clearance_mm)
+                return _op_all_summary(pcb_path, min_clearance_mm=min_clearance_mm)
 
-        if operation == "placement":
-            if pcb_path is None:
-                return {"error": "operation='placement' requires 'pcb_path'"}
-            result = _op_placement(pcb_path)
-            if result.get("violations_count") == 0:
-                result["note"] = (
-                    "placement checks keepout-zone overlap and board-outline "
-                    "overhang only, using each footprint's bounding box — it "
-                    "does not cover pad-to-pad clearance or silkscreen "
-                    "overlap. Use audit(operation='all') for a combined "
-                    "check before declaring the board clean."
-                )
-            return result
+            if operation == "placement":
+                if pcb_path is None:
+                    return {"error": "operation='placement' requires 'pcb_path'"}
+                result = _op_placement(pcb_path)
+                if result.get("violations_count") == 0:
+                    result["note"] = (
+                        "placement checks keepout-zone overlap and board-outline "
+                        "overhang only, using each footprint's bounding box — it "
+                        "does not cover pad-to-pad clearance or silkscreen "
+                        "overlap. Use audit(operation='all') for a combined "
+                        "check before declaring the board clean."
+                    )
+                return result
 
-        if operation == "footprint_overlaps":
-            if pcb_path is None:
-                return {"error": "operation='footprint_overlaps' requires 'pcb_path'"}
-            return _op_footprint_overlaps(
-                pcb_path,
-                min_clearance_mm=min_clearance_mm,
-                use_courtyard=use_courtyard,
-            )
-
-        if operation == "pad_clearances":
-            if pcb_path is None:
-                return {"error": "operation='pad_clearances' requires 'pcb_path'"}
-            return _op_pad_clearances(pcb_path, min_clearance_mm=min_clearance_mm)
-
-        if operation == "validate_one":
-            if pcb_path is None:
-                return {"error": "operation='validate_one' requires 'pcb_path'"}
-            if library is None:
-                return {"error": "operation='validate_one' requires 'library'"}
-            if footprint_name is None:
-                return {"error": "operation='validate_one' requires 'footprint_name'"}
-            if x_mm is None:
-                return {"error": "operation='validate_one' requires 'x_mm'"}
-            if y_mm is None:
-                return {"error": "operation='validate_one' requires 'y_mm'"}
-            return _op_validate_one(
-                pcb_path, library, footprint_name, x_mm, y_mm, rotation_deg
-            )
-
-        if operation == "auto_fix_placement":
-            if pcb_path is None:
-                return {"error": "operation='auto_fix_placement' requires 'pcb_path'"}
-            with pcb_write_lock(pcb_path) as _acquired:
-                if not _acquired:
-                    return busy_error(pcb_path)
-                return _op_auto_fix_placement(
-                    pcb_path, spacing_mm=spacing_mm, max_passes=max_passes
+            if operation == "footprint_overlaps":
+                if pcb_path is None:
+                    return {"error": "operation='footprint_overlaps' requires 'pcb_path'"}
+                return _op_footprint_overlaps(
+                    pcb_path,
+                    min_clearance_mm=min_clearance_mm,
+                    use_courtyard=use_courtyard,
                 )
 
-        if operation == "keepouts":
-            if pcb_path is None:
-                return {"error": "operation='keepouts' requires 'pcb_path'"}
-            return _op_keepouts(pcb_path)
+            if operation == "pad_clearances":
+                if pcb_path is None:
+                    return {"error": "operation='pad_clearances' requires 'pcb_path'"}
+                return _op_pad_clearances(pcb_path, min_clearance_mm=min_clearance_mm)
 
-        if operation == "pre_route_check":
-            if pcb_path is None:
-                return {"error": "operation='pre_route_check' requires 'pcb_path'"}
-            return _op_pre_route_check(pcb_path, min_clearance_mm=min_clearance_mm)
+            if operation == "validate_one":
+                if pcb_path is None:
+                    return {"error": "operation='validate_one' requires 'pcb_path'"}
+                if library is None:
+                    return {"error": "operation='validate_one' requires 'library'"}
+                if footprint_name is None:
+                    return {"error": "operation='validate_one' requires 'footprint_name'"}
+                if x_mm is None:
+                    return {"error": "operation='validate_one' requires 'x_mm'"}
+                if y_mm is None:
+                    return {"error": "operation='validate_one' requires 'y_mm'"}
+                return _op_validate_one(
+                    pcb_path, library, footprint_name, x_mm, y_mm, rotation_deg
+                )
 
-        if operation == "constraints":
-            if pcb_path is None:
-                return {"error": "operation='constraints' requires 'pcb_path'"}
-            return _op_constraints(pcb_path)
+            if operation == "auto_fix_placement":
+                if pcb_path is None:
+                    return {"error": "operation='auto_fix_placement' requires 'pcb_path'"}
+                with pcb_write_lock(pcb_path) as _acquired:
+                    if not _acquired:
+                        return busy_error(pcb_path)
+                    return _op_auto_fix_placement(
+                        pcb_path, spacing_mm=spacing_mm, max_passes=max_passes
+                    )
 
-        if operation == "check_silkscreen_overlaps":
-            if pcb_path is None:
-                return {"error": "operation='check_silkscreen_overlaps' requires 'pcb_path'"}
-            return _op_check_silkscreen_overlaps(pcb_path)
+            if operation == "keepouts":
+                if pcb_path is None:
+                    return {"error": "operation='keepouts' requires 'pcb_path'"}
+                return _op_keepouts(pcb_path)
 
-        return {
-            "error": (
-                f"unknown operation {operation!r}; "
-                f"valid: all|placement|footprint_overlaps|pad_clearances|"
-                f"validate_one|auto_fix_placement|keepouts|pre_route_check|"
-                f"constraints|check_silkscreen_overlaps"
-            )
-        }
+            if operation == "pre_route_check":
+                if pcb_path is None:
+                    return {"error": "operation='pre_route_check' requires 'pcb_path'"}
+                return _op_pre_route_check(pcb_path, min_clearance_mm=min_clearance_mm)
+
+            if operation == "constraints":
+                if pcb_path is None:
+                    return {"error": "operation='constraints' requires 'pcb_path'"}
+                return _op_constraints(pcb_path)
+
+            if operation == "check_silkscreen_overlaps":
+                if pcb_path is None:
+                    return {"error": "operation='check_silkscreen_overlaps' requires 'pcb_path'"}
+                return _op_check_silkscreen_overlaps(pcb_path)
+
+            return {
+                "error": (
+                    f"unknown operation {operation!r}; "
+                    f"valid: all|placement|footprint_overlaps|pad_clearances|"
+                    f"validate_one|auto_fix_placement|keepouts|pre_route_check|"
+                    f"constraints|check_silkscreen_overlaps"
+                )
+            }
+
+        # run_pcbnew_script normalizes every subprocess failure (missing
+        # KiCad Python, script traceback, timeout, unparseable output) to
+        # RuntimeError -- its documented contract. Every _op_* helper this
+        # router calls hits it directly with no try/except of its own, so
+        # without this the exception escaped the tool call raw instead of
+        # the {"status": "ok"|"error"} envelope every other failure path
+        # here already returns (same fix as pcb.py's _safe_dispatch, ef58890).
+        try:
+            return _dispatch()
+        except RuntimeError as e:
+            logger.error("audit(%r) failed: %s", operation, e)
+            return {"error": str(e)}

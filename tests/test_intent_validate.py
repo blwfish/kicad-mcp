@@ -294,6 +294,43 @@ def test_authored_bus_with_ambiguous_signals_rejected():
     assert any("CODEC" in e and "I2S_IN" in e for e in errs)
 
 
+def test_bus_part_provenance_unrecognized_value_rejected():
+    """Regression: Bus.part_provenance is a closed 4-value vocabulary
+    (corpus/user/ambiguous/assumed) enforced only by a Literal type hint --
+    unenforced at runtime for a Bus built from external dict data (from_dict's
+    Bus(**_only_fields(Bus, b))). A typo'd value would never match
+    templates.py's bare `== "ambiguous"` check and silently fall through to
+    the "assume a default part" branch."""
+    from kicad_mcp.utils.firmware.intent import Bus, DesignIntent, Mcu, validate_intent
+    it = DesignIntent(mcu=Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E"),
+                      buses=[Bus("MIC", "I2S_IN", {"BCLK": 4, "WS": 5, "SD": 6},
+                                 part_provenance="asumed")])  # typo
+    errs = validate_intent(it)
+    assert any("part_provenance" in e and "asumed" in e for e in errs)
+
+
+def test_bus_part_provenance_recognized_values_accepted():
+    from kicad_mcp.utils.firmware.intent import (
+        Bus, DesignIntent, Mcu, _PART_PROVENANCE_VALUES, validate_intent,
+    )
+    for value in _PART_PROVENANCE_VALUES:
+        it = DesignIntent(mcu=Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E"),
+                          buses=[Bus("MIC", "I2S_IN", {"BCLK": 4, "WS": 5, "SD": 6},
+                                     part_provenance=value)])
+        errs = validate_intent(it)
+        assert not any("part_provenance" in e for e in errs), (value, errs)
+
+
+def test_bus_part_provenance_none_is_not_an_error():
+    """None means "unresolved" -- a legitimate, common state, not a typo."""
+    from kicad_mcp.utils.firmware.intent import Bus, DesignIntent, Mcu, validate_intent
+    it = DesignIntent(mcu=Mcu("U1", "ESP32-WROOM-32E", "RF_Module:ESP32-WROOM-32E"),
+                      buses=[Bus("MIC", "I2S_IN", {"BCLK": 4, "WS": 5, "SD": 6},
+                                 part_provenance=None)])
+    errs = validate_intent(it)
+    assert not any("part_provenance" in e for e in errs)
+
+
 def test_mcu_ref_must_be_the_reserved_slot():
     # H4 (release-gate): the MCU slot is canonically MCU_REF ("U1"); build_intent
     # always assigns it and BOTH validate_intent and intent_parity key the MCU off

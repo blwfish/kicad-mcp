@@ -157,18 +157,20 @@ def extract_resistance_value(value: str) -> Tuple[Optional[float], Optional[str]
     Returns:
         Tuple of (numeric value, unit) or (None, None) if parsing fails
     """
-    # Handle "4k7" (means 4.7k) FIRST -- the looser pattern below would
-    # otherwise greedily match "4"+"k" and return (4.0, "K"), silently
-    # dropping the .7.  Same shadow pattern as LM7905 (see
-    # extract_voltage_from_regulator).
-    match = re.search(r"(\d+)([kKmM])(\d+)", value)
+    # Handle "4k7" (means 4.7k) and "4R7" (means 4.7 ohm) FIRST -- the looser
+    # pattern below would otherwise greedily match just "4" and stop at the
+    # letter, silently dropping the ".7" (e.g. "4R7" -> (4.0, 'Ω') instead of
+    # (4.7, 'Ω')).  Same shadow pattern as LM7905 (see
+    # extract_voltage_from_regulator). r/R was missing from this pattern even
+    # though the fallback pattern below explicitly supports r/R as a unit.
+    match = re.search(r"(\d+)([kKmMrR])(\d+)", value)
     if match:
         try:
             value1 = int(match.group(1))
             value2 = int(match.group(3))
             resistance = float(f"{value1}.{value2}")
             unit_letter = match.group(2).lower()
-            unit = "k" if unit_letter == "k" else "M"
+            unit = "k" if unit_letter == "k" else "M" if unit_letter == "m" else "Ω"
             return resistance, unit
         except ValueError:
             pass

@@ -20,6 +20,15 @@ def _op_search(
     if type not in ("footprint", "symbol"):
         return {"error": f"type must be 'footprint' or 'symbol', got {type!r}"}
 
+    # limit is passed straight through to a SQL LIMIT clause: SQLite treats
+    # limit=0 as "return nothing" (which then made the truncated flag below
+    # falsely read True for zero real matches, since len(results)==0==limit)
+    # and a negative limit as "no limit at all" (an unbounded query with no
+    # cap, silently defeating pagination). Reject both instead of forwarding
+    # a caller mistake into SQLite-specific edge-case semantics.
+    if limit <= 0:
+        return {"error": f"limit must be a positive integer, got {limit}"}
+
     try:
         from kicad_mcp.utils.library_index import get_library_index
 

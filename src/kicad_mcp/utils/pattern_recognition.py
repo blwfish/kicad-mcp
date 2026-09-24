@@ -609,7 +609,14 @@ def identify_sensor_interfaces(
         "gyroscope": r"L3G\d+|MPU\d+|BMI\d+|LSM\d+|ICM\d+",
         "magnetometer": r"HMC\d+|QMC\d+|LSM\d+|MMC\d+|RM\d+",
         "proximity": r"APDS9960|VL53L0X|VL6180|GP2Y|VCNL4040|VCNL4010",
-        "light": r"BH1750|TSL\d+|MAX4\d+|VEML\d+|APDS9960|LTR329|OPT\d+",
+        # MAX4\d+ was previously here uncurated and matched ANY Maxim part
+        # starting with MAX4 -- including MAX4080/MAX4173/MAX4372/MAX4373/
+        # MAX40056/MAX44284 (all curated current-sense parts below). Since
+        # dict iteration is break-on-first-match and "light" is checked
+        # before "current", 6 of the 8 curated current-sense parts were
+        # silently classified as light sensors instead. Narrowed to the real
+        # Maxim ambient-light-sensor family (MAX44006/7/9).
+        "light": r"BH1750|TSL\d+|MAX4400[679]|VEML\d+|APDS9960|LTR329|OPT\d+",
         "air_quality": r"CCS811|BME680|SGP\d+|SEN\d+|MQ\d+|MiCS",
         # Curated Maxim current-sense families, not bare MAX\d+ — which caught any
         # Maxim part (MAX17048 fuel gauge, MAX9814 mic amp, MAX98357A audio amp,
