@@ -106,6 +106,30 @@ def expand_bbox(rect: dict[str, float], margin: float) -> dict[str, float]:
     }
 
 
+def compute_overhang_mm(fp_rect: dict[str, float], outline: dict[str, float]) -> dict[str, float]:
+    """Per-side overhang of ``fp_rect`` (a footprint/component body bbox) past
+    ``outline`` (the board edge), in mm. Returns a dict with only the sides
+    that actually overhang (``left_mm``/``right_mm``/``top_mm``/``bottom_mm``);
+    a side with no overhang is simply absent, never a zero entry. Unrounded --
+    callers round to whatever precision they need (a `{side}: {amount}mm`
+    diagnostic message vs. a stored `overhang_mm` field have used different
+    precisions historically; this function stays neutral on that).
+
+    Single source of truth for what was 4 independent copies of this exact
+    if/if/if/if block across pcb_footprints.py and pcb_keepout.py (finding
+    #24 of the 2026-09-23 full review's Phase 1 pass)."""
+    overhang: dict[str, float] = {}
+    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
+        overhang["left_mm"] = outline["x_min_mm"] - fp_rect["x_min_mm"]
+    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
+        overhang["right_mm"] = fp_rect["x_max_mm"] - outline["x_max_mm"]
+    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
+        overhang["top_mm"] = outline["y_min_mm"] - fp_rect["y_min_mm"]
+    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
+        overhang["bottom_mm"] = fp_rect["y_max_mm"] - outline["y_max_mm"]
+    return overhang
+
+
 def clearance_violation(a: dict[str, float], b: dict[str, float], min_clearance_mm: float) -> bool:
     """Return True if rects ``a`` and ``b`` violate ``min_clearance_mm``.
 
@@ -198,4 +222,16 @@ def expand_bbox(rect, margin):
 def clearance_violation(a, b, min_clearance_mm):
     gap = signed_gap_mm(a, b)
     return gap <= 0 or gap < min_clearance_mm
+
+def compute_overhang_mm(fp_rect, outline):
+    overhang = {}
+    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
+        overhang["left_mm"] = outline["x_min_mm"] - fp_rect["x_min_mm"]
+    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
+        overhang["right_mm"] = fp_rect["x_max_mm"] - outline["x_max_mm"]
+    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
+        overhang["top_mm"] = outline["y_min_mm"] - fp_rect["y_min_mm"]
+    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
+        overhang["bottom_mm"] = fp_rect["y_max_mm"] - outline["y_max_mm"]
+    return overhang
 """

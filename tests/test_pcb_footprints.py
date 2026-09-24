@@ -468,3 +468,64 @@ class TestSearch:
         result = fn(operation="bogus")
         assert "error" in result
         assert "unknown operation" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Real-KiCad regression: overhang warning message after the compute_overhang_mm
+# extraction (finding #24, 2026-09-23 full review).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.requires_kicad
+class TestPlaceFootprintOverhangWarningIntegration:
+    """finding #24: place_footprint/move_footprint each had their own
+    hand-copied if/if/if/if overhang computation, now both call the shared
+    compute_overhang_mm (utils/geometry.py, spliced into the embedded script
+    via GEOMETRY_HELPER/_KEEPOUT_HELPER). Verifies the mechanical extraction
+    didn't introduce a NameError or change the warning message's content."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_unavailable(self):
+        from .conftest import pcbnew_available
+        if not pcbnew_available():
+            pytest.skip("pcbnew not importable under KiCad's Python")
+
+    def test_place_footprint_overhang_message_names_every_side(self, tmp_path):
+        from kicad_mcp.tools.pcb_board import _op_create, _op_set_outline
+        from kicad_mcp.tools.pcb_footprints import _op_place_footprint
+
+        pcb_path = str(tmp_path / "overhang_test.kicad_pcb")
+        assert _op_create(pcb_path).get("status") == "ok"
+        assert _op_set_outline(pcb_path, x_mm=0, y_mm=0, width_mm=10, height_mm=10) \
+            .get("status") == "ok"
+
+        # A 0805 resistor (~2x1.25mm body) centered at the board's corner
+        # overhangs both the left and top edges simultaneously.
+        result = _op_place_footprint(
+            pcb_path, library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+            reference="R1", value="10k", x_mm=0.0, y_mm=0.0,
+        )
+        assert result.get("status") == "ok", result
+        warnings = " ".join(result.get("placement_warnings", []))
+        assert "EXTENDS BEYOND BOARD OUTLINE" in warnings, result
+        assert "left" in warnings and "top" in warnings, result
+        assert "right" not in warnings and "bottom" not in warnings, result
+
+    def test_move_footprint_overhang_message_names_every_side(self, tmp_path):
+        from kicad_mcp.tools.pcb_board import _op_create, _op_set_outline
+        from kicad_mcp.tools.pcb_footprints import _op_place_footprint, _op_move_footprint
+
+        pcb_path = str(tmp_path / "overhang_move_test.kicad_pcb")
+        assert _op_create(pcb_path).get("status") == "ok"
+        assert _op_set_outline(pcb_path, x_mm=0, y_mm=0, width_mm=10, height_mm=10) \
+            .get("status") == "ok"
+        assert _op_place_footprint(
+            pcb_path, library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+            reference="R1", value="10k", x_mm=5.0, y_mm=5.0,
+        ).get("status") == "ok"
+
+        result = _op_move_footprint(pcb_path, reference="R1", x_mm=10.0, y_mm=10.0)
+        assert result.get("status") == "ok", result
+        warnings = " ".join(result.get("placement_warnings", []))
+        assert "EXTENDS BEYOND BOARD OUTLINE" in warnings, result
+        assert "right" in warnings and "bottom" in warnings, result
+        assert "left" not in warnings and "top" not in warnings, result
