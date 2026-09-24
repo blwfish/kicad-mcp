@@ -663,6 +663,87 @@ class TestParametricAttributeCapture:
 
 
 # ---------------------------------------------------------------------------
+# Golden fixture: a REAL captured getComponentDetail response (2026-09-24,
+# part C25804, a 10k 0603 resistor). Finding #28 of the 2026-09-23 full
+# review: every _live_part_to_row/_live_attributes test above uses a
+# hand-typed dict with GUESSED field names -- if a guess is wrong, nothing
+# catches it, since the test only checks the code handles whatever shape
+# IT was given. Two of the guesses WERE wrong (see _live_part_to_row's
+# docstring): manufacturer read only "brandNameEn" (real key:
+# "componentBrandEn", always "" in practice) and each price tier read only
+# "startQuantity"/"qFrom" and "endQuantity"/"qTo" (real keys: "startNumber"/
+# "endNumber" -- every tier collapsed to qFrom=1/qTo=None). This fixture
+# pins the ACTUAL field names the real API returns, so a future rename (or
+# a revert of the fix above) is caught by an assertion against ground
+# truth, not just against another guess.
+# ---------------------------------------------------------------------------
+
+class TestLiveApiGoldenFixture:
+    FIXTURE = Path(__file__).parent / "fixtures" / "jlcpcb_live_component_sample.json"
+
+    def _real_data(self) -> dict[str, Any]:
+        payload = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+        data: dict[str, Any] = payload["data"]
+        return data
+
+    def test_fixture_has_the_real_field_names_this_module_depends_on(self):
+        # Guard the fixture itself: if it's ever replaced with a differently
+        # shaped sample, this fails loudly instead of the tests below
+        # silently exercising a different code path than intended.
+        data = self._real_data()
+        assert data["componentCode"] == "C25804"
+        assert "componentBrandEn" in data and "brandNameEn" not in data
+        assert all("startNumber" in p and "endNumber" in p for p in data["prices"])
+        assert all("startQuantity" not in p for p in data["prices"])
+
+    def test_manufacturer_reads_the_real_field_name(self):
+        row = _live_part_to_row(self._real_data(), "C25804")
+        assert row is not None
+        assert row["manufacturer"] == "UNI-ROYAL(Uniroyal Elec)"
+
+    def test_mfr_reads_the_real_field_name(self):
+        row = _live_part_to_row(self._real_data(), "C25804")
+        assert row is not None
+        assert row["mfr"] == "0603WAF1002T5E"
+
+    def test_package_reads_the_real_field_name(self):
+        row = _live_part_to_row(self._real_data(), "C25804")
+        assert row is not None
+        assert row["package"] == "0603"
+
+    def test_price_tiers_keep_their_real_quantity_breaks(self):
+        row = _live_part_to_row(self._real_data(), "C25804")
+        assert row is not None
+        prices = json.loads(row["price"])
+        assert len(prices) == 6
+        # Real tiers from the capture: 1-999, 1000-4999, 5000-9999, ...
+        assert prices[0] == {"qFrom": 1, "qTo": 999, "price": 0.0018}
+        assert prices[1] == {"qFrom": 1000, "qTo": 4999, "price": 0.0015}
+        # Every tier must have a DISTINCT qFrom -- the pre-fix behavior
+        # collapsed every tier to qFrom=1, which this directly rules out.
+        assert len({p["qFrom"] for p in prices}) == len(prices)
+
+    def test_assembly_tier_from_real_payload(self):
+        row = _live_part_to_row(self._real_data(), "C25804")
+        assert row is not None
+        assert row["assembly_tier"] == "basic"
+
+    def test_attributes_decode_from_real_payload(self):
+        row = _live_part_to_row(self._real_data(), "C25804")
+        assert row is not None
+        assert row["attributes"]["Resistance"] == "10kΩ"
+
+    def test_solder_joint_genuinely_absent_from_real_payload_is_none(self):
+        # Documented in _live_part_to_row's docstring: verified across 4 real
+        # part types, solderJoint is not present in the live API at all.
+        data = self._real_data()
+        assert "solderJoint" not in data
+        row = _live_part_to_row(data, "C25804")
+        assert row is not None
+        assert row["joints"] is None
+
+
+# ---------------------------------------------------------------------------
 # Batch insert: isolate a CHECK-constraint violation instead of aborting
 # ---------------------------------------------------------------------------
 
