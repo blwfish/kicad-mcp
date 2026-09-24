@@ -1141,6 +1141,27 @@ class _FakeFootprint:
     def Pads(self): return list(self._pads)
 
 
+class TestAutoFixPlacementTieBreak:
+    """Regression: _op_auto_fix_placement's embedded nudge script chose which
+    footprint to move via `a["nets"] <= b["nets"]` alone -- when two
+    overlapping footprints tie on signal-net count, this always picked
+    whichever happened to come first in board iteration order instead of a
+    stable, reproducible choice. The canonical nudge_overlapping_footprints
+    in keepout_helpers.py breaks the tie by ref: `(a["nets"], a["ref"]) <=
+    (b["nets"], b["ref"])`. Can't run the embedded script without real
+    pcbnew, so this pins the tie-break source text directly (this repo's
+    usual approach for embedded-script logic it can't execute)."""
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_script_uses_ref_tiebreak_not_nets_alone(self, mock_run, audit_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "moves": [], "move_count": 0,
+                                  "unfixed": [], "unfixed_count": 0, "passes_used": 1}
+        fn = _get_audit_fn(audit_server)
+        fn("auto_fix_placement", pcb_path=pcb_file)
+        script = mock_run.call_args[0][0]
+        assert '(a["nets"], a["ref"]) <= (b["nets"], b["ref"])' in script
+
+
 class TestCourtyardBboxHelper:
     """_get_courtyard_bbox_tuple (shared by COURTYARD_BBOX_HELPER and
     COURTYARD_BBOX_TUPLE_HELPER) used to detect courtyard graphics via a

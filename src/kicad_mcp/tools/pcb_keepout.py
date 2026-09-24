@@ -886,8 +886,13 @@ for pass_num in range(1, max_passes + 1):
 
     moved_this_pass = False
     for a, b in pairs:
-        # Decide which to move: fewer signal nets = less connected = move it
-        if a["nets"] <= b["nets"]:
+        # Decide which to move: fewer signal nets = less connected = move it.
+        # Deterministic tie-break by ref when nets are equal, matching the
+        # canonical nudge_overlapping_footprints in keepout_helpers.py --
+        # this copy previously compared nets alone, so a tie always picked
+        # whichever footprint happened to come first in board iteration
+        # order instead of a stable, reproducible choice.
+        if (a["nets"], a["ref"]) <= (b["nets"], b["ref"]):
             mover, anchor = a, b
         else:
             mover, anchor = b, a
