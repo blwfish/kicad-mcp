@@ -103,6 +103,19 @@ def register_pcb_panelize_tools(mcp: FastMCP) -> None:
         if _pv_err:
             return {"error": _pv_err}
 
+        # output_path was never validated at all -- neither checked against
+        # the configured roots, nor guarded against pointing at the SAME
+        # file as pcb_path, which would let KiKit overwrite the source
+        # board with the panelized output instead of writing a new file.
+        if output_path:
+            _pv_err = validate_project_path(output_path, must_exist=False)
+            if _pv_err:
+                return {"error": _pv_err}
+            if os.path.realpath(os.path.expanduser(output_path)) == \
+               os.path.realpath(os.path.expanduser(pcb_path)):
+                return {"error": "output_path must not be the same file as pcb_path "
+                                  "(this would overwrite the source board)"}
+
         # Validate string enum parameters
         VALID_CUT_TYPES = {"vcuts", "mousebites"}
         VALID_FRAMING = {"none", "railstb", "railslr", "frame"}
@@ -290,6 +303,17 @@ print(json.dumps({
         info_warning = f"Panel info read failed ({type(e).__name__}): {e}"
         logger.warning(info_warning)
         panel_info = {}
+    else:
+        # run_pcbnew_script has TWO failure channels: a raised exception
+        # (caught above) and an exit-0 script that printed {"error": ...}
+        # itself (the embedded script's own board-load-failed branch does
+        # exactly this). Only the first was checked -- panel_info.get(...)
+        # on an error dict silently resolved every field to None under
+        # status="ok", masking a real failure as success.
+        if "error" in panel_info:
+            info_warning = f"Panel info read failed: {panel_info['error']}"
+            logger.warning(info_warning)
+            panel_info = {}
 
     result_dict = {
         "status": "ok",
