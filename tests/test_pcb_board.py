@@ -296,3 +296,22 @@ class TestUnknownOperation:
         assert "error" in result
         assert "unknown operation" in result["error"]
         assert "bogus_op" in result["error"]
+
+
+class TestFinalizeSilkscreenZeroAreaGuard:
+    """Regression: _op_finalize's inline silkscreen-fix copy was missing the
+    zero-area-bbox guard the canonical _op_auto_fix_silkscreen (in
+    pcb_silkscreen.py) has -- a degenerate zero-width/height text bbox would
+    have candidate move positions computed from it (tw2/th2 both 0) instead
+    of being treated as already-ok and left alone. Can't run the embedded
+    script without real pcbnew, so this pins the guard's presence in the
+    emitted script (this repo's usual approach for embedded-script logic it
+    can't execute)."""
+
+    @patch("kicad_mcp.tools.pcb_board.run_pcbnew_script")
+    def test_finalize_script_has_zero_area_guard(self, mock_run, pcb_server, pcb_file):
+        mock_run.return_value = {"status": "ok"}
+        fn = _get_pcb_fn(pcb_server)
+        fn("finalize", pcb_path=pcb_file)
+        script = mock_run.call_args[0][0]
+        assert "text_bbox.GetWidth() <= 0 or text_bbox.GetHeight() <= 0" in script
