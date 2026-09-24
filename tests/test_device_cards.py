@@ -94,6 +94,18 @@ def test_good_cards_validate_clean():
     # M4 (release-gate): a typo'd config sub-key silently no-ops the strap.
     (lambda c: c.update(config={"strap": {"pin_bits": ["A0"], "base": 1}}),
      "unknown config sub-key"),
+    # finding #112 (2026-09-23 review): type/value/footprint were presence-
+    # checked but never type-checked -- a non-string silently passed.
+    (lambda c: c.update(type=123), "type must be a non-empty string"),
+    (lambda c: c.update(value=["Foo"]), "value must be a non-empty string"),
+    (lambda c: c.update(footprint={}), "footprint must be a non-empty string"),
+    (lambda c: c.update(type=""), "type must be a non-empty string"),
+    # finding #111: static_ties iterated with no type check -- a plain
+    # string would iterate character-by-character instead of erroring once.
+    (lambda c: c.update(config={"static_ties": "A0:GND"}), "static_ties must be a list"),
+    # finding #109: decoupling had no validator at all.
+    (lambda c: c.update(decoupling="100nF"), "decoupling must be a list"),
+    (lambda c: c.update(decoupling=["100nF"]), "decoupling must be a list"),
 ])
 def test_bad_peripheral_rejected(mutate, needle):
     card = dict(_GOOD_PERIPHERAL)
@@ -120,6 +132,20 @@ def test_mcu_supply_rail_validated_against_rails(rail, ok):
     # would not join "+5V" and every peripheral power pin floats (silent open).
     card = dict(_GOOD_MCU, supply_rail=rail)
     assert (validate_mcu_card(card) == []) is ok
+
+
+@pytest.mark.parametrize("field", ["part", "chip", "value", "footprint",
+                                    "supply_pin", "ground_pin",
+                                    "uart_rx_pin", "uart_tx_pin"])
+@pytest.mark.parametrize("bad_value", [123, [], {}, ""])
+def test_mcu_required_string_fields_are_type_checked(field, bad_value):
+    """Regression: _MCU_REQUIRED checked field PRESENCE only, never TYPE --
+    an int/dict/list "part" (used as a dict key in load_cards) or a
+    non-string pin field would silently pass structural validation. finding
+    #112 of the 2026-09-23 full review."""
+    card = dict(_GOOD_MCU, **{field: bad_value})
+    errs = validate_mcu_card(card)
+    assert errs and any(f"{field} must be a non-empty string" in e for e in errs)
 
 
 @pytest.mark.parametrize("strap,ok", [
