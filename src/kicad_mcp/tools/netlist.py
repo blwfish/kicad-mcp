@@ -14,6 +14,7 @@ from fastmcp import Context
 
 logger = logging.getLogger(__name__)
 
+from kicad_mcp.utils.component_utils import get_component_type_from_reference
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.netlist_parser import analyze_netlist, extract_netlist as _parse_netlist
 from kicad_mcp.utils.path_validation import validate_project_path
@@ -179,9 +180,8 @@ async def _op_analyze_schematic_connections(
 
         components = netlist_data.get("components", {})
         for ref in components:
-            comp_type_match = re.match(r"^([A-Za-z_]+)", ref)
-            if comp_type_match:
-                comp_type = comp_type_match.group(1)
+            comp_type = get_component_type_from_reference(ref)
+            if comp_type:
                 if comp_type not in analysis["component_types"]:
                     analysis["component_types"][comp_type] = 0
                 analysis["component_types"][comp_type] += 1

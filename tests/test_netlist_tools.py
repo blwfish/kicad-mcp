@@ -512,3 +512,26 @@ class TestIsPowerNet:
         exec(POWER_NET_HELPER, ns)
         for n in ("+3V3", "-12V", "VCC", "GND", "-RESET", "+CS", "SDA", "VBUS", "+"):
             assert ns["is_power_net"](n) == is_power_net(n), n
+
+
+# -- analyze.connections: component_types tally -------------------------------
+
+class TestAnalyzeConnectionsComponentTypes:
+    """Regression: _op_analyze_schematic_connections' component_types tally
+    used to re-encode its own copy of the reference-prefix-extraction regex,
+    identical to (and independently maintained from) netlist_parser.py's own
+    copy and component_utils.py's canonical get_component_type_from_reference.
+    finding #6 of the 2026-09-23 full review. No test exercised the
+    "connections" operation at all before this fix."""
+
+    @patch("kicad_mcp.tools.netlist._parse_netlist")
+    def test_tallies_by_reference_prefix(self, mock_extract, analyze_server, sch_file):
+        mock_extract.return_value = {
+            "component_count": 3, "net_count": 1,
+            "components": {"R1": {}, "R2": {}, "U1": {}},
+            "nets": {"GND": [{}, {}]},
+        }
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(operation="connections", ctx=None, schematic_path=sch_file))
+        assert result["status"] == "ok"
+        assert result["analysis"]["component_types"] == {"R": 2, "U": 1}
