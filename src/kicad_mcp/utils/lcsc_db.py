@@ -477,6 +477,46 @@ def _decode_shard_rows(
     return batch, drops
 
 
+def _insert_component_batch(
+    conn: sqlite3.Connection,
+    batch: list[tuple],
+    fname: str,
+    drop_counts: dict[str, int],
+) -> int:
+    """Insert a shard's decoded rows; isolate a single CHECK-constraint
+    violation instead of letting it abort the entire batch.
+
+    ``assembly_tier`` has a SQL CHECK constraint on an external categorical
+    value; ``executemany``'s own error gives no way to tell WHICH row of the
+    batch violated it, and the whole batch used to abort with the exception
+    uncaught, losing every other well-formed shard queued behind it. Falls
+    back to per-row inserts only on that failure, so exactly the bad row(s)
+    are isolated and counted rather than the whole batch failing. Returns
+    the number of rows actually inserted.
+    """
+    insert_sql = """INSERT OR REPLACE INTO components
+           (lcsc, mfr, manufacturer, package, joints, assembly_tier,
+            description, datasheet, stock, price, attributes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)"""
+    try:
+        conn.executemany(insert_sql, batch)
+        conn.commit()
+        return len(batch)
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        logger.warning("Shard %s: batch insert failed (%s); retrying row-by-row", fname, e)
+        inserted = 0
+        for row in batch:
+            try:
+                conn.execute(insert_sql, row)
+                inserted += 1
+            except sqlite3.IntegrityError as row_e:
+                drop_counts["integrity_error"] += 1
+                logger.warning("Shard %s: dropped row %r: %s", fname, row[0], row_e)
+        conn.commit()
+        return inserted
+
+
 def build_db_from_jsonl(
     db_path: Path | None = None,
     meta_path: Path | None = None,
@@ -520,7 +560,8 @@ def build_db_from_jsonl(
     conn.commit()
 
     total_inserted = 0
-    drop_counts: dict[str, int] = {"bad_json": 0, "not_list": 0, "no_lcsc": 0}
+    drop_counts: dict[str, int] = {"bad_json": 0, "not_list": 0, "no_lcsc": 0,
+                                    "integrity_error": 0}
     shard_files = [fname for fname, info in files_dict.items()
                    if isinstance(info, dict) and info.get("kind") in ("components", None)]
 
@@ -561,15 +602,7 @@ def build_db_from_jsonl(
             drop_counts[reason] += count
 
         if batch:
-            conn.executemany(
-                """INSERT OR REPLACE INTO components
-                   (lcsc, mfr, manufacturer, package, joints, assembly_tier,
-                    description, datasheet, stock, price, attributes)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                batch,
-            )
-            conn.commit()
-            total_inserted += len(batch)
+            total_inserted += _insert_component_batch(conn, batch, fname, drop_counts)
 
         time.sleep(0.05)  # polite throttle
 
@@ -785,15 +818,24 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
     if not data:
         return None
     price_raw = data.get("prices") or data.get("price") or []
+    price_list = []
     if isinstance(price_raw, list):
-        price_list = [
-            {"qFrom": p.get("startQuantity", p.get("qFrom", 1)),
-             "qTo": p.get("endQuantity", p.get("qTo")),
-             "price": float(p.get("productPrice", p.get("price", 0)))}
-            for p in price_raw
-        ]
-    else:
-        price_list = []
+        for p in price_raw:
+            raw_price = p.get("productPrice", p.get("price", 0))
+            try:
+                price_val = float(raw_price)
+            except (TypeError, ValueError):
+                # Same rationale as solderJoint below: the live API gives no
+                # type guarantee, unlike the local-DB path where _parse_price
+                # already guards this exact conversion. An unguarded float()
+                # here used to crash the whole resolve/assign call on one
+                # malformed tier instead of just dropping that tier.
+                logger.debug("Live API returned non-numeric price %r for %s; "
+                             "dropping this price tier", raw_price, part_number)
+                continue
+            price_list.append({"qFrom": p.get("startQuantity", p.get("qFrom", 1)),
+                               "qTo": p.get("endQuantity", p.get("qTo")),
+                               "price": price_val})
     tier = "basic" if data.get("componentLibraryType") == "base" else "extended"
     # solderJoint comes straight from the live API with no type guarantee --
     # unlike the local-DB path (jlcparts's own JSONL shards, where `joints`
