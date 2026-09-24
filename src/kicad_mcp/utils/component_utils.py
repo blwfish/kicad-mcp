@@ -354,7 +354,16 @@ def normalize_component_value(value: str, component_type: str) -> str:
 
 
 def get_component_type_from_reference(reference: str) -> str:
-    """Determine component type from reference designator."""
+    """Extract a reference designator's leading letter prefix (e.g. "R1" ->
+    "R", "SW3" -> "SW"), or "" if it has none.
+
+    Single source of truth (CLAUDE.md's Syntactic-Semantic Seam Rule) for
+    this extraction -- netlist_parser.py's analyze_netlist, netlist.py's
+    connection analysis, and bom.py's category fallback each used to
+    re-encode their own copy of the same regex independently (finding #6
+    of the 2026-09-23 full review); this function had the canonical shape
+    all along but, until that fix, zero production callers of its own.
+    """
     match = re.match(r"^([A-Za-z_]+)", reference)
     if match:
         return match.group(1)

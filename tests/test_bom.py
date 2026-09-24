@@ -409,6 +409,29 @@ class TestAnalyzeBomDataPandasPath:
         results = _analyze_bom_data(components, {})
         assert "cost" not in results.get("stage_errors", {})
 
+    def test_categories_fall_back_to_reference_prefix_when_uncategorized(self):
+        """Regression: with no category/footprint column, categories fall
+        back to grouping by the reference designator's letter prefix. This
+        closure used to re-encode its own copy of the reference-prefix
+        regex (identical to netlist_parser.py/netlist.py's own copies, and
+        component_utils.py's canonical get_component_type_from_reference)
+        -- finding #6 of the 2026-09-23 full review. Mapped through
+        category_mapping to friendly names afterward."""
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [
+            {"reference": "R1", "value": "10k"},
+            {"reference": "R2", "value": "10k"},
+            {"reference": "C1", "value": "100nF"},
+        ]
+        results = _analyze_bom_data(components, {})
+        assert results["categories"] == {"Resistors": 2, "Capacitors": 1}
+
+    def test_reference_with_no_recognized_prefix_is_other(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        components = [{"reference": "1X1", "value": "?"}]
+        results = _analyze_bom_data(components, {})
+        assert results["categories"] == {"Other": 1}
+
     def test_missing_category_tallied_as_unknown_not_dropped(self):
         """Regression: value_counts() drops NaN by default -- a component
         with no category value used to vanish from the summary instead of
