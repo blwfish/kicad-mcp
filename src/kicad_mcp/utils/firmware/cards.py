@@ -200,10 +200,20 @@ def _validate_config(cfg: Any, where: str, errs: list[str]) -> None:
                     f"{sorted(CONFIG_SUBKEYS)}")
     if "address_strap" in cfg:
         _validate_address_strap(cfg["address_strap"], where, errs)
-    for tie in cfg.get("static_ties", []) or []:
-        if not (isinstance(tie, dict) and isinstance(tie.get("pin"), str)
-                and tie.get("rail") in _RAILS):
-            errs.append(f"{where}: static_ties entry {tie!r} needs pin:str + rail in {sorted(r for r in _RAILS)}")
+    static_ties = cfg.get("static_ties")
+    # A bare `for tie in cfg.get("static_ties", []) or []` iterated with NO
+    # type check first -- a card supplying static_ties as a plain STRING
+    # instead of a list would iterate over individual CHARACTERS, producing
+    # one bogus "needs pin:str + rail" error per character instead of one
+    # clear "must be a list" error. Contrast _validate_address_strap just
+    # above, which does check isinstance(strap, dict) before touching it.
+    if static_ties is not None and not isinstance(static_ties, list):
+        errs.append(f"{where}: static_ties must be a list")
+    else:
+        for tie in static_ties or []:
+            if not (isinstance(tie, dict) and isinstance(tie.get("pin"), str)
+                    and tie.get("rail") in _RAILS):
+                errs.append(f"{where}: static_ties entry {tie!r} needs pin:str + rail in {sorted(r for r in _RAILS)}")
 
 
 def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
@@ -216,6 +226,15 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
     if errs:
         return errs
     _validate_lib_id(card["lib_id"], where, errs)
+    # type/value/footprint were required (presence-checked above) but never
+    # TYPE-checked anywhere -- an int/dict/list would pass structural
+    # validation here and only surface later as a confusing failure (e.g.
+    # str(card["type"]) silently coercing a non-string "type" downstream in
+    # canonical_type(), or a dict "footprint" reaching pcbnew as a garbage
+    # value). finding #112 of the 2026-09-23 full review.
+    for f in ("type", "value", "footprint"):
+        if not isinstance(card[f], str) or not card[f].strip():
+            errs.append(f"{where}: {f} must be a non-empty string (got {type(card[f]).__name__})")
     if card["bus"] not in _BUSES:
         errs.append(f"{where}: bus {card['bus']!r} not in {sorted(str(b) for b in _BUSES)}")
     if not isinstance(card["roles"], dict):
@@ -241,7 +260,24 @@ def validate_peripheral_card(card: dict[str, Any]) -> list[str]:
     _validate_serves(card.get("serves"), where, errs)
     _validate_config(card.get("config"), where, errs)
     _validate_realize(card.get("realize"), where, errs)
+    _validate_decoupling(card.get("decoupling"), where, errs)
     return errs
+
+
+def _validate_decoupling(decoupling: Any, where: str, errs: list[str]) -> None:
+    """``decoupling`` is registered in PERIPHERAL_NONPIN_FIELDS (per-IC bypass
+    override, knowledge.py's PeripheralInfo types it as
+    ``list[dict[str, Any]]``) but had NO validator at all -- a malformed value
+    of any type passed silently. No template currently reads this field (it's
+    an unimplemented override point), so this checks the documented shape
+    (an optional list of mappings) rather than inventing per-key schema for
+    keys nothing consumes yet."""
+    if decoupling is None:
+        return
+    if not isinstance(decoupling, list) or not all(
+        isinstance(d, dict) for d in decoupling
+    ):
+        errs.append(f"{where}: decoupling must be a list of mappings")
 
 
 def _validate_aliases(aliases: Any, where: str, errs: list[str]) -> None:
@@ -317,6 +353,14 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
         return errs
     _validate_lib_id(card["lib_id"], where, errs)
     _validate_alt_lib_ids(card.get("alt_lib_ids"), where, errs)
+    # Required string fields were presence-checked above but never
+    # TYPE-checked -- an int/dict/list "part" used as a dict key downstream
+    # (load_cards indexes mcus by "part") or a non-string pin field would
+    # silently misbehave rather than fail here. finding #112.
+    for f in ("part", "chip", "value", "footprint",
+              "supply_pin", "ground_pin", "uart_rx_pin", "uart_tx_pin"):
+        if not isinstance(card[f], str) or not card[f].strip():
+            errs.append(f"{where}: {f} must be a non-empty string (got {type(card[f]).__name__})")
     bm = card["board_match"]
     if not isinstance(bm, list) or not bm or not all(isinstance(s, str) for s in bm):
         errs.append(f"{where}: board_match must be a non-empty list of strings")
@@ -344,7 +388,12 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
     # verifies against — a closed vocabulary (parse.CHIP_TARGET_DEFINES) so two
     # cards can't spell the same chip differently and the guard can't compare
     # strings that never had a chance to be equal. Unknown chip = loud error.
-    if card["chip"] not in CHIP_TARGET_DEFINES:
+    # `x not in a_dict` requires x to be hashable; an unhashable "chip" (a
+    # list/dict, already flagged above by the string-type check) would
+    # otherwise crash this membership test with an uncaught TypeError
+    # instead of returning the clean error list every other malformed-field
+    # case gets.
+    if isinstance(card["chip"], str) and card["chip"] not in CHIP_TARGET_DEFINES:
         errs.append(f"{where}: chip {card['chip']!r} not in the known chip "
                     f"vocabulary {sorted(CHIP_TARGET_DEFINES)}")
     return errs
