@@ -1312,6 +1312,17 @@ class TestAddHierarchicalLabel:
                            text=f"SIG_{i}", position=[100.0, float(100 + i * 10)], shape=shape)
             assert result["status"] == "ok", f"shape={shape!r} unexpectedly rejected"
 
+    def test_tri_state_spelling_also_accepted(self, sch_server):
+        """finding #20 (Phase 1.5, 2026-09-23 full review): add_sheet_pin's
+        pin_type only accepts "tri_state" (underscore) for the same tri-state
+        concept this shape param calls "tristate" -- a caller who learned one
+        operation's spelling would get "Unknown shape"/"Unknown pin_type" on
+        the other. Both spellings must now work on both operations."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_hierarchical_label",
+                       text="TRI_UNDERSCORE", position=[100.0, 200.0], shape="tri_state")
+        assert result["status"] == "ok", result
+
     def test_unknown_shape_returns_error(self, sch_server):
         """Guard: a misspelled shape ('inptu') returns a structured error, not silent default."""
         fn = _get_schematic_fn(sch_server)
@@ -1625,6 +1636,32 @@ class TestAddSheetPin:
         )
         assert result["status"] == "ok"
         assert result["pin_type"] == pin_type
+
+    def test_tristate_spelling_normalized_not_silently_falls_back_to_input(self, sch_server):
+        """finding #20 (Phase 1.5, 2026-09-23 full review): add_hierarchical_label's
+        shape param accepts "tristate" (no underscore) for the same tri-state
+        concept this pin_type param only accepted as "tri_state". Both spellings
+        must now work here too -- and critically, "tristate" must be normalized
+        to "tri_state" before reaching kicad_sch_api's own add_sheet_pin, which
+        has its OWN guard that silently substitutes "input" for any pin_type it
+        doesn't recognize (see its valid_pin_types check) -- so merely widening
+        our own accept-set without normalizing would silently persist the wrong
+        pin type instead of erroring. Checked against the actual persisted
+        sheet-pin data, not just our tool's own echoed return value."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_sheet_pin",
+            sheet_uuid=self.sheet_uuid,
+            name="TRI_NO_UNDERSCORE",
+            pin_type="tristate",
+            edge="right",
+            position_along_edge=5.0,
+        )
+        assert result["status"] == "ok", result
+        assert result["pin_type"] == "tri_state"
+        sch = sch_module._current_schematic
+        pins = sch.sheets.list_sheet_pins(self.sheet_uuid)
+        persisted = next(p for p in pins if p["name"] == "TRI_NO_UNDERSCORE")
+        assert persisted["pin_type"] == "tri_state"
 
     @pytest.mark.parametrize("edge", ["right", "bottom", "left", "top"])
     def test_all_valid_edges_succeed(self, sch_server, edge):
