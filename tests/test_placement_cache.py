@@ -401,3 +401,50 @@ class TestUnknownShardLogged:
             shard = placement_cache._schematic_shard("")
         assert shard == "_unknown"
         assert any("_unknown" in r.message for r in caplog.records)
+
+
+class TestSweepThrottling:
+    """finding #29 (Phase 1, 2026-09-23 full review): _sweep_expired() walks
+    EVERY shard (unlike _evict_lru_for_schematic, which only touches the
+    shard just written to) -- running that whole-cache walk on every single
+    save_state() call defeated the point of sharding for this portion of
+    the call. Throttled to at most once per _SWEEP_INTERVAL_SECONDS;
+    _expired() is still checked independently at read time, so this only
+    delays physical disk reclaim, never serves an expired entry."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_throttle_state(self):
+        # Module-level throttle timestamp persists across tests otherwise.
+        placement_cache._last_swept_at = 0.0
+        yield
+        placement_cache._last_swept_at = 0.0
+
+    def test_second_save_within_interval_does_not_resweep(self, isolated_cache_dir, monkeypatch):
+        calls = []
+        monkeypatch.setattr(placement_cache, "_sweep_expired", lambda *a, **k: calls.append(1))
+        placement_cache.save_state(_state("a", "/tmp/x.kicad_sch"))
+        placement_cache.save_state(_state("b", "/tmp/x.kicad_sch"))
+        assert len(calls) == 1
+
+    def test_save_after_interval_elapsed_resweeps(self, isolated_cache_dir, monkeypatch):
+        calls = []
+        monkeypatch.setattr(placement_cache, "_sweep_expired", lambda *a, **k: calls.append(1))
+        placement_cache.save_state(_state("a", "/tmp/x.kicad_sch"))
+        assert len(calls) == 1
+        placement_cache._last_swept_at -= placement_cache._SWEEP_INTERVAL_SECONDS + 1
+        placement_cache.save_state(_state("b", "/tmp/x.kicad_sch"))
+        assert len(calls) == 2
+
+    def test_expired_entry_still_never_served_even_when_sweep_throttled(self, isolated_cache_dir):
+        """The correctness guarantee that must survive throttling: load_state
+        enforces expiry independently of whether a sweep has run recently."""
+        placement_cache.save_state(_state("stale", "/tmp/x.kicad_sch"))
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        stale_path = shard / f"{_hex_id('stale')}.json"
+        old_mtime = time.time() - 31 * 86400
+        os.utime(stale_path, (old_mtime, old_mtime))
+        # A second save happens immediately after (well within the throttle
+        # window) -- the whole-cache sweep does NOT run, yet the expired
+        # entry must still be refused on load.
+        placement_cache.save_state(_state("fresh2", "/tmp/y.kicad_sch"))
+        assert placement_cache.load_state(_hex_id("stale")) is None
