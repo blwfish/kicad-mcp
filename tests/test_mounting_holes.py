@@ -93,11 +93,33 @@ def test_invalid_count_rejected_not_silently_placing_two():
             mock_run.assert_not_called()
 
 
-def test_valid_counts_still_accepted():
-    for good_count in (0, 2, 4):
+def test_zero_is_valid_and_never_reaches_run_pcbnew_script():
+    # count=0 takes the early-return path (see test_count_zero_emits_no_script);
+    # its "ok" status is the REAL code's own literal, never sourced from a mock.
+    with patch("kicad_mcp.tools.pcb_pipeline.run_pcbnew_script") as mock_run:
+        r = _step_add_mounting_holes("/tmp/x.kicad_pcb", {
+            "count": 0, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5,
+        })
+        assert r["status"] == "ok"
+        mock_run.assert_not_called()
+
+
+def test_valid_nonzero_counts_reach_run_pcbnew_script():
+    """Regression: asserting only `r["status"] == "ok"` against a mocked
+    run_pcbnew_script configured to RETURN "ok" is a tautology for count=2/4
+    -- it can't fail short of a crash, since _step_add_mounting_holes returns
+    the mock's value verbatim. The genuine behavioral question is whether the
+    validation guard actually let these values THROUGH to run_pcbnew_script
+    (rather than rejecting them, the way test_invalid_count_rejected does for
+    bad values) -- checked here via whether the mock was called at all, and
+    with the right count in its params, neither of which the mock's own
+    return_value can echo back. Split from the count=0 case above so this
+    function contains no assertion that merely echoes the mocked return."""
+    for good_count in (2, 4):
         with patch("kicad_mcp.tools.pcb_pipeline.run_pcbnew_script") as mock_run:
             mock_run.return_value = {"status": "ok", "holes_added": good_count, "positions": []}
-            r = _step_add_mounting_holes("/tmp/x.kicad_pcb", {
+            _step_add_mounting_holes("/tmp/x.kicad_pcb", {
                 "count": good_count, "drill_mm": 3.2, "inset_mm": 3.5, "keepout_mm": 1.5,
             })
-            assert r["status"] == "ok"
+            mock_run.assert_called_once()
+            assert mock_run.call_args.kwargs["params"]["count"] == good_count
