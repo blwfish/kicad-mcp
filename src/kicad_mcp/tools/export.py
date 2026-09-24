@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # gerbers
 # ---------------------------------------------------------------------------
 
-def _op_gerbers(
+async def _op_gerbers(
     pcb_path: str,
     output_dir: str = "",
     create_zip: bool = True,
@@ -64,18 +64,6 @@ def _op_gerbers(
         pcb_path,
     ]
 
-    try:
-        _gerber_run = subprocess.run(
-            gerber_cmd, capture_output=True, text=True,
-            check=True, timeout=30,
-        )
-        if _gerber_run.stdout.strip():
-            logger.info("Gerber export: %s", _gerber_run.stdout.strip())
-    except subprocess.CalledProcessError as e:
-        errors.append(f"Gerber export failed: {format_cli_error(e)}")
-    except subprocess.TimeoutExpired:
-        errors.append("Gerber export timed out after 30s")
-
     drill_cmd = [
         kicad_cli, "pcb", "export", "drill",
         "--output", output_dir + "/",
@@ -84,17 +72,42 @@ def _op_gerbers(
         pcb_path,
     ]
 
-    try:
-        _drill_run = subprocess.run(
-            drill_cmd, capture_output=True, text=True,
+    # Gerber and drill export are independent kicad-cli invocations: both
+    # only read pcb_path and each writes its own distinct file extensions
+    # into output_dir (.gbr/.gto/etc. vs .drl/.xln), so there's no output
+    # collision or ordering dependency between them — run concurrently in
+    # threads rather than blocking the event loop twice in sequence.
+    # return_exceptions=True so a failure in one export doesn't cancel or
+    # hide the result of the other.
+    _gerber_result, _drill_result = await asyncio.gather(
+        asyncio.to_thread(
+            subprocess.run, gerber_cmd, capture_output=True, text=True,
             check=True, timeout=30,
-        )
-        if _drill_run.stdout.strip():
-            logger.info("Drill export: %s", _drill_run.stdout.strip())
-    except subprocess.CalledProcessError as e:
-        errors.append(f"Drill export failed: {format_cli_error(e)}")
-    except subprocess.TimeoutExpired:
+        ),
+        asyncio.to_thread(
+            subprocess.run, drill_cmd, capture_output=True, text=True,
+            check=True, timeout=30,
+        ),
+        return_exceptions=True,
+    )
+
+    if isinstance(_gerber_result, subprocess.CalledProcessError):
+        errors.append(f"Gerber export failed: {format_cli_error(_gerber_result)}")
+    elif isinstance(_gerber_result, subprocess.TimeoutExpired):
+        errors.append("Gerber export timed out after 30s")
+    elif isinstance(_gerber_result, BaseException):
+        raise _gerber_result
+    elif _gerber_result.stdout.strip():
+        logger.info("Gerber export: %s", _gerber_result.stdout.strip())
+
+    if isinstance(_drill_result, subprocess.CalledProcessError):
+        errors.append(f"Drill export failed: {format_cli_error(_drill_result)}")
+    elif isinstance(_drill_result, subprocess.TimeoutExpired):
         errors.append("Drill export timed out after 30s")
+    elif isinstance(_drill_result, BaseException):
+        raise _drill_result
+    elif _drill_result.stdout.strip():
+        logger.info("Drill export: %s", _drill_result.stdout.strip())
 
     if errors:
         # Structured error list with count — caller can programmatically
@@ -314,8 +327,8 @@ async def _generate_thumbnail_with_cli(
             await ctx.report_progress(50, 100)
 
         try:
-            process = subprocess.run(
-                cmd, capture_output=True, text=True, check=True, timeout=30
+            process = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True, check=True, timeout=30
             )
             logger.debug("Command successful: %s", process.stdout)
 
@@ -419,7 +432,7 @@ def register_export_tools(mcp: FastMCP) -> None:
         if operation == "gerbers":
             if pcb_path is None:
                 return {"error": "operation='gerbers' requires 'pcb_path'"}
-            return _op_gerbers(pcb_path, output_dir=output_dir, create_zip=create_zip)
+            return await _op_gerbers(pcb_path, output_dir=output_dir, create_zip=create_zip)
         if operation == "bom_csv":
             if project_path is None:
                 return {"error": "operation='bom_csv' requires 'project_path'"}
