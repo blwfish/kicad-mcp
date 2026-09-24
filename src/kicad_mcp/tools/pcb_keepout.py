@@ -571,6 +571,15 @@ for i in range(n):
         # Skip same-footprint pairs
         if a["ref"] == b["ref"]:
             continue
+        # Same-net pads are exempt, matching real KiCad DRC -- two pads on
+        # the SAME net are expected to be electrically joined (often by a
+        # zone/plane) and are never a clearance violation regardless of
+        # gap. Requires a non-empty net name on BOTH sides: two pads that
+        # are each merely unconnected ("" == "") are NOT "the same net" and
+        # must still be checked. finding #20 of the 2026-09-23 full review's
+        # Phase 1 pass.
+        if a["net"] and a["net"] == b["net"]:
+            continue
         # Fast AABB rejection with clearance expansion
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
@@ -735,7 +744,7 @@ for fp in board.GetFootprints():
         x = pcbnew.ToMM(pos.x); y = pcbnew.ToMM(pos.y)
         w = pcbnew.ToMM(size.x); h = pcbnew.ToMM(size.y)
         all_pads.append({
-            "ref": ref, "pad": pad.GetNumber(),
+            "ref": ref, "pad": pad.GetNumber(), "net": pad.GetNetname(),
             "x0": x - w/2, "y0": y - h/2,
             "x1": x + w/2, "y1": y + h/2,
         })
@@ -749,6 +758,10 @@ for i in range(n):
     for j in range(i + 1, n):
         b = all_pads[j]
         if a["ref"] == b["ref"]:
+            continue
+        # Same-net pads exempt, matching real KiCad DRC -- see the identical
+        # check in _op_pad_clearances above. finding #20.
+        if a["net"] and a["net"] == b["net"]:
             continue
         if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
             continue
