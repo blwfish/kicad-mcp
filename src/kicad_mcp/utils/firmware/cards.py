@@ -136,18 +136,24 @@ def peripheral_pin_refs(card: dict[str, Any]) -> list[str]:
     ``PERIPHERAL_PIN_FIELDS`` plus the ``config`` straps/ties. Falsy values are
     skipped (an absent/optional pin is not a phantom symbol reference). Consumed
     by the card-pin gate (validate vs the real symbol) and the completeness
-    meta-gate, so the two never drift."""
+    meta-gate, so the two never drift.
+
+    ``None`` is filtered BEFORE ``str()``, not after: an explicit YAML
+    ``null`` (e.g. ``roles: {SDA: null}``) stringifies to the word "None",
+    which is a non-empty, truthy string -- a final `if r` filter run only
+    AFTER stringifying would keep it as a phantom pin reference. finding #8
+    of the 2026-09-23 full review's Phase 1 pass."""
     refs: list[str] = []
     for f in PERIPHERAL_PIN_FIELDS:
         v = card.get(f)
         if isinstance(v, dict):
-            refs += [str(x) for x in v.values()]      # roles: role -> pin
+            refs += [str(x) for x in v.values() if x is not None]  # roles: role -> pin
         elif isinstance(v, list):
-            refs += [str(x) for x in v]               # supply/ground/port pin lists
+            refs += [str(x) for x in v if x is not None]  # supply/ground/port pin lists
     cfg = card.get("config") or {}
     strap = cfg.get("address_strap")
     if isinstance(strap, dict):
-        refs += [str(x) for x in strap.get("pin_bits", []) or []]
+        refs += [str(x) for x in (strap.get("pin_bits", []) or []) if x is not None]
     refs += [str(t["pin"]) for t in cfg.get("static_ties", []) or []
              if isinstance(t, dict) and t.get("pin") is not None]
     return [r for r in refs if r]
@@ -157,8 +163,16 @@ def mcu_pin_refs(card: dict[str, Any]) -> list[str]:
     """Every symbol-pin name an MCU card references (driven by ``MCU_PIN_FIELDS``).
     Coerce-then-filter, SYMMETRIC with ``peripheral_pin_refs``: an absent or empty
     field is skipped, but a falsy-but-valid pin like ``0`` is kept (filtering the
-    raw value would drop int ``0`` while keeping ``"0"`` — a silent asymmetry)."""
-    return [r for r in (str(card[f]) for f in MCU_PIN_FIELDS if f in card) if r]
+    raw value would drop int ``0`` while keeping ``"0"`` — a silent asymmetry).
+
+    ``None`` is excluded explicitly (not by the falsy check above, which would
+    also wrongly drop ``0``): ``en_pin``/``boot_pin`` are OPTIONAL fields never
+    type-checked by ``validate_mcu_card`` when present, so an explicit YAML
+    ``en_pin: null`` reaches here and previously stringified to the phantom
+    pin name "None" -- same root cause as finding #8 in ``peripheral_pin_refs``,
+    reachable here via the two MCU fields structural validation doesn't cover."""
+    return [r for r in (str(card[f]) for f in MCU_PIN_FIELDS
+                        if f in card and card[f] is not None) if r]
 
 
 def valid_lib_id(val: Any) -> bool:
