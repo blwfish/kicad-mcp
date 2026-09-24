@@ -151,3 +151,11 @@ def test_suggest_cards_drafts_uncarded_not_carded(tmp_path):
     assert bme["card"]["roles"] == {"SDA": "SDA", "SCL": "SCL"}
     assert any("0x76" in r_ or "BME280" in r_ for r_ in bme["reasons"])
     assert any("WHO_AM_I" in r_ for r_ in bme["reasons"])   # 0x60 hint surfaced
+
+    # finding #22 (Phase 1.5, 2026-09-23 full review): draft_card() embeds
+    # confidence/reasons redundantly under card["_draft"]; scripts/prefetch_cards.py
+    # pops it before writing a card file out, but _op_suggest_cards used to leave
+    # it in "card" -- a caller following this tool's own advice ("drop the card
+    # in a devices dir") would write a lingering _draft key into a real device
+    # card file. It must not be present in the returned card.
+    assert "_draft" not in bme["card"]
