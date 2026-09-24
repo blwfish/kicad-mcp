@@ -107,6 +107,26 @@ def _op_add_via(
     valid_via_types = ("through", "blind_buried", "micro")
     if via_type not in valid_via_types:
         return {"error": f"via_type must be one of {valid_via_types}; got {via_type!r}"}
+    if via_type != "through":
+        # via.SetViaType() below only tags the via's TYPE -- it does not
+        # configure the via's actual layer span (via.SetLayerPair()), which
+        # is what physically DEFINES a blind/buried or micro via (a
+        # through-hole via keeps pcbnew's PCB_VIA default span, F.Cu-B.Cu,
+        # which happens to already be correct for "through"). This tool has
+        # no from_layer/to_layer parameters to compute a real span from, so
+        # accepting "blind_buried"/"micro" would emit a via tagged as one
+        # type but physically through-board -- a mismatch a DRC/fab step
+        # could miss. Reject rather than silently guess a layer pair.
+        # (Also: VIATYPE_BLIND_BURIED doesn't even exist in this KiCad's
+        # pcbnew API -- this path previously crashed with AttributeError
+        # rather than producing a mismatched via.) finding #18 of the
+        # 2026-09-23 full review's Phase 1 pass.
+        return {"error": (
+            f"via_type={via_type!r} is not yet supported: this tool has no "
+            "way to specify the via's layer span, which is what actually "
+            "defines a blind/buried or micro via. Use via_type='through' "
+            "(the only type whose default layer span is correct)."
+        )}
 
     script = """
 import pcbnew, json, sys
@@ -261,7 +281,11 @@ zones_removed = 0
 if params["clear_tracks"] or params["clear_vias"]:
     to_remove = []
     for track in board.GetTracks():
-        if params["clear_tracks"] and track.GetClass() == "PCB_TRACK":
+        # GetTracks() returns PCB_TRACK, PCB_VIA, AND PCB_ARC -- an arc is a
+        # curved copper trace segment, not a via, so it belongs under
+        # clear_tracks like PCB_TRACK does. Omitting it left arc segments
+        # behind after a "clear routing" call.
+        if params["clear_tracks"] and track.GetClass() in ("PCB_TRACK", "PCB_ARC"):
             to_remove.append(track)
         elif params["clear_vias"] and track.GetClass() == "PCB_VIA":
             to_remove.append(track)
