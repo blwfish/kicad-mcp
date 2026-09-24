@@ -917,6 +917,39 @@ class TestBuildPcbFromSchematic:
         assert result["incomplete_nets"] == 0
         assert "export_gerbers" not in result["steps"]
 
+    @patch("kicad_mcp.tools.pcb_pipeline._step_create_pcb_and_outline")
+    @patch("kicad_mcp.tools.pcb_pipeline._step_extract_netlist")
+    def test_runtime_error_in_an_early_step_returns_error_envelope_not_raises(
+        self, mock_netlist, mock_create, mcp_server, tmp_path,
+    ):
+        """finding #14 (Phase 1.5, 2026-09-23 full review): steps 1-6 of the
+        pipeline had no try/except of their own -- unlike steps 7/8
+        (zones/gerbers), whose own try/except deliberately treats THEM as
+        non-fatal finishing steps. run_pcbnew_script normalizes every
+        subprocess failure to RuntimeError (its documented contract); a
+        failure in an early step used to escape build_pcb_from_schematic raw
+        instead of the {"error": ...} envelope every other failure path
+        returns."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        sch = tmp_path / "test.kicad_sch"
+        sch.write_text("(kicad_sch)")
+
+        mock_netlist.return_value = {
+            "status": "ok",
+            "components": {"R1": {"reference": "R1", "value": "10k",
+                                  "footprint": "Resistor_SMD:R_0603_1608Metric"}},
+            "components_without_footprint": [],
+            "nets": {},
+            "component_count": 1, "net_count": 0, "skipped_count": 0,
+        }
+        mock_create.side_effect = RuntimeError("pcbnew script failed (exit 1): boom")
+
+        fn = _get_tool_fn(mcp_server, "build_pcb_from_schematic")
+        result = fn(str(pro))   # must not raise
+        assert "error" in result
+        assert "boom" in result["error"]
+
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_mounting_holes")
     @patch("kicad_mcp.tools.pcb_pipeline._step_export_gerbers")
     @patch("kicad_mcp.tools.pcb_pipeline._step_add_zones_and_fill")
