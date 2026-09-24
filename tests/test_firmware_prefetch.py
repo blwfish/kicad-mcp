@@ -90,6 +90,70 @@ def test_footprint_todo_when_unknown():
     assert card["_draft"]["needs_footprint"] is True
 
 
+def test_footprint_used_when_symbol_provides_one():
+    """End-to-end: synthesize_i2c_card already accepted a footprint kwarg --
+    this pins that a caller-provided value is actually used, not overridden
+    by the TODO default."""
+    card, _, _ = _synth(["SDA", "SCL", "VDD", "GND"],
+                        footprint="Sensor_Motion:InvenSense_QFN-24_4x4mm_P0.5mm")
+    assert card["footprint"] == "Sensor_Motion:InvenSense_QFN-24_4x4mm_P0.5mm"
+    assert card["_draft"]["needs_footprint"] is False
+
+
+# --- symbol_footprint: extracting the pre-assigned Footprint property ----------
+
+class _FakeSymbol:
+    """Duck-types kicad_sch_api's SymbolDefinition.raw_kicad_data shape --
+    a list of S-expression items, each itself a list whose first element is
+    a sexpdata.Symbol tag."""
+    def __init__(self, raw_kicad_data):
+        self.raw_kicad_data = raw_kicad_data
+
+
+def _property_item(key, value):
+    import sexpdata
+    return [sexpdata.Symbol("property"), key, value]
+
+
+def test_symbol_footprint_extracts_real_value():
+    """Regression: the module's own earlier assumption ("symbols don't
+    carry a footprint") was wrong -- verified against a real KiCad 10
+    symbol (Sensor_Motion:MPU-6050, one of prefetch's own DEFAULT_LIBRARIES),
+    which DOES carry a pre-assigned Footprint property."""
+    from kicad_mcp.utils.firmware.prefetch import symbol_footprint
+    sym = _FakeSymbol([
+        _property_item("Reference", "U"),
+        _property_item("Value", "MPU-6050"),
+        _property_item("Footprint", "Sensor_Motion:InvenSense_QFN-24_4x4mm_P0.5mm"),
+        _property_item("Datasheet", "https://example.com/mpu6050.pdf"),
+    ])
+    assert symbol_footprint(sym) == "Sensor_Motion:InvenSense_QFN-24_4x4mm_P0.5mm"
+
+
+def test_symbol_footprint_none_when_absent():
+    from kicad_mcp.utils.firmware.prefetch import symbol_footprint
+    sym = _FakeSymbol([
+        _property_item("Reference", "R"),
+        _property_item("Value", "R"),
+    ])
+    assert symbol_footprint(sym) is None
+
+
+def test_symbol_footprint_none_when_property_present_but_empty():
+    """A generic symbol (e.g. Device:R) has a Footprint property that
+    exists but is an empty string -- must be treated as "no footprint",
+    not as a legitimate empty value."""
+    from kicad_mcp.utils.firmware.prefetch import symbol_footprint
+    sym = _FakeSymbol([_property_item("Footprint", "")])
+    assert symbol_footprint(sym) is None
+
+
+def test_symbol_footprint_none_when_raw_data_missing():
+    from kicad_mcp.utils.firmware.prefetch import symbol_footprint
+    assert symbol_footprint(_FakeSymbol(None)) is None
+    assert symbol_footprint(object()) is None
+
+
 # --- symbol-name enumeration from .kicad_sym text ------------------------------
 
 def test_top_level_symbol_names_filters_subsymbols():
