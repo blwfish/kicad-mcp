@@ -376,6 +376,39 @@ class TestApplyAndClearCache:
         assert result["errors"][0]["ref"] == "U1"
         assert "not found" in result["errors"][0]["error"]
 
+    def test_apply_missing_x_mm_is_an_error_not_a_silent_move_to_origin(
+        self, schematic_layout_fn, tmp_path, monkeypatch,
+    ):
+        """Regression: a cached component entry missing x_mm/y_mm used to
+        silently default to (0.0, 0.0) via comp_state.get(key, 0.0) --
+        moving the real component to the origin while still counting it as
+        a successful apply, with no signal the cached entry was
+        incomplete."""
+        self._isolate_cache(tmp_path, monkeypatch)
+        sch_path = _build_real_sch(tmp_path, [
+            ("R1", "10k", (50, 50)),
+        ])
+        from kicad_mcp.utils.placement import cache as pc
+        pc.save_state({
+            "state_id": "12345678aaaabbbb",
+            "schematic_path": str(sch_path),
+            "schematic_hash": "",  # disable drift
+            "components": {"R1": {"y_mm": 20.0}},  # x_mm missing
+            "clusters": {},
+        })
+
+        result = schematic_layout_fn(operation="apply", state_id="12345678aaaabbbb")
+        assert result["applied"] == 0
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["ref"] == "R1"
+        assert "x_mm" in result["errors"][0]["error"]
+
+        # Confirm R1 was NOT silently moved to the origin.
+        import kicad_sch_api as ksa
+        reloaded = ksa.load_schematic(str(sch_path))
+        r1 = reloaded.components.get("R1")
+        assert (r1.position.x, r1.position.y) != (0.0, 0.0)
+
 
 class TestLabelingIntegration:
     """Slice 2 — confirm Layers 2/3/4 land on cluster dicts in the state."""

@@ -57,6 +57,16 @@ print(json.dumps({
 
 def _op_create(pcb_path: str) -> Dict[str, Any]:
     """Create a new empty .kicad_pcb file."""
+    # must_exist=False: unlike every sibling _op_* here, create's whole job
+    # is to write a file that doesn't exist yet -- the default must_exist=True
+    # would reject every legitimate call.
+    # must_exist=False: unlike every sibling _op_* here, create's whole job
+    # is to write a file that doesn't exist yet -- the default must_exist=True
+    # would reject every legitimate call.
+    _pv_err = validate_project_path(pcb_path, must_exist=False)
+    if _pv_err:
+        return {"error": _pv_err}
+
     script = """
 import pcbnew, json, sys
 

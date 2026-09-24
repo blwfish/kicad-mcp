@@ -1143,39 +1143,56 @@ class _FakeFootprint:
 
 class TestCourtyardBboxHelper:
     """_get_courtyard_bbox_tuple (shared by COURTYARD_BBOX_HELPER and
-    COURTYARD_BBOX_TUPLE_HELPER) reads `board` as a free variable — the
-    composed embedded script always defines `board = pcbnew.LoadBoard(...)`
-    at module scope before splicing this in, so the exec namespace needs one
-    too, set as a global before the call (Python resolves it at call time)."""
+    COURTYARD_BBOX_TUPLE_HELPER) used to detect courtyard graphics via a
+    `"CrtYd" in board.GetLayerName(item.GetLayer())` DISPLAY-NAME substring
+    match. KiCad 10 renamed that display name from "F.CrtYd"/"B.CrtYd" to
+    "F.Courtyard"/"B.Courtyard" (verified against a real KiCad 10.0.3
+    install) -- "CrtYd" is not a substring of "Courtyard", so the helper
+    silently found ZERO courtyard graphics on KiCad 10 and always fell back
+    to the less-accurate pad-bbox path. Fixed to compare `item.GetLayer()`
+    against the `pcbnew.F_CrtYd`/`B_CrtYd` layer-ID constants directly,
+    which are stable across the KiCad 9->10 rename (only the display name
+    changed) -- these tests use sentinel IDs 31/32 (F_CrtYd/B_CrtYd's real
+    values) and never reference a layer NAME at all, so they can't pass by
+    accidentally re-encoding the same bug the fix removes."""
+
+    _F_CRTYD, _B_CRTYD, _F_FAB = 31, 32, 49  # real pcbnew layer IDs
 
     @pytest.fixture(autouse=True)
     def _exec_helper(self):
         from kicad_mcp.utils.keepout_helpers import COURTYARD_BBOX_HELPER
         self.ns: dict = {
-            "pcbnew": types.SimpleNamespace(ToMM=lambda v: v / 1_000_000.0),
+            "pcbnew": types.SimpleNamespace(
+                ToMM=lambda v: v / 1_000_000.0,
+                F_CrtYd=self._F_CRTYD, B_CrtYd=self._B_CRTYD,
+            ),
+            # board.GetLayerName is unused by the fixed helper for courtyard
+            # detection -- present only so a mistaken reintroduction of the
+            # old name-based check would fail loudly (KeyError) rather than
+            # coincidentally passing on a name this fixture happens to set.
+            "board": types.SimpleNamespace(GetLayerName=lambda lid: (_ for _ in ()).throw(
+                AssertionError("courtyard detection must not call GetLayerName"))),
         }
         exec(COURTYARD_BBOX_HELPER, self.ns)
         self.get_courtyard_bbox = self.ns["get_courtyard_bbox"]
 
-    def _board(self, crtyd_layer_name="F.CrtYd"):
-        # get_courtyard_bbox_tuple checks `"CrtYd" in layer_name`.
-        self.ns["board"] = types.SimpleNamespace(
-            GetLayerName=lambda lid: {0: crtyd_layer_name, 1: "F.Fab"}.get(lid, "?")
-        )
-
     def test_courtyard_item_defines_bbox(self):
-        self._board()
         fp = _FakeFootprint(graphical_items=[
-            _FakeGraphicalItem(layer=0, bbox=_FakeBBox(1_000_000, 2_000_000, 3_000_000, 4_000_000)),
+            _FakeGraphicalItem(layer=self._F_CRTYD, bbox=_FakeBBox(1_000_000, 2_000_000, 3_000_000, 4_000_000)),
         ])
         assert self.get_courtyard_bbox(fp) == {
             "x_min_mm": 1.0, "y_min_mm": 2.0, "x_max_mm": 3.0, "y_max_mm": 4.0,
         }
 
+    def test_back_courtyard_layer_also_detected(self):
+        fp = _FakeFootprint(graphical_items=[
+            _FakeGraphicalItem(layer=self._B_CRTYD, bbox=_FakeBBox(1_000_000, 2_000_000, 3_000_000, 4_000_000)),
+        ])
+        assert self.get_courtyard_bbox(fp) is not None
+
     def test_no_courtyard_falls_back_to_pads(self):
-        self._board()
         fp = _FakeFootprint(
-            graphical_items=[_FakeGraphicalItem(layer=1, bbox=_FakeBBox(0, 0, 1, 1))],
+            graphical_items=[_FakeGraphicalItem(layer=self._F_FAB, bbox=_FakeBBox(0, 0, 1, 1))],
             pads=[_FakePad(x=5_000_000, y=5_000_000, w=1_000_000, h=1_000_000)],
         )
         bbox = self.get_courtyard_bbox(fp)
@@ -1185,10 +1202,9 @@ class TestCourtyardBboxHelper:
         """Ambiguous-input pin: a footprint with BOTH a courtyard graphic and
         pads must use the courtyard extent alone (the function returns as
         soon as the courtyard loop finds anything) — not a union of both."""
-        self._board()
         fp = _FakeFootprint(
             graphical_items=[
-                _FakeGraphicalItem(layer=0, bbox=_FakeBBox(1_000_000, 1_000_000, 2_000_000, 2_000_000)),
+                _FakeGraphicalItem(layer=self._F_CRTYD, bbox=_FakeBBox(1_000_000, 1_000_000, 2_000_000, 2_000_000)),
             ],
             pads=[_FakePad(x=50_000_000, y=50_000_000, w=1_000_000, h=1_000_000)],
         )
@@ -1196,7 +1212,6 @@ class TestCourtyardBboxHelper:
         assert bbox == {"x_min_mm": 1.0, "y_min_mm": 1.0, "x_max_mm": 2.0, "y_max_mm": 2.0}
 
     def test_no_courtyard_no_pads_returns_none(self):
-        self._board()
         assert self.get_courtyard_bbox(_FakeFootprint()) is None
 
 

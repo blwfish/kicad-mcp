@@ -494,8 +494,16 @@ def _op_apply(
             if comp is None:
                 errors.append({"ref": ref, "error": "component not found in schematic"})
                 continue
-            x = float(comp_state.get("x_mm", 0.0))
-            y = float(comp_state.get("y_mm", 0.0))
+            # A cached state missing x_mm/y_mm (a malformed/hand-edited cache,
+            # or a producer bug) used to silently default to (0.0, 0.0) --
+            # moving the component to the origin and still counting it in
+            # applied_count as a success, rather than surfacing that the
+            # cached entry was incomplete.
+            if "x_mm" not in comp_state or "y_mm" not in comp_state:
+                errors.append({"ref": ref, "error": "cached state missing x_mm/y_mm"})
+                continue
+            x = float(comp_state["x_mm"])
+            y = float(comp_state["y_mm"])
             try:
                 comp.position = (x, y)
                 applied_count += 1
