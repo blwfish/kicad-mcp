@@ -193,15 +193,9 @@ for kz in keepouts:
             })
 
 if outline and not rect_inside(fp_rect, outline):
-    overhang = {}
-    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
-        overhang["left_mm"] = round(outline["x_min_mm"] - fp_rect["x_min_mm"], 3)
-    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
-        overhang["right_mm"] = round(fp_rect["x_max_mm"] - outline["x_max_mm"], 3)
-    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
-        overhang["top_mm"] = round(outline["y_min_mm"] - fp_rect["y_min_mm"], 3)
-    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
-        overhang["bottom_mm"] = round(fp_rect["y_max_mm"] - outline["y_max_mm"], 3)
+    # compute_overhang_mm (GEOMETRY_HELPER, single source of truth) -- was 4
+    # independent copies of this exact if/if/if/if block. finding #24.
+    overhang = {k: round(v, 3) for k, v in compute_overhang_mm(fp_rect, outline).items()}
     violations.append({
         "type": "outside_board",
         "overhang": overhang,
@@ -417,15 +411,8 @@ for fp in board.GetFootprints():
         })
 
     if outline and not rect_inside(fp_rect, outline):
-        overhang = {}
-        if fp_rect["x_min_mm"] < outline["x_min_mm"]:
-            overhang["left_mm"] = round(outline["x_min_mm"] - fp_rect["x_min_mm"], 3)
-        if fp_rect["x_max_mm"] > outline["x_max_mm"]:
-            overhang["right_mm"] = round(fp_rect["x_max_mm"] - outline["x_max_mm"], 3)
-        if fp_rect["y_min_mm"] < outline["y_min_mm"]:
-            overhang["top_mm"] = round(outline["y_min_mm"] - fp_rect["y_min_mm"], 3)
-        if fp_rect["y_max_mm"] > outline["y_max_mm"]:
-            overhang["bottom_mm"] = round(fp_rect["y_max_mm"] - outline["y_max_mm"], 3)
+        # See the identical extraction in _op_validate_one above. finding #24.
+        overhang = {k: round(v, 3) for k, v in compute_overhang_mm(fp_rect, outline).items()}
         issues.append({
             "type": "outside_board",
             "severity": "violation",

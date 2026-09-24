@@ -19,6 +19,7 @@ from kicad_mcp.utils.geometry import (
     aabb_inside,
     aabb_overlap,
     clearance_violation,
+    compute_overhang_mm,
     expand_bbox,
     overlap_area,
     rect_inside,
@@ -210,6 +211,7 @@ class TestGeometryHelperSource:
         "signed_gap_mm",
         "expand_bbox",
         "clearance_violation",
+        "compute_overhang_mm",
     ])
     def test_helper_defines(self, name):
         assert f"def {name}" in GEOMETRY_HELPER, (
@@ -259,6 +261,63 @@ class TestGeometryHelperSource:
             expected = clearance_violation(a, b, cl)
             got = namespace["clearance_violation"](a, b, cl)
             assert got == expected, f"clearance_violation mismatch: b={b}, cl={cl}"
+
+    def test_helper_compute_overhang_mm_identical(self):
+        """compute_overhang_mm in GEOMETRY_HELPER must match Python module."""
+        namespace: dict = {}
+        exec(GEOMETRY_HELPER, namespace)
+        outline = _r(0, 0, 100, 50)
+        cases = [
+            _r(0, 0, 100, 50),        # flush, no overhang
+            _r(-1, 0, 100, 50),       # left overhang
+            _r(0, 0, 101, 50),        # right overhang
+            _r(0, -1, 100, 50),       # top overhang
+            _r(0, 0, 100, 51),        # bottom overhang
+            _r(-1, -1, 101, 51),      # all four sides
+        ]
+        for fp_rect in cases:
+            expected = compute_overhang_mm(fp_rect, outline)
+            got = namespace["compute_overhang_mm"](fp_rect, outline)
+            assert got == expected, f"compute_overhang_mm mismatch: fp_rect={fp_rect}"
+
+
+# ---------------------------------------------------------------------------
+# compute_overhang_mm — per-side overhang, absent (not zero) when flush/inside
+# ---------------------------------------------------------------------------
+
+class TestComputeOverhangMm:
+    OUTLINE = _r(0, 0, 100, 50)
+
+    def test_fully_inside_no_overhang(self):
+        assert compute_overhang_mm(_r(10, 10, 90, 40), self.OUTLINE) == {}
+
+    def test_exactly_flush_no_overhang(self):
+        # Threshold boundary: exactly AT the edge is not overhang (strict <).
+        assert compute_overhang_mm(_r(0, 0, 100, 50), self.OUTLINE) == {}
+
+    def test_left_overhang_just_past_boundary(self):
+        assert compute_overhang_mm(_r(-EPS, 0, 100, 50), self.OUTLINE) == \
+            pytest.approx({"left_mm": EPS})
+
+    def test_right_overhang_amount(self):
+        assert compute_overhang_mm(_r(0, 0, 105, 50), self.OUTLINE) == {"right_mm": 5.0}
+
+    def test_top_overhang_amount(self):
+        assert compute_overhang_mm(_r(0, -3, 100, 50), self.OUTLINE) == {"top_mm": 3.0}
+
+    def test_bottom_overhang_amount(self):
+        assert compute_overhang_mm(_r(0, 0, 100, 52.5), self.OUTLINE) == {"bottom_mm": 2.5}
+
+    def test_all_four_sides_simultaneously(self):
+        result = compute_overhang_mm(_r(-1, -2, 101, 53), self.OUTLINE)
+        assert result == {"left_mm": 1.0, "right_mm": 1.0, "top_mm": 2.0, "bottom_mm": 3.0}
+
+    def test_absent_key_not_zero_for_non_overhanging_side(self):
+        # A side with no overhang must be ABSENT, not present with value 0.0 --
+        # callers (e.g. pcb_keepout.py's warning message) iterate .items() and
+        # would report a false "0.0mm overhang" if this were a zero entry.
+        result = compute_overhang_mm(_r(-1, 0, 100, 50), self.OUTLINE)
+        assert "right_mm" not in result and "top_mm" not in result and "bottom_mm" not in result
 
 
 # ---------------------------------------------------------------------------
