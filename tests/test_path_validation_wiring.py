@@ -89,3 +89,20 @@ class TestStrictModeRejectionReachesRealTools:
 
         assert "error" in result
         assert "outside the configured" in result["error"]
+
+    def test_pcb_create_rejects_out_of_root_path_under_strict_mode(self, tmp_path, monkeypatch):
+        """Regression: _op_create (unlike every other _op_* in pcb_board.py)
+        never called validate_project_path at all -- a new board could be
+        created outside the configured roots even under strict mode."""
+        monkeypatch.setenv("KICAD_MCP_STRICT_PATHS", "1")
+        _isolated_roots(monkeypatch, tmp_path)
+        outsider = tmp_path / "outsider"
+        outsider.mkdir(exist_ok=True)
+        target = str(outsider / "new.kicad_pcb")  # doesn't exist yet -- this is a create
+
+        mcp = create_server()
+        fn = _get_tool_fn(mcp, "pcb")
+        result = fn("create", pcb_path=target)
+
+        assert "error" in result
+        assert "outside the configured" in result["error"]
