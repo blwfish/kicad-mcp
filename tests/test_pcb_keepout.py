@@ -1046,6 +1046,68 @@ class TestAuditAllDetailFlag:
         assert "summary" in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_all_full_forwards_use_courtyard_to_footprint_overlaps(
+        self, mock_run, audit_server, pcb_file
+    ):
+        """finding #15 (Phase 1.5, 2026-09-23 full review): audit(operation="all")
+        accepts a use_courtyard parameter but used to drop it when calling
+        _op_footprint_overlaps for detail="full" (and had no way to honor it at
+        all for detail="summary", its embedded script hardcoding courtyard-first
+        bbox selection). Pin that use_courtyard=False actually reaches the
+        footprint_overlaps sub-call's run_pcbnew_script params."""
+        mock_run.return_value = {"status": "ok"}
+        placement_result = {
+            "status": "ok", "total_footprints": 3, "violations_count": 0,
+            "clean_count": 3, "violations": [], "summary": "",
+        }
+        overlaps_result = {
+            "status": "ok", "total_footprints": 3, "pairs_checked": 3,
+            "overlap_count": 0, "error_count": 0, "warning_count": 0,
+            "overlaps": [], "summary": "",
+        }
+        pad_cl_result = {
+            "status": "ok", "total_pads": 6, "min_clearance_mm": 0.2,
+            "min_clearance_source": "board", "violation_count": 0,
+            "footprint_pairs_affected": 0, "footprint_pair_summary": [],
+            "violations": [], "violations_truncated": False, "summary": "",
+        }
+        keepouts_result = {"status": "ok", "keepout_count": 0, "keepouts": []}
+        mock_run.side_effect = [
+            placement_result, overlaps_result, pad_cl_result, keepouts_result
+        ]
+
+        fn = _get_audit_fn(audit_server)
+        fn("all", pcb_path=pcb_file, detail="full", use_courtyard=False)
+
+        # Call order: placement, footprint_overlaps, pad_clearances, keepouts
+        overlaps_call_params = mock_run.call_args_list[1].kwargs["params"]
+        assert overlaps_call_params["use_courtyard"] is False
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
+    def test_all_summary_passes_use_courtyard_into_embedded_script(
+        self, mock_run, audit_server, pcb_file
+    ):
+        """finding #15 (Phase 1.5, 2026-09-23 full review): detail="summary"'s
+        single embedded script used to have no use_courtyard param at all and
+        unconditionally used courtyard-first bbox selection. Pin that the flag
+        is now threaded into the script's params regardless of value."""
+        mock_run.return_value = {
+            "status": "ok", "total_footprints": 2, "total_issues": 0,
+            "footprint_overlaps": [], "keepout_violations": [],
+            "silkscreen_overlaps": [], "silkscreen_text_overlaps": [],
+            "summary": "",
+        }
+        fn = _get_audit_fn(audit_server)
+        fn("all", pcb_path=pcb_file, use_courtyard=False)
+        assert mock_run.call_args.kwargs["params"]["use_courtyard"] is False
+        # The embedded script must actually branch on the flag, not just accept
+        # it as an unused param -- pin that the conditional made it into the
+        # script text (the courtyard-vs-body decision itself lives in this
+        # boundary-op script and is otherwise unreachable to a unit test).
+        script = mock_run.call_args[0][0]
+        assert "get_courtyard_bbox(fp) if use_courtyard else None" in script
+
+    @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_all_summary_vs_full_different_shape(self, mock_run, audit_server, pcb_file):
         """summary and full return structurally different output."""
         summary_result = {
