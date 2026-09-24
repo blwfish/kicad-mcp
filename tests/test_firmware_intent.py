@@ -148,6 +148,21 @@ def test_from_dict_to_dict_identity():
     assert to_dict(from_dict(to_dict(i))) == to_dict(i)
 
 
+def test_net_keys_derived_from_net_dataclass_not_hand_copied():
+    """finding #18 (Phase 1.5, 2026-09-23 full review): _NET_KEYS used to be
+    a hand-typed frozenset literal mirroring Net's dataclass fields with
+    nothing tying the two together -- a field added to or removed from Net
+    without updating _NET_KEYS would silently drift (a legitimate new field
+    misflagged as unknown, or a stale key that's a no-op). _NET_KEYS is now
+    derived from dataclasses.fields(Net) directly; this pins that it stays
+    derived rather than being replaced by another hand-typed literal that
+    happens to agree today."""
+    import dataclasses
+    from kicad_mcp.utils.firmware.intent import Net, _NET_KEYS
+
+    assert _NET_KEYS == frozenset(f.name for f in dataclasses.fields(Net))
+
+
 def test_from_dict_drops_unknown_fields():
     """from_dict promises forward-compat: a newer doc with extra fields loads,
     silently dropping the unknowns, instead of raising TypeError on cls(**d)
