@@ -592,6 +592,15 @@ class TestParametricAttributeCapture:
             snapshot_date="", fetched_live=True, kicad_symbol_lib_id=None)
         assert rp.pin_count is None
 
+    def test_row_to_resolved_malformed_price_json_degrades_to_empty(self):
+        """Regression: this was a bare `except Exception` -- narrowed to
+        json.JSONDecodeError (the only exception json.loads() can raise;
+        the isinstance check already guards the non-str branch entirely)."""
+        rp = _row_to_resolved(
+            self._row(price="{not valid json"), match_score=None, deviations=[],
+            snapshot_date="", fetched_live=False, kicad_symbol_lib_id=None)
+        assert rp.price_tiers == []
+
     def test_live_attributes_list_shape(self):
         data = {"attributes": [
             {"attribute_name_en": "Resistance", "attribute_value_name": "10kΩ"},
@@ -1071,6 +1080,49 @@ class TestFreshness:
             meta.write_text(json.dumps({"downloaded_at": ts}))
             age = get_snapshot_age_days(meta_path=meta)
             assert age == expected
+
+
+class TestReadMetaErrorHandling:
+    """Regression: a bare `except Exception` swallowed a REAL problem
+    (permission denied, disk error, corrupted meta file) identically to
+    "no snapshot exists yet" -- every caller treats {} as "unknown" either
+    way, so the safe fallback is unchanged, but a genuine problem now logs
+    a warning instead of failing perfectly silently."""
+
+    def test_missing_file_returns_empty_no_warning(self, tmp_path, caplog):
+        import logging
+        from kicad_mcp.utils.lcsc_db import _read_meta
+        meta = tmp_path / "does-not-exist.json"
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.lcsc_db"):
+            result = _read_meta(meta_path=meta)
+        assert result == {}
+        assert not any("Failed to read" in r.message for r in caplog.records)
+
+    def test_corrupt_json_returns_empty_and_logs_warning(self, tmp_path, caplog):
+        import logging
+        from kicad_mcp.utils.lcsc_db import _read_meta
+        meta = tmp_path / "meta.json"
+        meta.write_text("{not valid json")
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.lcsc_db"):
+            result = _read_meta(meta_path=meta)
+        assert result == {}
+        assert any("Failed to read" in r.message for r in caplog.records)
+
+    def test_permission_error_returns_empty_and_logs_warning(self, tmp_path, caplog, monkeypatch):
+        import logging
+        from pathlib import Path
+        from kicad_mcp.utils.lcsc_db import _read_meta
+        meta = tmp_path / "meta.json"
+        meta.write_text("{}")
+
+        def _raise(*a, **k):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.lcsc_db"):
+            result = _read_meta(meta_path=meta)
+        assert result == {}
+        assert any("Failed to read" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
