@@ -95,8 +95,15 @@ for i, (cx, cy) in enumerate(corners):
 
 board.Add(zone)
 
+# Fill only the zone THIS call added, not every zone already on the board.
+# board.Zones() refills the whole board every time -- O(N^2) as zones
+# accumulate one add_zone call at a time (each call re-fills every prior
+# zone all over again). Existing zones already have their fill from
+# whichever call added them (or a later explicit fill_zones); this call's
+# job is only to make the new zone usable immediately. finding #21 of the
+# 2026-09-23 full review's Phase 1 pass.
 filler = pcbnew.ZONE_FILLER(board)
-filler.Fill(board.Zones())
+filler.Fill([zone])
 
 board.Save(pcb_path)
 
