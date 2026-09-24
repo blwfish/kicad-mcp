@@ -407,7 +407,9 @@ def _split_declarators(decls: str) -> list[str]:
     return parts
 
 
-def parse_const_decls(text: str) -> list[Macro]:
+def parse_const_decls(
+    text: str, skip_counts: Optional[dict[str, int]] = None
+) -> list[Macro]:
     """Extract C++ ``const``/``constexpr`` declarations and classify them with the
     SAME name-primary classifier as ``#define`` (CLAUDE.md Rule 3 — one source of
     truth for "is this a pin", two syntactic feeders). A const whose NAME says pin
@@ -415,7 +417,19 @@ def parse_const_decls(text: str) -> list[Macro]:
     OTHER (name doesn't say pin), so the classifier is the safety net against
     over-matching. One statement may declare several comma-separated names
     (``const int TIMEOUT = 5000, LED_PIN = 2;``) — split so a pin after the first
-    is NOT silently dropped. Order-preserving."""
+    is NOT silently dropped. Order-preserving.
+
+    A declarator fragment that isn't a scalar ``NAME = VALUE`` (a bare array
+    declarator like ``PINS[]``, a pointer/string type) has no name to classify
+    against and is deliberately not modeled as a Macro — unlike ``#define``,
+    where every macro becomes at least a ``MacroKind.OTHER`` entry, this parser
+    has no raw text worth attaching to a nameless fragment. That silent drop
+    used to have no counter at all, unlike every _extract_* method in
+    netlist_parser.py's regex-fallback path (same failure class, fixed there
+    first). ``skip_counts`` is optional and purely additive: pass a dict to
+    have ``"unparsed_const_declarators"`` incremented per dropped fragment;
+    omit it (the default, used by every existing caller) for unchanged
+    behavior."""
     out: list[Macro] = []
     for i, line in enumerate(text.splitlines(), start=1):
         m = _CONST_DECL_RE.match(line)
@@ -424,6 +438,10 @@ def parse_const_decls(text: str) -> list[Macro]:
         for part in _split_declarators(m.group("decls")):
             dm = _DECLARATOR_RE.match(part)
             if dm is None:
+                if skip_counts is not None:
+                    skip_counts["unparsed_const_declarators"] = (
+                        skip_counts.get("unparsed_const_declarators", 0) + 1
+                    )
                 continue
             value, comment = _split_comment(dm.group("value"))
             macro = classify(dm.group("name"), value, None)
@@ -439,14 +457,17 @@ def _blank_block_comments(text: str) -> str:
     return _BLOCK_COMMENT_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
 
 
-def parse_macros(text: str) -> list[Macro]:
+def parse_macros(
+    text: str, skip_counts: Optional[dict[str, int]] = None
+) -> list[Macro]:
     """Every pin/address/config macro in firmware text — both ``#define`` and
     ``const``/``constexpr`` declarations (the latter is how Arduino-IDE sketches
     name pins). Block comments are stripped first so a commented-out pinout isn't
     read as live pins; both syntactic sources then feed the one classifier (order:
-    defines, then const-decls)."""
+    defines, then const-decls). ``skip_counts`` is forwarded to
+    ``parse_const_decls`` (see its docstring) — optional, purely additive."""
     text = _blank_block_comments(text)
-    return parse_defines(text) + parse_const_decls(text)
+    return parse_defines(text) + parse_const_decls(text, skip_counts=skip_counts)
 
 
 # --- preprocessor: select active #if branches --------------------------------

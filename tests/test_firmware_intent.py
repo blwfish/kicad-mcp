@@ -100,6 +100,19 @@ def test_provenance_retains_unmodeled_macros():
     assert "MCP_IODIRA" in names and "NUM_SENSORS" in names
     assert prov["unparsed_count"] >= 2
 
+def test_provenance_parse_skip_counts_defaults_empty():
+    # No parse_skip_counts arg passed at all (the historical call shape) --
+    # the key must still be present (so a caller can tell "none" from "not
+    # surfaced at all"), just empty.
+    assert _intent().provenance["parse_skip_counts"] == {}
+
+def test_provenance_surfaces_parse_skip_counts_when_given():
+    parsed = partition(parse_defines(_SAMPLE))
+    counts = {"unparsed_const_declarators": 3}
+    intent = build_intent(parsed, firmware_path="config.h", board_id="esp32dev",
+                          parse_skip_counts=counts)
+    assert intent.provenance["parse_skip_counts"] == {"unparsed_const_declarators": 3}
+
 def test_duplicate_signal_first_wins():
     parsed = partition(parse_defines("#define FOO_PIN 5\n#define FOO_PIN 6\n"))
     i = build_intent(parsed, firmware_path="c.h", board_id="esp32dev")

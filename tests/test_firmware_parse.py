@@ -633,3 +633,60 @@ def test_const_decl_initializer_with_internal_comma_is_not_torn_apart():
     by_name = {m.name: m for m in macros}
     assert by_name["CFG"].raw_value == "{1, 2, 3}"
     assert by_name["RELAY_PIN"].gpio == 9
+
+
+# --- skip_counts: const-decl declarator fragments dropped with no place to go ----
+
+class TestConstDeclSkipCounts:
+    """Regression: a declarator fragment that isn't a scalar NAME = VALUE (a bare
+    array declarator like `PINS[]`) has no name to classify and was silently
+    dropped with zero counter or trace -- unlike #define, where every macro is
+    at least retained as MacroKind.OTHER. Same failure class as
+    netlist_parser.py's regex-fallback _extract_* methods (fixed there first);
+    here the fix is an optional, additive skip_counts out-param rather than a
+    changed return shape, since parse_const_decls/parse_macros' plain
+    list[Macro] return is depended on by dozens of existing call sites."""
+
+    def test_no_skip_counts_arg_is_unchanged_behavior(self):
+        # The historical call shape (no skip_counts at all) must behave exactly
+        # as before -- purely additive, opt-in via an optional param.
+        macros = parse_const_decls("const int PINS[] = {1, 2, 3};")
+        assert macros == []
+
+    def test_array_declarator_fragment_is_counted(self):
+        counts: dict[str, int] = {}
+        macros = parse_const_decls("const int PINS[] = {1, 2, 3};", skip_counts=counts)
+        assert macros == []
+        assert counts == {"unparsed_const_declarators": 1}
+
+    def test_clean_line_leaves_counts_untouched(self):
+        counts: dict[str, int] = {}
+        macros = parse_const_decls("const int LED_PIN = 2;", skip_counts=counts)
+        assert len(macros) == 1
+        assert counts == {}
+
+    def test_mixed_line_counts_only_the_unparsed_fragment(self):
+        # One statement: a real pin AND an array declarator side by side --
+        # the pin must still be recovered, and only the array fragment counted.
+        counts: dict[str, int] = {}
+        macros = parse_const_decls(
+            "const int PINS[] = {1, 2, 3}, LED_PIN = 2;", skip_counts=counts
+        )
+        assert [m.name for m in macros] == ["LED_PIN"]
+        assert counts == {"unparsed_const_declarators": 1}
+
+    def test_counts_accumulate_across_multiple_lines(self):
+        counts: dict[str, int] = {}
+        text = (
+            "const int PINS[] = {1, 2};\n"
+            "const int LED_PIN = 2;\n"
+            "const int OTHER[] = {3, 4};\n"
+        )
+        parse_const_decls(text, skip_counts=counts)
+        assert counts == {"unparsed_const_declarators": 2}
+
+    def test_parse_macros_forwards_skip_counts(self):
+        from kicad_mcp.utils.firmware.parse import parse_macros
+        counts: dict[str, int] = {}
+        parse_macros("const int PINS[] = {1, 2, 3};\n", skip_counts=counts)
+        assert counts == {"unparsed_const_declarators": 1}
