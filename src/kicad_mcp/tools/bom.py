@@ -144,10 +144,17 @@ async def _op_analyze_bom(
         total_cost = 0.0
         cost_available = False
         for file_type, file_info in results["bom_files"].items():
-            if "analysis" in file_info and "total_cost" in file_info["analysis"]:
-                if file_info["analysis"]["total_cost"] > 0:
-                    total_cost += file_info["analysis"]["total_cost"]
-                    cost_available = True
+            analysis = file_info.get("analysis", {})
+            # Was gated on `total_cost > 0`, which excludes a legitimate
+            # $0.00 BOM (all-free-sample parts, or a BOM whose real cost
+            # genuinely sums to zero) exactly the same way it excludes "no
+            # price data was parsed" -- indistinguishable, and the wrong one
+            # of the two silently wins. `has_cost_data` (set per-file above
+            # only when at least one row had a real parsed cost) is the
+            # actual "was cost data available" signal; gate on that instead.
+            if analysis.get("has_cost_data") and "total_cost" in analysis:
+                total_cost += analysis["total_cost"]
+                cost_available = True
 
         if cost_available:
             results["component_summary"]["total_cost"] = round(total_cost, 2)
@@ -271,16 +278,17 @@ def _parse_bom_file(
                 except csv.Error:
                     # Sniffer needs a large-enough / structurally consistent
                     # sample (fails on a single row, or wildly inconsistent
-                    # rows); fall back to substring presence rather than
-                    # failing the whole BOM.
-                    if "," in sample:
-                        delimiter = ","
-                    elif ";" in sample:
-                        delimiter = ";"
-                    elif "\t" in sample:
-                        delimiter = "\t"
-                    else:
-                        delimiter = ","
+                    # rows). Fall back to whichever candidate delimiter
+                    # appears MOST OFTEN in the sample rather than
+                    # first-found-wins by a fixed comma>semicolon>tab
+                    # priority -- that fixed order reintroduced the exact
+                    # "a comma inside a text field wins over the real
+                    # delimiter" misdetection Sniffer (the primary path,
+                    # above) exists to avoid, for any single-row or
+                    # structurally-inconsistent file Sniffer can't parse.
+                    counts = {d: sample.count(d) for d in (",", ";", "\t")}
+                    best = max(counts, key=lambda d: counts[d])
+                    delimiter = best if counts[best] > 0 else ","
 
                 format_info["delimiter"] = delimiter
 
