@@ -109,7 +109,7 @@ def register_schematic_router(mcp: FastMCP) -> None:
         size: float = 1.27,
         label_uuid: Optional[str] = None,
         new_text: Optional[str] = None,
-        offset: float = 0.0,
+        offset: Optional[float] = None,
         shape: str = "input",
         net_name: Optional[str] = None,
         # ── Sheets ────────────────────────────────────────────────────────
@@ -181,9 +181,11 @@ def register_schematic_router(mcp: FastMCP) -> None:
           add_label(text, position, rotation=0, size=1.27)
               -> {status, label_uuid, text, position}
               Net label placed at absolute coordinates.
-          add_label_to_pin(reference, pin_number, text, offset=0)
+          add_label_to_pin(reference, pin_number, text, offset=None)
               -> {status, label_uuid, text, reference, pin_number, position}
               Net label attached directly to a pin — preferred when labeling a pin.
+              offset omitted/None defaults to 2.54mm; pass offset=0 for a
+              literal zero-length stub straight from the pin.
           add_hierarchical_label(text, position, shape="input", rotation=0, size=1.27)
               -> {status, label_uuid, text, shape, position}
               For hierarchical sheet pins, not ordinary net labels.
@@ -740,8 +742,14 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if len(position) != 2:
                 return {"error": "Position must be [x, y] coordinates"}
             sch = _require_schematic()
-            junction_uuid = sch.junctions.add(position=tuple(position), diameter=diameter)
-            return {"status": "ok", "junction_uuid": junction_uuid, "position": position}
+            # add_wire snaps both its endpoints to grid -- an un-snapped
+            # junction meant to sit at a wire crossing/endpoint can miss it
+            # by a sub-grid amount, becoming a decorative dot with no real
+            # electrical connection. finding #12 of the 2026-09-23 full
+            # review's Phase 1 pass.
+            pos = list(_snap(position[0], position[1]))
+            junction_uuid = sch.junctions.add(position=tuple(pos), diameter=diameter)
+            return {"status": "ok", "junction_uuid": junction_uuid, "position": pos}
 
         # ── Labels ─────────────────────────────────────────────────────────
 
@@ -771,7 +779,13 @@ def register_schematic_router(mcp: FastMCP) -> None:
             pin_pos = _kicad_pin_position(comp, pin_number)
             if pin_pos is None:
                 return {"error": f"Pin {pin_number} not found on {reference}"}
-            effective_offset = offset if offset != 0 else 2.54
+            # None ("not specified") is the only sentinel for "use the
+            # default 2.54mm" -- `offset != 0` collided an explicit
+            # offset=0 (meaning "no stub, wire straight to the pin") with
+            # "caller didn't pass offset at all", making a literal zero
+            # offset unreachable through this operation. finding #10 of the
+            # 2026-09-23 full review's Phase 1 pass.
+            effective_offset = offset if offset is not None else 2.54
             dx, dy = _pin_wire_offset(comp, pin_number, effective_offset)
             label_x = pin_pos.x + dx
             label_y = pin_pos.y + dy
@@ -806,8 +820,9 @@ def register_schematic_router(mcp: FastMCP) -> None:
             shape_key = shape.lower()
             if shape_key not in shape_map:
                 return {"error": f"Unknown shape {shape!r}. Valid: {sorted(shape_map)}"}
+            pos = list(_snap(position[0], position[1]))
             label_uuid = sch.add_hierarchical_label(
-                text=text, position=tuple(position),
+                text=text, position=tuple(pos),
                 shape=shape_map[shape_key], rotation=rotation, size=size,
             )
             return {
@@ -815,7 +830,7 @@ def register_schematic_router(mcp: FastMCP) -> None:
                 "label_uuid": label_uuid,
                 "text": text,
                 "shape": shape,
-                "position": position,
+                "position": pos,
             }
 
         if operation == "connect_pins_with_labels":
@@ -903,6 +918,11 @@ def register_schematic_router(mcp: FastMCP) -> None:
             }
 
         # ── Text annotations ───────────────────────────────────────────────
+        # add_text / add_text_box / add_sheet below all snap position to grid
+        # for the same reason add_junction/add_hierarchical_label above do
+        # (finding #12): every other placement operation in this router
+        # snaps, and an un-snapped item drifts visually off-grid from
+        # everything else even though it carries no electrical connection.
 
         if operation == "add_text":
             if text is None:
@@ -912,8 +932,9 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if len(position) != 2:
                 return {"error": "Position must be [x, y] coordinates"}
             sch = _require_schematic()
-            text_uuid = sch.add_text(text, tuple(position), rotation, size)
-            return {"status": "ok", "text_uuid": text_uuid, "text": text, "position": position}
+            pos = list(_snap(position[0], position[1]))
+            text_uuid = sch.add_text(text, tuple(pos), rotation, size)
+            return {"status": "ok", "text_uuid": text_uuid, "text": text, "position": pos}
 
         if operation == "add_text_box":
             if text is None:
@@ -925,12 +946,13 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if len(position) != 2 or len(sheet_size) != 2:
                 return {"error": "Position and size must be [x, y] and [width, height]"}
             sch = _require_schematic()
-            textbox_uuid = sch.add_text_box(text, tuple(position), tuple(sheet_size), rotation, size)
+            pos = list(_snap(position[0], position[1]))
+            textbox_uuid = sch.add_text_box(text, tuple(pos), tuple(sheet_size), rotation, size)
             return {
                 "status": "ok",
                 "textbox_uuid": textbox_uuid,
                 "text": text,
-                "position": position,
+                "position": pos,
                 "size": sheet_size,
             }
 
@@ -948,13 +970,14 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if len(position) != 2 or len(sheet_size) != 2:
                 return {"error": "Position and size must be [x, y] and [width, height]"}
             sch = _require_schematic()
-            sheet_uuid = sch.add_sheet(name, filename, tuple(position), tuple(sheet_size))
+            pos = list(_snap(position[0], position[1]))
+            sheet_uuid = sch.add_sheet(name, filename, tuple(pos), tuple(sheet_size))
             return {
                 "status": "ok",
                 "sheet_uuid": sheet_uuid,
                 "name": name,
                 "filename": filename,
-                "position": position,
+                "position": pos,
                 "size": sheet_size,
             }
 
