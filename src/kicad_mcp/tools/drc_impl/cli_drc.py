@@ -52,12 +52,23 @@ def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
     # only — verification found neither key present in real kicad-cli output,
     # where the human-readable text field is called `description`, not `message`.
     categories: Dict[str, int] = {}
+    malformed_violations = 0
     for violation in violations:
-        key = (
-            violation.get("type")
-            or violation.get("rule_id")
-            or violation.get("description", "Unknown")
-        )
+        # A version-skewed/malformed kicad-cli report could put a non-dict
+        # item in this array (a bare string, null, ...); `.get()` on it
+        # raises AttributeError, which the caller's except clause doesn't
+        # catch (OSError/SubprocessError/ValueError only) -- that used to
+        # crash run_drc_via_cli uncaught instead of degrading this one
+        # violation to "Unknown" like a dict with no recognized keys does.
+        if not isinstance(violation, dict):
+            malformed_violations += 1
+            key = "Unknown"
+        else:
+            key = (
+                violation.get("type")
+                or violation.get("rule_id")
+                or violation.get("description", "Unknown")
+            )
         categories[key] = categories.get(key, 0) + 1
     if unconnected:
         categories["unconnected"] = len(unconnected)
@@ -75,6 +86,16 @@ def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
     }
     if schema_unrecognized:
         result["schema_unrecognized"] = True
+    if malformed_violations:
+        result["malformed_violations"] = malformed_violations
+    # kicad_version is the single most useful field for diagnosing a FUTURE
+    # schema_unrecognized report (was this kicad-cli 11 changing the JSON
+    # shape, or something else?) -- captured when present rather than
+    # silently dropped along with the report's other top-level metadata
+    # ($schema, coordinate_units, date, source, ignored_checks,
+    # included_severities), which stay genuinely unneeded by any consumer.
+    if "kicad_version" in report:
+        result["kicad_version"] = report["kicad_version"]
     return result
 
 
