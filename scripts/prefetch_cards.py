@@ -91,6 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     want_high_only = args.min_confidence == "high"
     dispositions: Counter[str] = Counter()
     written = 0
+    # which-symbol/why detail for load/synthesis failures -- an aggregate
+    # counter alone told a maintainer HOW MANY symbols failed but never
+    # WHICH ones or why, so a real regression (e.g. a library that stopped
+    # parsing) was indistinguishable from routine skips without re-running
+    # under a debugger.
+    failures: list[tuple[str, str]] = []
     for lib in args.libraries:
         lib_file = sym_dir / f"{lib}.kicad_sym"
         if not lib_file.is_file():
@@ -98,16 +104,30 @@ def main(argv: list[str] | None = None) -> int:
             continue
         for name in top_level_symbol_names(lib_file.read_text(errors="replace")):
             lib_id = f"{lib}:{name}"
-            sym = cache.get_symbol(lib_id)
-            if sym is None:
-                dispositions["symbol-load-failed"] += 1
+            try:
+                sym = cache.get_symbol(lib_id)
+                if sym is None:
+                    dispositions["symbol-load-failed"] += 1
+                    failures.append((lib_id, "get_symbol returned None"))
+                    continue
+                card, conf, reasons = synthesize_i2c_card(
+                    symbol_name=name, lib_id=lib_id, pin_names=_pin_names(sym),
+                    footprint=symbol_footprint(sym),
+                    unit_count=int(getattr(sym, "unit_count", 1) or 1),
+                    pin_types=_pin_types(sym),
+                )
+            except Exception as e:
+                # One malformed symbol (a parse error, an unexpected shape
+                # get_symbol doesn't guard against) must not abort the whole
+                # bulk run -- this script processes thousands of symbols
+                # across multiple libraries; losing all prior progress to
+                # one bad symbol is a real cost on a run that can take
+                # minutes. Broad on purpose: this is a maintainer CLI's
+                # top-level per-item boundary, the same role a tool-call
+                # boundary plays in the MCP server itself.
+                dispositions["symbol-processing-error"] += 1
+                failures.append((lib_id, f"{type(e).__name__}: {e}"))
                 continue
-            card, conf, reasons = synthesize_i2c_card(
-                symbol_name=name, lib_id=lib_id, pin_names=_pin_names(sym),
-                footprint=symbol_footprint(sym),
-                unit_count=int(getattr(sym, "unit_count", 1) or 1),
-                pin_types=_pin_types(sym),
-            )
             dispositions[conf] += 1
             if card is None or (want_high_only and conf != "high"):
                 continue
@@ -134,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"written: {written} card(s) to {out_dir}")
     for k, v in sorted(dispositions.items()):
         print(f"  {k}: {v}")
+    if failures:
+        print(f"\n{len(failures)} symbol(s) failed to load/process:")
+        for lib_id, why in failures:
+            print(f"  ! {lib_id}: {why}")
     print("NOTE: footprint is the symbol's own pre-assigned value when it has "
           "one, else TODO:confirm — review before shipping either way.")
     return 0
