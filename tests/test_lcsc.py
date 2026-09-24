@@ -33,7 +33,7 @@ from kicad_mcp.utils.lcsc_db import (
     _live_attributes,
     _live_part_to_row,
 )
-from kicad_mcp.tools.lcsc import _parse_attributes, _row_to_resolved
+from kicad_mcp.tools.lcsc import _normalize_lcsc_pn, _parse_attributes, _row_to_resolved
 
 FIXTURE_DB = Path(__file__).parent / "fixtures" / "jlcparts_synthetic.sqlite3"
 
@@ -465,6 +465,32 @@ class TestAttributeLutHelpers:
         assert _package_from_attributes([], self.SAMPLE_LUT) == ""
         assert _tier_from_attributes([], self.SAMPLE_LUT) == "extended"
 
+    def test_unrecognized_tier_value_counts_drop_when_given(self):
+        """finding #4 (Phase 1, 2026-09-23 full review): a "Basic/Extended"
+        attribute IS present, but its value is neither "basic" nor
+        "preferred" (a typo, or a new JLCPCB tier not yet mapped) --
+        previously fell through to the same "extended" default as a
+        component with NO tier attribute at all, indistinguishable with no
+        counter."""
+        lut = [["Basic/Extended", {"primary": "default",
+                                    "values": {"default": ["Expand", "string"]}}]]
+        drops: dict[str, int] = {}
+        tier = _tier_from_attributes([0], lut, drops=drops)
+        assert tier == "extended"
+        assert drops["unrecognized_tier_value"] == 1
+
+    def test_recognized_tier_value_does_not_count_as_drop(self):
+        drops: dict[str, int] = {}
+        _tier_from_attributes([1], self.SAMPLE_LUT, drops=drops)   # "Basic"
+        assert drops.get("unrecognized_tier_value", 0) == 0
+
+    def test_no_tier_attribute_present_does_not_count_as_drop(self):
+        # index 3 is "Manufacturer", not "Basic/Extended" at all -- must not
+        # be conflated with a present-but-unrecognized tier value.
+        drops: dict[str, int] = {}
+        _tier_from_attributes([3], self.SAMPLE_LUT, drops=drops)
+        assert drops.get("unrecognized_tier_value", 0) == 0
+
     # --- malformed-index guards: one bad component must not abort the DB build ---
 
     def test_tier_float_index_ignored(self):
@@ -888,6 +914,82 @@ class TestDecodeShardRows:
         row = json.dumps(["C1", "MFR", 2, "desc", "[]", [0], 100, "http"])
         batch, _ = _decode_shard_rows([row], self.COL_MAP, lut)
         assert json.loads(batch[0][-1]) == {"Resistance": "10kΩ"}
+
+
+class TestBuildDbDropCountsAggregation:
+    """Regression: build_db_from_jsonl aggregates per-shard drop reasons with
+    `drop_counts[reason] += count` into a dict pre-declared with only 4 keys
+    (bad_json, not_list, no_lcsc, integrity_error) -- any OTHER reason
+    _decode_shard_rows can actually report (bad_attr_index, bad_tier_index,
+    bad_price, unrecognized_tier_value) crashed the entire DB build with a
+    bare KeyError the first time a real snapshot contained one malformed
+    attribute/price/tier value. Phase 1, 2026-09-23 full review (surfaced
+    while implementing finding #4)."""
+
+    COL_MAP = {"lcsc": 0, "mfr": 1, "joints": 2, "description": 3,
+               "price": 4, "attributes": 5, "stock": 6, "datasheet": 7}
+
+    @pytest.mark.parametrize("reason", [
+        "bad_attr_index", "bad_tier_index", "bad_price", "unrecognized_tier_value",
+    ])
+    def test_every_real_drop_reason_aggregates_without_keyerror(self, reason):
+        from collections import defaultdict
+        drop_counts: dict[str, int] = defaultdict(int, {
+            "bad_json": 0, "not_list": 0, "no_lcsc": 0, "integrity_error": 0,
+        })
+        shard_drops = {reason: 3}
+        for r, count in shard_drops.items():
+            drop_counts[r] += count   # the exact line build_db_from_jsonl runs
+        assert drop_counts[reason] == 3
+
+    def test_bad_attr_index_from_real_decode_shard_rows_aggregates_cleanly(self):
+        from collections import defaultdict
+        lut: list[list] = []
+        lines = [json.dumps(["C1", "MFR", 2, "desc", "[]", [0], 100, "http"])]
+        _, shard_drops = _decode_shard_rows(lines, self.COL_MAP, lut)
+        drop_counts: dict[str, int] = defaultdict(int, {
+            "bad_json": 0, "not_list": 0, "no_lcsc": 0, "integrity_error": 0,
+        })
+        for reason, count in shard_drops.items():
+            drop_counts[reason] += count
+        assert drop_counts["bad_attr_index"] == 1
+        assert drop_counts["bad_tier_index"] == 1
+
+    def test_build_db_from_jsonl_end_to_end_survives_a_bad_attr_index_row(
+        self, tmp_path, monkeypatch,
+    ):
+        """The real regression: build_db_from_jsonl (not just the aggregation
+        pattern in isolation) must not KeyError when a live shard row
+        contains a malformed attribute index."""
+        manifest = json.dumps({
+            "created": "2026-01-01T00:00:00Z",
+            "files": {"shard1.jsonl": {"kind": "components"}},
+        }).encode()
+        lut_json = json.dumps([]).encode()   # empty LUT -> any index is malformed
+        shard_header = json.dumps(self.COL_MAP)
+        shard_row = json.dumps(["C1", "MFR", 2, "desc", "[]", [0], 100, "http"])
+        shard_bytes = (shard_header + "\n" + shard_row).encode()
+
+        def fake_fetch_url(url, timeout=60):
+            assert "manifest.json" in url
+            return manifest
+
+        def fake_fetch_gzip(url):
+            if "attributes-lut" in url:
+                return lut_json
+            if "shard1.jsonl" in url:
+                return shard_bytes
+            raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(lcsc_db, "_fetch_url", fake_fetch_url)
+        monkeypatch.setattr(lcsc_db, "_fetch_gzip", fake_fetch_gzip)
+
+        meta = lcsc_db.build_db_from_jsonl(
+            db_path=tmp_path / "test.db", meta_path=tmp_path / "test_meta.json",
+        )
+        assert meta["total_components"] == 1
+        assert meta["rows_dropped_by_reason"]["bad_attr_index"] == 1
+        assert meta["rows_dropped_by_reason"]["bad_tier_index"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1370,3 +1472,20 @@ class TestTosFlow:
         result = fn(operation="search", description="LDO")
         assert result["status"] == "error"
         assert result["code"] == "lcsc_tos_acceptance_required"
+
+
+class TestNormalizeLcscPn:
+    """finding #1 (Phase 1, 2026-09-23 full review): get_component()'s
+    ``WHERE lcsc = ?`` is an exact, case-sensitive SQLite match -- the old
+    "ensure C prefix" check tested part_number.upper().startswith("C") but
+    then returned part_number UNCHANGED, so a lowercase "c6186" passed the
+    check yet never matched the stored "C6186" row."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("C6186", "C6186"),
+        ("c6186", "C6186"),      # the concrete bug: lowercase survived unchanged
+        ("6186", "C6186"),       # no prefix at all
+        ("Cabc123", "CABC123"),
+    ])
+    def test_normalizes_to_uppercase_c_prefixed(self, raw, expected):
+        assert _normalize_lcsc_pn(raw) == expected

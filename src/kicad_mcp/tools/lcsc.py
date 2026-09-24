@@ -504,6 +504,18 @@ def _op_search(
             "total_candidates": total_candidates, "truncated": truncated}
 
 
+def _normalize_lcsc_pn(part_number: str) -> str:
+    """Normalize a user-supplied LCSC part number to the canonical "C<digits>"
+    form the snapshot DB stores. get_component()'s ``WHERE lcsc = ?`` is an
+    exact, case-sensitive SQLite match (no COLLATE NOCASE) -- the previous
+    "ensure C prefix" check tested `part_number.upper().startswith("C")` but
+    then returned `part_number` UNCHANGED, so a lowercase "c6186" passed the
+    check yet stayed lowercase and never matched the stored "C6186" row.
+    finding #1 of the 2026-09-23 full review's Phase 1 pass."""
+    pn = part_number.upper()
+    return pn if pn.startswith("C") else f"C{pn}"
+
+
 def _op_resolve(
     *,
     part_number: str | None,
@@ -515,8 +527,7 @@ def _op_resolve(
         return {"status": "error", "code": "missing_parameter",
                 "message": "part_number is required for resolve"}
 
-    # Normalize: ensure "C" prefix
-    pn = part_number if part_number.upper().startswith("C") else f"C{part_number}"
+    pn = _normalize_lcsc_pn(part_number)
 
     fetched_live = False
     row = get_component(pn)
@@ -566,7 +577,7 @@ def _op_assign(
         return {"status": "error", "code": "missing_parameter",
                 "message": "part_number is required for assign"}
 
-    pn = part_number if part_number.upper().startswith("C") else f"C{part_number}"
+    pn = _normalize_lcsc_pn(part_number)
 
     # Resolve the part first
     row = get_component(pn)
