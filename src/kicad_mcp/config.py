@@ -4,8 +4,11 @@ Detects KiCad installation paths, footprint library locations, and
 provides common constants used across tool modules.
 """
 
+import logging
 import os
 import platform
+
+logger = logging.getLogger(__name__)
 
 system = platform.system()
 
@@ -64,13 +67,40 @@ def _exists_or_false(path: str) -> bool:
         return False
 
 
+def _resolve_env_search_paths(
+    env_value: str, exists_check=_exists_or_false
+) -> tuple[list[str], int]:
+    """Resolve KICAD_SEARCH_PATHS' comma-separated entries against the
+    filesystem. Returns (found_paths, dropped_count) so a caller can warn
+    when the env var was SET but some/all of its entries don't exist --
+    previously this was a silent filter with no way to distinguish "env var
+    unset" (nothing to warn about) from "the user configured this and every
+    entry is wrong" (worth a warning). Auto-detected candidate locations
+    (below) are speculative guesses, not user-configured paths, so a miss
+    there is expected and not counted here."""
+    found: list[str] = []
+    dropped = 0
+    for p in env_value.split(","):
+        expanded = os.path.expanduser(p.strip())
+        if exists_check(expanded):
+            found.append(expanded)
+        else:
+            dropped += 1
+    return found, dropped
+
+
 ADDITIONAL_SEARCH_PATHS: list[str] = []
 env_paths = os.environ.get("KICAD_SEARCH_PATHS", "")
 if env_paths:
-    for p in env_paths.split(","):
-        expanded = os.path.expanduser(p.strip())
-        if _exists_or_false(expanded):
-            ADDITIONAL_SEARCH_PATHS.append(expanded)
+    _found, _dropped = _resolve_env_search_paths(env_paths)
+    ADDITIONAL_SEARCH_PATHS.extend(_found)
+    if _dropped:
+        logger.warning(
+            "KICAD_SEARCH_PATHS: %d of %d configured path(s) do not exist "
+            "and were skipped: %s",
+            _dropped, _dropped + len(_found), env_paths,
+        )
+
 
 # Auto-detect common project locations
 for loc in [
