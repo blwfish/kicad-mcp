@@ -119,6 +119,34 @@ class TestPathValidation:
         assert "error" in result
         assert "not found" in result["error"].lower()
 
+    def test_output_path_same_as_input_rejected(self, panelize_server, pcb_file):
+        """Regression: output_path was never validated against pcb_path --
+        KiKit would overwrite the SOURCE board with the panelized output
+        instead of writing a new file."""
+        fn = _get_tool_fn(panelize_server, "panelize_pcb")
+        result = fn(pcb_file, output_path=pcb_file)
+        assert "error" in result
+        assert "same file" in result["error"]
+
+    def test_output_path_same_as_input_via_relative_form_rejected(
+        self, panelize_server, pcb_file, tmp_path,
+    ):
+        """The same file referenced through a different (but equivalent)
+        path string -- must still be caught via realpath comparison, not a
+        naive string equality check."""
+        fn = _get_tool_fn(panelize_server, "panelize_pcb")
+        equivalent = str(tmp_path / "." / "test.kicad_pcb")
+        result = fn(pcb_file, output_path=equivalent)
+        assert "error" in result
+        assert "same file" in result["error"]
+
+    def test_output_path_different_file_still_accepted(self, panelize_server, pcb_file, tmp_path):
+        different = str(tmp_path / "panel-output.kicad_pcb")
+        fn = _get_tool_fn(panelize_server, "panelize_pcb")
+        with _happy_path_patches(tmp_path, pcb_file):
+            result = fn(pcb_file, output_path=different)
+        assert "error" not in result or "same file" not in result.get("error", "")
+
 
 # -- Rows/cols boundary tests ------------------------------------------------
 
@@ -527,4 +555,30 @@ class TestSubprocessBehavior:
             result = fn(pcb_file)
         assert result["status"] == "ok"
         assert "info_read_warning" in result
+        assert result["width_mm"] is None
+
+    def test_panel_info_error_dict_surfaces_warning_not_silent_none(
+        self, panelize_server, pcb_file,
+    ):
+        """Regression: run_pcbnew_script has TWO failure channels -- a
+        raised exception (covered above) and an exit-0 script that printed
+        {"error": ...} itself (the embedded info-read script's own
+        board-load-failed branch does exactly this). Only the exception
+        channel was checked; the error-dict channel silently resolved every
+        field to None under status="ok", masking a real failure as success."""
+        run_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        fn = _get_tool_fn(panelize_server, "panelize_pcb")
+        with (
+            patch("kicad_mcp.tools.pcb_panelize.platform.system", return_value="Linux"),
+            patch("kicad_mcp.tools.pcb_panelize.shutil.which", return_value="/usr/bin/kikit"),
+            patch("kicad_mcp.tools.pcb_panelize.subprocess.run", return_value=run_result),
+            patch("kicad_mcp.tools.pcb_panelize.os.path.exists", return_value=True),
+            patch("kicad_mcp.tools.pcb_panelize.run_pcbnew_script",
+                  return_value={"error": "Failed to load board: /tmp/x-panel.kicad_pcb"}),
+        ):
+            result = fn(pcb_file)
+        assert result["status"] == "ok"
+        assert "info_read_warning" in result
+        assert "Failed to load board" in result["info_read_warning"]
         assert result["width_mm"] is None
