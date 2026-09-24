@@ -511,6 +511,94 @@ def test_override_dir_takes_precedence(tmp_path):
     assert peris["MPU6050"]["lib_id"] == "Lib:Custom"   # override wins
 
 
+_PERIPHERAL_YAML = textwrap.dedent("""\
+    type: DUPTYPE
+    lib_id: Lib:{n}
+    value: v
+    bus: I2C
+    footprint: FP:X
+    roles: {{SDA: "4"}}
+    supply_pins: ["2"]
+    ground_pins: ["1"]
+    module: true
+""")
+
+_MCU_YAML = textwrap.dedent("""\
+    part: DUP-MCU
+    chip: {n}
+    lib_id: Lib:X
+    value: v
+    footprint: FP:X
+    board_match: ["dup"]
+    needs_3v3: true
+    supply_pin: VDD
+    ground_pin: GND
+    uart_rx_pin: RX
+    uart_tx_pin: TX
+    native_usb: false
+""")
+
+
+class TestLoadCardsCollisionVisibility:
+    """finding #110: load_cards' later-dir-wins override was undocumented at
+    runtime (no log) and didn't distinguish "intentional cross-tier override"
+    from "two cards in the SAME tier accidentally declaring the same key" --
+    the latter is always a bug (e.g. a copy-pasted card whose type/part field
+    wasn't updated), previously masked by silently keeping whichever file
+    rglob happened to list last."""
+
+    def test_cross_tier_override_is_logged_not_silent(self, tmp_path, caplog):
+        dir1 = tmp_path / "tier1"
+        dir2 = tmp_path / "tier2"
+        dir1.mkdir()
+        dir2.mkdir()
+        (dir1 / "a.yaml").write_text(_PERIPHERAL_YAML.format(n="Old"))
+        (dir2 / "b.yaml").write_text(_PERIPHERAL_YAML.format(n="New"))
+        with caplog.at_level("INFO", logger="kicad_mcp.utils.firmware.cards"):
+            peris, _ = load_cards(extra_dirs=[str(dir1), str(dir2)])
+        assert peris["DUPTYPE"]["lib_id"] == "Lib:New"   # later tier wins
+        assert any("overridden" in r.message for r in caplog.records)
+
+    def test_same_tier_peripheral_collision_raises(self, tmp_path):
+        (tmp_path / "a.yaml").write_text(_PERIPHERAL_YAML.format(n="A"))
+        (tmp_path / "b.yaml").write_text(_PERIPHERAL_YAML.format(n="B"))
+        with pytest.raises(CardError, match="duplicate peripheral card"):
+            load_cards(extra_dirs=[str(tmp_path)])
+
+    def test_cross_tier_mcu_override_is_logged_not_silent(self, tmp_path, caplog):
+        dir1 = tmp_path / "tier1"
+        dir2 = tmp_path / "tier2"
+        dir1.mkdir()
+        dir2.mkdir()
+        (dir1 / "a.yaml").write_text(_MCU_YAML.format(n="esp32"))
+        (dir2 / "b.yaml").write_text(_MCU_YAML.format(n="esp32s3"))
+        with caplog.at_level("INFO", logger="kicad_mcp.utils.firmware.cards"):
+            _, mcus = load_cards(extra_dirs=[str(dir1), str(dir2)])
+        [mcu] = [m for m in mcus if m["part"] == "DUP-MCU"]
+        assert mcu["chip"] == "esp32s3"   # later tier wins
+        assert any("overridden" in r.message for r in caplog.records)
+
+    def test_same_tier_mcu_collision_raises(self, tmp_path):
+        (tmp_path / "a.yaml").write_text(_MCU_YAML.format(n="esp32"))
+        (tmp_path / "b.yaml").write_text(_MCU_YAML.format(n="esp32s3"))
+        with pytest.raises(CardError, match="duplicate MCU card"):
+            load_cards(extra_dirs=[str(tmp_path)])
+
+    def test_nested_subdirs_within_one_tier_still_count_as_same_tier(self, tmp_path):
+        """A tier dir (e.g. the packaged devices/ dir) has its own
+        subdirectories (mcus/, peripherals/) -- comparing path.parent instead
+        of the tier root would wrongly treat these as different tiers and
+        downgrade a real same-tier duplicate to a silent override."""
+        sub_a = tmp_path / "sub_a"
+        sub_b = tmp_path / "sub_b"
+        sub_a.mkdir()
+        sub_b.mkdir()
+        (sub_a / "a.yaml").write_text(_PERIPHERAL_YAML.format(n="A"))
+        (sub_b / "b.yaml").write_text(_PERIPHERAL_YAML.format(n="B"))
+        with pytest.raises(CardError, match="duplicate peripheral card"):
+            load_cards(extra_dirs=[str(tmp_path)])
+
+
 def test_malformed_card_raises(tmp_path):
     (tmp_path / "bad.yaml").write_text("type: BAD\nlib_id: no_colon\n")
     with pytest.raises(CardError):

@@ -24,6 +24,7 @@ Two validation tiers (the honesty backstop):
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -40,6 +41,8 @@ from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
 _PACKAGED_DIR = Path(__file__).parent / "devices"
 _ENV_DIRS_VAR = "KICAD_MCP_DEVICE_DIRS"
 _PROJECT_DIR = Path("firmware-devices")
+
+logger = logging.getLogger(__name__)
 
 _BUSES = frozenset({"I2C", "SPI", "I2S", "UART", None})
 
@@ -492,10 +495,23 @@ def load_cards(
     Returns ``(peripherals_by_type_upper, mcus)``. A malformed card raises
     ``CardError`` (loud — never silently dropped; data-capture rule). Later dirs
     override earlier on a colliding ``type`` / ``part`` key, enabling project
-    pins without editing the packaged set.
+    pins without editing the packaged set -- that cross-tier override is
+    intentional and is logged (not silent) so it's visible in a debugging
+    session. Two cards colliding WITHIN the same tier (e.g. two packaged
+    files both declaring ``type: MPU6050``) is never intentional -- it's
+    always an accidental duplicate -- so that case raises loudly instead of
+    silently keeping whichever file `rglob` happened to list last.
+    finding #110.
     """
     peripherals: dict[str, dict[str, Any]] = {}
     mcus_by_part: dict[str, dict[str, Any]] = {}
+    # Value is (path, tier_dir) -- tier_dir is the _card_dirs() entry the card
+    # was discovered under, NOT path.parent, since a tier (e.g. the packaged
+    # dir) may itself have subdirectories (devices/mcus/, devices/peripherals/)
+    # that would otherwise look like different tiers and wrongly downgrade a
+    # same-tier duplicate to a silently-logged "override".
+    peripheral_sources: dict[str, tuple[Path, Path]] = {}
+    mcu_sources: dict[str, tuple[Path, Path]] = {}
     for d in _card_dirs(extra_dirs):
         if not d.is_dir():
             continue
@@ -505,12 +521,39 @@ def load_cards(
                 errs = validate_mcu_card(card)
                 if errs:
                     raise CardError(f"{path}:\n  " + "\n  ".join(errs))
-                mcus_by_part[card["part"]] = card
+                part = card["part"]
+                prev = mcu_sources.get(part)
+                if prev is not None:
+                    prev_path, prev_dir = prev
+                    if prev_dir == d:
+                        raise CardError(
+                            f"{path}: duplicate MCU card for part {part!r} -- "
+                            f"already defined by {prev_path} in the same directory"
+                        )
+                    logger.info(
+                        "MCU card part=%r overridden: %s -> %s", part, prev_path, path,
+                    )
+                mcu_sources[part] = (path, d)
+                mcus_by_part[part] = card
             elif "type" in card:
                 errs = validate_peripheral_card(card)
                 if errs:
                     raise CardError(f"{path}:\n  " + "\n  ".join(errs))
-                peripherals[canonical_type(str(card["type"]))] = card
+                ctype = canonical_type(str(card["type"]))
+                prev = peripheral_sources.get(ctype)
+                if prev is not None:
+                    prev_path, prev_dir = prev
+                    if prev_dir == d:
+                        raise CardError(
+                            f"{path}: duplicate peripheral card for type {ctype!r} "
+                            f"-- already defined by {prev_path} in the same directory"
+                        )
+                    logger.info(
+                        "Peripheral card type=%r overridden: %s -> %s",
+                        ctype, prev_path, path,
+                    )
+                peripheral_sources[ctype] = (path, d)
+                peripherals[ctype] = card
             else:
                 raise CardError(
                     f"card {path} is neither a peripheral (needs 'type') nor an "
