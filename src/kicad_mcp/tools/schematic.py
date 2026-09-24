@@ -813,7 +813,12 @@ def register_schematic_router(mcp: FastMCP) -> None:
                 "input": HierarchicalLabelShape.INPUT,
                 "output": HierarchicalLabelShape.OUTPUT,
                 "bidirectional": HierarchicalLabelShape.BIDIRECTIONAL,
+                # Accept both spellings -- add_sheet_pin's pin_type (same
+                # underlying tri-state concept) only accepts "tri_state", the
+                # spelling kicad_sch_api itself uses. finding #20 of the
+                # 2026-09-23 full review's Phase 1.5 pass.
                 "tristate": HierarchicalLabelShape.TRISTATE,
+                "tri_state": HierarchicalLabelShape.TRISTATE,
                 "passive": HierarchicalLabelShape.PASSIVE,
                 "unspecified": HierarchicalLabelShape.UNSPECIFIED,
             }
@@ -995,12 +1000,21 @@ def register_schematic_router(mcp: FastMCP) -> None:
             # Reject unknown pin_type explicitly — silent default-substitution by
             # the underlying library would hide caller typos (mirrors the
             # add_hierarchical_label guard pattern).
-            valid_pin_types = {"input", "output", "bidirectional", "tri_state", "passive"}
+            # "tristate" accepted alongside "tri_state" for consistency with
+            # add_hierarchical_label's shape param (same tri-state concept,
+            # finding #20 of the 2026-09-23 full review's Phase 1.5 pass) --
+            # normalized below since kicad_sch_api's own add_sheet_pin only
+            # recognizes "tri_state" and silently falls back to "input"
+            # otherwise (see its valid_pin_types check).
+            valid_pin_types = {"input", "output", "bidirectional", "tri_state",
+                               "tristate", "passive"}
             pin_type_key = pin_type.lower()
             if pin_type_key not in valid_pin_types:
                 return {
                     "error": f"Unknown pin_type {pin_type!r}. Valid: {sorted(valid_pin_types)}"
                 }
+            if pin_type_key == "tristate":
+                pin_type_key = "tri_state"
 
             valid_edges = {"right", "bottom", "left", "top"}
             edge_key = edge.lower()
