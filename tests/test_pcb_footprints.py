@@ -476,6 +476,26 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.requires_kicad
+class TestBlockedConstraintsSharedHelper:
+    """finding #17 (Phase 1.5, 2026-09-23 full review): place_footprint's and
+    move_footprint's embedded keepout-overlap scripts each had their own
+    ad-hoc `k.replace("no_", "")` label-derivation instead of importing
+    keepout_helpers.blocked_constraints -- the exact naive approach that
+    helper's own docstring says was deliberately replaced (a new constraint
+    key without a "no_" prefix, or "no_" in a different position, would
+    silently produce a wrong label instead of failing loudly). Pins that
+    both sites now call the canonical helper and neither reintroduces the
+    naive duplicate."""
+
+    def test_no_naive_duplicate_and_both_sites_use_canonical_helper(self):
+        import inspect
+        from kicad_mcp.tools import pcb_footprints
+
+        source = inspect.getsource(pcb_footprints)
+        assert 'k.replace("no_"' not in source
+        assert source.count("blocked_constraints(c)") == 2
+
+
 class TestPlaceFootprintOverhangWarningIntegration:
     """finding #24: place_footprint/move_footprint each had their own
     hand-copied if/if/if/if overhang computation, now both call the shared
