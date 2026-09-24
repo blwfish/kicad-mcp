@@ -321,3 +321,83 @@ class TestCorruptCacheFile:
             latest = placement_cache.find_latest_for_schematic("/tmp/x.kicad_sch")
         assert latest is not None
         assert not any("returning stale candidate" in r.message.lower() for r in caplog.records)
+
+    def test_non_dict_json_treated_as_corrupt_not_crash(self, isolated_cache_dir):
+        """Regression: json.loads() succeeding on a bare list/string/number
+        (syntactically valid JSON, not an object) was trusted as a dict via
+        a type annotation alone -- a caller's first `.get(...)` on the
+        result would crash with AttributeError instead of getting the same
+        clean "corrupt, treat as miss" handling malformed JSON already gets."""
+        bogus_id = _hex_id("nondict")
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        shard.mkdir(parents=True, exist_ok=True)
+        (shard / f"{bogus_id}.json").write_text("[1, 2, 3]")
+        assert placement_cache.load_state(bogus_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Failure-visibility: eviction/sweep/clear no longer fail perfectly silently
+# ---------------------------------------------------------------------------
+
+class TestCleanupFailureVisibility:
+    """Regression: _evict_lru_for_schematic/_sweep_expired/clear_cache all
+    used a bare `except OSError: pass` (or contextlib.suppress) with zero
+    counter -- since _evict_lru_for_schematic/_sweep_expired are called
+    fire-and-forget from save_state, a failed cleanup left literally no
+    trace anywhere that it happened."""
+
+    def test_evict_lru_logs_warning_on_unlink_failure(self, isolated_cache_dir, caplog, monkeypatch):
+        import logging
+        import json as json_module
+        from pathlib import Path
+        # Write 6 state files directly (bypassing save_state's own
+        # auto-eviction, which would otherwise trim back down to 5 before
+        # this test ever gets to exercise a failing unlink).
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        shard.mkdir(parents=True, exist_ok=True)
+        for i in range(6):
+            sid = _hex_id(f"evict{i}")
+            (shard / f"{sid}.json").write_text(json_module.dumps(_state(sid)))
+        monkeypatch.setattr(Path, "unlink", lambda self: (_ for _ in ()).throw(OSError("busy")))
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.placement.cache"):
+            placement_cache._evict_lru_for_schematic("/tmp/x.kicad_sch")
+        assert any("Failed to evict" in r.message for r in caplog.records)
+
+    def test_sweep_expired_logs_warning_on_unlink_failure(self, isolated_cache_dir, caplog, monkeypatch):
+        import logging
+        from pathlib import Path
+        placement_cache.save_state(_state("s0", "/tmp/x.kicad_sch"))
+        path = next(placement_cache._shard_dir("/tmp/x.kicad_sch").glob("*.json"))
+        old_time = time.time() - placement_cache.DEFAULT_MAX_AGE_DAYS * 86400 - 3600
+        os.utime(path, (old_time, old_time))
+        monkeypatch.setattr(Path, "unlink", lambda self: (_ for _ in ()).throw(OSError("busy")))
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.placement.cache"):
+            placement_cache._sweep_expired()
+        assert any("Failed to sweep" in r.message for r in caplog.records)
+
+    def test_clear_cache_logs_warning_on_unlink_failure(self, isolated_cache_dir, caplog, monkeypatch):
+        import logging
+        from pathlib import Path
+        placement_cache.save_state(_state("s0", "/tmp/x.kicad_sch"))
+        monkeypatch.setattr(Path, "unlink", lambda self: (_ for _ in ()).throw(OSError("busy")))
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.placement.cache"):
+            count = placement_cache.clear_cache("/tmp/x.kicad_sch")
+        assert count == 0
+        assert any("could not be deleted" in r.message for r in caplog.records)
+
+    def test_no_warning_when_all_deletes_succeed(self, isolated_cache_dir, caplog):
+        import logging
+        placement_cache.save_state(_state("s0", "/tmp/x.kicad_sch"))
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.placement.cache"):
+            count = placement_cache.clear_cache("/tmp/x.kicad_sch")
+        assert count == 1
+        assert not any("could not be deleted" in r.message for r in caplog.records)
+
+
+class TestUnknownShardLogged:
+    def test_falsy_schematic_path_logs_debug(self, isolated_cache_dir, caplog):
+        import logging
+        with caplog.at_level(logging.DEBUG, logger="kicad_mcp.utils.placement.cache"):
+            shard = placement_cache._schematic_shard("")
+        assert shard == "_unknown"
+        assert any("_unknown" in r.message for r in caplog.records)
