@@ -16,7 +16,7 @@ from kicad_mcp.tools.pcb_silkscreen import _op_auto_fix_silkscreen
 from kicad_mcp.utils.firmware.intent import load_intent
 from kicad_mcp.utils.firmware.sidecar import _HOLE_DEFAULTS
 from kicad_mcp.utils.keepout_helpers import BODY_EXTENT_HELPER, KEEPOUT_HELPER, LIB_SEARCH_HELPER
-from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
+from kicad_mcp.utils.kicad_cli import KiCadCLIError, format_cli_error, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
 from kicad_mcp.utils.path_validation import validate_project_path
@@ -2218,7 +2218,7 @@ def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
             capture_output=True, text=True, check=True, timeout=30,
         )
     except subprocess.CalledProcessError as e:
-        errors.append(f"Gerber export failed: {e.stderr or e.stdout}")
+        errors.append(f"Gerber export failed: {format_cli_error(e)}")
     except subprocess.TimeoutExpired:
         errors.append("Gerber export timed out")
 
@@ -2232,7 +2232,7 @@ def _step_export_gerbers(pcb_path: str) -> Dict[str, Any]:
             capture_output=True, text=True, check=True, timeout=30,
         )
     except subprocess.CalledProcessError as e:
-        errors.append(f"Drill export failed: {e.stderr or e.stdout}")
+        errors.append(f"Drill export failed: {format_cli_error(e)}")
     except subprocess.TimeoutExpired:
         errors.append("Drill export timed out")
 

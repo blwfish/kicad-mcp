@@ -285,3 +285,15 @@ def is_kicad_cli_available() -> bool:
 def get_kicad_version() -> str | None:
     """Convenience function to get KiCad CLI version."""
     return get_cli_manager().get_version()
+
+
+def format_cli_error(e: subprocess.CalledProcessError) -> str:
+    """Concatenate a failed kicad-cli subprocess's stderr and stdout into one
+    error message. `e.stderr or e.stdout` drops stderr entirely whenever it's
+    an empty string but stdout has content (kicad-cli writes errors to stdout
+    on some builds) -- single source of truth, previously duplicated as a
+    private nested function in export.py and never ported to the identical
+    pattern in pcb_pipeline.py. finding #14/#25 of the 2026-09-23 full
+    review's Phase 1 pass."""
+    parts = [s.strip() for s in (e.stderr, e.stdout) if s and s.strip()]
+    return "\n".join(parts) or f"(no output; exit code {e.returncode})"
