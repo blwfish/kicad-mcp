@@ -153,12 +153,33 @@ class TestAddVia:
         fn("add_via",
            pcb_path=pcb_file, x_mm=10, y_mm=20,
            drill_mm=0.4, size_mm=0.8,
-           net_name="GND", via_type="blind_buried")
+           net_name="GND", via_type="through")
         params = mock_run.call_args[1]["params"]
         assert params["drill_mm"] == 0.4
         assert params["size_mm"] == 0.8
         assert params["net_name"] == "GND"
-        assert params["via_type"] == "blind_buried"
+        assert params["via_type"] == "through"
+
+    def test_blind_buried_via_type_rejected(self, pcb_server, pcb_file):
+        """finding #18 (Phase 1, 2026-09-23 full review): via.SetViaType()
+        only tags the via's type -- it doesn't configure the actual layer
+        span (via.SetLayerPair()), which is what physically defines a
+        blind/buried or micro via. With no from_layer/to_layer parameters to
+        compute a real span from, accepting these types emitted a via
+        tagged as one type but physically through-board. Rejected until
+        real layer-span parameters exist."""
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_via", pcb_path=pcb_file, x_mm=10, y_mm=10,
+                    drill_mm=0.3, size_mm=0.6, via_type="blind_buried")
+        assert "error" in result
+        assert "not yet supported" in result["error"]
+
+    def test_micro_via_type_rejected(self, pcb_server, pcb_file):
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("add_via", pcb_path=pcb_file, x_mm=10, y_mm=10,
+                    drill_mm=0.3, size_mm=0.6, via_type="micro")
+        assert "error" in result
+        assert "not yet supported" in result["error"]
 
 
 # -- edit_trace_width tests --------------------------------------------------
@@ -379,3 +400,77 @@ class TestAddViaBoundary:
         result = fn("add_via", pcb_path=pcb_file, x_mm=10, y_mm=10,
                     drill_mm=0.49, size_mm=0.5)
         assert "error" not in result
+
+
+# ---------------------------------------------------------------------------
+# Real-KiCad regression: clear_routing must remove PCB_ARC segments too.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.requires_kicad
+class TestClearRoutingRemovesArcsIntegration:
+    """finding #17 (Phase 1, 2026-09-23 full review): board.GetTracks()
+    returns PCB_TRACK, PCB_VIA, AND PCB_ARC objects; _op_clear_routing's
+    embedded script only matched the first two classes under
+    clear_tracks, so an arc-shaped copper trace survived a "clear routing"
+    call. This is boundary logic welded to pcbnew (AGENTS.md), so it's
+    only reachable through a real pcbnew round trip, not a mock."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_unavailable(self):
+        from .conftest import pcbnew_available
+        if not pcbnew_available():
+            pytest.skip("pcbnew not importable under KiCad's Python")
+
+    _ADD_ARC_SCRIPT = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "load failed"}))
+    sys.exit(0)
+
+arc = pcbnew.PCB_ARC(board)
+arc.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)))
+arc.SetMid(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(5)))
+arc.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(10), pcbnew.FromMM(0)))
+arc.SetWidth(pcbnew.FromMM(0.25))
+arc.SetLayer(pcbnew.F_Cu)
+board.Add(arc)
+board.Save(params["pcb_path"])
+print(json.dumps({"status": "ok"}))
+"""
+
+    _COUNT_TRACKS_SCRIPT = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "load failed"}))
+    sys.exit(0)
+
+classes = [t.GetClass() for t in board.GetTracks()]
+print(json.dumps({"status": "ok", "classes": classes}))
+"""
+
+    def test_clear_routing_removes_arc_segment(self, tmp_path):
+        from kicad_mcp.tools.pcb_board import _op_create
+        from kicad_mcp.tools.pcb_routing import _op_clear_routing
+        from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+
+        pcb_path = str(tmp_path / "arc_test.kicad_pcb")
+        assert _op_create(pcb_path).get("status") == "ok"
+
+        add_result = run_pcbnew_script(self._ADD_ARC_SCRIPT, params={"pcb_path": pcb_path})
+        assert add_result.get("status") == "ok", add_result
+
+        before = run_pcbnew_script(self._COUNT_TRACKS_SCRIPT, params={"pcb_path": pcb_path})
+        assert before["classes"] == ["PCB_ARC"], before
+
+        clear_result = _op_clear_routing(pcb_path, clear_tracks=True, clear_vias=True)
+        assert "error" not in clear_result, clear_result
+        assert clear_result["tracks_removed"] == 1, clear_result
+
+        after = run_pcbnew_script(self._COUNT_TRACKS_SCRIPT, params={"pcb_path": pcb_path})
+        assert after["classes"] == [], after
