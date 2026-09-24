@@ -600,6 +600,27 @@ def _op_clear_cache(*, schematic_path: str | None) -> dict[str, Any]:
 # Telemetry helpers
 # ---------------------------------------------------------------------------
 
+def _build_warning_events(
+    layer_events: list[dict[str, Any]], convention_events: list[Any]
+) -> list[dict[str, Any]]:
+    """Merge layer_events' warn-level dicts with convention_events' warn-level
+    ConventionEvents into one list of dicts _warning_targets can consume.
+    ConventionEvent's cluster_id/affected_refs fields are carried into "data"
+    here -- omitting them used to mean a future level="warn" ConventionEvent
+    (today only "info" is ever emitted, per ConventionEvent's own level field
+    comment) would carry no "data" at all and get silently skipped by
+    _warning_targets' "no target" guard. finding #26 of the 2026-09-23 full
+    review's Phase 1.5 pass -- latent today, closed before it can bite."""
+    return [
+        e for e in layer_events if e.get("level") == "warn"
+    ] + [
+        {"code": cev.code, "level": cev.level,
+         "data": {"cluster_id": cev.cluster_id, "refs": cev.affected_refs}}
+        for cev in convention_events
+        if getattr(cev, "level", "") == "warn"
+    ]
+
+
 def _warning_targets(data: Any) -> tuple[list[str], list[str]]:
     """Extract (refs, cluster_ids) from a warn event's "data" payload for
     record_warning. Each emitter (schematic_layout's own layer_events,
@@ -678,13 +699,7 @@ def _record_suggest_telemetry(
             if props.get("LCSC"):
                 lcsc_resolved += 1
 
-        warning_events = [
-            e for e in layer_events if e.get("level") == "warn"
-        ] + [
-            {"code": cev.code, "level": cev.level}
-            for cev in convention_events
-            if getattr(cev, "level", "") == "warn"
-        ]
+        warning_events = _build_warning_events(layer_events, convention_events)
 
         output_summary = {
             "cluster_count": len(clusters),

@@ -691,6 +691,45 @@ class TestApplyMovesOnlyTargetedRefs:
         assert (c1_after.x, c1_after.y) == (c1_pos_before.x, c1_pos_before.y)
 
 
+class TestBuildWarningEventsCarriesConventionEventData:
+    """finding #26 (Phase 1.5, 2026-09-23 full review): _build_warning_events'
+    synthetic dict for a warn-level ConventionEvent used to carry only
+    code/level, dropping cluster_id/affected_refs -- both real fields on
+    ConventionEvent. A future level="warn" producer (none exists today; only
+    "info" is ever emitted) would have its warning silently skipped by
+    _warning_targets' "no target" guard, since the resulting dict had no
+    "data" key at all."""
+
+    def _convention_event(self, level="warn"):
+        from kicad_mcp.utils.placement.conventions import ConventionEvent
+        return ConventionEvent(
+            level=level, code="convention_skipped", rule="mcu_crystal_proximate",
+            cluster_id="cluster_1", message="test", affected_refs=["U1", "Y1"],
+        )
+
+    def test_warn_level_convention_event_carries_cluster_id_and_refs(self):
+        from kicad_mcp.tools.schematic_layout import (
+            _build_warning_events,
+            _warning_targets,
+        )
+        events = _build_warning_events([], [self._convention_event()])
+        assert len(events) == 1
+        refs, cluster_ids = _warning_targets(events[0].get("data"))
+        assert refs == ["U1", "Y1"]
+        assert cluster_ids == ["cluster_1"]
+
+    def test_info_level_convention_event_excluded(self):
+        from kicad_mcp.tools.schematic_layout import _build_warning_events
+        events = _build_warning_events([], [self._convention_event(level="info")])
+        assert events == []
+
+    def test_layer_events_still_included_unchanged(self):
+        from kicad_mcp.tools.schematic_layout import _build_warning_events
+        layer_events = [{"level": "warn", "code": "x"}, {"level": "info", "code": "y"}]
+        events = _build_warning_events(layer_events, [])
+        assert events == [{"level": "warn", "code": "x"}]
+
+
 class TestWarningTargetsRecognizesRankEvents:
     """finding #24 (Phase 1.5, 2026-09-23 full review): _warning_targets (the
     telemetry consumer that maps a warn event's "data" payload to
