@@ -129,6 +129,17 @@ async def _op_identify_circuit_patterns(
         )
         result["total_patterns_found"] = total_patterns
 
+        # Forward incompleteness signals from the parser, same as
+        # netlist.py::_op_extract_netlist. The regex fallback (kicad-cli
+        # unavailable) cannot resolve hierarchical sub-schematics and
+        # returns empty pin lists, so every connectivity-dependent pattern
+        # classifier here silently finds nothing while this op still
+        # reports status="ok" -- without these fields the caller can't tell
+        # "genuinely no patterns" from "parser couldn't see the wiring."
+        for _k in ("parser_path", "incomplete", "incomplete_reason"):
+            if _k in netlist_data:
+                result[_k] = netlist_data[_k]
+
         if ctx:
             await ctx.report_progress(100, 100)
             await ctx.info(
