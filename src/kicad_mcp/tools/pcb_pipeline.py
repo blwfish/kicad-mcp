@@ -2323,18 +2323,31 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
         with pcb_write_lock(pcb_path) as _acquired:
             if not _acquired:
                 return busy_error(pcb_path)
-            return _build_pcb_from_schematic_impl(
-                project_path,
-                board_width_mm=board_width_mm,
-                board_height_mm=board_height_mm,
-                ground_net=ground_net,
-                autoroute_passes=autoroute_passes,
-                export_gerbers=export_gerbers,
-                intent_path=intent_path,
-                placement_hints=placement_hints,
-                add_mounting_holes=add_mounting_holes,
-                approved=approved,
-            )
+            try:
+                return _build_pcb_from_schematic_impl(
+                    project_path,
+                    board_width_mm=board_width_mm,
+                    board_height_mm=board_height_mm,
+                    ground_net=ground_net,
+                    autoroute_passes=autoroute_passes,
+                    export_gerbers=export_gerbers,
+                    intent_path=intent_path,
+                    placement_hints=placement_hints,
+                    add_mounting_holes=add_mounting_holes,
+                    approved=approved,
+                )
+            except RuntimeError as exc:
+                # run_pcbnew_script normalizes every subprocess failure to
+                # RuntimeError (its documented contract) -- steps 1-6 below
+                # call it with no wrapper of their own (unlike steps 7/8,
+                # whose own try/except deliberately treats THEM as non-fatal
+                # finishing steps), so any of those failures escaped this
+                # tool call raw instead of the {"error": ...} envelope every
+                # other failure path here returns. finding #14 of the
+                # 2026-09-23 full review's Phase 1.5 pass.
+                logger.error("build_pcb_from_schematic failed for %s: %s",
+                            pcb_path, exc)
+                return {"error": str(exc)}
 
     def _build_pcb_from_schematic_impl(
         project_path: str,
