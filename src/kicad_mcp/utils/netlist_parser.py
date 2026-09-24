@@ -702,6 +702,7 @@ def _parse_kicadxml(xml_text: str) -> Dict[str, Any]:
     # Extract nets from <nets>
     nets: Dict[str, List] = {}
     malformed_nets_skipped = 0
+    unconnected_nets_skipped = 0
     nets_element = root.find("nets")
     if nets_element is not None:
         for net_elem in nets_element.findall("net"):
@@ -709,10 +710,19 @@ def _parse_kicadxml(xml_text: str) -> Dict[str, Any]:
             if not net_name:
                 malformed_nets_skipped += 1
                 continue
-            # Strip leading "/" from local label net names
-            clean_name = net_name.lstrip("/")
-            # Skip auto-generated unconnected nets
+            # Strip exactly ONE leading "/" (the local-label hierarchy
+            # marker) -- lstrip("/") strips EVERY leading slash, so a name
+            # like "///weird" would silently become "weird" instead of the
+            # correct "//weird". finding #99 of the 2026-09-23 full review.
+            clean_name = net_name[1:] if net_name.startswith("/") else net_name
+            # Skip auto-generated unconnected nets. Counted (not just
+            # dropped) so net_count's implication -- that it's trackable --
+            # actually holds; the "unconnected-(" prefix itself is a
+            # kicad-cli convention with no version check, but the count at
+            # least makes the drop visible if that convention ever changes.
+            # finding #94.
             if clean_name.startswith("unconnected-("):
+                unconnected_nets_skipped += 1
                 continue
             pins = []
             for node in net_elem.findall("node"):
@@ -741,11 +751,19 @@ def _parse_kicadxml(xml_text: str) -> Dict[str, Any]:
     # here — kicad-cli's netlist export doesn't report fully unconnected pins
     # at all, only connectivity, so this is necessarily connectivity-derived
     # rather than a full symbol pin enumeration like the regex path's.
+    orphan_net_nodes_skipped = 0
     for net_pins in nets.values():
         for entry in net_pins:
             ref = entry["component"]
             comp = component_info.get(ref)
             if comp is None:
+                # A net node referencing a component missing from
+                # component_info (e.g. a malformed-component skip elsewhere
+                # in this same parse) was silently dropped with no counter
+                # or log -- the per-component "pins" reconstruction this
+                # loop builds would then just quietly be missing that pin's
+                # entry. finding #97 of the 2026-09-23 full review.
+                orphan_net_nodes_skipped += 1
                 continue
             comp.setdefault("pins", []).append(
                 {"num": entry["pin"], "name": entry.get("pinfunction", "")}
@@ -759,6 +777,8 @@ def _parse_kicadxml(xml_text: str) -> Dict[str, Any]:
         "net_count": len(nets),
         "malformed_components_skipped": malformed_components_skipped,
         "malformed_nets_skipped": malformed_nets_skipped,
+        "unconnected_nets_skipped": unconnected_nets_skipped,
+        "orphan_net_nodes_skipped": orphan_net_nodes_skipped,
         # Geometric fields are regex-only — kicad-cli's netlist export
         # exposes connectivity, not canvas positions. Return None
         # sentinels so callers see a uniform shape across paths and can
