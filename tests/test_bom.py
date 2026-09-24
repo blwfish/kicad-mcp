@@ -99,6 +99,30 @@ class TestAnalyzeBom:
         assert "error" in result
         assert "project_path" in result["error"]
 
+    def test_zero_total_cost_bom_still_reports_cost(self, analyze_server, tmp_path):
+        """finding #2 (Phase 1, 2026-09-23 full review): the component-
+        summary aggregation gated on `total_cost > 0`, indistinguishable
+        from "no cost data was parsed" -- a legitimate $0.00 BOM (all
+        free-sample parts) silently got NO total_cost key in the summary at
+        all, the same outcome as a BOM with no cost column."""
+        name = "zeroboard"
+        pro = tmp_path / f"{name}.kicad_pro"
+        pro.write_text(json.dumps({"meta": {"filename": f"{name}.kicad_pro"}}))
+        bom = tmp_path / f"{name}-bom.csv"
+        with open(bom, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Reference", "Value", "Quantity", "Cost"])
+            writer.writerow(["R1", "10k", "1", "0.00"])
+            writer.writerow(["R2", "10k", "1", "0.00"])
+
+        fn = _get_tool_fn(analyze_server, "analyze")
+        result = asyncio.run(fn(
+            operation="bom", ctx=None, project_path=str(pro),
+        ))
+        assert result["status"] == "ok"
+        assert "total_cost" in result["component_summary"]
+        assert result["component_summary"]["total_cost"] == 0.0
+
 
 # -- export router → bom_csv operation ---------------------------------------
 
@@ -235,6 +259,30 @@ def test_csv_sniffer_failure_falls_back_to_substring_heuristic(tmp_path):
     p.write_text("R1\n")
     comps, info = _parse_bom_file(str(p))
     assert info["delimiter"] == ","  # no delimiter char present -> default
+
+
+def test_csv_sniffer_failure_fallback_picks_most_frequent_delimiter(tmp_path):
+    """finding #3 (Phase 1, 2026-09-23 full review): the Sniffer-failure
+    fallback used first-found-wins by a fixed comma>semicolon>tab priority.
+    csv.Sniffer correctly handles a comma incidentally sitting in a text
+    field AS LONG AS the delimiter is structurally consistent across rows --
+    it only actually raises csv.Error (reaching this fallback at all) on
+    genuine inconsistency, e.g. one malformed/differently-shaped row mixed
+    into an otherwise-consistent file (a stray footer/summary line in a real
+    BOM export). In exactly that reachable case, the old fixed
+    comma>semicolon>tab priority picked "," off the one malformed row's
+    incidental comma, misaligning every column of the semicolon-delimited
+    majority. Picking by highest character COUNT (4 semicolons vs 1 comma
+    here) instead fixes it."""
+    from kicad_mcp.tools.bom import _parse_bom_file
+    p = tmp_path / "bom.csv"
+    p.write_text(
+        "R1;10k;Resistor\n"
+        "R2;20k;Resistor\n"
+        "JunkRow,onlytwo\n"   # malformed row -> Sniffer can't determine delimiter
+    )
+    comps, info = _parse_bom_file(str(p))
+    assert info["delimiter"] == ";"
 
 
 def test_xml_unrecognized_tags_surfaced_not_silently_empty(tmp_path):
