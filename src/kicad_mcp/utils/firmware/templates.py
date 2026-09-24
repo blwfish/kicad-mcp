@@ -922,7 +922,18 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
         return ex
     periph_by_ref = {p.ref: p for p in intent.peripherals}
     existing_net_names = {n.name for n in intent.nets}
-    has_5v = any(p.type in _FIVE_V_SOURCES for p in intent.peripherals)
+    # A board.yaml extra_connectors entry wired to "+5V" (a barrel jack, a
+    # user-declared USB connector) is materialized by apply_sidecar BEFORE
+    # expand_intent runs at all -- its net lands directly in intent.nets, not
+    # through the per-template `ex.power` rail-merge deferred to AFTER this
+    # whole template loop (see expand_intent's `rail_endpoints`). So a
+    # pre-existing "+5V" net name here is real signal, not a template's own
+    # not-yet-merged contribution: apply_sidecar's synthesize_connector call
+    # always tags the connector type "CONN" (never "USB_C"/"CP2102"), so the
+    # peripheral-type check above missed this source entirely. finding #9 of
+    # the 2026-09-23 full review's Phase 1 pass.
+    has_5v = (any(p.type in _FIVE_V_SOURCES for p in intent.peripherals)
+              or any(n.name == "+5V" for n in intent.nets))
     # A +3V3 tap is only sourced when the board's logic rail IS +3V3 (ESP32 LDO /
     # Pico); a 5V board (Nano) has no +3V3 — requesting it must downgrade, not hang
     # a sourceless +3V3 pin on the terminal (symmetric with the has_5v guard).

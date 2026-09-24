@@ -151,6 +151,33 @@ def test_power_5v_native_usb_board_with_only_ams1117_downgrades_with_gap():
     assert all("+5V" not in lg.positions for lg in it.connector_legends)
 
 
+def test_power_5v_sourced_by_board_yaml_extra_connector_no_downgrade():
+    """finding #9 (Phase 1, 2026-09-23 full review): has_5v only checked
+    peripheral TYPE against _FIVE_V_SOURCES (USB_C/CP2102, template-emitted).
+    A board.yaml extra_connectors entry wired to "+5V" (e.g. a barrel jack)
+    is a genuine, user-declared +5V source, but apply_sidecar's
+    synthesize_connector always tags it type "CONN" -- has_5v missed it
+    entirely, downgrading a legitimately-sourced power:5v request with a
+    false "no +5V rail" gap. No MCU here (mirrors the sibling
+    without-rail test) so the ONLY possible +5V source is the board.yaml
+    connector itself."""
+    it = DesignIntent()
+    it.peripherals = [Peripheral(
+        ref="U3", type="MCP23017", lib_id="Interface_Expansion:MCP23017x-x-SO",
+        value="MCP23017", bus="I2C")]
+    sc = BoardSidecar(
+        extra_connectors=[{
+            "ref": "J_PWR", "lib_id": "Connector:Barrel_Jack",
+            "footprint": "FP:Jack", "nets": {"1": "+5V", "2": "GND"},
+        }],
+        expander_terminals={"U3": {"device": "S", "ports": 2, "power": "5v"}},
+    )
+    apply_sidecar(it, sc)
+    expand_intent(it)
+    assert not any(g.kind == "expander_terminals_power" for g in it.gaps)
+    assert any("+5V" in lg.positions for lg in it.connector_legends)
+
+
 def test_power_5v_without_rail_downgrades_with_gap():
     # A board with no +5V source (no MCU -> power_tree never fires, no regulator/USB
     # block) downgrades power: 5v to signal+GND with a disclosed gap — never a
