@@ -517,13 +517,40 @@ class SchematicParser:
         print(f"Extracted {len(self.no_connects)} no-connects")
 
     def _build_netlist(self) -> None:
-        """Build the netlist from extracted components and connections."""
+        """Build the netlist from extracted components and connections.
+
+        This registers every NAME a net could have (local/global/hierarchical
+        labels, power symbol types) as a key in ``self.nets`` -- it does NOT
+        trace wire-to-pin connectivity, so every net's endpoint list is always
+        empty on this path. Local and hierarchical labels used to be extracted
+        into ``self.labels``/``self.hierarchical_labels`` but never consulted
+        here at all -- only global labels and power symbols became net keys,
+        so a schematic using (the far more common) local labels for its nets
+        would silently undercount ``net_count`` on this fallback path. Kept
+        despite the missing endpoints, same rationale as global labels: a net
+        name a caller can see is strictly more useful than one silently
+        dropped, and this is not the "complex connectivity tracing" gap --
+        that refers to pin-level wire tracing, not label collection.
+        """
         print("Building netlist from schematic data")
+
+        # Process local labels as nets
+        for label in self.labels:
+            net_name = label["text"]
+            if net_name not in self.nets:
+                self.nets[net_name] = []
 
         # Process global labels as nets
         for label in self.global_labels:
             net_name = label["text"]
-            self.nets[net_name] = []
+            if net_name not in self.nets:
+                self.nets[net_name] = []
+
+        # Process hierarchical labels as nets
+        for label in self.hierarchical_labels:
+            net_name = label["text"]
+            if net_name not in self.nets:
+                self.nets[net_name] = []
 
         # Process power symbols as nets
         for power in self.power_symbols:
@@ -774,7 +801,9 @@ def extract_netlist(schematic_path: str) -> Dict[str, Any]:
         result = parser.parse()
         result["incomplete"] = True
         result["incomplete_reason"] = (
-            "regex fallback: hierarchical sub-schematics not resolved"
+            "regex fallback: hierarchical sub-schematics not resolved, and nets "
+            "are label/power-symbol NAMES only -- no wire-to-pin connectivity is "
+            "traced, so every net's endpoint list is empty"
         )
         return result
     except Exception as e:
