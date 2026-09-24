@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.netlist_parser import analyze_netlist, extract_netlist as _parse_netlist
+from kicad_mcp.utils.path_validation import validate_project_path
 
 
 async def _op_extract_netlist(
@@ -33,11 +34,15 @@ async def _op_extract_netlist(
     capped, since an unbounded schematic can otherwise return an
     arbitrarily large response.
     """
-    if not os.path.exists(path):
-        logger.warning(f"File not found: {path}")
+    # os.path.exists() only checked existence -- unlike every _op_* in the
+    # pcb_*.py routers, this bypassed the path-traversal defense
+    # (KICAD_MCP_STRICT_PATHS).
+    _pv_err = validate_project_path(path)
+    if _pv_err:
+        logger.warning(_pv_err)
         if ctx:
-            await ctx.info(f"File not found: {path}")
-        return {"status": "error", "error": f"File not found: {path}"}
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     ext = os.path.splitext(path)[1].lower()
     project_path: str | None = None
@@ -137,14 +142,12 @@ async def _op_analyze_schematic_connections(
     """Analyze connections in a KiCad schematic."""
     logger.debug(f"Analyzing connections in schematic: {schematic_path}")
 
-    if not os.path.exists(schematic_path):
-        logger.warning(f"Schematic file not found: {schematic_path}")
+    _pv_err = validate_project_path(schematic_path)
+    if _pv_err:
+        logger.warning(_pv_err)
         if ctx:
-            await ctx.info(f"Schematic file not found: {schematic_path}")
-        return {
-            "status": "error",
-            "error": f"Schematic file not found: {schematic_path}",
-        }
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     if ctx:
         await ctx.report_progress(10, 100)
@@ -260,14 +263,12 @@ async def _op_find_component_connections(
         component_ref, project_path,
     )
 
-    if not os.path.exists(project_path):
-        logger.warning(f"Project not found: {project_path}")
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
+        logger.warning(_pv_err)
         if ctx:
-            await ctx.info(f"Project not found: {project_path}")
-        return {
-            "status": "error",
-            "error": f"Project not found: {project_path}",
-        }
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     if ctx:
         await ctx.report_progress(10, 100)
