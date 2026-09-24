@@ -27,6 +27,7 @@ from kicad_mcp.utils.placement.edge_terminal import (
     outward_normal,
     pad_centroid_offset,
     pad_extent,
+    ref_class,
     rotate_extents,
     rotation_to_face,
 )
@@ -45,6 +46,21 @@ class TestIsScrewTerminalClass:
     @pytest.mark.parametrize("cls", ["SW", "H", "USB", "U", "R", "C", ""])
     def test_others_do_not(self, cls):
         assert is_screw_terminal_class(cls) is False
+
+
+# ---------------------------------------------------------------------------
+# ref_class -- finding #23 (Phase 1.5, 2026-09-23 full review): pcb_pipeline.py
+# hand-copied this exact 4-line body independently in 4 embedded pcbnew scripts.
+# Now a single source here, spliced into all 4 via EDGE_TERMINAL_HELPER.
+# ---------------------------------------------------------------------------
+
+class TestRefClass:
+    @pytest.mark.parametrize("ref,expected", [
+        ("J1", "J"), ("J10", "J"), ("SW_A1", "SW_A"), ("H3", "H"),
+        ("U7", "U"), ("R", "R"), ("", ""),
+    ])
+    def test_prefix_before_first_digit(self, ref, expected):
+        assert ref_class(ref) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +368,7 @@ class TestEdgeTerminalHelperSource:
 
     HELPER_FUNCS = [
         "is_screw_terminal_class",
+        "ref_class",
         "natural_ref_key",
         "pad_centroid_offset",
         "pad_extent",
@@ -403,6 +420,10 @@ class TestEdgeTerminalHelperSource:
     def test_is_screw_terminal_class_match(self, ns):
         for cls in ["J", "SW", "H", "USB", "J_PWR", "", "U"]:
             assert ns["is_screw_terminal_class"](cls) == is_screw_terminal_class(cls)
+
+    def test_ref_class_match(self, ns):
+        for ref in ["J1", "J10", "SW_A1", "H3", "U7", "R", ""]:
+            assert ns["ref_class"](ref) == ref_class(ref)
 
     def test_normals_match(self, ns):
         for edge in ["top", "bottom", "left", "right", "none"]:

@@ -43,6 +43,17 @@ def is_screw_terminal_class(cls: str) -> bool:
     return cls == "J"
 
 
+def ref_class(ref: str) -> str:
+    """KiCad designator class -- the letter prefix before the first digit
+    (e.g. "SW1" -> "SW", "H3" -> "H"). Single source of truth for pcb_pipeline.py's
+    embedded pcbnew scripts, which used to hand-copy this identical 4-line body
+    independently in 4 places (finding #23 of the 2026-09-23 full review)."""
+    for i, c in enumerate(ref):
+        if c.isdigit():
+            return ref[:i]
+    return ref
+
+
 def natural_ref_key(ref: str) -> Tuple[str, int]:
     """``(prefix, number)`` sort key for human/numeric ordering: ``J2 < J10``
     (not the lexical ``J10 < J2``).  A bare prefix (no digits) sorts first
@@ -481,6 +492,12 @@ import math as _et_math
 
 def is_screw_terminal_class(cls):
     return cls == "J"
+
+def ref_class(ref):
+    for i, c in enumerate(ref):
+        if c.isdigit():
+            return ref[:i]
+    return ref
 
 def natural_ref_key(ref):
     n = len(ref)

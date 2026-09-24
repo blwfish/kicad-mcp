@@ -519,7 +519,7 @@ def _step_measure_cluster(
     - ``edge_placed_refs`` — refs the pass-1 placer anchored to an edge (from its
       ``rotation_chosen`` decisions). These march along the edges, so they are NOT
       part of the interior cluster.
-    - ``_ref_class(ref) == "H"`` — corner mounting holes. H is NOT an edge-designator
+    - ``ref_class(ref) == "H"`` — corner mounting holes. H is NOT an edge-designator
       class, so an ``is_terminal`` filter would KEEP them and inflate the bbox to the
       full board → the no-op guard fires → the feature silently does nothing.
 
@@ -532,18 +532,12 @@ def _step_measure_cluster(
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
-""" + BODY_EXTENT_HELPER + """
+""" + BODY_EXTENT_HELPER + EDGE_TERMINAL_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
 if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
 edge_refs = set(params["edge_placed_refs"])
-
-def _ref_class(ref):
-    for i, c in enumerate(ref):
-        if c.isdigit():
-            return ref[:i]
-    return ref
 
 bx0 = by0 = float("inf")
 bx1 = by1 = float("-inf")
@@ -552,7 +546,7 @@ for fp in board.GetFootprints():
     ref = fp.GetReference()
     if ref in edge_refs:
         continue                  # edge-placed terminal — anchors to the edge band
-    if _ref_class(ref) == "H":
+    if ref_class(ref) == "H":
         continue                  # corner hole — would inflate the bbox to full board
     has_keepout = any(z.GetIsRuleArea() for z in fp.Zones()) if hasattr(fp, 'Zones') else False
     fx0, fy0, fx1, fy1 = body_bbox(fp, has_keepout)
@@ -590,23 +584,18 @@ def _step_remove_mounting_holes(pcb_path: str) -> Dict[str, Any]:
 import pcbnew, json, sys
 
 params = json.loads(open(sys.argv[1]).read())
+""" + EDGE_TERMINAL_HELPER + """
 board = pcbnew.LoadBoard(params["pcb_path"])
 if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
-
-def _ref_class(ref):
-    for i, c in enumerate(ref):
-        if c.isdigit():
-            return ref[:i]
-    return ref
 
 # Collect-then-remove (a SWIG container must NOT be mutated while iterating, and
 # wrapping it in list() yields raw SwigPyObjects with no typed methods — so iterate
 # cleanly first, gather, then Remove). Mirrors pcb_autoroute._export_dsn's zone loop.
 fps_to_remove = []
 for fp in board.GetFootprints():
-    if _ref_class(fp.GetReference()) == "H":
+    if ref_class(fp.GetReference()) == "H":
         fps_to_remove.append(fp)
 removed_fps = [fp.GetReference() for fp in fps_to_remove]
 for fp in fps_to_remove:
@@ -700,19 +689,14 @@ import pcbnew, json, os, sys
 params = json.loads(open(sys.argv[1]).read())
 fp_specs = params["fp_specs"]
 
-""" + LIB_SEARCH_HELPER + BODY_EXTENT_HELPER + """
+""" + LIB_SEARCH_HELPER + BODY_EXTENT_HELPER + EDGE_TERMINAL_HELPER + """
 
-# Edge designator classes come from params (single source) and the prefix is
-# extracted EXACTLY as _ref_class does in smart placement (up to the first
-# digit), so the two stay consistent — a ref like "SW_A1" classifies identically.
+# Edge designator classes come from params (single source); ref_class (shared
+# with smart placement via EDGE_TERMINAL_HELPER) extracts the same prefix, so
+# the two stay consistent — a ref like "SW_A1" classifies identically.
 _EDGE_CLASSES = set(params["edge_classes"])
-def _ref_class(ref):
-    for i, c in enumerate(ref):
-        if c.isdigit():
-            return ref[:i]
-    return ref
 def _is_terminal(ref):
-    return _ref_class(ref) in _EDGE_CLASSES
+    return ref_class(ref) in _EDGE_CLASSES
 
 components = []
 errors = []
@@ -1196,16 +1180,10 @@ for net_name, members in net_members.items():
 # the designator class for "HV1" is "HV", not "H".
 EDGE_CLASSES = set(params["edge_classes"])  # single source (see _EDGE_DESIGNATOR_CLASSES)
 
-def _ref_class(ref):
-    for i, c in enumerate(ref):
-        if c.isdigit():
-            return ref[:i]
-    return ref
-
 tier1, tier2, tier3, tier4 = [], [], [], []
 
 for ref, info in fp_info.items():
-    cls = _ref_class(ref)
+    cls = ref_class(ref)
     if "fixed" in placement_hints.get(ref, {}):
         # An explicit fixed-coordinate hint is an ABSOLUTE override — honor it
         # regardless of class. tier2 owns the fixed-placement path; without this a
@@ -1423,7 +1401,7 @@ def is_field_terminal(ref):
     # human-rational treatment (antenna-opposite edge, seat-on-board, force-edge);
     # plug-in module headers / USB / switches keep their original placement, so
     # boards without field wiring are byte-for-byte unchanged by this feature.
-    return (is_screw_terminal_class(_ref_class(ref))
+    return (is_screw_terminal_class(ref_class(ref))
             and normalize_family(fp_info[ref].get("footprint", "")) in wire_entry_table)
 
 edge_groups = {"top": [], "bottom": [], "left": [], "right": []}
@@ -1505,7 +1483,7 @@ for edge in ("top", "bottom", "left", "right"):
     rot_source = {}
     for ref in group:
         info = fp_info[ref]
-        cls = _ref_class(ref)
+        cls = ref_class(ref)
         hint = placement_hints.get(ref, {})
         is_term = is_screw_terminal_class(cls)
         ext0 = (info["ext_left"], info["ext_right"], info["ext_top"], info["ext_bot"])
@@ -1557,7 +1535,7 @@ for edge in ("top", "bottom", "left", "right"):
         el, er, et, eb = rext
         info = fp_info[ref]
         rkeep = rotate_keepout(info["keepout_rel"], ang)
-        is_term = is_screw_terminal_class(_ref_class(ref))
+        is_term = is_screw_terminal_class(ref_class(ref))
         clear = (fits and not overlaps_prior(prior_boxes, x, y, el, er, et, eb)
                  and not hits_keepout(x, y, el, er, et, eb))
         if clear or is_field_terminal(ref):

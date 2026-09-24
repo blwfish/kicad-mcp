@@ -183,3 +183,66 @@ class TestEmitPlacementDecision:
         env = _emit_one({"event": "something_new", "ref": "J9"})
         assert len(env) == 1
         assert env[0]["code"] == "placement_decision"
+
+
+# ---------------------------------------------------------------------------
+# ref_class helper sharing -- finding #23 (Phase 1.5, 2026-09-23 full review):
+# 4 embedded pcbnew scripts in this file each hand-copied an identical 4-line
+# `def _ref_class(ref): ...` body independently. All 4 now splice the single
+# canonical ref_class from edge_terminal.EDGE_TERMINAL_HELPER instead (drift
+# against the pure-Python version is covered by test_edge_terminal_placement's
+# TestEdgeTerminalHelperSource). This pins that none of the 4 regrows a local
+# duplicate and that EDGE_TERMINAL_HELPER is actually spliced into all 4.
+# ---------------------------------------------------------------------------
+
+def test_no_hand_copied_ref_class_defs_remain():
+    import inspect
+    from kicad_mcp.tools import pcb_pipeline
+
+    source = inspect.getsource(pcb_pipeline)
+    assert "def _ref_class(" not in source
+    # ref_class (no leading underscore, from EDGE_TERMINAL_HELPER) is still used.
+    assert source.count("ref_class(") >= 4
+
+
+def test_edge_terminal_helper_spliced_into_every_script_using_ref_class():
+    import inspect
+    from kicad_mcp.tools import pcb_pipeline
+
+    for fn_name in ("_step_measure_cluster", "_step_remove_mounting_holes",
+                    "_estimate_board_size", "_step_smart_placement"):
+        fn_source = inspect.getsource(getattr(pcb_pipeline, fn_name))
+        assert "EDGE_TERMINAL_HELPER" in fn_source, (
+            f"{fn_name} calls ref_class but its script no longer splices "
+            "EDGE_TERMINAL_HELPER -- ref_class would be a NameError at runtime")
+
+
+def test_all_four_ref_class_scripts_compile_as_python():
+    """The splice itself (string concatenation of several *_HELPER constants)
+    is unreachable to a normal unit test and only fails at real-KiCad-subprocess
+    time -- a missing "+" or an indentation clash between two spliced helpers
+    would otherwise go unnoticed until someone happened to run the affected
+    tool against real KiCad. compile() catches that class of error cheaply."""
+    from unittest.mock import patch
+
+    from kicad_mcp.tools import pcb_pipeline as pp
+
+    with patch.object(pp, "run_pcbnew_script") as mock_run:
+        mock_run.return_value = {"status": "ok"}
+        pp._step_measure_cluster("/tmp/x.kicad_pcb", [])
+        compile(mock_run.call_args[0][0], "_step_measure_cluster", "exec")
+
+    with patch.object(pp, "run_pcbnew_script") as mock_run:
+        mock_run.return_value = {"status": "ok"}
+        pp._step_remove_mounting_holes("/tmp/x.kicad_pcb")
+        compile(mock_run.call_args[0][0], "_step_remove_mounting_holes", "exec")
+
+    with patch.object(pp, "run_pcbnew_script") as mock_run:
+        mock_run.return_value = {"status": "ok", "components": []}
+        pp._estimate_board_size([{"library": "R", "footprint_name": "R_0805", "ref": "R1"}])
+        compile(mock_run.call_args[0][0], "_estimate_board_size", "exec")
+
+    with patch.object(pp, "run_pcbnew_script") as mock_run:
+        mock_run.return_value = {"status": "ok", "placements": {}, "decisions": []}
+        pp._step_smart_placement("/tmp/x.kicad_pcb", {})
+        compile(mock_run.call_args[0][0], "_step_smart_placement", "exec")
