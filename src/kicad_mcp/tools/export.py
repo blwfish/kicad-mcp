@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP, Context
 
 from kicad_mcp.utils.file_utils import get_project_files
-from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
+from kicad_mcp.utils.kicad_cli import KiCadCLIError, format_cli_error, get_kicad_cli_path
 from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
@@ -64,13 +64,6 @@ def _op_gerbers(
         pcb_path,
     ]
 
-    def _cli_error_text(e: subprocess.CalledProcessError) -> str:
-        # Concatenate both streams — `or` would drop stderr entirely
-        # when empty, hiding stdout-only error reports (kicad-cli
-        # writes errors to stdout on some builds).
-        parts = [s.strip() for s in (e.stderr, e.stdout) if s and s.strip()]
-        return "\n".join(parts) or f"(no output; exit code {e.returncode})"
-
     try:
         _gerber_run = subprocess.run(
             gerber_cmd, capture_output=True, text=True,
@@ -79,7 +72,7 @@ def _op_gerbers(
         if _gerber_run.stdout.strip():
             logger.info("Gerber export: %s", _gerber_run.stdout.strip())
     except subprocess.CalledProcessError as e:
-        errors.append(f"Gerber export failed: {_cli_error_text(e)}")
+        errors.append(f"Gerber export failed: {format_cli_error(e)}")
     except subprocess.TimeoutExpired:
         errors.append("Gerber export timed out after 30s")
 
@@ -99,7 +92,7 @@ def _op_gerbers(
         if _drill_run.stdout.strip():
             logger.info("Drill export: %s", _drill_run.stdout.strip())
     except subprocess.CalledProcessError as e:
-        errors.append(f"Drill export failed: {_cli_error_text(e)}")
+        errors.append(f"Drill export failed: {format_cli_error(e)}")
     except subprocess.TimeoutExpired:
         errors.append("Drill export timed out after 30s")
 
