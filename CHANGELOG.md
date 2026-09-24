@@ -82,6 +82,26 @@ before being counted as done. Boundary-op changes (embedded `pcbnew`
 subprocess scripts) were additionally verified against real KiCad, not
 just mocked. Full suite: 3129 passed, 1 pre-existing skip.
 
+### Known Issues
+
+`integration / kicad-10.0` is red on this release and is being shipped
+that way deliberately, not silently. A same-day investigation (see
+[#150](https://github.com/blwfish/kicad-mcp/issues/150)) found several
+dense multi-pass boards in `tests/integration/test_firmware_pcb_pipeline.py`
+(`test_expander_terminals_to_routed_pcb` and others) genuinely need more
+real FreeRouter routing time than their test timeouts currently budget,
+and separately investigated (and ruled out) whether concurrent autoroute
+passes were degrading routing quality under CPU contention -- they
+aren't, but concurrent passes still measurably produce worse routing
+than serial for a reason not yet identified. Root cause: unresolved.
+Scope: confined to this one test file's dense-board autoroute fixtures --
+does not implicate `pcb_autoroute.py`'s serial (shipped) code path's
+correctness, nor any of this release's ~200 review-remediation fixes,
+all of which are covered by the full unit suite (3129 passing) and were
+individually mutation-tested. Filed and tracked in #150; not merged over
+silently, and not expected to block routine PRs given `kicad-10.0` was
+already not a required branch-protection check before this release.
+
 ## [0.17.0] — 2026-09-22
 
 Makes AGENT-INSTRUCTIONS.md's "no concurrent PCB writes" rule actually
