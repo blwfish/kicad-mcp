@@ -12,7 +12,7 @@ same class already used the escape-aware `_QSTR` pattern; these sites
 didn't, until this fix promoted _QSTR to a module-level constant every
 site now shares.
 """
-from kicad_mcp.utils.netlist_parser import SchematicParser
+from kicad_mcp.utils.netlist_parser import SchematicParser, analyze_netlist
 
 
 def _parser(tmp_path, content: str = "") -> SchematicParser:
@@ -276,3 +276,25 @@ class TestPowerSymbolTypeEscapedQuote:
         p._extract_power_symbols()
         assert len(p.power_symbols) == 1
         assert p.power_symbols[0]["type"] == "GND"
+
+
+class TestAnalyzeNetlistComponentTypes:
+    """Regression: analyze_netlist's component_types tally used to re-encode
+    its own copy of the reference-prefix-extraction regex (`re.match(r"^([A-
+    Za-z_]+)", ref)`), identical to (and independently maintained from)
+    netlist.py's own copy and component_utils.py's canonical (until the
+    2026-09-23 full review's finding #6, unused) get_component_type_from_
+    reference. Now delegates to that single source of truth."""
+
+    def test_tallies_by_reference_prefix(self):
+        result = analyze_netlist({
+            "components": {"R1": {}, "R2": {}, "C1": {}, "U1": {}},
+            "nets": {},
+        })
+        assert result["component_types"] == {"R": 2, "C": 1, "U": 1}
+
+    def test_reference_with_no_letter_prefix_is_not_tallied(self):
+        # get_component_type_from_reference returns "" for a ref with no
+        # leading letters -- must not create a spurious "" bucket.
+        result = analyze_netlist({"components": {"1R1": {}}, "nets": {}})
+        assert "" not in result["component_types"]

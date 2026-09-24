@@ -7,6 +7,8 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List
 
+from kicad_mcp.utils.component_utils import get_component_type_from_reference
+
 logger = logging.getLogger(__name__)
 
 
@@ -858,9 +860,9 @@ def analyze_netlist(netlist_data: Dict[str, Any]) -> Dict[str, Any]:
         results["incomplete_reason"] = netlist_data.get("incomplete_reason", "")
 
     for ref in components_dict:
-        comp_type = re.match(r"^([A-Za-z_]+)", ref)
+        comp_type = get_component_type_from_reference(ref)
         if comp_type:
-            results["component_types"][comp_type.group(1)] += 1
+            results["component_types"][comp_type] += 1
 
     for net_name in nets_dict:
         if is_power_net(net_name):

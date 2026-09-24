@@ -20,6 +20,7 @@ except ImportError:
 
 from fastmcp import Context
 
+from kicad_mcp.utils.component_utils import get_component_type_from_reference
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 
@@ -551,10 +552,17 @@ def _analyze_bom_data(
         elif ref_col:
 
             def extract_prefix(ref):
+                # Delegates to the single source of truth for "extract a
+                # reference designator's letter prefix" (CLAUDE.md's
+                # Syntactic-Semantic Seam Rule) -- this closure previously
+                # re-encoded its own copy of the same regex, independently
+                # of netlist_parser.py/netlist.py's identical logic and
+                # component_utils.py's own (until now unused) canonical
+                # version. finding #6 of the 2026-09-23 full review.
                 if isinstance(ref, str):
-                    match = re.match(r"^([A-Za-z]+)", ref)
-                    if match:
-                        return match.group(1)
+                    prefix = get_component_type_from_reference(ref)
+                    if prefix:
+                        return prefix
                 return "Other"
 
             if isinstance(df[ref_col].iloc[0], str) and "," in df[ref_col].iloc[0]:
