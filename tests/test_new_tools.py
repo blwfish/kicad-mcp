@@ -6,6 +6,8 @@ pre_route_check, set_design_rules project file updates, and export_gerbers.
 import asyncio
 import json
 import os
+import subprocess
+import threading
 import time
 import zipfile
 from unittest.mock import patch, MagicMock
@@ -537,6 +539,137 @@ class TestExportGerbers:
 
         assert result["status"] == "ok"
         assert result["output_dir"] == str(tmp_path / "gerbers")
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_gerber_and_drill_run_concurrently(self, mock_run, mock_cli, export_server, tmp_path):
+        """Gerber and drill exports should overlap in wall-clock time, not
+        run back-to-back — each side sleeps 0.3s; sequential execution would
+        take >=0.6s, concurrent execution should take well under that."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+        gerber_dir = tmp_path / "gerbers"
+        gerber_dir.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            time.sleep(0.3)
+            if "gerbers" in cmd:
+                (gerber_dir / "test-F_Cu.gbr").write_text("G04*")
+            elif "drill" in cmd:
+                (gerber_dir / "test.drl").write_text("M48")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export")
+        start = time.monotonic()
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path=str(pcb), output_dir=str(gerber_dir), create_zip=False,
+        ))
+        elapsed = time.monotonic() - start
+
+        assert result["status"] == "ok"
+        assert elapsed < 0.5, f"expected concurrent exports to finish well under 0.6s, took {elapsed:.2f}s"
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_both_exports_failing_are_both_reported(self, mock_run, mock_cli, export_server, tmp_path):
+        """If gerber AND drill export both fail, both errors should surface
+        (not just the first, which a naive gather-without-return_exceptions
+        would drop)."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+        gerber_dir = tmp_path / "gerbers"
+        gerber_dir.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if "gerbers" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, output="", stderr="gerber boom")
+            elif "drill" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, output="", stderr="drill boom")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path=str(pcb), output_dir=str(gerber_dir), create_zip=False,
+        ))
+
+        assert result["error_count"] == 2
+        assert any("gerber boom" in e for e in result["errors"])
+        assert any("drill boom" in e for e in result["errors"])
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_one_export_failing_still_reports_the_other_succeeded(
+        self, mock_run, mock_cli, export_server, tmp_path
+    ):
+        """A failure in one export (e.g. drill) shouldn't be masked or
+        cancel the other (gerber) — only the failing side is reported."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+        gerber_dir = tmp_path / "gerbers"
+        gerber_dir.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if "gerbers" in cmd:
+                (gerber_dir / "test-F_Cu.gbr").write_text("G04*")
+                return MagicMock(returncode=0, stdout="", stderr="")
+            elif "drill" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, output="", stderr="drill boom")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path=str(pcb), output_dir=str(gerber_dir), create_zip=False,
+        ))
+
+        assert result["error_count"] == 1
+        assert "drill boom" in result["errors"][0]
+        # Gerber export completed and wrote its file despite the drill failure.
+        assert (gerber_dir / "test-F_Cu.gbr").exists()
+
+    @patch("kicad_mcp.tools.export.get_kicad_cli_path")
+    @patch("kicad_mcp.tools.export.subprocess.run")
+    def test_drill_timeout_reported_independently(self, mock_run, mock_cli, export_server, tmp_path):
+        """A timeout on one side is reported without disturbing the other."""
+        mock_cli.return_value = "/usr/bin/kicad-cli"
+
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text("(kicad_pcb)")
+        gerber_dir = tmp_path / "gerbers"
+        gerber_dir.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if "gerbers" in cmd:
+                (gerber_dir / "test-F_Cu.gbr").write_text("G04*")
+                return MagicMock(returncode=0, stdout="", stderr="")
+            elif "drill" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 30)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None,
+            pcb_path=str(pcb), output_dir=str(gerber_dir), create_zip=False,
+        ))
+
+        assert result["error_count"] == 1
+        assert "timed out" in result["errors"][0]
 
 
 # -- autoroute preflight tests ----------------------------------------------
