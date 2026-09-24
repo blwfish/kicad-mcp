@@ -628,6 +628,86 @@ class TestParametricAttributeCapture:
         assert row is not None
         assert row["joints"] is None
 
+    def test_live_part_to_row_non_numeric_price_dropped_not_a_crash(self):
+        """Regression: float(p.get("productPrice", ...)) was unguarded --
+        the live API gives no type guarantee on price data, unlike the
+        local-DB path where _parse_price already guards this exact
+        conversion. A non-numeric price used to crash the whole
+        resolve/assign call instead of just dropping that price tier."""
+        import json
+        data = {"componentModelEn": "RT0805",
+                "prices": [{"startQuantity": 1, "endQuantity": 9, "productPrice": "call for quote"}]}
+        row = _live_part_to_row(data, "C1")
+        assert row is not None
+        assert json.loads(row["price"]) == []
+
+    def test_live_part_to_row_mix_of_good_and_bad_price_tiers(self):
+        import json
+        data = {"componentModelEn": "RT0805",
+                "prices": [
+                    {"startQuantity": 1, "endQuantity": 9, "productPrice": "0.10"},
+                    {"startQuantity": 10, "endQuantity": 99, "productPrice": "N/A"},
+                ]}
+        row = _live_part_to_row(data, "C1")
+        prices = json.loads(row["price"])
+        assert len(prices) == 1
+        assert prices[0]["price"] == 0.10
+
+    def test_live_part_to_row_missing_price_key_is_default_zero(self):
+        import json
+        data = {"componentModelEn": "RT0805",
+                "prices": [{"startQuantity": 1, "endQuantity": 9}]}
+        row = _live_part_to_row(data, "C1")
+        prices = json.loads(row["price"])
+        assert prices == [{"qFrom": 1, "qTo": 9, "price": 0.0}]
+
+
+# ---------------------------------------------------------------------------
+# Batch insert: isolate a CHECK-constraint violation instead of aborting
+# ---------------------------------------------------------------------------
+
+class TestInsertComponentBatch:
+    """assembly_tier has a SQL CHECK constraint on an external categorical
+    value; a single bad row used to abort the ENTIRE batch via an unguarded
+    executemany(), losing every other well-formed row in the shard."""
+
+    def _conn(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        lcsc_db._create_schema(conn)
+        return conn
+
+    def _row(self, lcsc, tier="basic"):
+        return (lcsc, "MFR", "Vendor", "0805", 2, tier,
+                "desc", "", 100, "[]", "{}")
+
+    def test_all_valid_rows_inserted_via_fast_path(self):
+        conn = self._conn()
+        drop_counts = {"integrity_error": 0}
+        batch = [self._row("C1"), self._row("C2")]
+        n = lcsc_db._insert_component_batch(conn, batch, "shard1.jsonl", drop_counts)
+        assert n == 2
+        assert drop_counts["integrity_error"] == 0
+        assert conn.execute("SELECT COUNT(*) FROM components").fetchone()[0] == 2
+
+    def test_one_bad_tier_isolated_good_rows_still_inserted(self):
+        conn = self._conn()
+        drop_counts = {"integrity_error": 0}
+        batch = [self._row("C1"), self._row("C2", tier="bogus_tier"), self._row("C3")]
+        n = lcsc_db._insert_component_batch(conn, batch, "shard1.jsonl", drop_counts)
+        assert n == 2
+        assert drop_counts["integrity_error"] == 1
+        lcsc_ids = {r[0] for r in conn.execute("SELECT lcsc FROM components").fetchall()}
+        assert lcsc_ids == {"C1", "C3"}
+
+    def test_all_bad_rows_none_inserted_no_crash(self):
+        conn = self._conn()
+        drop_counts = {"integrity_error": 0}
+        batch = [self._row("C1", tier="x"), self._row("C2", tier="y")]
+        n = lcsc_db._insert_component_batch(conn, batch, "shard1.jsonl", drop_counts)
+        assert n == 0
+        assert drop_counts["integrity_error"] == 2
+
 
 # ---------------------------------------------------------------------------
 # Shard ingestion drop accounting
