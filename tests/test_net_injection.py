@@ -80,6 +80,34 @@ def test_insert_pos_none_when_no_anchor_at_all():
     assert find_net_insert_pos("garbage with no closing paren") is None
 
 
+def test_insert_pos_none_logs_a_diagnostic_warning(caplog):
+    """Regression: collapsing 3 distinct failure causes (no net lines, no
+    footprints, no closing paren) into a bare None gave zero signal about
+    which strategies were tried. finding #81 of the 2026-09-23 review."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.net_injection"):
+        result = find_net_insert_pos("garbage with no closing paren")
+    assert result is None
+    assert any("no existing (net ...) line" in r.message for r in caplog.records)
+
+
+def test_footprint_fallback_accepts_space_indentation():
+    """Regression: _FOOTPRINT_RE hardcoded literal tab indentation -- a
+    space-indented (hand-edited or reformatted) board silently fell through
+    to the weaker end-of-file fallback with no signal. finding #78."""
+    space_indented = (
+        '(kicad_pcb (version 20240108) (generator "pcbnew")\n'
+        '  (general)\n'
+        '  (footprint "R_0603"\n'
+        '    (at 10 10)\n'
+        '  )\n'
+        ")\n"
+    )
+    pos = find_net_insert_pos(space_indented)
+    assert pos is not None
+    assert space_indented[pos:].lstrip("\n \t").startswith("(footprint")
+
+
 # -- inject_net_definitions --------------------------------------------------
 
 def test_inject_empty_returns_unchanged():
@@ -120,6 +148,61 @@ def test_existing_net_codes():
 
 def test_existing_net_codes_empty():
     assert existing_net_codes(PCB_FRESH_K10) == []
+
+
+def test_existing_net_codes_and_insert_pos_use_the_same_pattern():
+    """Regression: existing_net_codes used to re-encode its own independent
+    copy of the "what is a net line" regex, separate from find_net_insert_pos's
+    -- a format change could update one and silently miss the other.
+    finding #80 of the 2026-09-23 review. Both now share _NET_LINE_RE
+    directly; this pins that a name with an escaped quote (only handled by
+    the escape-aware pattern) is extracted identically by both consumers."""
+    from kicad_mcp.utils.net_injection import _NET_LINE_RE
+    board = (
+        '(kicad_pcb (version 20240108) (generator "test")\n'
+        '\t(net 0 "")\n'
+        '\t(net 1 "4.7\\" spacer")\n'
+        ")\n"
+    )
+    codes = existing_net_codes(board)
+    assert (1, '4.7" spacer') in codes
+    # find_net_insert_pos's escape-aware matching must agree the quoted name
+    # doesn't prematurely end the net line -- lands after the FULL net line.
+    pos = find_net_insert_pos(board)
+    assert board[:pos].endswith('(net 1 "4.7\\" spacer")')
+    # And both functions are provably matching against the identical object.
+    import kicad_mcp.utils.net_injection as ni_module
+    assert ni_module._NET_LINE_RE is _NET_LINE_RE
+
+
+def test_existing_net_codes_warns_on_malformed_net_shaped_line(caplog):
+    """Regression: a line shaped like "(net N \"..." that doesn't fully match
+    (malformed quote escaping, an unexpected format) was silently skipped
+    with no counter -- "net doesn't exist" was indistinguishable from "net
+    was malformed and dropped". finding #82 of the 2026-09-23 review."""
+    import logging
+    # An unbalanced/malformed quote inside a net-shaped line: the escape-aware
+    # pattern requires a closing `")`, this line never provides one before
+    # the next construct starts, so it fails to fully match.
+    malformed = (
+        '(kicad_pcb (version 20240108) (generator "test")\n'
+        '\t(net 0 "")\n'
+        '\t(net 1 "unterminated\n'
+        '\t(net 2 "VCC")\n'
+        ")\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.net_injection"):
+        codes = existing_net_codes(malformed)
+    assert (2, "VCC") in codes
+    assert not any(c == 1 for c, _ in codes)  # the malformed one is absent
+    assert any("did not match the expected" in r.message for r in caplog.records)
+
+
+def test_existing_net_codes_no_warning_when_all_well_formed(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.net_injection"):
+        existing_net_codes(PCB_WITH_NETS)
+    assert not any("did not match" in r.message for r in caplog.records)
 
 
 # -- byte-identical: both call paths agree -----------------------------------
