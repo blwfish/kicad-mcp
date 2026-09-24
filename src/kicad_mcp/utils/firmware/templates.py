@@ -998,7 +998,7 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
             for bank in sorted(banks):
                 _emit_expander_terminal(ex, alloc, ref, banks[bank], rail=rail,
                                         device=device, value=f"{device} {bank}")
-        else:  # single
+        elif spec.group == "single":
             total = len(port_nets) + (1 if rail else 0) + 1   # signals + power + GND
             force_header = total > _SCREW_MAX
             if force_header:
@@ -1009,6 +1009,17 @@ def expander_terminals(intent: DesignIntent, alloc: RefAllocator) -> Expansion:
                     "consider group: per_bank."))
             _emit_expander_terminal(ex, alloc, ref, port_nets, rail=rail,
                                     device=device, value=device, force_header=force_header)
+        else:
+            # sidecar._EXPANDER_GROUPS validates the board.yaml path, but this
+            # function can be reached directly with an already-built DesignIntent
+            # that never went through that validation -- a group value added to
+            # _EXPANDER_GROUPS without a matching branch here used to fall
+            # through silently and be treated as "single". finding #21 of the
+            # 2026-09-23 full review's Phase 1.5 pass.
+            raise ValueError(
+                f"expander_terminals[{ref!r}]: unrecognized group {spec.group!r} — "
+                "add a dispatch branch here for this group value."
+            )
 
         ex.gaps.append(Gap(
             "expander_terminals",
