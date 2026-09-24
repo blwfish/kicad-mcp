@@ -43,6 +43,9 @@ class _McuInfoBase(TypedDict):
     chip: str            # build-target chip id from parse.CHIP_TARGET_DEFINES
                          # (esp32/esp32s3/rp2040/avr/...) — the DECLARED identity
                          # resolve_mcu's fuzzy-match guard verifies against
+    board_match: list[str]  # platformio board= ids this card claims (exact-match
+                            # pass 1, then longest-substring fuzzy pass 2 in
+                            # resolve_mcu below)
     lib_id: str
     value: str
     footprint: str
