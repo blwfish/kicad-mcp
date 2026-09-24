@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+from kicad_mcp.utils.kicad_cli import KiCadCLIError
 from tests.conftest import get_tool_fn
 
 
@@ -60,9 +61,9 @@ class TestGeneratePcbThumbnailSuccess:
             _mock_run_ok(FAKE_SVG, os.path.dirname(project_path)),
         )
         monkeypatch.setattr(
-            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
+            "kicad_mcp.tools.export.get_kicad_cli_path",
+            lambda required=True: "/usr/bin/kicad-cli",
         )
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(
             operation="thumbnail", ctx=None, project_path=project_path,
@@ -79,9 +80,9 @@ class TestGeneratePcbThumbnailSuccess:
             _mock_run_ok(FAKE_SVG, os.path.dirname(project_path)),
         )
         monkeypatch.setattr(
-            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
+            "kicad_mcp.tools.export.get_kicad_cli_path",
+            lambda required=True: "/usr/bin/kicad-cli",
         )
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(
             operation="thumbnail", ctx=None, project_path=project_path,
@@ -96,9 +97,9 @@ class TestGeneratePcbThumbnailSuccess:
             _mock_run_ok(FAKE_SVG, os.path.dirname(project_path)),
         )
         monkeypatch.setattr(
-            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
+            "kicad_mcp.tools.export.get_kicad_cli_path",
+            lambda required=True: "/usr/bin/kicad-cli",
         )
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(
             operation="thumbnail", ctx=None, project_path=project_path,
@@ -124,9 +125,9 @@ class TestGeneratePcbThumbnailZeroByteOutput:
             _mock_run_ok(b"", os.path.dirname(project_path)),  # empty output
         )
         monkeypatch.setattr(
-            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
+            "kicad_mcp.tools.export.get_kicad_cli_path",
+            lambda required=True: "/usr/bin/kicad-cli",
         )
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         result = asyncio.run(fn(
             operation="thumbnail", ctx=None, project_path=project_path,
@@ -158,8 +159,11 @@ class TestGeneratePcbThumbnailErrors:
 
     def test_kicad_cli_not_found(self, mcp_server, project_path, monkeypatch):
         fn = get_tool_fn(mcp_server, "export")
-        monkeypatch.setattr("kicad_mcp.tools.export.shutil.which", lambda _: None)
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
+
+        def _not_found(required=True):
+            raise KiCadCLIError("KiCad CLI not found.")
+
+        monkeypatch.setattr("kicad_mcp.tools.export.get_kicad_cli_path", _not_found)
 
         result = asyncio.run(fn(
             operation="thumbnail", ctx=None, project_path=project_path,
@@ -170,9 +174,9 @@ class TestGeneratePcbThumbnailErrors:
     def test_kicad_cli_fails(self, mcp_server, project_path, monkeypatch):
         fn = get_tool_fn(mcp_server, "export")
         monkeypatch.setattr(
-            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
+            "kicad_mcp.tools.export.get_kicad_cli_path",
+            lambda required=True: "/usr/bin/kicad-cli",
         )
-        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
 
         def _fail(cmd, **kwargs):
             raise subprocess.CalledProcessError(1, cmd, stderr="render failed")

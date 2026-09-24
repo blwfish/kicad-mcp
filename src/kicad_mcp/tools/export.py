@@ -5,7 +5,6 @@ See docs/SPEC_Tool_Consolidation.md.
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 import time
 import zipfile
@@ -13,9 +12,8 @@ from typing import Any, Dict, Optional
 
 from fastmcp import FastMCP, Context
 
-from kicad_mcp.config import KICAD_APP_PATH, system
 from kicad_mcp.utils.file_utils import get_project_files
-from kicad_mcp.utils.kicad_cli import get_kicad_cli_path
+from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
@@ -248,37 +246,19 @@ async def _generate_thumbnail_with_cli(
         project_name = os.path.splitext(os.path.basename(pcb_file))[0]
         output_file = os.path.join(project_dir, f"{project_name}_thumbnail.svg")
 
-        kicad_cli = None
-        if system == "Darwin":
-            kicad_cli_path = os.path.join(
-                KICAD_APP_PATH, "Contents/MacOS/kicad-cli"
-            )
-            if os.path.exists(kicad_cli_path):
-                kicad_cli = kicad_cli_path
-            elif shutil.which("kicad-cli") is not None:
-                kicad_cli = "kicad-cli"
-            else:
-                logger.warning("kicad-cli not found at %s or in PATH", kicad_cli_path)
-                return {"error": f"kicad-cli not found at {kicad_cli_path} or in PATH"}
-        elif system == "Windows":
-            kicad_cli_path = os.path.join(KICAD_APP_PATH, "bin", "kicad-cli.exe")
-            if os.path.exists(kicad_cli_path):
-                kicad_cli = kicad_cli_path
-            elif shutil.which("kicad-cli.exe") is not None:
-                kicad_cli = "kicad-cli.exe"
-            elif shutil.which("kicad-cli") is not None:
-                kicad_cli = "kicad-cli"
-            else:
-                logger.warning("kicad-cli not found at %s or in PATH", kicad_cli_path)
-                return {"error": f"kicad-cli not found at {kicad_cli_path} or in PATH"}
-        elif system == "Linux":
-            kicad_cli = shutil.which("kicad-cli")
-            if not kicad_cli:
-                logger.warning("kicad-cli not found in PATH")
-                return {"error": "kicad-cli not found in PATH"}
-        else:
-            logger.warning("Unsupported operating system: %s", system)
-            return {"error": f"Unsupported operating system: {system}"}
+        # Was a hand-rolled platform branch (its own Darwin/Windows hardcoded
+        # app-bundle paths + shutil.which fallback, Linux shutil.which only) --
+        # an independent, less capable copy of kicad_cli.py's KiCadCLIManager
+        # (env var override, per-OS common-path fallbacks including Homebrew/
+        # snap, actual `--version` validation, caching) that _op_gerbers in
+        # this same file already delegates to. finding #22 of the 2026-09-23
+        # full review.
+        try:
+            kicad_cli = get_kicad_cli_path(required=True)
+        except KiCadCLIError as e:
+            logger.warning("%s", e)
+            return {"error": str(e)}
+        assert kicad_cli is not None  # required=True raises above if CLI not found
 
         if ctx:
             await ctx.report_progress(30, 100)

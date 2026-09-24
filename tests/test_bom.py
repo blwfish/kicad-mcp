@@ -129,6 +129,64 @@ class TestExportBomCsv:
         assert "project_path" in result["error"]
 
 
+# ---------------------------------------------------------------------------
+# kicad-cli discovery: _export_bom_with_cli used to hand-roll its own
+# Darwin/Windows/Linux branch (finding #22 of the 2026-09-23 full review) --
+# had zero test coverage of any kind before this fix. Migrated to the
+# canonical kicad_cli.get_kicad_cli_path(), already used by export.py's
+# _op_gerbers/_generate_thumbnail_with_cli; these tests exercise that path
+# through the public bom_csv operation.
+# ---------------------------------------------------------------------------
+
+class TestExportBomCsvCliDiscovery:
+    def _project(self, tmp_path):
+        name = "board"
+        pro = tmp_path / f"{name}.kicad_pro"
+        pro.write_text(json.dumps({"meta": {"filename": f"{name}.kicad_pro"}}))
+        sch = tmp_path / f"{name}.kicad_sch"
+        sch.write_text('(kicad_sch)\n')
+        return str(pro)
+
+    def test_cli_not_found_is_a_clean_error_not_a_crash(self, export_server, tmp_path, monkeypatch):
+        from kicad_mcp.utils.kicad_cli import KiCadCLIError
+
+        def _not_found(required=True):
+            raise KiCadCLIError("KiCad CLI not found.")
+
+        monkeypatch.setattr("kicad_mcp.tools.bom.get_kicad_cli_path", _not_found)
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="bom_csv", ctx=None, project_path=self._project(tmp_path),
+        ))
+        assert result["status"] == "error"
+        assert "KiCad CLI" in result["error"]
+
+    def test_resolved_cli_path_is_used_in_the_export_command(self, export_server, tmp_path, monkeypatch):
+        """The path get_kicad_cli_path() resolves must be the actual binary
+        invoked -- not silently ignored in favor of a hardcoded fallback."""
+        monkeypatch.setattr(
+            "kicad_mcp.tools.bom.get_kicad_cli_path",
+            lambda required=True: "/opt/kicad/bin/kicad-cli",
+        )
+        captured_cmd = {}
+
+        def _fake_run(cmd, **kwargs):
+            import subprocess
+            captured_cmd["cmd"] = cmd
+            out_idx = cmd.index("--output") + 1
+            with open(cmd[out_idx], "w") as f:
+                f.write("Reference,Value\nR1,10k\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("kicad_mcp.tools.bom.subprocess.run", _fake_run)
+        fn = _get_tool_fn(export_server, "export")
+        result = asyncio.run(fn(
+            operation="bom_csv", ctx=None, project_path=self._project(tmp_path),
+        ))
+        assert result["status"] == "ok"
+        assert captured_cmd["cmd"][0] == "/opt/kicad/bin/kicad-cli"
+
+
 def test_json_bom_unrecognized_container_is_surfaced(tmp_path):
     """A populated JSON BOM with no components/parts key must not silently look
     empty — surface the unrecognized top-level keys."""
