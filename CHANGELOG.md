@@ -4,7 +4,7 @@ All notable changes to kicad-mcp are documented here.
 
 ## [0.18.0] — 2026-09-24
 
-A full-codebase review remediation pass, plus three autoroute/export
+A full-codebase review remediation pass, plus two audit/export
 performance wins. No user-facing API changes.
 
 ### Fixed — 2026-09-23 full-review remediation
@@ -59,16 +59,6 @@ superseded).
 
 ### Performance
 
-- **FreeRouter autoroute passes now run concurrently** instead of
-  serially. Each pass is an independent subprocess against the same
-  read-only DSN, writing to its own SES output — nothing depended on one
-  finishing before the next started. Passes now run in a thread pool
-  (capped via `KICAD_AUTOROUTE_MAX_CONCURRENT_PASSES`, default 4) instead
-  of one at a time; measured 10 passes going from ~160s to ~50s on a real
-  board. Each pass gets its own `--user_data_path` (Freerouting's
-  settings/log files otherwise default to a single fixed path shared by
-  every concurrent invocation, a real collision risk this closes).
-  `cancel_autoroute` now kills every in-flight pass, not just one.
 - **`audit(operation="all", detail="full")` now makes one subprocess
   round trip instead of four** — the four sub-checks (placement,
   footprint overlaps, pad clearances, keepouts) now share a single
@@ -90,7 +80,7 @@ code, minimally-scoped implementation, a regression test, and a mutation
 check (temporarily revert the fix, confirm the new test fails, restore)
 before being counted as done. Boundary-op changes (embedded `pcbnew`
 subprocess scripts) were additionally verified against real KiCad, not
-just mocked. Full suite: 3148 passed, 1 pre-existing skip.
+just mocked. Full suite: 3129 passed, 1 pre-existing skip.
 
 ## [0.17.0] — 2026-09-22
 
