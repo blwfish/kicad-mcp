@@ -616,8 +616,10 @@ def _filter_dict_values(field_name: str, mapping: dict) -> dict:
 
 # Net is built field-by-field (its nested endpoints need conversion), so it can't
 # go through _only_fields directly — this set lets us flag a typo'd Net key with the
-# same honesty as _only_fields does for the other dataclasses.
-_NET_KEYS = frozenset({"name", "kind", "confidence", "endpoints", "bus", "origin"})
+# same honesty as _only_fields does for the other dataclasses. Derived from Net's
+# own fields (like _known_top_level below derives from DesignIntent's) rather than
+# hand-copied, so it can't drift out of sync with the dataclass it mirrors.
+_NET_KEYS = frozenset(f.name for f in dataclasses.fields(Net))
 
 
 def _net_from_dict(n: dict[str, Any]) -> Net:
