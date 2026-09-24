@@ -14,9 +14,10 @@ into the shipped ``devices/`` tree.
         --out ./prefetch_cards --min-confidence high
 
 Every symbol's disposition is reported (generated / skipped + reason) — no silent
-truncation. Generated cards carry footprint ``TODO:confirm`` (symbols don't carry
-a footprint) and a draft header; a human confirms footprint + reviews before any
-card is promoted into ``src/kicad_mcp/utils/firmware/devices/``.
+truncation. Generated cards carry the symbol's own pre-assigned Footprint
+property when it has one, else ``TODO:confirm``, plus a draft header; a human
+confirms footprint + reviews before any card is promoted into
+``src/kicad_mcp/utils/firmware/devices/``.
 """
 from __future__ import annotations
 
@@ -53,7 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     from kicad_sch_api.library.cache import get_symbol_cache
 
     from kicad_mcp.utils.firmware.cards import validate_peripheral_card
-    from kicad_mcp.utils.firmware.prefetch import synthesize_i2c_card, top_level_symbol_names
+    from kicad_mcp.utils.firmware.prefetch import (
+        symbol_footprint,
+        synthesize_i2c_card,
+        top_level_symbol_names,
+    )
 
     sym_dir = Path(args.symbols_dir)
     if not sym_dir.is_dir():
@@ -80,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             card, conf, reasons = synthesize_i2c_card(
                 symbol_name=name, lib_id=lib_id, pin_names=_pin_names(sym),
+                footprint=symbol_footprint(sym),
                 unit_count=int(getattr(sym, "unit_count", 1) or 1),
             )
             dispositions[conf] += 1
@@ -108,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"written: {written} card(s) to {out_dir}")
     for k, v in sorted(dispositions.items()):
         print(f"  {k}: {v}")
-    print("NOTE: generated cards have footprint TODO:confirm — review before shipping.")
+    print("NOTE: footprint is the symbol's own pre-assigned value when it has "
+          "one, else TODO:confirm — review before shipping either way.")
     return 0
 
 
