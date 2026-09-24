@@ -37,6 +37,16 @@ jobs:
     runs-on: [self-hosted, macOS]
     strategy:
       fail-fast: false
+      # Multiple self-hosted runners are registered under the "macOS" label but
+      # share one physical machine, so the kicad-9.0 and kicad-10.0 legs can be
+      # picked up concurrently -- each launching its own batch of FreeRouter
+      # JVMs during autoroute tests. Investigated 2026-09-24 (PR #148): a CI-only
+      # "hang" in test_expander_terminals_to_routed_pcb was actually every pass
+      # completing successfully but ~10x slower than normal (loadavg 32-33),
+      # consistent with both legs' FreeRouter batches colliding at the same
+      # relative test-execution moment. max-parallel: 1 forces the two legs to
+      # run one at a time so they never compete for the machine's CPU/JVMs.
+      max-parallel: 1
       matrix:
         include:
           - kicad: "10.0"
