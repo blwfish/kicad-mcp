@@ -1569,6 +1569,16 @@ for edge in ("top", "bottom", "left", "right"):
                 placement_decisions.append({"event": "terminal_edge_crowded",
                                             "ref": ref, "edge": edge})
             place_at(ref, x, y, ang, rext, rkeep)
+            # Every ref reaching this line IS genuinely edge-placed (the
+            # `else` branch below is the only interior fallback) -- track it
+            # unconditionally so _step_measure_cluster's caller can exclude
+            # non-terminal edge-placed refs (module headers / SW / USB) too,
+            # not just screw terminals. "rotation_chosen" stays is_term-only
+            # since it also carries orientation-source info meaningful only
+            # for the wire-entry-face rotation logic above. finding #16 of
+            # the 2026-09-23 full review's Phase 1 pass.
+            placement_decisions.append({"event": "edge_group_placed", "ref": ref,
+                                        "edge": edge})
             if is_term:
                 placement_decisions.append({"event": "rotation_chosen", "ref": ref,
                                             "edge": edge, "angle": ang,
@@ -2599,9 +2609,13 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
             try:
                 # Cluster = everything NOT edge-placed and NOT a mounting hole (§2:
                 # includes interior J6, excludes H* + the edge-anchored terminals).
+                # "edge_group_placed" fires for every ref actually seated at an
+                # edge (screw terminals AND module headers/SW/USB) -- filtering
+                # on "rotation_chosen" alone missed the latter, since that event
+                # is only emitted for the screw-terminal subset.
                 _edge_placed = [
                     d["ref"] for d in (step.get("placement_decisions") or [])
-                    if d.get("event") == "rotation_chosen" and d.get("edge")
+                    if d.get("event") == "edge_group_placed" and d.get("edge")
                 ]
                 _meas = _step_measure_cluster(pcb_path, _edge_placed)
                 _cw, _ch = _meas.get("cluster_w", 0.0), _meas.get("cluster_h", 0.0)
