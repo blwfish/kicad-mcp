@@ -163,11 +163,21 @@ print(json.dumps({
     "error_count": len(errors),
 }))
 """
-        return run_pcbnew_script(script, params={
-            "footprints": footprints,
-            "padding_mm": padding_mm,
-            "routing_factor": routing_factor,
-        })
+        try:
+            return run_pcbnew_script(script, params={
+                "footprints": footprints,
+                "padding_mm": padding_mm,
+                "routing_factor": routing_factor,
+            })
+        except RuntimeError as e:
+            # run_pcbnew_script normalizes every subprocess failure to
+            # RuntimeError (its documented contract) -- this call had no
+            # wrapper of its own, so the exception escaped this tool call
+            # raw instead of the {"error": ...} envelope every other
+            # failure path here returns. finding #16 of the 2026-09-23
+            # full review's Phase 1.5 pass.
+            logger.error("estimate_board_size failed: %s", e)
+            return {"error": str(e)}
 
     @mcp.tool(
         annotations={
@@ -463,7 +473,11 @@ print(json.dumps({
     "note": "These are SUGGESTIONS. Apply with move_footprint, then run audit_all to verify.",
 }))
 """
-        return run_pcbnew_script(script, params={
-            "pcb_path": pcb_path,
-            "spacing_mm": spacing_mm,
-        })
+        try:
+            return run_pcbnew_script(script, params={
+                "pcb_path": pcb_path,
+                "spacing_mm": spacing_mm,
+            })
+        except RuntimeError as e:
+            logger.error("suggest_placement failed for %s: %s", pcb_path, e)
+            return {"error": str(e)}
