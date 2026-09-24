@@ -153,8 +153,15 @@ def _get_courtyard_bbox_tuple(fp):
     x_max = float("-inf"); y_max = float("-inf")
     found = False
     for item in fp.GraphicalItems():
-        layer_name = board.GetLayerName(item.GetLayer())
-        if "CrtYd" in layer_name:
+        # Layer-ID comparison, not a display-name substring match: KiCad 10
+        # renamed the courtyard layer's DISPLAY name from "F.CrtYd"/"B.CrtYd"
+        # to "F.Courtyard"/"B.Courtyard" (verified against a real KiCad 10.0.3
+        # install) -- "CrtYd" is not a substring of "Courtyard", so this
+        # helper silently found ZERO courtyard graphics on KiCad 10 and always
+        # fell through to the less-accurate pad-bbox fallback below. The
+        # sibling BODY_EXTENT_HELPER in this same file already uses the
+        # layer-ID constants for this exact reason.
+        if item.GetLayer() in (pcbnew.F_CrtYd, pcbnew.B_CrtYd):
             found = True
             bbox = item.GetBoundingBox()
             x_min = min(x_min, pcbnew.ToMM(bbox.GetX()))

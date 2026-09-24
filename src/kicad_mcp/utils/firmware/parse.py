@@ -455,7 +455,7 @@ def parse_macros(text: str) -> list[Macro]:
 # ``#if defined(X)`` / bare-identifier tests against a known ``defines`` set.
 # Complex expressions (``&&``, comparisons) are unknown -> take the #if branch.
 
-_PP_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$")
+_PP_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif|undef)\b(.*)$")
 
 
 def _eval_cond(directive: str, arg: str, defines: set[str]) -> Optional[bool]:
@@ -481,6 +481,14 @@ def select_active_branches(text: str, defines: set[str]) -> str:
     a later ``#define`` scan sees one consistent target."""
     out: list[str] = []
     stack: list[dict[str, bool]] = []
+    # #undef was never recognized here: a macro #define'd earlier and then
+    # #undef'd stayed in `defines` forever, so a later #ifdef on that name
+    # kept selecting the wrong branch. Track defines as a local mutable copy
+    # (never mutate the caller's set) so #undef inside THIS file's active
+    # branches actually clears it for subsequent lines, same as a real
+    # preprocessor. An #undef inside an INACTIVE branch is correctly a no-op
+    # here (only active-branch lines reach this far in a real preprocessor).
+    defines = set(defines)
     for line in text.splitlines(keepends=True):
         m = _PP_RE.match(line)
         if m is None:
@@ -488,6 +496,12 @@ def select_active_branches(text: str, defines: set[str]) -> str:
                 out.append(line)
             continue
         d, arg = m.group(1), m.group(2)
+        if d == "undef":
+            if all(s["active"] for s in stack):
+                arg = re.sub(r"//.*$", "", arg).strip()
+                if arg:
+                    defines.discard(arg.split()[0])
+            continue
         if d in ("if", "ifdef", "ifndef"):
             parent = all(s["active"] for s in stack)
             cond = _eval_cond(d, arg, defines)

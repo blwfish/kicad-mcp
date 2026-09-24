@@ -305,6 +305,36 @@ def test_unknown_condition_takes_if_branch():
     text = "#if FOO && BAR\nP\n#else\nQ\n#endif\n"
     assert select_active_branches(text, set()) == "P\n"          # complex -> take #if
 
+def test_undef_clears_a_previously_passed_in_define():
+    """Regression: #undef was never recognized -- a macro present in the
+    incoming `defines` set stayed active forever, so an #ifdef AFTER the
+    #undef still (wrongly) selected the defined branch."""
+    text = "#undef FOO\n#ifdef FOO\nWRONG\n#else\nRIGHT\n#endif\n"
+    assert select_active_branches(text, {"FOO"}) == "RIGHT\n"
+
+def test_undef_line_itself_is_stripped_from_output():
+    text = "before\n#undef FOO\nafter\n"
+    assert select_active_branches(text, {"FOO"}) == "before\nafter\n"
+
+def test_undef_does_not_mutate_callers_set():
+    """defines is caller-owned; #undef inside the scanned text must not leak
+    back out and affect the caller's own set (or a second, independent call
+    reusing the same set object)."""
+    caller_defines = {"FOO"}
+    select_active_branches("#undef FOO\n", caller_defines)
+    assert caller_defines == {"FOO"}
+
+def test_undef_inside_inactive_branch_is_a_noop():
+    """An #undef under a branch that's never taken must not affect defines
+    used later in the file -- matches how a real preprocessor never
+    evaluates directives in dead code."""
+    text = "#ifdef NEVER\n#undef FOO\n#endif\n#ifdef FOO\nSTILL_ON\n#endif\n"
+    assert select_active_branches(text, {"FOO"}) == "STILL_ON\n"
+
+def test_undef_of_unset_macro_is_harmless():
+    text = "#undef NEVER_DEFINED\n#ifdef NEVER_DEFINED\nWRONG\n#else\nRIGHT\n#endif\n"
+    assert select_active_branches(text, set()) == "RIGHT\n"
+
 def test_idf_target_defines():
     assert idf_target_defines("esp32-s3-devkitc-1") == {"CONFIG_IDF_TARGET_ESP32S3"}
     assert idf_target_defines("esp32dev") == {"CONFIG_IDF_TARGET_ESP32"}
