@@ -600,6 +600,38 @@ def _op_clear_cache(*, schematic_path: str | None) -> dict[str, Any]:
 # Telemetry helpers
 # ---------------------------------------------------------------------------
 
+def _warning_targets(data: Any) -> tuple[list[str], list[str]]:
+    """Extract (refs, cluster_ids) from a warn event's "data" payload for
+    record_warning. Each emitter (schematic_layout's own layer_events,
+    ConventionEvent, rank.py's signal_flow_cycle/no_signal_source) uses its
+    own key(s) for its warning's target -- this is the single place that must
+    recognize all of them, or a new emitter's warning silently has no
+    recognized target and gets skipped by the "no target" guard below, even
+    though it was genuinely emitted and counted in warnings_emitted_count.
+    edges_dropped/fallback_origin (rank.py) were missing entirely until
+    finding #24 of the 2026-09-23 full review's Phase 1.5 pass."""
+    refs: list[str] = []
+    cluster_ids: list[str] = []
+    if not isinstance(data, dict):
+        return refs, cluster_ids
+    if isinstance(data.get("refs"), list):
+        refs = data["refs"]
+    if isinstance(data.get("ref"), str):
+        refs = [data["ref"]]
+    if isinstance(data.get("cluster_id"), str):
+        cluster_ids = [data["cluster_id"]]
+    if isinstance(data.get("candidates"), list):
+        cluster_ids = cluster_ids or [data.get("cluster_id", "")]
+    if isinstance(data.get("edges_dropped"), list):
+        cluster_ids = cluster_ids or sorted({
+            c for edge in data["edges_dropped"] if isinstance(edge, list)
+            for c in edge if isinstance(c, str)
+        })
+    if isinstance(data.get("fallback_origin"), str):
+        cluster_ids = cluster_ids or [data["fallback_origin"]]
+    return refs, cluster_ids
+
+
 def _record_suggest_telemetry(
     *,
     state: dict[str, Any],
@@ -701,17 +733,7 @@ def _record_suggest_telemetry(
         for ev in warning_events:
             code = ev.get("code", "unknown")
             data = ev.get("data") or {}
-            refs = []
-            cluster_ids = []
-            if isinstance(data, dict):
-                if isinstance(data.get("refs"), list):
-                    refs = data["refs"]
-                if isinstance(data.get("ref"), str):
-                    refs = [data["ref"]]
-                if isinstance(data.get("cluster_id"), str):
-                    cluster_ids = [data["cluster_id"]]
-                if isinstance(data.get("candidates"), list):
-                    cluster_ids = cluster_ids or [data.get("cluster_id", "")]
+            refs, cluster_ids = _warning_targets(data)
             if not refs and not cluster_ids:
                 # Warning has no target — skip (record_warning would reject).
                 continue
