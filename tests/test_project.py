@@ -153,6 +153,34 @@ class TestGetProjectFiles:
         assert "project" in files  # standard-file detection is unaffected
         assert any("Could not scan" in r.message for r in caplog.records)
 
+    def test_derived_file_type_collision_logs_warning_not_silent(self, tmp_path, caplog):
+        """Regression: the derived key strips separators and everything after
+        the first dot, so "proj-pos.csv" and "proj_pos.zip" both derive
+        file_type "pos" -- two unrelated files, one silently overwriting the
+        other in the returned dict with no signal either happened. finding
+        #25 (Phase 1, 2026-09-23 full review)."""
+        import logging
+        name = "proj"
+        (tmp_path / f"{name}.kicad_pro").write_text("{}")
+        (tmp_path / f"{name}-pos.csv").write_text("a")
+        (tmp_path / f"{name}_pos.zip").write_text("b")
+
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.file_utils"):
+            files = get_project_files(str(tmp_path / f"{name}.kicad_pro"))
+        assert "pos" in files   # one of the two survives (current behavior kept)
+        assert any("collides" in r.message for r in caplog.records)
+
+    def test_no_collision_warning_for_distinct_file_types(self, tmp_path, caplog):
+        import logging
+        name = "proj"
+        (tmp_path / f"{name}.kicad_pro").write_text("{}")
+        (tmp_path / f"{name}-bom.csv").write_text("a")
+        (tmp_path / f"{name}-pos.csv").write_text("b")
+
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.file_utils"):
+            get_project_files(str(tmp_path / f"{name}.kicad_pro"))
+        assert not any("collides" in r.message for r in caplog.records)
+
 
 # -- open_kicad_project tests ------------------------------------------------
 
