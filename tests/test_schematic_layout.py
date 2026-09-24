@@ -689,3 +689,45 @@ class TestApplyMovesOnlyTargetedRefs:
         # R2 and C1 must NOT have moved — the bug used to overwrite them.
         assert (r2_after.x, r2_after.y) == (r2_pos_before.x, r2_pos_before.y)
         assert (c1_after.x, c1_after.y) == (c1_pos_before.x, c1_pos_before.y)
+
+
+class TestWarningTargetsRecognizesRankEvents:
+    """finding #24 (Phase 1.5, 2026-09-23 full review): _warning_targets (the
+    telemetry consumer that maps a warn event's "data" payload to
+    record_warning's affected_refs/affected_cluster_ids) recognized refs/ref/
+    cluster_id/candidates but not rank.py's signal_flow_cycle
+    (data={"edges_dropped": [[src, dst], ...]}) or no_signal_source
+    (data={"fallback_origin": cluster_id}) -- both warnings were genuinely
+    emitted and counted in warnings_emitted_count, but silently never reached
+    record_warning at all (skipped by the "no target" guard)."""
+
+    def test_edges_dropped_maps_to_cluster_ids(self):
+        from kicad_mcp.tools.schematic_layout import _warning_targets
+        refs, cluster_ids = _warning_targets(
+            {"edges_dropped": [["clusterA", "clusterB"], ["clusterB", "clusterC"]]})
+        assert refs == []
+        assert cluster_ids == ["clusterA", "clusterB", "clusterC"]   # deduped, sorted
+
+    def test_fallback_origin_maps_to_cluster_ids(self):
+        from kicad_mcp.tools.schematic_layout import _warning_targets
+        refs, cluster_ids = _warning_targets({"fallback_origin": "clusterX"})
+        assert refs == []
+        assert cluster_ids == ["clusterX"]
+
+    def test_no_recognized_key_yields_no_targets(self):
+        from kicad_mcp.tools.schematic_layout import _warning_targets
+        assert _warning_targets({"something_else": 1}) == ([], [])
+        assert _warning_targets({}) == ([], [])
+        assert _warning_targets(None) == ([], [])
+
+    @pytest.mark.parametrize("data,expected_refs,expected_clusters", [
+        ({"refs": ["R1", "R2"]}, ["R1", "R2"], []),
+        ({"ref": "R1"}, ["R1"], []),
+        ({"cluster_id": "c1"}, [], ["c1"]),
+        ({"candidates": ["c1", "c2"], "cluster_id": "c1"}, [], ["c1"]),
+    ])
+    def test_preexisting_keys_still_recognized(self, data, expected_refs, expected_clusters):
+        # Regression guard for the refactor into a standalone function --
+        # the pre-existing key recognition must be byte-for-byte preserved.
+        from kicad_mcp.tools.schematic_layout import _warning_targets
+        assert _warning_targets(data) == (expected_refs, expected_clusters)
