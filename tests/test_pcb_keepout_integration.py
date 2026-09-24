@@ -312,3 +312,95 @@ for fp in board.GetFootprints():
         assert result["status"] == "ok"
         # U1 should overlap its own keepout (which we skip)
         assert result["own_keepout_overlaps"] >= 1
+
+
+class TestSameNetPadClearanceExemptionIntegration:
+    """finding #20 (Phase 1, 2026-09-23 full review): real KiCad DRC exempts
+    same-net pad pairs from copper-to-copper clearance (they're expected to
+    be electrically joined, often by a zone/plane) -- _op_pad_clearances and
+    the audit_footprint_overlaps pad-clearance loop checked only
+    same-footprint, never same-net, producing false-positive violations for
+    two adjacent same-net pads on different footprints. Builds a fresh
+    2-footprint board (not the fixed external test PCB) since the scenario
+    needs precise control over pad spacing and net assignment."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_unavailable(self):
+        if not pcbnew_available():
+            pytest.skip("pcbnew not importable under KiCad's Python")
+
+    @pytest.fixture
+    def close_pads_board(self, tmp_path):
+        """Two 0805 resistors placed close enough that their nearest pads
+        violate a 0.5mm clearance requirement."""
+        from kicad_mcp.tools.pcb_board import _op_create
+        from kicad_mcp.tools.pcb_footprints import _op_place_footprint
+        from kicad_mcp.tools.pcb_nets import _op_add_net, _op_bulk_assign_pad_nets
+
+        pcb_path = str(tmp_path / "close_pads.kicad_pcb")
+        assert _op_create(pcb_path).get("status") == "ok"
+
+        r1 = _op_place_footprint(
+            pcb_path, library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+            reference="R1", value="10k", x_mm=100.0, y_mm=100.0,
+            check_keepouts=False,
+        )
+        assert r1.get("status") == "ok", r1
+        # 0805 is ~2mm long; 2.1mm center-to-center puts the facing pads
+        # well under 0.5mm apart (each pad is ~1mm wide, centered ~0.85mm
+        # from the body center on each side).
+        r2 = _op_place_footprint(
+            pcb_path, library="Resistor_SMD", footprint_name="R_0805_2012Metric",
+            reference="R2", value="10k", x_mm=102.1, y_mm=100.0,
+            check_keepouts=False,
+        )
+        assert r2.get("status") == "ok", r2
+
+        assert _op_add_net(pcb_path, "SHARED").get("status") == "ok"
+        assert _op_add_net(pcb_path, "OTHER").get("status") == "ok"
+        return pcb_path
+
+    def test_different_nets_still_violate(self, close_pads_board):
+        from kicad_mcp.tools.pcb_nets import _op_bulk_assign_pad_nets
+        from kicad_mcp.tools.pcb_keepout import _op_pad_clearances
+
+        assert _op_bulk_assign_pad_nets(close_pads_board, [
+            {"reference": "R1", "pad": "2", "net": "SHARED"},
+            {"reference": "R2", "pad": "1", "net": "OTHER"},
+        ]).get("status") == "ok"
+
+        result = _op_pad_clearances(close_pads_board, min_clearance_mm=0.5)
+        assert result.get("status") == "ok", result
+        pairs = {(v["pad_a"], v["pad_b"]) for v in result["violations"]}
+        assert ("R1:2", "R2:1") in pairs or ("R2:1", "R1:2") in pairs, result
+
+    def test_same_net_pads_are_exempt(self, close_pads_board):
+        from kicad_mcp.tools.pcb_nets import _op_bulk_assign_pad_nets
+        from kicad_mcp.tools.pcb_keepout import _op_pad_clearances
+
+        assert _op_bulk_assign_pad_nets(close_pads_board, [
+            {"reference": "R1", "pad": "2", "net": "SHARED"},
+            {"reference": "R2", "pad": "1", "net": "SHARED"},
+        ]).get("status") == "ok"
+
+        result = _op_pad_clearances(close_pads_board, min_clearance_mm=0.5)
+        assert result.get("status") == "ok", result
+        pairs = {(v["pad_a"], v["pad_b"]) for v in result["violations"]}
+        assert ("R1:2", "R2:1") not in pairs and ("R2:1", "R1:2") not in pairs, result
+
+    def test_same_net_pads_exempt_in_pre_route_check_too(self, close_pads_board):
+        """The identical same-net exemption in _op_pre_route_check's own
+        (structurally duplicated) pad-clearance loop -- a second, separate
+        copy of the same bug pattern."""
+        from kicad_mcp.tools.pcb_nets import _op_bulk_assign_pad_nets
+        from kicad_mcp.tools.pcb_keepout import _op_pre_route_check
+
+        assert _op_bulk_assign_pad_nets(close_pads_board, [
+            {"reference": "R1", "pad": "2", "net": "SHARED"},
+            {"reference": "R2", "pad": "1", "net": "SHARED"},
+        ]).get("status") == "ok"
+
+        result = _op_pre_route_check(close_pads_board, min_clearance_mm=0.5)
+        assert result.get("status") == "ok", result
+        pairs = {(v["pad_a"], v["pad_b"]) for v in result["pad_violations"]}
+        assert ("R1:2", "R2:1") not in pairs and ("R2:1", "R1:2") not in pairs, result
