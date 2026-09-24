@@ -14,6 +14,14 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# No schema_version marker existed anywhere in the persisted history JSON --
+# format drift (a future field rename/removal) would be undetectable from
+# the file alone. Bump this if the persisted shape of a history entry or the
+# top-level history dict ever changes incompatibly.
+SCHEMA_VERSION = 1
+
+MAX_HISTORY_ENTRIES = 10
+
 # Directory for storing DRC history
 if platform.system() == "Windows":
     DRC_HISTORY_DIR = os.path.join(
@@ -91,15 +99,22 @@ def save_drc_result(project_path: str, drc_result: Dict[str, Any]) -> None:
     else:
         history = {"project_path": project_path, "entries": []}
 
+    history["schema_version"] = SCHEMA_VERSION
     history["entries"].append(history_entry)
 
-    # Keep only the last 10 entries
-    if len(history["entries"]) > 10:
+    # Keep only the last MAX_HISTORY_ENTRIES entries. A hardcoded cap with no
+    # `truncated` flag meant a caller reading only the returned entries list
+    # (get_drc_history) had no way to tell "this project has 3 DRC runs ever"
+    # from "this project has 50 DRC runs, you're seeing the newest 10" --
+    # persisted here so it round-trips through the file, not just computed
+    # transiently at read time.
+    history["entries_truncated"] = len(history["entries"]) > MAX_HISTORY_ENTRIES
+    if history["entries_truncated"]:
         history["entries"] = sorted(
             history["entries"],
             key=lambda x: x["timestamp"],
             reverse=True,
-        )[:10]
+        )[:MAX_HISTORY_ENTRIES]
 
     try:
         with open(history_path, "w") as f:
@@ -118,11 +133,26 @@ def get_drc_history(project_path: str) -> List[Dict[str, Any]]:
     Returns:
         List of DRC history entries, sorted by timestamp (newest first)
     """
+    entries: List[Dict[str, Any]] = get_drc_history_info(project_path)["entries"]
+    return entries
+
+
+def get_drc_history_info(project_path: str) -> Dict[str, Any]:
+    """Like :func:`get_drc_history` but also surfaces the truncation flag
+    save_drc_result persists -- a caller that only sees the (capped-at-10)
+    entries list has no way to tell "this project has 3 DRC runs ever" from
+    "this project has 50, you're seeing the newest 10". Kept as a separate
+    function (rather than changing get_drc_history's return shape) so the
+    existing plain-list contract for that function is undisturbed.
+
+    Returns:
+        ``{"entries": [...], "truncated": bool, "schema_version": int | None}``
+    """
     history_path = get_project_history_path(project_path)
 
     if not os.path.exists(history_path):
         logger.debug("No DRC history found for %s", project_path)
-        return []
+        return {"entries": [], "truncated": False, "schema_version": None}
 
     try:
         with open(history_path, "r") as f:
@@ -134,11 +164,27 @@ def get_drc_history(project_path: str) -> List[Dict[str, Any]]:
             reverse=True,
         )
 
-        return entries
+        schema_version = history.get("schema_version")
+        if schema_version is not None and schema_version != SCHEMA_VERSION:
+            # Not fatal -- older history files (schema_version absent
+            # entirely, i.e. None) predate this field and are still read
+            # normally -- but a version that IS present and doesn't match
+            # is worth knowing about if a future format change ever needs
+            # to distinguish "old file, never migrated" from "corrupt".
+            logger.info(
+                "DRC history file %s has schema_version=%r (current is %d)",
+                history_path, schema_version, SCHEMA_VERSION,
+            )
+
+        return {
+            "entries": entries,
+            "truncated": bool(history.get("entries_truncated", False)),
+            "schema_version": schema_version,
+        }
     except (json.JSONDecodeError, IOError) as e:
         logger.warning("DRC history file %s is corrupted or unreadable (%s) — "
                         "treating as no history", history_path, e)
-        return []
+        return {"entries": [], "truncated": False, "schema_version": None}
 
 
 def compare_with_previous(

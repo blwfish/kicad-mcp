@@ -14,7 +14,7 @@ from kicad_mcp.tools.drc_impl.cli_drc import run_drc_via_cli
 from kicad_mcp.tools.pcb_drc_fix import _op_autofix
 from kicad_mcp.utils.drc_history import (
     compare_with_previous,
-    get_drc_history,
+    get_drc_history_info,
     save_drc_result,
 )
 from kicad_mcp.utils.file_utils import get_project_files
@@ -27,7 +27,8 @@ def _op_history(project_path: str) -> Dict[str, Any]:
         logger.warning("Project not found: %s", project_path)
         return {"status": "error", "error": f"Project not found: {project_path}"}
 
-    history_entries = get_drc_history(project_path)
+    history_info = get_drc_history_info(project_path)
+    history_entries = history_info["entries"]
 
     # Calculate trend information
     trend = None
@@ -51,6 +52,10 @@ def _op_history(project_path: str) -> Dict[str, Any]:
         "history_entries": history_entries,
         "entry_count": len(history_entries),
         "trend": trend,
+        # A hardcoded 10-entry cap with no flag meant a caller couldn't tell
+        # "this project has 3 DRC runs ever" from "this project has 50, only
+        # the newest 10 are kept". finding #106 of the 2026-09-23 review.
+        "truncated": history_info["truncated"],
     }
 
 

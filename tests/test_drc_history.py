@@ -118,3 +118,63 @@ class TestHistoryTruncation:
         assert len(entries) == 10
         # newest-first, so the 2 oldest (total_violations 0, 1) were dropped
         assert {e["total_violations"] for e in entries} == set(range(2, 12))
+
+    def test_truncated_flag_false_below_the_cap(self):
+        drc_history.save_drc_result("/proj/board.kicad_pro", _FULL_DRC_RESULT)
+        info = drc_history.get_drc_history_info("/proj/board.kicad_pro")
+        assert info["truncated"] is False
+
+    def test_truncated_flag_true_once_the_cap_is_exceeded(self):
+        """Regression: a hardcoded 10-entry cap with no flag meant a caller
+        reading only the entries list had no way to tell "3 DRC runs ever"
+        from "50 runs, newest 10 shown". finding #106 of the 2026-09-23
+        full review."""
+        for i in range(11):
+            drc_history.save_drc_result(
+                "/proj/board.kicad_pro",
+                {**_FULL_DRC_RESULT, "total_violations": i},
+            )
+        info = drc_history.get_drc_history_info("/proj/board.kicad_pro")
+        assert info["truncated"] is True
+        assert len(info["entries"]) == 10
+
+    def test_exactly_at_the_cap_is_not_truncated(self):
+        """Threshold boundary: exactly 10 entries is the documented limit,
+        not yet a drop."""
+        for i in range(10):
+            drc_history.save_drc_result(
+                "/proj/board.kicad_pro",
+                {**_FULL_DRC_RESULT, "total_violations": i},
+            )
+        info = drc_history.get_drc_history_info("/proj/board.kicad_pro")
+        assert info["truncated"] is False
+        assert len(info["entries"]) == 10
+
+
+class TestSchemaVersion:
+    """finding #105 of the 2026-09-23 full review: no schema_version marker
+    existed anywhere in the persisted history JSON, making future format
+    drift undetectable from the file alone."""
+
+    def test_fresh_history_gets_current_schema_version(self):
+        drc_history.save_drc_result("/proj/board.kicad_pro", _FULL_DRC_RESULT)
+        info = drc_history.get_drc_history_info("/proj/board.kicad_pro")
+        assert info["schema_version"] == drc_history.SCHEMA_VERSION
+
+    def test_no_history_file_has_none_schema_version(self):
+        info = drc_history.get_drc_history_info("/proj/never-saved.kicad_pro")
+        assert info["schema_version"] is None
+
+    def test_pre_existing_history_without_the_field_is_still_readable(self):
+        """A history file saved before this field existed (no schema_version
+        key at all) must still load normally -- old files aren't corrupt,
+        just older."""
+        history_path = drc_history.get_project_history_path("/proj/board.kicad_pro")
+        drc_history.ensure_history_dir()
+        with open(history_path, "w") as f:
+            json.dump({"project_path": "/proj/board.kicad_pro", "entries": [
+                {**_FULL_DRC_RESULT, "timestamp": 1000, "datetime": "x"},
+            ]}, f)
+        info = drc_history.get_drc_history_info("/proj/board.kicad_pro")
+        assert info["schema_version"] is None
+        assert len(info["entries"]) == 1

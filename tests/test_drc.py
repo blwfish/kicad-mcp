@@ -229,28 +229,53 @@ class TestDrcHistoryOperation:
         assert "error" in result
         assert "project_path" in result["error"]
 
-    @patch("kicad_mcp.tools.drc.get_drc_history")
+    @patch("kicad_mcp.tools.drc.get_drc_history_info")
     def test_returns_history(self, mock_hist, drc_server, tmp_path):
         pro = tmp_path / "test.kicad_pro"
         pro.write_text("{}")
-        mock_hist.return_value = [
-            {"timestamp": 1000, "total_violations": 5},
-            {"timestamp": 900, "total_violations": 10},
-        ]
+        mock_hist.return_value = {
+            "entries": [
+                {"timestamp": 1000, "total_violations": 5},
+                {"timestamp": 900, "total_violations": 10},
+            ],
+            "truncated": False,
+            "schema_version": 1,
+        }
         fn = _get_tool_fn(drc_server, "drc")
         result = asyncio.run(fn("history", None, project_path=str(pro)))
         assert result["status"] == "ok"
         assert result["entry_count"] == 2
         assert result["trend"] == "improving"
+        assert result["truncated"] is False
 
-    @patch("kicad_mcp.tools.drc.get_drc_history")
+    @patch("kicad_mcp.tools.drc.get_drc_history_info")
     def test_no_trend_with_single_entry(self, mock_hist, drc_server, tmp_path):
         pro = tmp_path / "test.kicad_pro"
         pro.write_text("{}")
-        mock_hist.return_value = [{"timestamp": 1000, "total_violations": 5}]
+        mock_hist.return_value = {
+            "entries": [{"timestamp": 1000, "total_violations": 5}],
+            "truncated": False,
+            "schema_version": 1,
+        }
         fn = _get_tool_fn(drc_server, "drc")
         result = asyncio.run(fn("history", None, project_path=str(pro)))
         assert result["trend"] is None
+
+    @patch("kicad_mcp.tools.drc.get_drc_history_info")
+    def test_truncated_flag_surfaced(self, mock_hist, drc_server, tmp_path):
+        """Regression: a hardcoded 10-entry cap with no flag meant a caller
+        couldn't tell "3 DRC runs ever" from "50 runs, newest 10 shown".
+        finding #106 of the 2026-09-23 full review."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        mock_hist.return_value = {
+            "entries": [{"timestamp": 1000, "total_violations": 5}],
+            "truncated": True,
+            "schema_version": 1,
+        }
+        fn = _get_tool_fn(drc_server, "drc")
+        result = asyncio.run(fn("history", None, project_path=str(pro)))
+        assert result["truncated"] is True
 
 
 # -- drc router: run operation tests -----------------------------------------
