@@ -56,7 +56,7 @@ for kz in keepouts:
     if not rects_overlap(fp_rect, kz_bb):
         continue
     c = kz["constraints"]
-    blocked = [k.replace("no_", "") for k, v in c.items() if v]
+    blocked = blocked_constraints(c)
     if blocked:
         src = kz["source_ref"] or kz["source"]
         placement_warnings.append(f"Overlaps keepout from {src} (blocks {', '.join(blocked)})")
@@ -241,7 +241,7 @@ if params["check_keepouts"]:
         if not rects_overlap(fp_rect, kz_bb):
             continue
         c = kz["constraints"]
-        blocked = [k.replace("no_", "") for k, v in c.items() if v]
+        blocked = blocked_constraints(c)
         if blocked:
             src = kz["source_ref"] or kz["source"]
             placement_warnings.append(f"Overlaps keepout from {src} (blocks {', '.join(blocked)})")
