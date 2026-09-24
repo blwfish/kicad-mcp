@@ -394,6 +394,8 @@ class TestParseKicadxml:
         assert parsed["malformed_components_skipped"] == 1
         assert parsed["net_count"] == 1                # SDA; unconnected + no-name excluded
         assert parsed["malformed_nets_skipped"] == 1   # the <net> with no name
+        assert parsed["unconnected_nets_skipped"] == 1  # the "unconnected-(U1-Pad3)" net
+        assert parsed["orphan_net_nodes_skipped"] == 0  # every node in a KEPT net has a real component
 
     def test_all_component_fields_survive(self, parsed):
         r1 = parsed["components"]["R1"]
@@ -438,6 +440,49 @@ class TestParseKicadxml:
         # node present but no pinfunction attribute -> name is "", not omitted
         c1 = parsed["components"]["C1"]
         assert c1["pins"] == [{"num": "2", "name": ""}]
+
+    def test_orphan_net_node_is_counted_not_silent(self):
+        """Regression: a net node referencing a component missing from
+        component_info (e.g. dropped by a malformed-component skip
+        elsewhere in the same parse) was silently skipped in the per-
+        component pin-aggregation loop with no counter at all. finding #97
+        of the 2026-09-23 full review."""
+        from kicad_mcp.utils.netlist_parser import _parse_kicadxml
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E">
+  <components>
+    <comp ref="R1"><value>10k</value></comp>
+  </components>
+  <nets>
+    <net name="GHOST">
+      <node ref="U99" pin="1"/>
+    </net>
+  </nets>
+</export>
+"""
+        result = _parse_kicadxml(xml)
+        assert result["orphan_net_nodes_skipped"] == 1
+        assert "R1" in result["components"]
+
+    def test_lstrip_only_removes_one_leading_slash(self):
+        """Regression: net_name.lstrip("/") strips EVERY leading slash, not
+        just the local-label hierarchy marker -- "///weird" would silently
+        become "weird" instead of the correct "//weird". finding #99 of the
+        2026-09-23 full review."""
+        from kicad_mcp.utils.netlist_parser import _parse_kicadxml
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E">
+  <components><comp ref="R1"><value>10k</value></comp></components>
+  <nets>
+    <net name="///weird">
+      <node ref="R1" pin="1"/>
+    </net>
+  </nets>
+</export>
+"""
+        result = _parse_kicadxml(xml)
+        assert "//weird" in result["nets"]
+        assert "weird" not in result["nets"]
 
     def test_malformed_xml_raises_parse_error(self):
         import xml.etree.ElementTree as ET
