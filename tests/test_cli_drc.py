@@ -218,13 +218,24 @@ class TestCategorizationFallbacks:
              patch("subprocess.run", side_effect=_patched_run_writing({"violations": violations})):
             return _run(pcb)
 
-    def test_falls_back_to_type_when_no_rule_id(self, tmp_path):
-        violations = [{"type": "silk_overlap", "message": "Silkscreen overlaps"}]
+    def test_real_kicad_cli_shape_uses_type_and_description(self, tmp_path):
+        """Real kicad-cli 10.x JSON never has rule_id or message (verified live
+        against `kicad-cli pcb drc` output on two demo boards) -- only type and
+        description. This is the shape that actually occurs in production."""
+        violations = [{"type": "silk_overlap", "description": "Silkscreen overlaps"}]
         result = self._run_with_violations(tmp_path, violations)
         assert result["violation_categories"] == {"silk_overlap": 1}
 
-    def test_falls_back_to_message_when_no_rule_id_or_type(self, tmp_path):
-        violations = [{"message": "Pad too small"}]
+    def test_falls_back_to_rule_id_when_no_type(self, tmp_path):
+        """rule_id kept as a legacy/defensive fallback only -- not seen in any
+        real kicad-cli output, but harmless to keep in case an older/future
+        version emits it without a type."""
+        violations = [{"rule_id": "clearance", "message": "Too close"}]
+        result = self._run_with_violations(tmp_path, violations)
+        assert result["violation_categories"] == {"clearance": 1}
+
+    def test_falls_back_to_description_when_no_type_or_rule_id(self, tmp_path):
+        violations = [{"description": "Pad too small"}]
         result = self._run_with_violations(tmp_path, violations)
         assert result["violation_categories"] == {"Pad too small": 1}
 
@@ -233,12 +244,14 @@ class TestCategorizationFallbacks:
         result = self._run_with_violations(tmp_path, violations)
         assert result["violation_categories"] == {"Unknown": 1}
 
-    def test_rule_id_wins_over_type(self, tmp_path):
-        """rule_id takes priority over type (stable key preferred)."""
-        violations = [{"rule_id": "clearance", "type": "some_type", "message": "msg"}]
+    def test_type_wins_over_rule_id(self, tmp_path):
+        """type takes priority over rule_id -- type is the field real kicad-cli
+        actually emits; rule_id is legacy/defensive and would never coexist
+        with type in real output, but priority order is still pinned."""
+        violations = [{"rule_id": "clearance", "type": "some_type", "description": "msg"}]
         result = self._run_with_violations(tmp_path, violations)
-        assert "clearance" in result["violation_categories"]
-        assert "some_type" not in result["violation_categories"]
+        assert "some_type" in result["violation_categories"]
+        assert "clearance" not in result["violation_categories"]
 
 
 # ---------------------------------------------------------------------------
@@ -247,17 +260,14 @@ class TestCategorizationFallbacks:
 
 class TestExternalInterfaceDrift:
 
-    def test_unknown_top_level_key_silently_returns_zero_violations(self, tmp_path):
+    def test_unknown_top_level_key_flags_schema_unrecognized_not_silent_zero(self, tmp_path):
         """
-        Documents the open 'External interface verification' gap.
-
-        If a future KiCad version changes the top-level JSON key from
-        'violations' to something else (e.g. 'results'), the current
-        implementation silently falls back to an empty list via
-        drc_report.get('violations', []).
-
-        This test PINS that silent-zero behaviour so any future tightening
-        of the schema contract is visible.
+        Regression for the 'External interface verification' gap: if a future
+        KiCad version changes the top-level JSON key from 'violations' to
+        something else (e.g. 'results'), total_violations still computes to 0
+        (nothing to categorize it as), but schema_unrecognized=True is now set
+        so a caller/log can distinguish "genuinely clean board" from "kicad-cli
+        format drifted out from under us" instead of the two looking identical.
         """
         pcb = str(tmp_path / "board.kicad_pcb")
         future_format = {
@@ -268,12 +278,22 @@ class TestExternalInterfaceDrift:
         with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
              patch("subprocess.run", side_effect=_patched_run_writing(future_format)):
             result = _run(pcb)
-        # Current behaviour: silently succeeds with zero violations
         assert result["status"] == "ok"
         assert result["total_violations"] == 0
         assert result["violations"] == []
-        # NOTE: this is a known gap — a missing 'violations' key should ideally
-        # warn or fail rather than silently return zero. See project_external_interface_verification.md
+        assert result["schema_unrecognized"] is True
+
+    def test_recognized_schema_never_sets_schema_unrecognized(self, tmp_path):
+        """A genuinely clean board (empty violations, recognized key present)
+        must NOT be flagged -- the flag is specifically for an unrecognized
+        shape, not for "zero violations" in general."""
+        pcb = str(tmp_path / "board.kicad_pcb")
+        with patch(f"{_MODULE}.get_kicad_cli_path", return_value="/fake/kicad-cli"), \
+             patch("subprocess.run", side_effect=_patched_run_writing({"violations": []})):
+            result = _run(pcb)
+        assert result["status"] == "ok"
+        assert result["total_violations"] == 0
+        assert "schema_unrecognized" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -317,16 +337,32 @@ class TestParseDrcReport:
         assert out["violation_categories"] == {}
         assert out["unconnected_count"] == 0 and out["parity_count"] == 0
 
-    def test_rule_id_fallback_chain(self):
+    def test_categorization_fallback_chain(self):
+        """type first (the real kicad-cli field), then rule_id, then
+        description (the real message field -- 'message' does not exist in
+        real kicad-cli output), then Unknown."""
         from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
         out = parse_drc_report({"violations": [
-            {"type": "silk_overlap"},          # no rule_id -> type
-            {"message": "Pad too small"},      # no rule_id/type -> message
-            {},                                # nothing -> Unknown
+            {"type": "silk_overlap"},              # -> type
+            {"rule_id": "clearance"},               # no type -> rule_id
+            {"description": "Pad too small"},       # no type/rule_id -> description
+            {},                                     # nothing -> Unknown
         ]})
         assert out["violation_categories"] == {
-            "silk_overlap": 1, "Pad too small": 1, "Unknown": 1,
+            "silk_overlap": 1, "clearance": 1, "Pad too small": 1, "Unknown": 1,
         }
+
+    def test_schema_unrecognized_flag_only_on_no_known_keys(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        recognized = parse_drc_report({"violations": [], "unconnected_items": []})
+        assert "schema_unrecognized" not in recognized
+
+        unrecognized = parse_drc_report({"results": [{"type": "x"}]})
+        assert unrecognized["schema_unrecognized"] is True
+        assert unrecognized["total_violations"] == 0
+
+        empty_report = parse_drc_report({})
+        assert "schema_unrecognized" not in empty_report
 
 
 # ---------------------------------------------------------------------------

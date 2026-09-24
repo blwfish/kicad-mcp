@@ -139,7 +139,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
         reference: Optional[str] = None,
         value: Optional[str] = None,
         rotation_deg: Optional[float] = None,
-        layer: str = "F.Cu",
+        layer: Optional[str] = None,
         check_keepouts: bool = True,
         # ── Nets ──────────────────────────────────────────────────────────
         net_name: str = "",
@@ -389,7 +389,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                     return {"error": "operation='place_footprint' requires 'y_mm'"}
                 return _op_place_footprint(
                     pcb_path, library, footprint_name, reference, value,
-                    x_mm, y_mm, rotation_deg=rotation_deg or 0.0, layer=layer,
+                    x_mm, y_mm, rotation_deg=rotation_deg or 0.0, layer=layer or "F.Cu",
                     check_keepouts=check_keepouts,
                 )
 
@@ -497,7 +497,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                     return {"error": "operation='add_trace' requires 'end_y_mm'"}
                 return _with_manual_routing_note(_op_add_trace(
                     pcb_path, start_x_mm, start_y_mm, end_x_mm, end_y_mm,
-                    width_mm=trace_width_mm, layer=layer, net_name=net_name,
+                    width_mm=trace_width_mm, layer=layer or "F.Cu", net_name=net_name,
                 ))
 
             if operation == "add_via":
@@ -541,7 +541,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                     return {"error": "operation='add_zone' requires 'net_name'"}
                 return _op_add_zone(
                     pcb_path, net_name,
-                    layer=layer,
+                    layer=layer or "F.Cu",
                     corners=corners if corners is not None else [],
                     clearance_mm=zone_clearance_mm,
                     min_width_mm=min_width_mm,
@@ -567,7 +567,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                     return {"error": "operation='add_text' requires 'y_mm'"}
                 return _op_add_text(
                     pcb_path, text, x_mm, y_mm,
-                    layer=layer, size_mm=text_size_mm,
+                    layer=layer or "F.SilkS", size_mm=text_size_mm,
                     thickness_mm=thickness_mm, rotation_deg=rotation_deg or 0.0,
                 )
 

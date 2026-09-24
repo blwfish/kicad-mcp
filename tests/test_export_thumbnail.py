@@ -111,6 +111,30 @@ class TestGeneratePcbThumbnailSuccess:
 # Error paths — tool returns a dict with "error", not ImageContent
 # ---------------------------------------------------------------------------
 
+class TestGeneratePcbThumbnailZeroByteOutput:
+    """Regression: kicad-cli exiting 0 but writing an empty output file
+    (a truncated write, or a layer with nothing to render) used to pass the
+    existence-only check and report status=ok with size_bytes=0 -- a
+    genuine failure surfaced as success."""
+
+    def test_zero_byte_output_is_an_error_not_success(self, mcp_server, project_path, monkeypatch):
+        fn = get_tool_fn(mcp_server, "export")
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_ok(b"", os.path.dirname(project_path)),  # empty output
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.shutil.which", lambda _: "/usr/bin/kicad-cli"
+        )
+        monkeypatch.setattr("kicad_mcp.tools.export.system", "Linux")
+
+        result = asyncio.run(fn(
+            operation="thumbnail", ctx=None, project_path=project_path,
+        ))
+        assert "error" in result
+        assert result.get("status") != "ok"
+
+
 class TestGeneratePcbThumbnailErrors:
     def test_missing_project_file(self, mcp_server, tmp_path):
         fn = get_tool_fn(mcp_server, "export")
