@@ -86,17 +86,24 @@ just mocked. Full suite: 3129 passed, 1 pre-existing skip.
 
 `integration / kicad-10.0` is red on this release and is being shipped
 that way deliberately, not silently. A same-day investigation (see
-[#150](https://github.com/blwfish/kicad-mcp/issues/150)) found several
-dense multi-pass boards in `tests/integration/test_firmware_pcb_pipeline.py`
-(`test_expander_terminals_to_routed_pcb` and others) genuinely need more
-real FreeRouter routing time than their test timeouts currently budget,
-and separately investigated (and ruled out) whether concurrent autoroute
-passes were degrading routing quality under CPU contention -- they
-aren't, but concurrent passes still measurably produce worse routing
-than serial for a reason not yet identified. Root cause: unresolved.
-Scope: confined to this one test file's dense-board autoroute fixtures --
-does not implicate `pcb_autoroute.py`'s serial (shipped) code path's
-correctness, nor any of this release's ~200 review-remediation fixes,
+[#150](https://github.com/blwfish/kicad-mcp/issues/150)) found that a
+handful of dense multi-pass boards in
+`tests/integration/test_firmware_pcb_pipeline.py`
+(`test_expander_terminals_to_routed_pcb` and others) fail their
+routing-completeness assertion under BOTH serial and concurrent
+autoroute execution -- including a run given roughly 5x the normal time
+budget (28 real minutes, well inside a 3600s ceiling), which still left
+more nets unrouted than a shorter concurrent run did. That rules out
+"the test timeout is just too short" as the explanation; CPU contention
+and GC thrashing were investigated and ruled out too. The most likely
+remaining explanation is a genuine routability issue with this test's
+board fixture (net classes, DSN export, footprint/keepout choices, or
+something in the schematic-to-PCB pipeline for this scenario) rather
+than anything specific to how autoroute passes are scheduled. Root
+cause: unresolved, actively tracked in #150. Scope: confined to this one
+test file's dense-board autoroute fixtures -- does not implicate
+`pcb_autoroute.py`'s serial (shipped) code path's correctness, nor any
+of this release's ~200 review-remediation fixes,
 all of which are covered by the full unit suite (3129 passing) and were
 individually mutation-tested. Filed and tracked in #150; not merged over
 silently, and not expected to block routine PRs given `kicad-10.0` was
