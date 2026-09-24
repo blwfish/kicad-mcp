@@ -305,7 +305,16 @@ def run_pcbnew_script(
         logger.error("pcbnew script timed out after %.1fs%s", timeout, detail)
         raise RuntimeError(f"pcbnew script timed out after {timeout}s{detail}")
     finally:
-        os.unlink(script_path)
+        # Unguarded: an OSError here (file already removed, permission
+        # issue) propagates out of this `finally` block and MASKS whatever
+        # exception was already in flight (a TimeoutExpired/RuntimeError
+        # above, or the original exception on the success path) -- the
+        # params_path cleanup right below already gets this right. finding
+        # #6 of the 2026-09-23 full review's Phase 1 pass.
+        try:
+            os.unlink(script_path)
+        except OSError as e:
+            logger.debug("Could not remove temp script %s: %s", script_path, e)
         if params_path:
             try:
                 os.unlink(params_path)
