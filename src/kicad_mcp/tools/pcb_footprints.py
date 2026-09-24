@@ -67,15 +67,11 @@ if outline is None:
         "Add a board outline before placing components."
     )
 elif not rect_inside(fp_rect, outline):
-    overhang_parts = []
-    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
-        overhang_parts.append(f"left {round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}mm")
-    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
-        overhang_parts.append(f"right {round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}mm")
-    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
-        overhang_parts.append(f"top {round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}mm")
-    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
-        overhang_parts.append(f"bottom {round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}mm")
+    # compute_overhang_mm (GEOMETRY_HELPER, single source of truth) -- was 4
+    # independent copies of this exact if/if/if/if block. finding #24.
+    _SIDE_LABEL = {"left_mm": "left", "right_mm": "right", "top_mm": "top", "bottom_mm": "bottom"}
+    overhang_parts = [f"{_SIDE_LABEL[k]} {round(v, 1)}mm"
+                      for k, v in compute_overhang_mm(fp_rect, outline).items()]
     placement_warnings.append(
         f"EXTENDS BEYOND BOARD OUTLINE ({', '.join(overhang_parts)}) — "
         "move this footprint before routing or pads will be unreachable."
@@ -256,15 +252,10 @@ if outline is None:
         "No board outline (Edge.Cuts) found — cannot validate footprint boundary."
     )
 elif not rect_inside(fp_rect, outline):
-    overhang_parts = []
-    if fp_rect["x_min_mm"] < outline["x_min_mm"]:
-        overhang_parts.append(f"left {round(outline['x_min_mm'] - fp_rect['x_min_mm'], 1)}mm")
-    if fp_rect["x_max_mm"] > outline["x_max_mm"]:
-        overhang_parts.append(f"right {round(fp_rect['x_max_mm'] - outline['x_max_mm'], 1)}mm")
-    if fp_rect["y_min_mm"] < outline["y_min_mm"]:
-        overhang_parts.append(f"top {round(outline['y_min_mm'] - fp_rect['y_min_mm'], 1)}mm")
-    if fp_rect["y_max_mm"] > outline["y_max_mm"]:
-        overhang_parts.append(f"bottom {round(fp_rect['y_max_mm'] - outline['y_max_mm'], 1)}mm")
+    # See the identical extraction in _op_place_footprint above. finding #24.
+    _SIDE_LABEL = {"left_mm": "left", "right_mm": "right", "top_mm": "top", "bottom_mm": "bottom"}
+    overhang_parts = [f"{_SIDE_LABEL[k]} {round(v, 1)}mm"
+                      for k, v in compute_overhang_mm(fp_rect, outline).items()]
     placement_warnings.append(
         f"EXTENDS BEYOND BOARD OUTLINE ({', '.join(overhang_parts)}) — "
         "move this footprint before routing or pads will be unreachable."
