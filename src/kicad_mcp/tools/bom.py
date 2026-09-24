@@ -23,6 +23,7 @@ from fastmcp import Context
 from kicad_mcp.utils.component_utils import get_component_type_from_reference
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
+from kicad_mcp.utils.kicad_utils import get_project_name_from_path
 
 
 async def _op_analyze_bom(
@@ -193,7 +194,7 @@ async def _op_export_bom_csv(
 
     schematic_file = files["schematic"]
     project_dir = os.path.dirname(project_path)
-    project_name = os.path.basename(project_path)[:-10]
+    project_name = get_project_name_from_path(project_path)
 
     if ctx:
         await ctx.report_progress(20, 100)
