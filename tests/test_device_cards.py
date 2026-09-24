@@ -511,6 +511,49 @@ def test_backcompat_constants_match_cards():
     assert K.MPU6050_AD0_PIN == mpu["config"]["address_strap"]["pin_bits"][0]
 
 
+# finding #23 (Phase 1, 2026-09-23 full review): MAX98357A/SPH0645/ICS43434 are
+# template-owned dataclass-free dicts in knowledge.py, hand-copied from (and
+# meant to mirror) their YAML resolution cards -- both the knowledge.py
+# constants' own comments and the card files' own comments say "keep in sync",
+# but nothing enforced it. templates.py accesses these via FLAT lowercase keys
+# (M["din"], M["bclk"], ...), while the card format nests the same facts under
+# roles: {ROLE: pin} with UPPERCASE role names -- the two representations
+# never matched key-for-key, so the parity check below maps between them
+# explicitly per constant rather than a blind dict-equality.
+@pytest.mark.parametrize("card_type,pyname,role_map,pin_fields", [
+    ("MAX98357A", "MAX98357A",
+     {"din": "DIN", "bclk": "BCLK", "lrclk": "LRCLK", "sd_mode": "SD_MODE",
+      "outp": "OUTP", "outn": "OUTN"}, None),
+    ("SPH0645", "SPH0645",
+     {"ws": "WS", "bclk": "BCLK", "data": "DATA", "sel": "SEL"}, ("vdd", "gnd")),
+    ("ICS-43434", "ICS43434",
+     {"ws": "WS", "bclk": "BCLK", "data": "DATA", "sel": "SEL"}, ("vdd", "gnd")),
+])
+def test_template_owned_mic_amp_constants_match_their_cards(
+    card_type, pyname, role_map, pin_fields,
+):
+    card = K.resolve_peripheral(card_type)
+    assert card is not None, f"no card resolves for {card_type!r}"
+    const = getattr(K, pyname)
+    assert const["lib_id"] == card["lib_id"]
+    assert const["value"] == card["value"]
+    assert const["footprint"] == card["footprint"]
+    for py_key, role_name in role_map.items():
+        assert const[py_key] == card["roles"][role_name], (
+            f"{pyname}[{py_key!r}] drifted from card roles[{role_name!r}]"
+        )
+    if pin_fields:
+        vdd_key, gnd_key = pin_fields
+        assert [const[vdd_key]] == card["supply_pins"]
+        assert [const[gnd_key]] == card["ground_pins"]
+
+
+def test_max98357a_power_pin_lists_match_card():
+    card = K.resolve_peripheral("MAX98357A")
+    assert K.MAX98357A_VDD_PINS == card["supply_pins"]
+    assert K.MAX98357A_GND_PINS == card["ground_pins"]
+
+
 # --- MCU resolution (longest board_match, no hand-ordered precedence) ---------
 
 @pytest.mark.parametrize("board,part", [
