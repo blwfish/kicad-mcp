@@ -537,8 +537,21 @@ class TestAddJunction:
         _call(fn, "create", name="test")
         result = _call(fn, "add_junction", position=[100.0, 100.0])
         assert result["status"] == "ok"
-        assert result["position"] == [100.0, 100.0]
+        # 100.0 isn't itself a multiple of the 1.27mm grid -- snaps to 100.33
+        # since finding #12's fix (was a silent pass-through before).
+        assert result["position"] == [100.33, 100.33]
         assert "junction_uuid" in result
+
+    def test_add_junction_snaps_to_grid(self, sch_server):
+        """finding #12 (Phase 1, 2026-09-23 full review): add_wire snaps both
+        its endpoints to the 1.27mm grid; an un-snapped junction meant to sit
+        at a wire crossing/endpoint can miss it by a sub-grid amount and
+        carry no real electrical connection."""
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        result = _call(fn, "add_junction", position=[100.3, 100.4])
+        assert result["status"] == "ok"
+        assert result["position"] == [100.33, 100.33]   # both snap to the 1.27mm grid
 
     def test_add_junction_bad_position(self, sch_server):
         fn = _get_schematic_fn(sch_server)
@@ -743,6 +756,41 @@ class TestAddMultiUnitComponent:
         )
         assert "error" in result
         assert "not found" in result["error"].lower()
+
+    def test_add_multi_unit_partial_units_lands_on_grid(self, sch_server):
+        """finding #11 (Phase 1, 2026-09-23 full review) was investigated and
+        found to be a false positive against the installed kicad-sch-api
+        (0.5.6): Components.add() snaps to grid internally regardless of
+        call site, verified by mutation-testing an explicit _snap() call
+        added here (it made no observable difference, so it was reverted
+        rather than kept as dead code). Pinned anyway as a regression guard
+        on the router's overall grid-alignment behavior, an off-grid pin
+        library update would need this router to catch."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_multi_unit_component",
+            lib_id="Amplifier_Operational:LM358",
+            reference="U1",
+            value="LM358",
+            position=[100.3, 100.4],
+            units=[1],
+        )
+        assert result["status"] == "ok"
+        assert result["units"][0]["position"] == [100.33, 100.33]
+
+    def test_add_multi_unit_all_units_lands_on_grid(self, sch_server):
+        """Same investigation, the add_all_units=True branch (no explicit
+        `units` -- every unit placed at once)."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_multi_unit_component",
+            lib_id="Amplifier_Operational:LM358",
+            reference="U1",
+            value="LM358",
+            position=[100.3, 100.4],
+        )
+        assert result["status"] == "ok"
+        # unit 1 is placed at the base position with no unit_spacing offset.
+        unit1 = next(u for u in result["units"] if u["unit"] == 1)
+        assert unit1["position"] == [100.33, 100.33]
 
     def test_add_multi_unit_invalid_unit_number(self, sch_server):
         """Requesting a unit number that doesn't exist returns an error."""
@@ -1113,6 +1161,24 @@ class TestAddLabelToPin:
         with pytest.raises(RuntimeError, match="No schematic loaded"):
             _call(fn, "add_label_to_pin", reference="R1", pin_number="1", text="GND")
 
+    def test_explicit_offset_zero_is_not_the_default_2_54mm(self, sch_server):
+        """finding #10 (Phase 1, 2026-09-23 full review): `offset != 0`
+        collided an explicit offset=0 (a literal zero-length stub, straight
+        to the pin) with "caller didn't pass offset at all" -- both used to
+        get bumped to the 2.54mm default, making offset=0 unreachable."""
+        fn = _get_schematic_fn(sch_server)
+        sch = sch_module._current_schematic
+        comp = sch_module._find_component_for_pin(sch, "R1", "1")
+        pin_pos = sch_module._kicad_pin_position(comp, "1")
+
+        zero = _call(fn, "add_label_to_pin", reference="R1", pin_number="1",
+                     text="GND", offset=0)
+        assert tuple(zero["position"]) == (pin_pos.x, pin_pos.y)
+
+        default = _call(fn, "add_label_to_pin", reference="R1", pin_number="1",
+                        text="VCC")
+        assert tuple(default["position"]) != (pin_pos.x, pin_pos.y)
+
 
 # -- connect_pins_with_labels tests ------------------------------------------
 
@@ -1216,6 +1282,14 @@ class TestAddHierarchicalLabel:
         assert "label_uuid" in result
         assert result["text"] == "DATA_IN"
         assert result["shape"] == "input"
+
+    def test_add_hierarchical_label_snaps_to_grid(self, sch_server):
+        """finding #12: add_hierarchical_label skipped the grid-snap every
+        sibling placement operation applies."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_hierarchical_label", text="X", position=[100.3, 100.4], shape="input")
+        assert result["status"] == "ok"
+        assert result["position"] == [100.33, 100.33]
 
     def test_add_output_shape(self, sch_server):
         fn = _get_schematic_fn(sch_server)
@@ -1361,7 +1435,9 @@ class TestAddText:
         assert result["status"] == "ok"
         assert "text_uuid" in result
         assert result["text"] == "Hello World"
-        assert result["position"] == [50.0, 50.0]
+        # 50.0 isn't itself a multiple of the 1.27mm grid -- snaps to 49.53
+        # since finding #12's fix (was a silent pass-through before).
+        assert result["position"] == [49.53, 49.53]
 
     def test_add_text_with_rotation(self, sch_server):
         fn = _get_schematic_fn(sch_server)
@@ -1380,6 +1456,14 @@ class TestAddText:
         with pytest.raises(RuntimeError, match="No schematic loaded"):
             _call(fn, "add_text", text="X", position=[50.0, 50.0])
 
+    def test_add_text_snaps_to_grid(self, sch_server):
+        """finding #12: add_text skipped the grid-snap every sibling
+        placement operation applies."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_text", text="X", position=[10.3, 10.4])
+        assert result["status"] == "ok"
+        assert result["position"] == [10.16, 10.16]
+
 
 # -- add_text_box tests ------------------------------------------------------
 
@@ -1397,8 +1481,18 @@ class TestAddTextBox:
         assert result["status"] == "ok"
         assert "textbox_uuid" in result
         assert result["text"] == "Note here"
-        assert result["position"] == [10.0, 10.0]
+        # 10.0 isn't itself a multiple of the 1.27mm grid -- snaps to 10.16
+        # since finding #12's fix (was a silent pass-through before).
+        assert result["position"] == [10.16, 10.16]
         assert result["size"] == [30.0, 15.0]
+
+    def test_add_text_box_snaps_to_grid(self, sch_server):
+        """finding #12: add_text_box skipped the grid-snap every sibling
+        placement operation applies."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_text_box", text="X", position=[10.3, 10.4], sheet_size=[30.0, 15.0])
+        assert result["status"] == "ok"
+        assert result["position"] == [10.16, 10.16]
 
     def test_add_text_box_bad_position(self, sch_server):
         fn = _get_schematic_fn(sch_server)
@@ -1439,7 +1533,10 @@ class TestAddSheet:
         assert "sheet_uuid" in result
         assert result["name"] == "PowerSupply"
         assert result["filename"] == "power.kicad_sch"
-        assert result["position"] == [100.0, 50.0]
+        # neither 100.0 nor 50.0 is itself a multiple of the 1.27mm grid --
+        # snaps to (100.33, 49.53) since finding #12's fix (was a silent
+        # pass-through before).
+        assert result["position"] == [100.33, 49.53]
         assert result["size"] == [40.0, 25.0]
 
     def test_add_sheet_uuid_is_string(self, sch_server):
@@ -1447,6 +1544,15 @@ class TestAddSheet:
         result = _call(fn, "add_sheet", name="Sub", filename="sub.kicad_sch", position=[50.0, 50.0], sheet_size=[30.0, 20.0])
         assert isinstance(result["sheet_uuid"], str)
         assert len(result["sheet_uuid"]) > 0
+
+    def test_add_sheet_snaps_to_grid(self, sch_server):
+        """finding #12: add_sheet skipped the grid-snap every sibling
+        placement operation applies."""
+        fn = _get_schematic_fn(sch_server)
+        result = _call(fn, "add_sheet", name="Sub", filename="sub.kicad_sch",
+                       position=[50.3, 50.4], sheet_size=[30.0, 20.0])
+        assert result["status"] == "ok"
+        assert result["position"] == [50.8, 50.8]
 
     def test_add_sheet_bad_position(self, sch_server):
         fn = _get_schematic_fn(sch_server)
