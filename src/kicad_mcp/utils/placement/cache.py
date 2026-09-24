@@ -89,6 +89,15 @@ def _schematic_shard(schematic_path: str) -> str:
     non-normalized but equivalent path. This is the single source of truth
     for the shard key; no caller normalizes on its own."""
     if not schematic_path:
+        # Every caller with a falsy schematic_path collapses into this ONE
+        # shared shard -- two unrelated callers that both omit it would
+        # contend for the same MAX_STATES_PER_SCHEMATIC=5 LRU slot, so one
+        # caller's save could evict another's with no relation between them.
+        # Logged (not restructured into per-caller buckets) since there's no
+        # caller identity to shard on without a schematic_path in the first
+        # place -- this makes the collision visible if it ever actually
+        # matters in practice, rather than silent either way.
+        logger.debug("Falsy schematic_path -- using shared '_unknown' cache shard")
         return "_unknown"
     normalized = str(Path(schematic_path))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
@@ -153,7 +162,17 @@ def load_state(state_id: str) -> dict[str, Any] | None:
             with contextlib.suppress(OSError):
                 path.unlink()
             return None
-        obj: dict[str, Any] = json.loads(path.read_text())
+        obj = json.loads(path.read_text())
+        if not isinstance(obj, dict):
+            # Syntactically valid JSON but not an object (a bare list/string/
+            # number) -- the `dict[str, Any]` annotation on this call used to
+            # just trust that shape, so a caller's first `.get(...)` on the
+            # result would crash with AttributeError instead of getting the
+            # same clean "corrupt, treat as miss" handling a JSONDecodeError
+            # already gets.
+            logger.warning("placement cache file for %r is not a JSON object "
+                            "(got %s) -- treating as corrupt", state_id, type(obj).__name__)
+            return None
         return obj
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("placement cache load failed for %r: %s", state_id, e)
@@ -220,17 +239,21 @@ def clear_cache(schematic_path: str | None = None) -> int:
     if not d.exists():
         return 0
     count = 0
-    if schematic_path is None:
-        # All shards.
-        for path in d.glob("*/*.json"):
-            with contextlib.suppress(OSError):
-                path.unlink()
-                count += 1
-    else:
-        for path in _states_for_schematic(schematic_path):
-            with contextlib.suppress(OSError):
-                path.unlink()
-                count += 1
+    failed = 0
+    candidates = d.glob("*/*.json") if schematic_path is None else _states_for_schematic(schematic_path)
+    for path in candidates:
+        try:
+            path.unlink()
+            count += 1
+        except OSError:
+            failed += 1
+    if failed:
+        # bare `contextlib.suppress(OSError)` previously gave the caller no
+        # way to tell "5 states, all deleted" from "5 states, only 3
+        # deleted" -- the return value already answers the first half
+        # (count of successes); this makes the second half visible too.
+        logger.warning("clear_cache: %d file(s) could not be deleted "
+                        "(schematic_path=%r)", failed, schematic_path)
     return count
 
 
@@ -255,9 +278,19 @@ def _evict_lru_for_schematic(schematic_path: str) -> None:
     if len(states) <= MAX_STATES_PER_SCHEMATIC:
         return
     states.sort(key=lambda p: p.stat().st_mtime)
+    failed = 0
     for path in states[: len(states) - MAX_STATES_PER_SCHEMATIC]:
-        with contextlib.suppress(OSError):
+        try:
             path.unlink()
+        except OSError:
+            failed += 1
+    if failed:
+        # Called from save_state (fire-and-forget, no return value the
+        # caller inspects) -- a failed eviction previously left no trace
+        # anywhere, so a schematic could silently accumulate more than
+        # MAX_STATES_PER_SCHEMATIC files with nothing to explain why.
+        logger.warning("Failed to evict %d stale cache file(s) for %s",
+                        failed, schematic_path)
 
 
 def _sweep_expired(max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> None:
@@ -266,12 +299,19 @@ def _sweep_expired(max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> None:
     if not d.exists():
         return
     cutoff = time.time() - max_age_days * 86400
+    failed = 0
     for path in d.glob("*/*.json"):
         try:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
         except OSError:
-            pass
+            failed += 1
+    if failed:
+        # Called from save_state (fire-and-forget) -- previously a `pass`
+        # with zero signal; a stat/unlink failure here (permission,
+        # concurrent delete) used to leave no trace of why expired files
+        # keep accumulating.
+        logger.warning("Failed to sweep %d expired cache file(s)", failed)
 
 
 def _expired(path: Path, max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> bool:
