@@ -98,6 +98,13 @@ class SchematicParser:
         self.hierarchical_labels: list[dict] = []
         self.global_labels: list[dict] = []
         self.malformed_components_skipped: int = 0
+        # Every _extract_* regex-fallback helper below (wires, junctions,
+        # labels, power symbols, no-connects) used to silently `continue`
+        # past a non-matching S-expression with zero error counter --
+        # systemic across the whole regex-fallback path, not a one-off.
+        # Keyed by construct name, always present (even empty) in parse()'s
+        # result so a caller can tell "genuinely none" from "some dropped".
+        self.extraction_skip_counts: dict[str, int] = {}
 
         # Netlist information
         self.nets: dict[str, list] = defaultdict(list)
@@ -108,6 +115,9 @@ class SchematicParser:
 
         # Load the file
         self._load_schematic()
+
+    def _record_skip(self, construct: str) -> None:
+        self.extraction_skip_counts[construct] = self.extraction_skip_counts.get(construct, 0) + 1
 
     def _load_schematic(self) -> None:
         """Load the schematic file content."""
@@ -150,6 +160,7 @@ class SchematicParser:
             "component_count": len(self.component_info),
             "net_count": len(self.nets),
             "malformed_components_skipped": self.malformed_components_skipped,
+            "extraction_skip_counts": self.extraction_skip_counts,
         }
 
         print(
@@ -336,6 +347,10 @@ class SchematicParser:
                         "y": float(pts_match.group(4)),
                     },
                 })
+            else:
+                # A multi-segment/bus wire (more than 2 xy points) or any
+                # other non-matching shape used to be silently dropped here.
+                self._record_skip("wires")
 
         print(f"Extracted {len(self.wires)} wires")
 
@@ -346,14 +361,24 @@ class SchematicParser:
         junctions = self._extract_s_expressions(r"\(junction\s+")
 
         for junction in junctions:
+            # Verified against real KiCad 10 templates (e.g. Arduino_Mega):
+            # modern junctions are `(junction (at X Y) (diameter D) (color
+            # ...) (uuid ...))`, never a bare `(xy X Y)` child -- the
+            # original `\(junction\s+\(xy ...\)\)` pattern (immediately
+            # double-closed) never matched a real modern schematic's
+            # junctions at all. `(xy ...)` is kept as a fallback in case an
+            # older/legacy export still uses it; neither form requires the
+            # coordinate pair to be the junction's last child.
             xy_match = re.search(
-                r"\(junction\s+\(xy\s+([\d\.-]+)\s+([\d\.-]+)\)\)", junction
+                r"\(junction\s+\((?:at|xy)\s+([\d\.-]+)\s+([\d\.-]+)\)", junction
             )
             if xy_match:
                 self.junctions.append({
                     "x": float(xy_match.group(1)),
                     "y": float(xy_match.group(2)),
                 })
+            else:
+                self._record_skip("junctions")
 
         print(f"Extracted {len(self.junctions)} junctions")
 
@@ -382,6 +407,8 @@ class SchematicParser:
                         ),
                     },
                 })
+            else:
+                self._record_skip("local_labels")
 
         # Global labels
         global_labels = self._extract_s_expressions(r"\(global_label\s+")
@@ -406,6 +433,8 @@ class SchematicParser:
                         ),
                     },
                 })
+            else:
+                self._record_skip("global_labels")
 
         # Hierarchical labels
         hierarchical_labels = self._extract_s_expressions(r"\(hierarchical_label\s+")
@@ -430,6 +459,8 @@ class SchematicParser:
                         ),
                     },
                 })
+            else:
+                self._record_skip("hierarchical_labels")
 
         print(
             f"Extracted {len(self.labels)} local labels, "
@@ -460,6 +491,8 @@ class SchematicParser:
                         ),
                     },
                 })
+            else:
+                self._record_skip("power_symbols")
 
         print(f"Extracted {len(self.power_symbols)} power symbols")
 
@@ -478,6 +511,8 @@ class SchematicParser:
                     "x": float(xy_match.group(1)),
                     "y": float(xy_match.group(2)),
                 })
+            else:
+                self._record_skip("no_connects")
 
         print(f"Extracted {len(self.no_connects)} no-connects")
 

@@ -125,6 +125,104 @@ class TestMalformedComponentsSkippedSurfaced:
         assert result["component_count"] == 1
 
 
+class TestJunctionModernFormat:
+    """Regression: verified against real KiCad 10 templates (Arduino_Mega) --
+    modern junctions are `(junction (at X Y) (diameter D) (color ...)
+    (uuid ...))`, never a bare `(xy X Y)` child. The original pattern
+    (`\\(junction\\s+\\(xy ...\\)\\)`, immediately double-closed) never
+    matched a real modern schematic's junctions at all -- every junction
+    was silently dropped on every real board."""
+
+    def test_junction_with_modern_at_form_is_extracted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = (
+            '(junction (at 21.59 132.08) (diameter 1.016) '
+            '(color 0 0 0 0) (uuid "127679a9-3981-4934-815e-896a4e3ff56e"))\n'
+        )
+        p._extract_junctions()
+        assert p.junctions == [{"x": 21.59, "y": 132.08}]
+        assert "junctions" not in p.extraction_skip_counts
+
+    def test_junction_with_legacy_xy_form_still_works(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(junction (xy 10 20))\n'
+        p._extract_junctions()
+        assert p.junctions == [{"x": 10.0, "y": 20.0}]
+
+
+class TestExtractionSkipCounts:
+    """Regression: every _extract_* regex-fallback helper (wires, junctions,
+    labels, power symbols, no-connects) used to silently `continue` past a
+    non-matching S-expression with no error counter at all -- systemic
+    across the whole regex-fallback path. parse() must surface a dict a
+    caller can inspect to tell "genuinely none of this construct" from
+    "some were dropped"."""
+
+    def test_clean_parse_has_no_skips(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = (
+            '(wire (pts (xy 0 0) (xy 10 10)))\n'
+            '(junction (at 5 5) (diameter 1) (uuid "x"))\n'
+            '(label "NET1" (at 1 1 0))\n'
+            '(no_connect (at 2 2))\n'
+        )
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {}
+
+    def test_malformed_wire_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        # 3-point (bus/multi-segment) wire the 2-point regex can't match.
+        p.content = '(wire (pts (xy 0 0) (xy 5 5) (xy 10 10)))\n'
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"wires": 1}
+
+    def test_malformed_junction_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(junction (weird_field 1 2))\n'
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"junctions": 1}
+
+    def test_malformed_local_label_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(label "NET1")\n'  # missing (at ...)
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"local_labels": 1}
+
+    def test_malformed_global_label_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(global_label "VBUS" (shape input))\n'  # missing (at ...)
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"global_labels": 1}
+
+    def test_malformed_hierarchical_label_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(hierarchical_label "RESET" (shape output))\n'  # missing (at ...)
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"hierarchical_labels": 1}
+
+    def test_malformed_power_symbol_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(symbol (lib_id "power:GND"))\n'  # missing (at ...)
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"power_symbols": 1}
+
+    def test_malformed_no_connect_is_counted(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(no_connect (weird_field 1 2))\n'
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"no_connects": 1}
+
+    def test_multiple_constructs_accumulate_independently(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = (
+            '(junction (weird_field 1 2))\n'
+            '(no_connect (weird_field 1 2))\n'
+            '(no_connect (weird_field 3 4))\n'
+        )
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {"junctions": 1, "no_connects": 2}
+
+
 class TestPowerSymbolTypeEscapedQuote:
     def test_power_symbol_type_with_escaped_quote_not_truncated(self, tmp_path):
         p = _parser(tmp_path)
