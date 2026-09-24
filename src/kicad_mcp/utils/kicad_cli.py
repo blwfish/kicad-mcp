@@ -115,6 +115,17 @@ class KiCadCLIManager:
             )
             if result.returncode == 0:
                 return result.stdout.strip()
+            # A nonzero exit here falls through to `return None` below --
+            # _validate_cli_path already logs its own retry attempts'
+            # returncode via logger.debug, but this sibling call had no
+            # equivalent: stderr was never even read, and neither the
+            # returncode nor stderr was logged, so a caller had no way to
+            # tell "CLI absent" from "CLI present but --version itself is
+            # broken" from the logs alone.
+            logger.warning(
+                "kicad-cli --version exited %s: %s",
+                result.returncode, result.stderr.strip() or "(no stderr)",
+            )
         except (subprocess.SubprocessError, OSError) as e:
             logger.warning("Failed to get KiCad CLI version: %s", e)
 
@@ -212,11 +223,24 @@ class KiCadCLIManager:
                 if result.returncode == 0:
                     return True
                 logger.debug(
-                    "KiCad CLI validation attempt %d/%d for %s exited %s",
+                    "KiCad CLI validation attempt %d/%d for %s exited %s: %s",
                     attempt + 1,
                     attempts,
                     cli_path,
                     result.returncode,
+                    result.stderr.strip() or "(no stderr)",
+                )
+            except subprocess.TimeoutExpired as e:
+                # Distinguished from the catch-all below (finding: "losing
+                # the timeout-vs-not-found distinction") -- a hung process
+                # and a missing/crashing binary call for different operator
+                # responses (wait longer vs. reinstall KiCad).
+                logger.debug(
+                    "KiCad CLI validation attempt %d/%d for %s timed out after %ss",
+                    attempt + 1,
+                    attempts,
+                    cli_path,
+                    e.timeout,
                 )
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug(
