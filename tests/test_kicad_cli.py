@@ -17,14 +17,16 @@ def _ok():
     result = MagicMock(spec=subprocess.CompletedProcess)
     result.returncode = 0
     result.stdout = "kicad-cli version 9.0.0"
+    result.stderr = ""
     return result
 
 
-def _nonzero():
+def _nonzero(stderr=""):
     """A `--version` CompletedProcess that exited nonzero (transient under load)."""
     result = MagicMock(spec=subprocess.CompletedProcess)
     result.returncode = 1
     result.stdout = ""
+    result.stderr = stderr
     return result
 
 
@@ -92,3 +94,84 @@ def test_validate_first_attempt_success_does_not_sleep():
 
     assert run.call_count == 1
     assert sleep.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Medium findings from the 2026-09-23 full review: diagnosability gaps in
+# get_version() (stderr/returncode never logged on failure) and
+# _validate_cli_path (timeout vs. other-error distinction lost in the log).
+# ---------------------------------------------------------------------------
+
+class TestGetVersionLogsFailureDetail:
+    def test_nonzero_exit_logs_returncode_and_stderr(self, caplog):
+        import logging
+        mgr = _manager_with_detect()
+        mgr._cached_cli_path = _FAKE_CLI
+        mgr._cache_validated = True
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run",
+                  return_value=_nonzero(stderr="kicad-cli: fatal error")),
+            caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.kicad_cli"),
+        ):
+            assert mgr.get_version() is None
+        assert any(
+            "exited 1" in r.message and "fatal error" in r.message
+            for r in caplog.records
+        )
+
+    def test_nonzero_exit_with_empty_stderr_says_so(self, caplog):
+        import logging
+        mgr = _manager_with_detect()
+        mgr._cached_cli_path = _FAKE_CLI
+        mgr._cache_validated = True
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run",
+                  return_value=_nonzero(stderr="")),
+            caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.kicad_cli"),
+        ):
+            assert mgr.get_version() is None
+        assert any("(no stderr)" in r.message for r in caplog.records)
+
+    def test_success_returns_stripped_stdout(self):
+        mgr = _manager_with_detect()
+        mgr._cached_cli_path = _FAKE_CLI
+        mgr._cache_validated = True
+        with patch("kicad_mcp.utils.kicad_cli.subprocess.run", return_value=_ok()):
+            assert mgr.get_version() == "kicad-cli version 9.0.0"
+
+
+class TestValidateCliPathDistinguishesTimeout:
+    def test_timeout_is_retried_and_logged_distinctly_from_other_errors(self, caplog):
+        """Regression: TimeoutExpired and a generic SubprocessError/OSError
+        used to log through the identical debug message -- an operator
+        reading logs couldn't tell 'kicad-cli is hanging' from 'kicad-cli
+        crashed or is missing', which call for different responses."""
+        import logging
+        mgr = _manager_with_detect()
+        side_effects = [subprocess.TimeoutExpired(cmd="kicad-cli", timeout=10.0), _ok()]
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run", side_effect=side_effects),
+            patch("kicad_mcp.utils.kicad_cli.time.sleep"),
+            caplog.at_level(logging.DEBUG, logger="kicad_mcp.utils.kicad_cli"),
+        ):
+            assert mgr.find_kicad_cli() == _FAKE_CLI
+        # The dedicated TimeoutExpired branch's message format has no
+        # "failed:" prefix (that's the generic catch-all's format) -- str()
+        # of a bare TimeoutExpired ALSO happens to contain "timed out", so
+        # asserting on that substring alone would pass even if the
+        # dedicated branch were removed and the exception fell through to
+        # the generic handler instead.
+        timeout_msgs = [r.message for r in caplog.records if "timed out" in r.message]
+        assert timeout_msgs and all("failed:" not in m for m in timeout_msgs)
+
+    def test_nonzero_exit_logs_stderr_too(self, caplog):
+        import logging
+        mgr = _manager_with_detect()
+        side_effects = [_nonzero(stderr="permission denied"), _ok()]
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run", side_effect=side_effects),
+            patch("kicad_mcp.utils.kicad_cli.time.sleep"),
+            caplog.at_level(logging.DEBUG, logger="kicad_mcp.utils.kicad_cli"),
+        ):
+            assert mgr.find_kicad_cli() == _FAKE_CLI
+        assert any("permission denied" in r.message for r in caplog.records)
