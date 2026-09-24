@@ -81,6 +81,7 @@ def register_schematic_router(mcp: FastMCP) -> None:
         footprint: Optional[str] = None,
         properties: Optional[str] = None,
         units: Optional[List[int]] = None,
+        unit: Optional[int] = None,
         unit_spacing: float = 15.0,
         criteria: Optional[Dict[str, Any]] = None,
         updates: Optional[Dict[str, Any]] = None,
@@ -149,8 +150,13 @@ def register_schematic_router(mcp: FastMCP) -> None:
           add_multi_unit_component(lib_id, reference, value, position,
                                    units?, footprint?, unit_spacing=15)
               -> {status, reference, total_units, units}   for multi-unit symbols
-          remove_component(reference) -> {status, reference}
-          move_component(reference, position) -> {status, reference, old_position, new_position}
+          remove_component(reference, unit?) -> {status, reference, units_removed}
+              unit unspecified removes ALL units sharing this reference (a
+              multi-unit symbol like a quad op-amp has one placed component
+              per unit); pass unit=N to remove only that one.
+          move_component(reference, position, unit?) -> {status, reference, old_position, new_position, unit?}
+              If reference resolves to multiple units, unit is required —
+              returns an error listing the available units otherwise.
           list_components() -> {status, count, components}
           filter_components(lib_id?, value?, reference?, footprint?) -> {status, count, components}
           components_in_area(x1, y1, x2, y2) -> {status, count, components}
@@ -445,10 +451,29 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if reference is None:
                 return {"error": "operation='remove_component' requires 'reference'"}
             sch = _require_schematic()
-            removed = sch.components.remove(reference)
-            if removed:
-                return {"status": "ok", "reference": reference}
-            return {"error": f"Component {reference} not found"}
+            # sch.components.remove(reference) only removes the FIRST unit-instance
+            # sharing this reference (kicad-sch-api's own documented behavior) --
+            # a multi-unit component (e.g. a quad op-amp with 4 placed units) would
+            # silently leave the other units behind while reporting full success.
+            # Gather every unit sharing this reference and remove them all.
+            all_comps = [c for c in sch.components if c.reference == reference]
+            if not all_comps:
+                return {"error": f"Component {reference} not found"}
+            if unit is not None:
+                matching = [c for c in all_comps
+                            if getattr(c, "unit", None) == unit
+                            or getattr(getattr(c, "_data", None), "unit", None) == unit]
+                if not matching:
+                    return {"error": f"Component {reference} has no unit {unit}"}
+                all_comps = matching
+            removed_units = []
+            for comp in all_comps:
+                if sch.components.remove_component(comp):
+                    u = getattr(comp, "unit", None) or getattr(getattr(comp, "_data", None), "unit", 1) or 1
+                    removed_units.append(u)
+            if not removed_units:
+                return {"error": f"Component {reference} not found"}
+            return {"status": "ok", "reference": reference, "units_removed": sorted(removed_units)}
 
         if operation == "move_component":
             if reference is None:
@@ -458,22 +483,44 @@ def register_schematic_router(mcp: FastMCP) -> None:
             if len(position) != 2:
                 return {"error": "position must be [x, y]"}
             sch = _require_schematic()
-            # IMPORTANT: use components.get(ref), NOT components.filter(reference=ref).
-            # kicad-sch-api's filter() silently drops unrecognized kwargs (the valid
-            # key is reference_pattern, not reference) and returns ALL components —
-            # filter(reference=...)[0] would silently move the wrong component.
-            comp = sch.components.get(reference)
-            if comp is None:
+            # IMPORTANT: don't use components.get(ref) directly -- it (and
+            # components.filter(reference=ref), which also silently drops the
+            # unrecognized "reference" kwarg and returns ALL components) only
+            # ever resolves to ONE unit-instance for a multi-unit reference,
+            # silently moving the wrong unit and reporting full success while
+            # the others stay put. Enumerate every unit sharing this reference
+            # and require disambiguation when there's more than one.
+            all_comps = [c for c in sch.components if c.reference == reference]
+            if not all_comps:
                 return {"error": f"Component {reference!r} not found"}
+            if len(all_comps) > 1:
+                if unit is None:
+                    available = sorted(
+                        getattr(c, "unit", None) or getattr(getattr(c, "_data", None), "unit", 1) or 1
+                        for c in all_comps
+                    )
+                    return {"error": f"Component {reference!r} has multiple units {available}; "
+                                      f"specify unit=N to move a specific one"}
+                matching = [c for c in all_comps
+                            if (getattr(c, "unit", None)
+                                or getattr(getattr(c, "_data", None), "unit", 1) or 1) == unit]
+                if not matching:
+                    return {"error": f"Component {reference!r} has no unit {unit}"}
+                comp = matching[0]
+            else:
+                comp = all_comps[0]
             old_pos = [comp.position.x, comp.position.y] if comp.position else None
             new_pos = list(_snap(position[0], position[1]))
             comp.position = tuple(new_pos)
-            return {
+            result = {
                 "status": "ok",
                 "reference": reference,
                 "old_position": old_pos,
                 "new_position": new_pos,
             }
+            if len(all_comps) > 1 or unit is not None:
+                result["unit"] = getattr(comp, "unit", None) or getattr(getattr(comp, "_data", None), "unit", 1) or 1
+            return result
 
         if operation == "list_components":
             sch = _require_schematic()

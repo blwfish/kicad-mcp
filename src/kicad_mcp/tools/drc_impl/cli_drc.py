@@ -15,6 +15,9 @@ from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 logger = logging.getLogger(__name__)
 
 
+_KNOWN_TOP_LEVEL_KEYS = frozenset({"violations", "unconnected_items", "schematic_parity"})
+
+
 def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
     """Parse a kicad-cli ``pcb drc --format json`` report into DRC result fields.
 
@@ -23,21 +26,37 @@ def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
     ALL THREE violation arrays kicad-cli emits — clearance/rule ``violations``,
     ``unconnected_items`` and ``schematic_parity`` — so a board with unrouted
     nets or schematic-parity errors is NOT reported as clean (review finding
-    h-drc-arrays; the old code read only ``violations``). A genuinely unknown
-    future top-level key still yields zero, by design.
+    h-drc-arrays; the old code read only ``violations``).
+
+    If NONE of the three known top-level keys are present but the report is
+    non-empty, that's a strong signal kicad-cli renamed its schema (the exact
+    failure mode that would otherwise silently report total_violations=0,
+    i.e. a dirty board reported clean) — this is flagged via
+    ``schema_unrecognized`` rather than silently returning zero.
     """
     violations = report.get("violations", [])
     unconnected = report.get("unconnected_items", [])
     parity = report.get("schematic_parity", [])
+    schema_unrecognized = bool(report) and not (_KNOWN_TOP_LEVEL_KEYS & report.keys())
+    if schema_unrecognized:
+        logger.warning(
+            "kicad-cli DRC report has none of the expected top-level keys %s "
+            "(got %s) — total_violations will be reported as 0, which may be "
+            "wrong rather than a genuinely clean board",
+            sorted(_KNOWN_TOP_LEVEL_KEYS), sorted(report.keys()),
+        )
 
-    # Categorize rule violations by rule_id (stable across versions) with
-    # type/message fallback; the other two arrays are counted as their own kinds.
+    # Categorize rule violations by type (the field real kicad-cli 10.x JSON
+    # actually emits, confirmed against live `kicad-cli pcb drc` output on
+    # two demo boards); rule_id/message are kept as legacy/defensive fallbacks
+    # only — verification found neither key present in real kicad-cli output,
+    # where the human-readable text field is called `description`, not `message`.
     categories: Dict[str, int] = {}
     for violation in violations:
         key = (
-            violation.get("rule_id")
-            or violation.get("type")
-            or violation.get("message", "Unknown")
+            violation.get("type")
+            or violation.get("rule_id")
+            or violation.get("description", "Unknown")
         )
         categories[key] = categories.get(key, 0) + 1
     if unconnected:
@@ -45,7 +64,7 @@ def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
     if parity:
         categories["schematic_parity"] = len(parity)
 
-    return {
+    result = {
         "total_violations": len(violations) + len(unconnected) + len(parity),
         "violation_categories": categories,
         "violations": violations,
@@ -54,6 +73,9 @@ def parse_drc_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "unconnected_count": len(unconnected),
         "parity_count": len(parity),
     }
+    if schema_unrecognized:
+        result["schema_unrecognized"] = True
+    return result
 
 
 async def run_drc_via_cli(

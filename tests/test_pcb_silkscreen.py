@@ -79,6 +79,23 @@ class TestAddText:
         assert params["thickness_mm"] == 0.2
         assert params["rotation_deg"] == 45
 
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_no_layer_arg_defaults_to_silkscreen_not_copper(self, mock_run, pcb_server, pcb_file):
+        """Regression: the pcb() router's shared `layer` parameter (used by
+        place_footprint/add_trace/add_zone, where "F.Cu" is the sensible
+        default) used to be passed unconditionally into add_text, silently
+        overriding _op_add_text's own "F.SilkS" default -- add_text(...) with
+        no layer arg placed text on COPPER instead of silkscreen. Asserts the
+        ACTUAL outgoing params, not just the mocked return value (the router
+        default previously matched the mock and this exact bug still passed
+        test_adds_text above)."""
+        mock_run.return_value = {"status": "ok", "text": "Rev 1.0",
+                                  "x_mm": 0, "y_mm": 0, "layer": "F.SilkS"}
+        fn = _get_pcb_fn(pcb_server)
+        fn("add_text", pcb_path=pcb_file, text="Rev 1.0", x_mm=10, y_mm=20)
+        params = mock_run.call_args[1]["params"]
+        assert params["layer"] == "F.SilkS"
+
 
 # -- list_silkscreen tests ---------------------------------------------------
 
@@ -254,3 +271,27 @@ class TestEditText:
         result = fn("edit_text", pcb_path=pcb_file,
                     text="Rev 1.0", new_text="Rev 2.0")
         assert result["status"] == "ok"
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_no_layer_arg_leaves_layer_unchanged_not_copper(self, mock_run, pcb_server, pcb_file):
+        """Regression: same router seam as add_text -- the shared `layer`
+        parameter used to default to "F.Cu" and get passed unconditionally,
+        so edit_text(...) with no layer arg would silently MOVE existing
+        silkscreen text onto copper. _op_edit_text's own contract is
+        layer=None means "leave unchanged"; the router must actually deliver
+        None when the caller doesn't specify a layer."""
+        mock_run.return_value = {"status": "ok", "old_text": "Rev 1.0",
+                                  "new_text": "Rev 2.0", "items_updated": 1}
+        fn = _get_pcb_fn(pcb_server)
+        fn("edit_text", pcb_path=pcb_file, text="Rev 1.0", new_text="Rev 2.0")
+        params = mock_run.call_args[1]["params"]
+        assert params["layer"] is None
+
+    @patch("kicad_mcp.tools.pcb_silkscreen.run_pcbnew_script")
+    def test_explicit_layer_still_forwarded(self, mock_run, pcb_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "old_text": "Rev 1.0",
+                                  "new_text": "Rev 1.0", "items_updated": 1}
+        fn = _get_pcb_fn(pcb_server)
+        fn("edit_text", pcb_path=pcb_file, text="Rev 1.0", layer="B.SilkS")
+        params = mock_run.call_args[1]["params"]
+        assert params["layer"] == "B.SilkS"
