@@ -153,3 +153,145 @@ class TestGerbersStaleLeftoverFiles:
             create_zip=False,
         ))
         assert "ignored_stale_files" not in result
+
+
+class TestGerbersFileClassification:
+    """Regression: the prior binary split ("not drill = gerber") put ANY
+    unrecognized extension into the gerber bucket silently -- a stray
+    .log/.rpt/.txt file kicad-cli or a future version might emit would be
+    reported as a "gerber" with no way to tell it apart from a real one."""
+
+    def test_unrecognized_extension_is_reported_separately(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({
+                "test-F_Cu.gbr": b"G04 real content*\n",
+                "test.log": b"kicad-cli diagnostic output",
+            }, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=False,
+        ))
+        assert result["status"] == "ok"
+        assert result["gerber_files"] == ["test-F_Cu.gbr"]
+        assert result["gerber_count"] == 1
+        assert result["other_files"] == ["test.log"]
+        assert result["total_files"] == 2
+
+    def test_no_other_files_key_when_all_recognized(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({"test-F_Cu.gbr": b"G04 real content*\n"}, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=False,
+        ))
+        assert "other_files" not in result
+
+    def test_drill_extensions_never_land_in_gerber_bucket(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({
+                "test.drl": b"M48\nT1C0.3\n%\n",
+                "test-F_Cu.gbr": b"G04 real content*\n",
+            }, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=False,
+        ))
+        assert result["drill_files"] == ["test.drl"]
+        assert result["gerber_files"] == ["test-F_Cu.gbr"]
+        assert "other_files" not in result
+
+
+class TestGerbersFilesystemErrors:
+    """Regression: os.makedirs/os.listdir/zipfile.ZipFile were unguarded --
+    an OSError (permission denied, disk full) would propagate uncaught
+    through the MCP tool call instead of the clean {"error": ...} dict
+    every other failure mode in this function returns."""
+
+    def test_makedirs_failure_returns_clean_error(self, mcp_server, pcb_path, monkeypatch):
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.os.makedirs",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("permission denied")),
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path,
+            output_dir="/some/dir", create_zip=False,
+        ))
+        assert "error" in result
+        assert "permission denied" in result["error"]
+
+    def test_listdir_failure_returns_clean_error(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({"test-F_Cu.gbr": b"G04 real content*\n"}, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.os.listdir",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("stale mount")),
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=False,
+        ))
+        assert "error" in result
+        assert "stale mount" in result["error"]
+
+    def test_zip_failure_reports_error_but_keeps_export_data(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({"test-F_Cu.gbr": b"G04 real content*\n"}, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+
+        class _FailingZipFile:
+            def __init__(self, *a, **k):
+                raise OSError("disk full")
+
+        monkeypatch.setattr("kicad_mcp.tools.export.zipfile.ZipFile", _FailingZipFile)
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=True,
+        ))
+        assert result["status"] == "error"
+        assert "disk full" in result["error"]
+        # The gerber files themselves were already written and reported --
+        # a zip failure must not hide that real export data exists on disk.
+        assert result["gerber_files"] == ["test-F_Cu.gbr"]

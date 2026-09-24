@@ -42,7 +42,10 @@ def _op_gerbers(
         pcb_dir = os.path.dirname(os.path.abspath(pcb_path))
         output_dir = os.path.join(pcb_dir, "gerbers")
 
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as e:
+        return {"error": f"Failed to create output directory {output_dir}: {e}"}
 
     # output_dir is reused across runs (exist_ok=True); a stale file left
     # over from a PREVIOUS export -- e.g. a different board's gerber that
@@ -112,7 +115,10 @@ def _op_gerbers(
     # output_dir is reused across runs (exist_ok=True above), so filter to
     # files this run actually wrote/touched -- a small tolerance covers
     # coarse filesystem mtime resolution (e.g. FAT32's 2s granularity).
-    all_paths = [os.path.join(output_dir, f) for f in os.listdir(output_dir)]
+    try:
+        all_paths = [os.path.join(output_dir, f) for f in os.listdir(output_dir)]
+    except OSError as e:
+        return {"error": f"Failed to list output directory {output_dir}: {e}"}
     all_files = sorted(
         p for p in all_paths
         if os.path.isfile(p) and os.path.getmtime(p) >= export_start_time - 1.0
@@ -124,8 +130,29 @@ def _op_gerbers(
     if stale_files:
         logger.warning("Ignoring %d stale file(s) in %s left over from a "
                         "previous export: %s", len(stale_files), output_dir, stale_files)
-    gerber_files = [f for f in all_files if not (f.endswith(".drl") or f.endswith(".xln"))]
-    drill_files = [f for f in all_files if f.endswith(".drl") or f.endswith(".xln")]
+
+    # Explicit allow-lists rather than "not drill = gerber": the prior binary
+    # split put ANY unrecognized extension (a stray .log/.txt/.rpt kicad-cli
+    # or a future version might emit) into the gerber bucket silently, with
+    # no way for a caller to tell "27 real gerbers" from "26 gerbers + 1
+    # unrelated file". Drill extensions listed first since drill files are
+    # never also gerber files.
+    _DRILL_EXTS = (".drl", ".xln")
+    _GERBER_EXTS = (
+        ".gbr", ".gtl", ".gbl", ".gto", ".gbo", ".gts", ".gbs",
+        ".gko", ".gm1", ".gm2", ".gbrjob",
+    )
+    drill_files = [f for f in all_files if f.endswith(_DRILL_EXTS)]
+    gerber_files = [f for f in all_files if f.endswith(_GERBER_EXTS)]
+    other_files = [
+        f for f in all_files
+        if not f.endswith(_DRILL_EXTS) and not f.endswith(_GERBER_EXTS)
+    ]
+    if other_files:
+        logger.warning(
+            "Export produced %d file(s) with an unrecognized extension, not "
+            "classified as gerber or drill: %s", len(other_files), other_files,
+        )
 
     if not all_files:
         return {"error": "No output files generated — PCB may be empty"}
@@ -151,15 +178,26 @@ def _op_gerbers(
     }
     if stale_files:
         result["ignored_stale_files"] = stale_files
+    if other_files:
+        result["other_files"] = [os.path.basename(f) for f in other_files]
 
     if create_zip:
         pcb_name = os.path.splitext(os.path.basename(pcb_path))[0]
         zip_path = os.path.join(
             os.path.dirname(output_dir), f"{pcb_name}-gerbers.zip"
         )
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in all_files:
-                zf.write(f, os.path.basename(f))
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in all_files:
+                    zf.write(f, os.path.basename(f))
+        except (OSError, zipfile.BadZipFile) as e:
+            # The individual gerber/drill files are already on disk and
+            # correctly reported above -- zipping is a convenience step, not
+            # the export itself, so a failure here (disk full, permission)
+            # must not look like the whole export failed nor silently
+            # produce a truncated/absent zip under status="ok".
+            return {**result, "status": "error",
+                    "error": f"Gerber files exported but ZIP creation failed: {e}"}
         result["zip_path"] = zip_path
         result["zip_size_bytes"] = os.path.getsize(zip_path)
 
