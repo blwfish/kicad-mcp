@@ -7,6 +7,7 @@ kicad-cli is mocked so tests run without KiCad installed.
 import asyncio
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -188,3 +189,57 @@ class TestGeneratePcbThumbnailErrors:
         ))
         assert isinstance(result, dict)
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Event-loop liveness — the blocking subprocess.run() call must not stall
+# other coroutines running concurrently on the same event loop.
+# ---------------------------------------------------------------------------
+
+class TestThumbnailDoesNotBlockEventLoop:
+    def test_other_coroutine_makes_progress_during_cli_call(
+        self, mcp_server, project_path, monkeypatch
+    ):
+        """A concurrent asyncio task should keep ticking while kicad-cli
+        'runs' (simulated with a blocking sleep). Before wrapping the
+        subprocess.run() call in asyncio.to_thread, that call ran on the
+        event loop thread itself and stalled every other coroutine for the
+        duration of the call."""
+        fn = get_tool_fn(mcp_server, "export")
+
+        def _slow_run(cmd, **kwargs):
+            time.sleep(0.3)
+            out_idx = cmd.index("--output") + 1
+            with open(cmd[out_idx], "wb") as f:
+                f.write(FAKE_SVG)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("kicad_mcp.tools.export.subprocess.run", _slow_run)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path",
+            lambda required=True: "/usr/bin/kicad-cli",
+        )
+
+        async def _run_both():
+            tick_count = 0
+
+            async def ticker():
+                nonlocal tick_count
+                while True:
+                    await asyncio.sleep(0.02)
+                    tick_count += 1
+
+            ticker_task = asyncio.create_task(ticker())
+            result = await fn(operation="thumbnail", ctx=None, project_path=project_path)
+            ticker_task.cancel()
+            return result, tick_count
+
+        result, tick_count = asyncio.run(_run_both())
+
+        assert result["status"] == "ok"
+        # A stalled loop would deliver ~0 ticks during the 0.3s CLI call;
+        # a responsive loop should deliver most of the ~15 expected ticks.
+        assert tick_count >= 5, (
+            f"event loop only ticked {tick_count} times during the CLI call "
+            "— subprocess.run() may be blocking the loop again"
+        )
