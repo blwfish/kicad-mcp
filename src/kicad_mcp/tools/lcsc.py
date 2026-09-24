@@ -135,7 +135,12 @@ def _row_to_resolved(
     price_raw = row.get("price") or "[]"
     try:
         price_tiers = json.loads(price_raw) if isinstance(price_raw, str) else price_raw
-    except Exception:
+    except json.JSONDecodeError:
+        # The only call inside this try is json.loads() (the isinstance
+        # check guards the non-str branch entirely) -- narrowed from a bare
+        # except, matching lcsc_db.py's _parse_price/_parse_attributes,
+        # which already catch this specific exception rather than
+        # Exception generally.
         price_tiers = []
 
     joints = row.get("joints")
