@@ -143,15 +143,42 @@ def test_collect_corpus_counts_read_errors(tmp_path, monkeypatch):
     _write(cfg)
     _write(tmp_path / "ok.cpp", "INMP441")
     _write(tmp_path / "bad.cpp", "INMP441")
-    orig = Path.read_text
+    orig = Path.read_bytes
 
     def flaky(self, *a, **k):
         if self.name == "bad.cpp":
             raise OSError("simulated unreadable file")
         return orig(self, *a, **k)
 
-    monkeypatch.setattr(Path, "read_text", flaky)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
     corpus = collect_corpus(str(cfg), "preprocessed config text")
     assert corpus.files_errored == 1
     names = {Path(e.file).name for e in corpus.entries}
     assert "ok.cpp" in names and "bad.cpp" not in names
+
+
+def test_collect_corpus_counts_encoding_errors(tmp_path):
+    """Regression: read_text(errors="replace") silently replaced invalid
+    UTF-8 bytes with U+FFFD, with no signal anywhere that corruption
+    happened -- a part name straddling a replaced byte could fail to match
+    with zero indication why. finding #55 of the 2026-09-23 full review."""
+    cfg = tmp_path / "config.h"
+    _write(cfg)
+    _write(tmp_path / "ok.cpp", "INMP441")
+    # 0xFF is not valid UTF-8 in any position.
+    (tmp_path / "bad_encoding.cpp").write_bytes(b"INMP441 \xff garbage\n")
+
+    corpus = collect_corpus(str(cfg), "preprocessed config text")
+    assert corpus.files_with_encoding_errors == 1
+    assert corpus.files_errored == 0  # the file WAS read, just imperfectly
+    # The file is still included (best-effort), not dropped.
+    names = {Path(e.file).name for e in corpus.entries}
+    assert "bad_encoding.cpp" in names
+
+
+def test_collect_corpus_no_encoding_error_for_clean_utf8(tmp_path):
+    cfg = tmp_path / "config.h"
+    _write(cfg)
+    _write(tmp_path / "ok.cpp", "INMP441")
+    corpus = collect_corpus(str(cfg), "preprocessed config text")
+    assert corpus.files_with_encoding_errors == 0
