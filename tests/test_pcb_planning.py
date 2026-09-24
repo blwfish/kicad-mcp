@@ -83,6 +83,19 @@ class TestEstimateBoardSize:
         assert params["routing_factor"] == 3.0
         assert len(params["footprints"]) == 1
 
+    @patch("kicad_mcp.tools.pcb_planning.run_pcbnew_script")
+    def test_runtime_error_returns_error_envelope_not_raises(self, mock_run, planning_server):
+        """finding #16 (Phase 1.5, 2026-09-23 full review): this call had no
+        try/except of its own -- run_pcbnew_script normalizes every
+        subprocess failure to RuntimeError (its documented contract), so
+        the exception escaped this tool call raw instead of the
+        {"error": ...} envelope every other failure path here returns."""
+        mock_run.side_effect = RuntimeError("pcbnew script failed (exit 1): boom")
+        fn = _get_tool_fn(planning_server, "estimate_board_size")
+        result = fn([{"library": "R", "footprint_name": "R_0805"}])   # must not raise
+        assert "error" in result
+        assert "boom" in result["error"]
+
 
 # -- suggest_placement tests -------------------------------------------------
 
@@ -112,3 +125,16 @@ class TestSuggestPlacement:
         assert result["status"] == "ok"
         assert len(result["suggestions"]) == 3
         assert result["suggestions"][0]["reference"] == "U1"
+
+    @patch("kicad_mcp.tools.pcb_planning.run_pcbnew_script")
+    def test_runtime_error_returns_error_envelope_not_raises(self, mock_run, planning_server, pcb_file):
+        """finding #16 (Phase 1.5, 2026-09-23 full review): this call had no
+        try/except of its own -- run_pcbnew_script normalizes every
+        subprocess failure to RuntimeError (its documented contract), so
+        the exception escaped this tool call raw instead of the
+        {"error": ...} envelope every other failure path here returns."""
+        mock_run.side_effect = RuntimeError("pcbnew script failed (exit 1): boom")
+        fn = _get_tool_fn(planning_server, "suggest_placement")
+        result = fn(pcb_file)   # must not raise
+        assert "error" in result
+        assert "boom" in result["error"]
