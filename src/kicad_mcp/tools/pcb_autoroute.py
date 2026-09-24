@@ -612,6 +612,14 @@ def _autoroute_worker(job_id: str, **kwargs: Any) -> None:
     boundary from _op_start.
     """
     pcb_path = kwargs["pcb_path"]
+    # Popped rather than forwarded: _run_full_autoroute below has no
+    # net_classes parameter -- net_classes is applied as a pre-step (it
+    # writes the sibling .kicad_pro's net_settings before the DSN export),
+    # matching how _op_run_locked (the synchronous path) treats it. Was
+    # entirely absent from _op_start/_autoroute_worker until finding #19 of
+    # the 2026-09-23 full review's Phase 1 pass -- a caller using
+    # operation="start" with net_classes got no error and no effect.
+    net_classes = kwargs.pop("net_classes", None)
     with pcb_write_lock(pcb_path) as acquired:
         if not acquired:
             with _autoroute_lock:
@@ -623,11 +631,22 @@ def _autoroute_worker(job_id: str, **kwargs: Any) -> None:
             return
 
         try:
+            net_class_results, _err = _apply_net_classes(pcb_path, net_classes)
+            if _err is not None:
+                with _autoroute_lock:
+                    job = _autoroute_jobs.get(job_id)
+                    if job:
+                        job["status"] = "error"
+                        job["result"] = _err
+                        job["elapsed"] = round(time.time() - job["started"], 1)
+                return
             # Match the synchronous `run` path: pre-flight placement check +
             # courtyard auto-fix before launching FreeRouter, so async routing
             # doesn't skip a correction `run` would have applied.
             preflight_info = _run_preflight(pcb_path)
             result = _run_full_autoroute(job_id=job_id, **kwargs)
+            if net_class_results:
+                result["net_classes_applied"] = net_class_results
             if preflight_info:
                 result["preflight"] = preflight_info
             with _autoroute_lock:
@@ -909,6 +928,112 @@ def _op_run(
             return {"error": str(exc)}
 
 
+def _apply_net_classes(
+    pcb_path: str, net_classes: Optional[Dict[str, Any]],
+) -> tuple[list, Optional[Dict[str, Any]]]:
+    """Write ``net_classes`` into the sibling .kicad_pro's net_settings, before
+    routing (so the DSN export includes them). Returns ``(net_class_results,
+    error)`` -- ``error`` is a ``{"error": ...}`` dict on failure, else None.
+
+    Single source of truth for BOTH the synchronous (`run`) and async
+    (`start`) autoroute paths -- previously only `_op_run_locked` (the
+    synchronous path) applied net_classes at all; `_op_start`/
+    `_autoroute_worker` (the async path) had no net_classes parameter
+    whatsoever, so a caller using `start` with net_classes got no error and
+    no effect. finding #19 of the 2026-09-23 full review's Phase 1 pass."""
+    net_class_results: list = []
+    if not net_classes:
+        return net_class_results, None
+
+    from kicad_mcp.tools.pcb_nets import _default_net_class
+    stem = os.path.splitext(pcb_path)[0]
+    pro_path = stem + ".kicad_pro"
+    if not os.path.exists(pro_path):
+        return net_class_results, {
+            "error": (
+                f"net_classes requires a .kicad_pro file at {pro_path}. "
+                "Create one or use set_net_class separately."
+            )
+        }
+
+    import json as _json
+
+    with open(pro_path, "r") as f:
+        project = _json.load(f)
+
+    if "net_settings" not in project:
+        project["net_settings"] = {
+            "classes": [_default_net_class()],
+            "meta": {"version": 4},
+            "net_colors": None,
+            "netclass_assignments": None,
+            "netclass_patterns": [],
+        }
+
+    ns = project["net_settings"]
+    classes = ns.get("classes", [])
+    _raw_assignments = ns.get("netclass_assignments")
+    assignments = _raw_assignments if _raw_assignments is not None else {}
+
+    _KNOWN_NET_CLASS_KEYS = frozenset({
+        "nets", "track_width_mm", "clearance_mm", "via_diameter_mm", "via_drill_mm",
+    })
+    for cls_name, cls_def in net_classes.items():
+        # A misspelled key (e.g. "trackWidthMm") used to be silently
+        # replaced by the hardcoded default below via .get(key, default)
+        # -- the caller's override had no effect and no signal it was
+        # ignored. Reject unknown keys instead of guessing what was meant.
+        unknown = sorted(set(cls_def) - _KNOWN_NET_CLASS_KEYS)
+        if unknown:
+            return net_class_results, {
+                "error": f"net_classes[{cls_name!r}] has unrecognized key(s) "
+                         f"{unknown}; valid keys: {sorted(_KNOWN_NET_CLASS_KEYS)}"
+            }
+        nets = cls_def.get("nets", [])
+        tw = cls_def.get("track_width_mm", 0.25)
+        cl = cls_def.get("clearance_mm", 0.2)
+        vd = cls_def.get("via_diameter_mm", 0.6)
+        vr = cls_def.get("via_drill_mm", 0.3)
+
+        # Find or create class
+        existing = None
+        for c in classes:
+            if c.get("name") == cls_name:
+                existing = c
+                break
+        if existing:
+            existing["track_width"] = tw
+            existing["clearance"] = cl
+            existing["via_diameter"] = vd
+            existing["via_drill"] = vr
+        else:
+            nc = _default_net_class()
+            nc["name"] = cls_name
+            nc["track_width"] = tw
+            nc["clearance"] = cl
+            nc["via_diameter"] = vd
+            nc["via_drill"] = vr
+            classes.append(nc)
+
+        for net_name in nets:
+            assignments[net_name] = cls_name
+
+        net_class_results.append({
+            "class": cls_name,
+            "track_width_mm": tw,
+            "nets_assigned": len(nets),
+        })
+
+    ns["classes"] = classes
+    ns["netclass_assignments"] = assignments
+
+    with open(pro_path, "w") as f:
+        _json.dump(project, f, indent=2)
+        f.write("\n")
+
+    return net_class_results, None
+
+
 def _op_run_locked(
     pcb_path: str,
     jar_path: str,
@@ -921,91 +1046,9 @@ def _op_run_locked(
     exactly "everything that touches pcb_path or its sibling .kicad_pro",
     not accidentally narrower or wider."""
     # Apply net classes before routing (so DSN export includes them)
-    net_class_results = []
-    if net_classes:
-        from kicad_mcp.tools.pcb_nets import _default_net_class
-        stem = os.path.splitext(pcb_path)[0]
-        pro_path = stem + ".kicad_pro"
-        if not os.path.exists(pro_path):
-            return {
-                "error": (
-                    f"net_classes requires a .kicad_pro file at {pro_path}. "
-                    "Create one or use set_net_class separately."
-                )
-            }
-
-        import json as _json
-
-        with open(pro_path, "r") as f:
-            project = _json.load(f)
-
-        if "net_settings" not in project:
-            project["net_settings"] = {
-                "classes": [_default_net_class()],
-                "meta": {"version": 4},
-                "net_colors": None,
-                "netclass_assignments": None,
-                "netclass_patterns": [],
-            }
-
-        ns = project["net_settings"]
-        classes = ns.get("classes", [])
-        _raw_assignments = ns.get("netclass_assignments")
-        assignments = _raw_assignments if _raw_assignments is not None else {}
-
-        _KNOWN_NET_CLASS_KEYS = frozenset({
-            "nets", "track_width_mm", "clearance_mm", "via_diameter_mm", "via_drill_mm",
-        })
-        for cls_name, cls_def in net_classes.items():
-            # A misspelled key (e.g. "trackWidthMm") used to be silently
-            # replaced by the hardcoded default below via .get(key, default)
-            # -- the caller's override had no effect and no signal it was
-            # ignored. Reject unknown keys instead of guessing what was meant.
-            unknown = sorted(set(cls_def) - _KNOWN_NET_CLASS_KEYS)
-            if unknown:
-                return {"error": f"net_classes[{cls_name!r}] has unrecognized key(s) "
-                                  f"{unknown}; valid keys: {sorted(_KNOWN_NET_CLASS_KEYS)}"}
-            nets = cls_def.get("nets", [])
-            tw = cls_def.get("track_width_mm", 0.25)
-            cl = cls_def.get("clearance_mm", 0.2)
-            vd = cls_def.get("via_diameter_mm", 0.6)
-            vr = cls_def.get("via_drill_mm", 0.3)
-
-            # Find or create class
-            existing = None
-            for c in classes:
-                if c.get("name") == cls_name:
-                    existing = c
-                    break
-            if existing:
-                existing["track_width"] = tw
-                existing["clearance"] = cl
-                existing["via_diameter"] = vd
-                existing["via_drill"] = vr
-            else:
-                nc = _default_net_class()
-                nc["name"] = cls_name
-                nc["track_width"] = tw
-                nc["clearance"] = cl
-                nc["via_diameter"] = vd
-                nc["via_drill"] = vr
-                classes.append(nc)
-
-            for net_name in nets:
-                assignments[net_name] = cls_name
-
-            net_class_results.append({
-                "class": cls_name,
-                "track_width_mm": tw,
-                "nets_assigned": len(nets),
-            })
-
-        ns["classes"] = classes
-        ns["netclass_assignments"] = assignments
-
-        with open(pro_path, "w") as f:
-            _json.dump(project, f, indent=2)
-            f.write("\n")
+    net_class_results, _err = _apply_net_classes(pcb_path, net_classes)
+    if _err is not None:
+        return _err
 
     # Pre-flight placement check — catch issues before spending time on FreeRouter
     preflight_info = _run_preflight(pcb_path)
@@ -1031,6 +1074,7 @@ def _op_start(
     freerouter_jar: str = "",
     passes: int = 1,
     remove_zones: bool = True,
+    net_classes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Start autorouting in the background. Returns a job_id immediately."""
     _pv_err = validate_project_path(pcb_path)
@@ -1091,6 +1135,7 @@ def _op_start(
             "java_path": java_path,
             "passes": passes,
             "remove_zones": remove_zones,
+            "net_classes": net_classes,
         },
         daemon=True,
     )
@@ -1276,6 +1321,7 @@ def register_pcb_autoroute_tools(mcp: FastMCP) -> None:
                 freerouter_jar=freerouter_jar,
                 passes=passes,
                 remove_zones=remove_zones,
+                net_classes=net_classes,
             )
         if operation == "poll":
             if job_id is None:
