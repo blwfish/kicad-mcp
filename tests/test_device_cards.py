@@ -148,6 +148,23 @@ def test_mcu_required_string_fields_are_type_checked(field, bad_value):
     assert errs and any(f"{field} must be a non-empty string" in e for e in errs)
 
 
+@pytest.mark.parametrize("board_match,ok", [
+    (["esp32dev"], True),
+    ([""], False),          # finding #113: an empty string IS a str, previously slipped through
+    (["  "], False),        # whitespace-only is equally useless
+    (["esp32dev", ""], False),
+])
+def test_mcu_board_match_entries_rejects_empty_strings(board_match, ok):
+    """board_match entries were only isinstance(str)-checked -- "" is a str,
+    so it silently passed despite matching nothing at resolve_mcu time.
+    finding #113 of the 2026-09-23 full review."""
+    card = dict(_GOOD_MCU, board_match=board_match)
+    errs = validate_mcu_card(card)
+    assert (errs == []) is ok
+    if not ok:
+        assert any("board_match" in e for e in errs)
+
+
 @pytest.mark.parametrize("strap,ok", [
     ({"pin_bits": ["A0"], "base": 0x20}, True),
     ({"pin_bits": [], "base": 0x20}, False),          # empty pin_bits

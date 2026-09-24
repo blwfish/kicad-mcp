@@ -365,8 +365,13 @@ def validate_mcu_card(card: dict[str, Any]) -> list[str]:
         if not isinstance(card[f], str) or not card[f].strip():
             errs.append(f"{where}: {f} must be a non-empty string (got {type(card[f]).__name__})")
     bm = card["board_match"]
-    if not isinstance(bm, list) or not bm or not all(isinstance(s, str) for s in bm):
-        errs.append(f"{where}: board_match must be a non-empty list of strings")
+    # entries were only isinstance(str)-checked -- an empty string "" IS a str,
+    # so board_match: [""] silently passed as a valid entry despite matching
+    # nothing (resolve_mcu compares against these via substring/equality).
+    # finding #113.
+    if (not isinstance(bm, list) or not bm
+            or not all(isinstance(s, str) and s.strip() for s in bm)):
+        errs.append(f"{where}: board_match must be a non-empty list of non-empty strings")
     if not isinstance(card["native_usb"], bool) or not isinstance(card["needs_3v3"], bool):
         errs.append(f"{where}: needs_3v3 and native_usb must be bools")
     # gpio_pin_prefix is optional, but when present it feeds an f-string in
