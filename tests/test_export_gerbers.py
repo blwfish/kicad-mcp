@@ -98,3 +98,58 @@ class TestGerbersZeroByteOutput:
         ))
         assert "error" in result
         assert result["empty_files"] == ["test-B_Cu.gbr"]
+
+
+class TestGerbersStaleLeftoverFiles:
+    """Regression: output_dir is reused across runs (os.makedirs(...,
+    exist_ok=True)), and the file-globbing comment assumed the directory
+    "is freshly created per export and contains only kicad-cli output" --
+    a stale file left over from a PREVIOUS export (e.g. a different
+    board's gerber that doesn't share a filename with anything this run
+    writes) was silently swept into the fab-package ZIP alongside this
+    run's real output."""
+
+    def test_stale_leftover_file_excluded_from_output(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        import time
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        # A leftover file from a previous, unrelated export run.
+        stale_path = os.path.join(output_dir, "old-board-F_Cu.gbr")
+        with open(stale_path, "wb") as f:
+            f.write(b"G04 stale content from a previous run*\n")
+        old_time = time.time() - 3600  # 1 hour old
+        os.utime(stale_path, (old_time, old_time))
+
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({"test-F_Cu.gbr": b"G04 fresh content*\n"}, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=False,
+        ))
+        assert result["status"] == "ok"
+        assert result["gerber_files"] == ["test-F_Cu.gbr"]
+        assert result["gerber_count"] == 1
+        assert result["ignored_stale_files"] == ["old-board-F_Cu.gbr"]
+
+    def test_no_stale_files_no_warning_key(self, mcp_server, pcb_path, tmp_path, monkeypatch):
+        output_dir = str(tmp_path / "gerbers")
+        os.makedirs(output_dir, exist_ok=True)
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.subprocess.run",
+            _mock_run_writing({"test-F_Cu.gbr": b"G04 fresh content*\n"}, output_dir),
+        )
+        monkeypatch.setattr(
+            "kicad_mcp.tools.export.get_kicad_cli_path", lambda required=True: "/usr/bin/kicad-cli"
+        )
+        fn = get_tool_fn(mcp_server, "export")
+        result = asyncio.run(fn(
+            operation="gerbers", ctx=None, pcb_path=pcb_path, output_dir=output_dir,
+            create_zip=False,
+        ))
+        assert "ignored_stale_files" not in result
