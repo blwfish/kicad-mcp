@@ -39,6 +39,59 @@ def test_address_corroboration_noted():
     assert any("corroborates" in r for r in reasons)
 
 
+def test_pin_type_corroboration_does_not_block_a_real_i2c_bus():
+    """Regression: adding pin_types corroboration must not regress the
+    existing clean-bus-is-high case when SDA/SCL carry plausible I2C
+    electrical types (input/bidirectional, as seen on a real KiCad 10
+    symbol -- Sensor_Motion:MPU-6050 has SCL=input, SDA=bidirectional)."""
+    card, conf, _ = _synth(
+        ["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x76,
+        pin_types={"SDA": "bidirectional", "SCL": "input", "VDD": "power_in", "GND": "power_in"},
+    )
+    assert conf == "high"
+
+
+def test_scl_typed_as_power_pin_is_flagged_not_high():
+    """Regression: role classification was 100% name-regex based -- a pin
+    named SCL is not itself proof of an I2C clock. A symbol where "SCL"
+    is electrically typed as a power pin is a real miswiring/misnaming red
+    flag that pin-name matching alone could never catch."""
+    card, conf, reasons = _synth(
+        ["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x76,
+        pin_types={"SDA": "bidirectional", "SCL": "power_in", "VDD": "power_in", "GND": "power_in"},
+    )
+    assert conf == "low"
+    assert any("SCL" in r and "misnamed" in r for r in reasons)
+
+
+def test_sda_typed_as_no_connect_is_flagged_not_high():
+    card, conf, reasons = _synth(
+        ["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x76,
+        pin_types={"SDA": "no_connect", "SCL": "input", "VDD": "power_in", "GND": "power_in"},
+    )
+    assert conf == "low"
+    assert any("SDA" in r for r in reasons)
+
+
+def test_pin_types_omitted_falls_back_to_name_only_unchanged():
+    """No pin_types passed at all (the historical call shape, still used by
+    any caller that hasn't been updated) must behave exactly as before --
+    this is purely additive corroboration, opt-in via an optional param."""
+    card, conf, _ = _synth(["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x76)
+    assert conf == "high"
+
+
+def test_pin_types_missing_entries_for_bus_pins_is_harmless():
+    """A caller that supplies pin_types for SOME pins but not the I2C bus
+    pins themselves (e.g. an incomplete extraction) must not spuriously
+    flag anything -- absence of type data is not itself suspicious."""
+    card, conf, _ = _synth(
+        ["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x76,
+        pin_types={"VDD": "power_in", "GND": "power_in"},
+    )
+    assert conf == "high"
+
+
 def test_no_bus_is_skip():
     card, conf, _ = _synth(["OUT", "VDD", "GND"])
     assert card is None and conf == "skip"
@@ -165,3 +218,49 @@ def test_top_level_symbol_names_filters_subsymbols():
       (symbol "BME280_0_0" ...)
     '''
     assert top_level_symbol_names(txt) == ["MPU-6050", "BME280"]
+
+
+# --- scripts/prefetch_cards.py::_pin_types (extraction, not synthesis logic) ---
+
+class _FakePinType:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakePin:
+    def __init__(self, name, pin_type_value):
+        self.name = name
+        self.pin_type = _FakePinType(pin_type_value)
+
+
+class _FakePinSymbol:
+    def __init__(self, pins):
+        self.pins = pins
+
+
+def test_pin_types_extracts_electrical_type_by_name():
+    import sys
+    sys.path.insert(0, "scripts")
+    from prefetch_cards import _pin_types
+    sym = _FakePinSymbol([
+        _FakePin("SDA", "bidirectional"),
+        _FakePin("SCL", "input"),
+        _FakePin("VDD", "power_in"),
+    ])
+    assert _pin_types(sym) == {"SDA": "bidirectional", "SCL": "input", "VDD": "power_in"}
+
+
+def test_pin_types_empty_when_no_pins():
+    import sys
+    sys.path.insert(0, "scripts")
+    from prefetch_cards import _pin_types
+    assert _pin_types(_FakePinSymbol([])) == {}
+    assert _pin_types(object()) == {}
+
+
+def test_pin_types_skips_unnamed_pins():
+    import sys
+    sys.path.insert(0, "scripts")
+    from prefetch_cards import _pin_types
+    sym = _FakePinSymbol([_FakePin("", "passive"), _FakePin("SDA", "bidirectional")])
+    assert _pin_types(sym) == {"SDA": "bidirectional"}
