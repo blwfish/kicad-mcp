@@ -97,6 +97,7 @@ class SchematicParser:
         self.power_symbols: list[dict] = []
         self.hierarchical_labels: list[dict] = []
         self.global_labels: list[dict] = []
+        self.malformed_components_skipped: int = 0
 
         # Netlist information
         self.nets: dict[str, list] = defaultdict(list)
@@ -148,6 +149,7 @@ class SchematicParser:
             "power_symbols": self.power_symbols,
             "component_count": len(self.component_info),
             "net_count": len(self.nets),
+            "malformed_components_skipped": self.malformed_components_skipped,
         }
 
         print(
@@ -239,6 +241,11 @@ class SchematicParser:
             self.components.append(component)
             self.component_info[ref] = component
 
+        # Stored under the same key the XML parser path (_parse_kicadxml)
+        # uses for the identical failure class -- this used to be logged
+        # here but never surfaced in parse()'s result dict at all, an
+        # asymmetry between the two parser paths for the same signal.
+        self.malformed_components_skipped = skipped_no_reference
         if skipped_no_reference:
             logger.info(
                 "Skipped %d symbol blocks with no Reference property "

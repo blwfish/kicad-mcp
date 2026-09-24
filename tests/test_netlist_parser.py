@@ -93,6 +93,38 @@ class TestHierarchicalLabelEscapedQuote:
         assert p.hierarchical_labels[0]["text"] == "RESET"
 
 
+class TestMalformedComponentsSkippedSurfaced:
+    """Regression: _extract_components counted+logged symbols with no
+    Reference property (library-definition blocks inside (lib_symbols ...))
+    but never surfaced the count in parse()'s result dict at all -- the
+    sibling XML/cli parser path (_parse_kicadxml) already returns
+    malformed_components_skipped unconditionally (explicitly documented as
+    "uniform shape across paths"), so this was an asymmetry between the two
+    parser paths for the identical failure signal."""
+
+    def test_skipped_count_present_and_zero_when_all_valid(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = (
+            '(symbol (lib_id "Device:R") '
+            '(property "Reference" "R1") (at 10 20 0)'
+            ')\n'
+        )
+        result = p.parse()
+        assert result["malformed_components_skipped"] == 0
+
+    def test_skipped_count_reflects_library_definition_blocks(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = (
+            '(symbol (lib_id "Device:R") '
+            '(property "Reference" "R1") (at 10 20 0)'
+            ')\n'
+            '(symbol (lib_id "Device:C") (at 30 40 0))\n'  # no Reference property
+        )
+        result = p.parse()
+        assert result["malformed_components_skipped"] == 1
+        assert result["component_count"] == 1
+
+
 class TestPowerSymbolTypeEscapedQuote:
     def test_power_symbol_type_with_escaped_quote_not_truncated(self, tmp_path):
         p = _parser(tmp_path)
