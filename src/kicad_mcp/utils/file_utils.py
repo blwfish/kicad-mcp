@@ -58,7 +58,20 @@ def get_project_files(project_path: str) -> dict[str, str]:
                     if not file_type:
                         file_type = ext[1:]
 
-                    files[file_type] = os.path.join(project_dir, file)
+                    new_path = os.path.join(project_dir, file)
+                    # The derived key strips separators and everything after
+                    # the first dot, so two DIFFERENT files -- different
+                    # separator ("-" vs "_"), different extension, or a
+                    # KICAD_EXTENSIONS entry from the loop above -- can
+                    # collide on the same file_type and silently overwrite
+                    # each other with no signal one was dropped.
+                    if file_type in files and files[file_type] != new_path:
+                        logger.warning(
+                            "get_project_files: %r collides with existing "
+                            "file_type %r (%s) -- overwriting with %s",
+                            file, file_type, files[file_type], new_path,
+                        )
+                    files[file_type] = new_path
     except OSError as e:
         # Was a bare `pass` with no signal at all -- "directory has no data
         # files" was indistinguishable from "the listdir/scan failed
