@@ -427,12 +427,17 @@ def _component_net_side(
 
 def _looks_like_crystal(ref: str, components: dict[str, Any]) -> bool:
     """Crystal detection: ref starts with Y or X (KiCad convention) OR
-    the component's lib_id mentions Crystal."""
+    the component's lib_id mentions Crystal/XTAL.
+
+    Regression: pattern_recognition.py's identify_oscillators checks BOTH
+    "CRYSTAL" and "XTAL" in the lib_id; this only checked "crystal",
+    missing lib_ids like "Device:XTAL_HC49" that don't also start with a
+    Y/X reference designator."""
     if _ref_starts_with(ref, _CRYSTAL_PREFIXES):
         return True
     comp = components.get(ref) or {}
     lib_id = (comp.get("lib_id") or "").lower()
-    return "crystal" in lib_id
+    return "crystal" in lib_id or "xtal" in lib_id
 
 
 def _is_power_symbol(ref: str, components: dict[str, Any]) -> bool:
@@ -449,14 +454,18 @@ def _power_symbol_kind(ref: str, components: dict[str, Any]) -> str:
     """Return 'ground' for GND-family symbols, 'rail' for everything else.
 
     Heuristic: the power symbol's value or lib_id name. GND/GNDA/GNDD/
-    AGND/DGND/EARTH all classify as ground.
+    AGND/DGND/EARTH all classify as ground via the "GND"/"EARTH" substring
+    checks below. VSS is also a ground-family name (pattern_recognition.py's
+    own ground-net keyword list is ["GND", "AGND", "DGND", "VSS"]) but
+    doesn't contain "GND" as a substring, so it was missed here -- a
+    genuine drift between the two classifiers for this one keyword.
     """
     comp = components.get(ref) or {}
     value = (comp.get("value") or "").upper()
     lib_id = (comp.get("lib_id") or "").lower()
     name = lib_id.split(":")[-1].upper() if ":" in lib_id else ""
     text = f"{value} {name}"
-    if "GND" in text or "EARTH" in text:
+    if "GND" in text or "EARTH" in text or "VSS" in text:
         return "ground"
     return "rail"
 
