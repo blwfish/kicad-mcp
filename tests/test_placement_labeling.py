@@ -176,6 +176,30 @@ class TestPatternRecognitionLayer:
         assert labels["c0"].label == LABEL_UNCLASSIFIED
         assert labels["c0"].label_source == LABEL_SOURCE_TOPOLOGY
 
+    def test_plain_crystal_labeled_crystal_not_oscillator(self):
+        """Regression: identify_oscillators emits type="crystal_oscillator"
+        for an actual crystal (ref Y/X or lib_id CRYSTAL/XTAL), but
+        _PATTERN_TO_LABEL had no ("identify_oscillators", "crystal_oscillator")
+        entry -- only the bare (name, None) fallback to LABEL_OSCILLATOR. A
+        plain crystal with no other data (no LCSC hint) was silently
+        mislabeled "oscillator" instead of "crystal", contradicting this
+        module's own documented pattern<->label parity contract."""
+        comps = [_comp("Y1", value="16MHz")]
+        nl = _netlist(comps)
+        labels, _ = label_clusters({"c0": ["Y1"]}, nl)
+        assert labels["c0"].label == LABEL_CRYSTAL
+        assert labels["c0"].label_source == LABEL_SOURCE_PATTERN
+
+    def test_oscillator_ic_still_labeled_oscillator(self):
+        """Non-crystal oscillator ICs must still fall through to the
+        generic (name, None) -> LABEL_OSCILLATOR mapping, unaffected by the
+        new crystal_oscillator entry."""
+        comps = [_comp("U1", value="OSC-16MHz")]
+        nl = _netlist(comps)
+        labels, _ = label_clusters({"c0": ["U1"]}, nl)
+        assert labels["c0"].label == LABEL_OSCILLATOR
+        assert labels["c0"].label_source == LABEL_SOURCE_PATTERN
+
 
 # ---------------------------------------------------------------------------
 # Layer 3 — resolved-part labeling

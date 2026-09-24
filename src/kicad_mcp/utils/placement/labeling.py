@@ -146,6 +146,15 @@ _PATTERN_TO_LABEL: dict[tuple[str, str | None], str] = {
     ("identify_power_supplies", "switching_regulator"): LABEL_SWITCHING_REGULATOR,
     ("identify_amplifiers", None): LABEL_OP_AMP,
     ("identify_filters", None): LABEL_FILTER,
+    # identify_oscillators emits type="crystal_oscillator" for an actual
+    # crystal (LABEL_CRYSTAL is a distinct, defined label in this vocabulary
+    # and IS reachable via the Layer-3 description-regex path below) vs
+    # "oscillator_ic"/"rc_oscillator" for everything else. Without this
+    # entry, a plain crystal with no other data fell through to the bare
+    # (name, None) fallback and was mislabeled "oscillator" instead of
+    # "crystal" -- must be kept in sync with pattern_recognition's mappings
+    # per this module's own documented contract (see class docstring).
+    ("identify_oscillators", "crystal_oscillator"): LABEL_CRYSTAL,
     ("identify_oscillators", None): LABEL_OSCILLATOR,
     ("identify_digital_interfaces", None): LABEL_DIGITAL_INTERFACE,
     ("identify_sensor_interfaces", None): LABEL_SENSOR,

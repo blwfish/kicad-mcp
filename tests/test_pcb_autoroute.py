@@ -321,6 +321,50 @@ class TestAutorouteUnknownOperation:
         assert "run|start|poll|cancel|list_jobs" in result["error"]
 
 
+class TestAutorouteNetClassesValidation:
+    """Regression: net_classes[cls_name] fields (nets/track_width_mm/
+    clearance_mm/via_diameter_mm/via_drill_mm) were read via
+    cls_def.get(key, default) with no validation of the key set -- a
+    misspelled key (e.g. "trackWidthMm") was silently replaced by the
+    hardcoded default, with no signal the caller's override had no effect."""
+
+    @pytest.fixture
+    def project_pair(self, tmp_path):
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text('{"net_settings": {"classes": [], "meta": {"version": 4}}}')
+        return str(pcb)
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_preflight", return_value=None)
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouting.jar")
+    def test_misspelled_key_rejected_not_silently_defaulted(
+        self, mock_jar, mock_java, mock_preflight, mock_full_route, route_server, project_pair,
+    ):
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("run", pcb_path=project_pair,
+                    net_classes={"Signal": {"trackWidthMm": 0.3}})
+        assert "error" in result
+        assert "trackWidthMm" in result["error"]
+        mock_full_route.assert_not_called()  # rejected before routing even starts
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_preflight", return_value=None)
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouting.jar")
+    def test_correct_keys_still_accepted(
+        self, mock_jar, mock_java, mock_preflight, mock_full_route, route_server, project_pair,
+    ):
+        mock_full_route.return_value = {"tracks_after": 0, "vias_after": 0, "unconnected_after_routing": 0}
+        fn = _get_tool_fn(route_server, "autoroute")
+        result = fn("run", pcb_path=project_pair,
+                    net_classes={"Signal": {"track_width_mm": 0.3, "clearance_mm": 0.15}})
+        assert "error" not in result or "trackWidthMm" not in result.get("error", "")
+        mock_full_route.assert_called_once()
+
+
 # --- h-autoroute-nudge: the shared NUDGE_PLACEMENT_HELPER, exec'd in-process ---
 # The autoroute and DRC-fix placement steps both consume one helper now. We exec
 # the real helper string against a duck-typed pcbnew board so its containment +
