@@ -383,6 +383,29 @@ def test_pin_refs_keep_falsy_but_valid_pin_drop_empty():
     assert "" not in mrefs              # empty uart_tx_pin dropped
 
 
+def test_pin_refs_filter_explicit_none_not_the_stringified_word():
+    """finding #8 (Phase 1, 2026-09-23 full review): `str(x)` was applied
+    per-element BEFORE the final falsy filter, so an explicit YAML null
+    (roles: {SDA: null}) stringified to "None" -- a non-empty, truthy
+    string that survived the filter as a phantom pin reference. Must not
+    be confused with the `0`-survives case above: None is never a valid
+    pin identifier, 0 legitimately can be."""
+    from kicad_mcp.utils.firmware.cards import mcu_pin_refs, peripheral_pin_refs
+    prefs = peripheral_pin_refs({"roles": {"SDA": None, "SCL": "4"},
+                                 "supply_pins": [None, "9"]})
+    assert "None" not in prefs
+    assert prefs == ["4", "9"]
+
+    # en_pin/boot_pin are OPTIONAL and never type-checked by
+    # validate_mcu_card when present -- an explicit null reaches
+    # mcu_pin_refs unfiltered by any earlier validation gate.
+    mrefs = mcu_pin_refs({"supply_pin": "VDD", "ground_pin": "GND",
+                          "en_pin": None, "boot_pin": "IO0",
+                          "uart_rx_pin": "RX", "uart_tx_pin": "TX"})
+    assert "None" not in mrefs
+    assert set(mrefs) == {"VDD", "GND", "IO0", "RX", "TX"}
+
+
 def test_recognized_part_names_maps_raw_to_canonical():
     peripherals = {
         "INMP441": dict(_GOOD_PERIPHERAL, type="INMP441"),
