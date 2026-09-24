@@ -401,6 +401,117 @@ class TestAutorouteNetClassesValidation:
         mock_full_route.assert_called_once()
 
 
+class TestApplyNetClasses:
+    """Direct unit tests of the extracted _apply_net_classes helper -- the
+    single source of truth both the synchronous (run) and async (start)
+    autoroute paths now call. finding #19 (Phase 1, 2026-09-23 full review):
+    operation="start" had no net_classes parameter at all, so a caller
+    using it with net_classes got no error and no effect -- entirely
+    silent, unlike a misspelled key (handled) or a missing .kicad_pro."""
+
+    @pytest.fixture
+    def pro_pair(self, tmp_path):
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text('{"net_settings": {"classes": [], "meta": {"version": 4}}}')
+        return str(pcb), str(pro)
+
+    def test_no_net_classes_is_a_noop(self, pro_pair):
+        from kicad_mcp.tools.pcb_autoroute import _apply_net_classes
+        pcb, _ = pro_pair
+        results, err = _apply_net_classes(pcb, None)
+        assert results == [] and err is None
+
+    def test_missing_kicad_pro_is_an_error(self, tmp_path):
+        from kicad_mcp.tools.pcb_autoroute import _apply_net_classes
+        pcb = tmp_path / "nopro.kicad_pcb"
+        pcb.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
+        results, err = _apply_net_classes(str(pcb), {"Signal": {"track_width_mm": 0.3}})
+        assert err is not None and "kicad_pro" in err["error"]
+
+    def test_writes_class_into_kicad_pro(self, pro_pair):
+        import json
+        from kicad_mcp.tools.pcb_autoroute import _apply_net_classes
+        pcb, pro = pro_pair
+        results, err = _apply_net_classes(
+            pcb, {"Signal": {"track_width_mm": 0.3, "nets": ["CLK"]}},
+        )
+        assert err is None
+        assert results == [{"class": "Signal", "track_width_mm": 0.3, "nets_assigned": 1}]
+        project = json.loads(open(pro).read())
+        assert project["net_settings"]["netclass_assignments"] == {"CLK": "Signal"}
+
+
+class TestAutorouteStartWithNetClasses:
+    """End-to-end: operation="start" must apply net_classes the same way
+    operation="run" does. Runs the background worker synchronously (a fake
+    Thread whose start() calls the target in-process) so the job's final
+    result can be asserted without a real poll loop."""
+
+    @pytest.fixture
+    def project_pair(self, tmp_path):
+        pcb = tmp_path / "test.kicad_pcb"
+        pcb.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text('{"net_settings": {"classes": [], "meta": {"version": 4}}}')
+        return str(pcb)
+
+    class _SyncThread:
+        """threading.Thread stand-in that runs the target immediately,
+        in-process, on .start() -- avoids a real poll loop in the test."""
+        def __init__(self, target, kwargs, daemon=True):
+            self._target, self._kwargs = target, kwargs
+
+        def start(self):
+            self._target(**self._kwargs)
+
+    @patch("kicad_mcp.tools.pcb_autoroute.threading.Thread")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_preflight", return_value=None)
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouting.jar")
+    def test_start_applies_net_classes(
+        self, mock_jar, mock_java, mock_preflight, mock_full_route, mock_thread,
+        route_server, project_pair,
+    ):
+        import json
+        mock_thread.side_effect = self._SyncThread
+        mock_full_route.return_value = {"tracks_after": 0, "vias_after": 0,
+                                        "unconnected_after_routing": 0}
+        fn = _get_tool_fn(route_server, "autoroute")
+        start_result = fn("start", pcb_path=project_pair,
+                          net_classes={"Signal": {"track_width_mm": 0.3, "nets": ["CLK"]}})
+        assert "job_id" in start_result
+        job = _autoroute_jobs[start_result["job_id"]]
+        assert job["status"] == "done", job
+        assert job["result"]["net_classes_applied"] == [
+            {"class": "Signal", "track_width_mm": 0.3, "nets_assigned": 1},
+        ]
+        pro_path = project_pair.replace(".kicad_pcb", ".kicad_pro")
+        project = json.loads(open(pro_path).read())
+        assert project["net_settings"]["netclass_assignments"] == {"CLK": "Signal"}
+
+    @patch("kicad_mcp.tools.pcb_autoroute.threading.Thread")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_preflight", return_value=None)
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouting.jar")
+    def test_start_rejects_misspelled_net_class_key(
+        self, mock_jar, mock_java, mock_preflight, mock_full_route, mock_thread,
+        route_server, project_pair,
+    ):
+        mock_thread.side_effect = self._SyncThread
+        fn = _get_tool_fn(route_server, "autoroute")
+        start_result = fn("start", pcb_path=project_pair,
+                          net_classes={"Signal": {"trackWidthMm": 0.3}})
+        assert "job_id" in start_result
+        job = _autoroute_jobs[start_result["job_id"]]
+        assert job["status"] == "error", job
+        assert "trackWidthMm" in job["result"]["error"]
+        mock_full_route.assert_not_called()   # rejected before routing even starts
+
+
 # --- h-autoroute-nudge: the shared NUDGE_PLACEMENT_HELPER, exec'd in-process ---
 # The autoroute and DRC-fix placement steps both consume one helper now. We exec
 # the real helper string against a duck-typed pcbnew board so its containment +
