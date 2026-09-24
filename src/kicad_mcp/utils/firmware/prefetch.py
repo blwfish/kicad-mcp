@@ -71,6 +71,13 @@ def symbol_footprint(symbol: Any) -> Optional[str]:
     return None
 
 
+# Electrical pin types that are unambiguously incompatible with an I2C
+# signal line -- a pin named SDA/SCL wired as a power pin is a clear
+# red flag, not a plausible I2C symbol (regardless of how loosely other
+# symbol authors may use the other electrical types for I2C pins).
+_IMPLAUSIBLE_I2C_PIN_TYPES = frozenset({"power_in", "power_out", "no_connect"})
+
+
 def synthesize_i2c_card(
     *,
     symbol_name: str,
@@ -79,6 +86,7 @@ def synthesize_i2c_card(
     footprint: Optional[str] = None,
     address: Optional[int] = None,
     unit_count: int = 1,
+    pin_types: Optional[dict[str, str]] = None,
 ) -> tuple[Optional[dict[str, Any]], str, list[str]]:
     """Try to synthesize an I2C device card from a symbol's pin NAMES.
 
@@ -87,12 +95,24 @@ def synthesize_i2c_card(
     caller's best-effort extraction (see ``symbol_footprint``) and left as
     ``TODO:confirm`` only when the symbol genuinely has none assigned — the
     card is still a *draft for review*, not a shipped fact, regardless.
+
+    ``pin_types`` (pin name -> KiCad electrical pin type, e.g. "input",
+    "bidirectional") is optional best-effort corroboration: role
+    classification was previously 100% name-regex based (a pin named SCL is
+    not itself proof of an I2C clock), so when available this catches the
+    unambiguous case of a "SDA"/"SCL"-named pin actually wired as a power
+    pin -- a real miswiring/misnaming, not just a stylistic type choice.
     """
     names = {n.strip() for n in pin_names if n and n.strip()}
     reasons: list[str] = []
 
     if not set(_I2C_ROLES) <= names:
         return None, "skip", ["no clean I2C bus signature (need SDA + SCL by name)"]
+
+    implausible_bus_pins = sorted(
+        role for role in _I2C_ROLES
+        if pin_types and (pin_types.get(role) or "").lower() in _IMPLAUSIBLE_I2C_PIN_TYPES
+    )
 
     supply = sorted(n for n in names if is_supply_pin(n))
     ground = sorted(n for n in names if is_ground_pin(n))
@@ -112,7 +132,10 @@ def synthesize_i2c_card(
                        + (" (corroborates symbol)" if corroborated else ""))
 
     confidence = "low"
-    if not supply or not ground:
+    if implausible_bus_pins:
+        reasons.append(f"flagged: {implausible_bus_pins} named like an I2C bus pin "
+                       "but electrically typed as power/no-connect — likely misnamed")
+    elif not supply or not ground:
         reasons.append("flagged: symbol lacks an identifiable supply/ground pin")
     elif unit_count > 1:
         reasons.append("flagged: multi-unit symbol (ambiguous pin lookup)")
