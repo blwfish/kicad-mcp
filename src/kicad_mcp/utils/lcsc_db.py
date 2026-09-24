@@ -583,8 +583,16 @@ def build_db_from_jsonl(
         # First line is the column map
         try:
             col_map: dict[str, int] = json.loads(lines[0])
-        except Exception:
+        except json.JSONDecodeError:
             logger.warning("Shard %s: bad header line — skipping", fname)
+            continue
+        if not isinstance(col_map, dict):
+            # Valid JSON but not an object (e.g. a bare list or number) --
+            # json.loads() alone wouldn't have raised for this, and the
+            # required.issubset(col_map.keys()) check just below would
+            # crash with AttributeError instead of skipping cleanly like
+            # every other malformed-shard case in this loop does.
+            logger.warning("Shard %s: header line is not a JSON object — skipping", fname)
             continue
 
         required = {"lcsc", "mfr", "joints", "description", "price", "attributes", "stock"}
@@ -648,7 +656,17 @@ def _read_meta(meta_path: Path | None = None) -> dict[str, Any]:
     try:
         result: dict[str, Any] = json.loads(meta_path.read_text())
         return result
-    except Exception:
+    except FileNotFoundError:
+        # The expected, normal case: no snapshot has been built yet.
+        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        # A REAL problem (permission denied, disk error, a corrupted meta
+        # file) used to be swallowed identically to "no snapshot exists" --
+        # every caller (get_snapshot_age_days/get_snapshot_date) treats {}
+        # as "unknown" either way, so the safe fallback is unchanged, but an
+        # operator debugging "why does this always say no snapshot" had no
+        # signal to distinguish the two cases.
+        logger.warning("Failed to read jlcparts metadata at %s: %s", meta_path, e)
         return {}
 
 
@@ -862,6 +880,23 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
                 "qTo": p.get("endNumber", p.get("endQuantity", p.get("qTo"))),
                 "price": price_val,
             })
+    # finding #29 of the 2026-09-23 full review: this only distinguishes
+    # basic/extended, never "preferred" -- unlike _tier_from_attributes
+    # (the local-DB/jlcparts-shard path), which also checks a "JLCPCB Best
+    # Choice Part"/"Preferred Part" attribute. Verified against 9 real
+    # captured getComponentDetail responses spanning resistors, capacitors,
+    # an op-amp, a voltage regulator, an RP2040, and a MOSFET:
+    # componentLibraryType took only two values across all of them ("base"
+    # and "expand"), never anything resembling "preferred", and none of the
+    # samples' `attributes` lists (a different vocabulary -- attribute_name_en/
+    # attribute_value_name -- than the jlcparts LUT's "JLCPCB Best Choice
+    # Part"/"Preferred Part" keys) carried any such signal either. This
+    # live endpoint appears not to expose the preferred/basic/extended
+    # three-way distinction jlcparts' bulk data does -- same class of
+    # data-source limitation as solderJoint below, not a fixable wrong
+    # guess. A live-resolved part can therefore never come back "preferred"
+    # from this function; that asymmetry with the local-DB path is real but
+    # not something guessing a field name here would fix.
     tier = "basic" if data.get("componentLibraryType") == "base" else "extended"
     # solderJoint comes straight from the live API with no type guarantee --
     # unlike the local-DB path (jlcparts's own JSONL shards, where `joints`
