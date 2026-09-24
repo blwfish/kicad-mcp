@@ -157,3 +157,68 @@ class TestFillZones:
         fn = _get_pcb_fn(pcb_server)
         fn("fill_zones", pcb_path=pcb_file)
         assert mock_run.call_args[1]["timeout"] == 60.0
+
+
+# ---------------------------------------------------------------------------
+# Real-KiCad regression: add_zone should not depend on refilling every prior
+# zone to leave each zone correctly filled.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.requires_kicad
+class TestAddZoneFillsOnlyItsOwnZoneIntegration:
+    """finding #21 (Phase 1, 2026-09-23 full review): _op_add_zone called
+    filler.Fill(board.Zones()) -- refilling EVERY zone already on the board,
+    not just the one this call added -- O(N^2) as zones accumulate one
+    add_zone call at a time. Fixed to filler.Fill([zone]) (fills only the
+    new zone; _op_fill_zones remains the explicit "refill everything"
+    operation). This test pins the CORRECTNESS side (every zone added still
+    ends up filled) since the O(N^2) claim itself is a timing property, not
+    independently benchmarked here."""
+
+    @pytest.fixture(autouse=True)
+    def skip_if_unavailable(self):
+        from .conftest import pcbnew_available
+        if not pcbnew_available():
+            pytest.skip("pcbnew not importable under KiCad's Python")
+
+    _COUNT_FILLED_SCRIPT = """
+import pcbnew, json, sys
+
+params = json.loads(open(sys.argv[1]).read())
+board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "load failed"}))
+    sys.exit(0)
+
+filled = [z.IsFilled() for z in board.Zones()]
+print(json.dumps({"status": "ok", "filled": filled, "count": len(filled)}))
+"""
+
+    def test_each_added_zone_ends_up_filled(self, tmp_path):
+        from kicad_mcp.tools.pcb_board import _op_create
+        from kicad_mcp.tools.pcb_nets import _op_add_net
+        from kicad_mcp.tools.pcb_zones import _op_add_zone
+        from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+
+        pcb_path = str(tmp_path / "zones_test.kicad_pcb")
+        assert _op_create(pcb_path).get("status") == "ok"
+        assert _op_add_net(pcb_path, "GND").get("status") == "ok"
+
+        # Three non-overlapping zones added one at a time (same net -- a
+        # second net with nothing yet connected to it gets pruned by
+        # pcbnew's own board.Save() between calls, unrelated to this fix) --
+        # each add_zone call must leave EVERY zone filled, not just the one
+        # it happened to touch last.
+        r1 = _op_add_zone(pcb_path, net_name="GND", layer="F.Cu",
+                          corners=[[0, 0], [10, 0], [10, 10], [0, 10]])
+        assert r1.get("status") == "ok", r1
+        r2 = _op_add_zone(pcb_path, net_name="GND", layer="B.Cu",
+                          corners=[[20, 0], [30, 0], [30, 10], [20, 10]])
+        assert r2.get("status") == "ok", r2
+        r3 = _op_add_zone(pcb_path, net_name="GND", layer="F.Cu",
+                          corners=[[0, 20], [10, 20], [10, 30], [0, 30]])
+        assert r3.get("status") == "ok", r3
+
+        check = run_pcbnew_script(self._COUNT_FILLED_SCRIPT, params={"pcb_path": pcb_path})
+        assert check["count"] == 3, check
+        assert all(check["filled"]), check
