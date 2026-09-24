@@ -311,6 +311,41 @@ class TestAutoroutePoll:
 
 # -- autoroute router: unknown operation -------------------------------------
 
+class TestPreRouteCheckKeepouts:
+    """Regression: pcb_autoroute.py's own _run_pre_route_check (used
+    internally as a preflight before FreeRouter) omitted keepout zones
+    entirely -- unlike the canonical audit(operation="pre_route_check") in
+    pcb_keepout.py, which checks courtyard overlaps, keepouts, AND pad
+    clearances. A board with a real antenna/RF keepout violation could
+    reach FreeRouter unchecked via this path. Can't run the embedded
+    script without real pcbnew, so this pins the keepout-check logic's
+    presence in the emitted script (this repo's usual approach for
+    embedded-script logic it can't execute)."""
+
+    @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
+    def test_script_now_checks_keepouts(self, mock_run):
+        from kicad_mcp.tools.pcb_autoroute import _run_pre_route_check
+        mock_run.return_value = {"status": "ok", "route_ready": True}
+        _run_pre_route_check("/tmp/dummy.kicad_pcb")
+        script = mock_run.call_args[0][0]
+        # "extract_keepouts(board)" alone would also match KEEPOUT_HELPER's
+        # own function DEFINITION line (always spliced in regardless of
+        # whether it's ever called) -- check the actual call+assignment
+        # this fix added instead.
+        assert "keepouts = extract_keepouts(board)" in script
+        assert "keepout_violation_count" in script
+
+    @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
+    def test_script_reports_keepout_violations_field(self, mock_run):
+        from kicad_mcp.tools.pcb_autoroute import _run_pre_route_check
+        mock_run.return_value = {"status": "ok", "route_ready": True,
+                                  "keepout_violations": 0}
+        result = _run_pre_route_check("/tmp/dummy.kicad_pcb")
+        script = mock_run.call_args[0][0]
+        assert '"keepout_violations": keepout_violation_count' in script
+        assert result["keepout_violations"] == 0
+
+
 class TestAutorouteUnknownOperation:
 
     def test_unknown_op(self, route_server):

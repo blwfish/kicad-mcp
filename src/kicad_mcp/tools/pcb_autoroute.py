@@ -704,6 +704,39 @@ for i in range(len(footprints)):
             })
             errors.append(f"Courtyard overlap: {a['reference']} and {b['reference']}")
 
+# --- Keepout zone check ---
+# This preflight used to omit keepout zones entirely -- the canonical
+# _op_pre_route_check in pcb_keepout.py checks them, so a board with a real
+# antenna/RF keepout violation could reach FreeRouter unchecked via this
+# path even though the standalone audit(operation="pre_route_check") would
+# have caught it.
+keepouts = extract_keepouts(board)
+outline = get_board_outline(board)
+keepout_violation_count = 0
+
+for fp in board.GetFootprints():
+    ref = fp.GetReference()
+    fp_bbox = fp.GetBoundingBox(False, False)
+    fp_rect = {
+        "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+        "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+        "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+        "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+    }
+    for kz in keepouts:
+        if kz["source"] == "footprint" and kz["source_ref"] == ref:
+            continue
+        kz_bb = kz["bounding_box"]
+        if not rects_overlap(fp_rect, kz_bb):
+            continue
+        c = kz["constraints"]
+        if c["no_footprints"]:
+            keepout_violation_count += 1
+            errors.append(f"Keepout violation: {ref} in keepout from {kz['source_ref'] or kz['source']}")
+    if outline and not rect_inside(fp_rect, outline):
+        keepout_violation_count += 1
+        errors.append(f"Board edge: {ref} extends outside board outline")
+
 # --- Pad clearance check ---
 all_pads = []
 for fp in board.GetFootprints():
@@ -742,6 +775,7 @@ print(json.dumps({
     "status": "ok",
     "route_ready": route_ready,
     "courtyard_overlaps": len(courtyard_overlaps),
+    "keepout_violations": keepout_violation_count,
     "pad_violations": len(pad_violations),
     "error_count": len(errors),
     "errors": errors[:20],
