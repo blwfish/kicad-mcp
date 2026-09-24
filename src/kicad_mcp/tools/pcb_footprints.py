@@ -193,6 +193,7 @@ def _op_move_footprint(
     x_mm: float,
     y_mm: float,
     rotation_deg: Optional[float] = None,
+    check_keepouts: bool = True,
 ) -> Dict[str, Any]:
     """Move a footprint to a new position on the PCB."""
     _pv_err = validate_project_path(pcb_path)
@@ -234,6 +235,21 @@ fp_rect = {
     "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
     "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
 }
+if params["check_keepouts"]:
+    # move_footprint used to check ONLY the board outline, never keepout
+    # zones -- unlike place_footprint, which checks both. A footprint moved
+    # into an antenna/RF keepout produced no warning at all, even though
+    # placing a new one at the same spot would have.
+    for kz in extract_keepouts(board):
+        kz_bb = kz["bounding_box"]
+        if not rects_overlap(fp_rect, kz_bb):
+            continue
+        c = kz["constraints"]
+        blocked = [k.replace("no_", "") for k, v in c.items() if v]
+        if blocked:
+            src = kz["source_ref"] or kz["source"]
+            placement_warnings.append(f"Overlaps keepout from {src} (blocks {', '.join(blocked)})")
+
 outline = get_board_outline(board)
 if outline is None:
     placement_warnings.append(
@@ -271,6 +287,7 @@ print(json.dumps(result))
         "x_mm": x_mm,
         "y_mm": y_mm,
         "rotation_deg": rotation_deg,
+        "check_keepouts": check_keepouts,
     })
 
 

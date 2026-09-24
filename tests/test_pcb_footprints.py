@@ -218,6 +218,44 @@ class TestMoveFootprint:
         params = mock_run.call_args[1]["params"]
         assert params["rotation_deg"] is None
 
+    @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
+    def test_move_reports_keepout_overlap(self, mock_run, pcb_server, pcb_file):
+        """Regression: move_footprint used to check ONLY the board outline,
+        never keepout zones -- unlike place_footprint, which checks both.
+        A footprint moved into an antenna/RF keepout produced no warning at
+        all, even though placing a new one at the same spot would have."""
+        mock_run.return_value = {
+            "status": "ok", "reference": "U1", "x_mm": 130.0, "y_mm": 76.0,
+            "rotation": 0,
+            "placement_warnings": ["Overlaps keepout from U1 (blocks tracks, vias)"],
+        }
+        fn = _get_pcb_fn(pcb_server)
+        result = fn("move_footprint",
+                    pcb_path=pcb_file, reference="U1", x_mm=130, y_mm=76)
+        assert "placement_warnings" in result
+        assert len(result["placement_warnings"]) == 1
+
+    @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
+    def test_move_keepout_check_included_by_default(self, mock_run, pcb_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "reference": "R1",
+                                  "x_mm": 100, "y_mm": 80, "rotation": 0}
+        fn = _get_pcb_fn(pcb_server)
+        fn("move_footprint", pcb_path=pcb_file, reference="R1", x_mm=100, y_mm=80)
+        params = mock_run.call_args[1]["params"]
+        assert params["check_keepouts"] is True
+        script = mock_run.call_args[0][0]
+        assert "extract_keepouts" in script
+
+    @patch("kicad_mcp.tools.pcb_footprints.run_pcbnew_script")
+    def test_move_keepout_check_disabled(self, mock_run, pcb_server, pcb_file):
+        mock_run.return_value = {"status": "ok", "reference": "R1",
+                                  "x_mm": 100, "y_mm": 80, "rotation": 0}
+        fn = _get_pcb_fn(pcb_server)
+        fn("move_footprint", pcb_path=pcb_file, reference="R1", x_mm=100, y_mm=80,
+           check_keepouts=False)
+        params = mock_run.call_args[1]["params"]
+        assert params["check_keepouts"] is False
+
 
 # -- list_footprints tests ---------------------------------------------------
 
