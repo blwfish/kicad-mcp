@@ -5,11 +5,14 @@ This will allow users to compare DRC results over time.
 """
 import hashlib
 import json
+import logging
 import os
 import platform
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Directory for storing DRC history
 if platform.system() == "Windows":
@@ -62,9 +65,16 @@ def save_drc_result(project_path: str, drc_result: Dict[str, Any]) -> None:
     history_entry = {
         "timestamp": timestamp,
         "datetime": formatted_time,
+        "status": drc_result.get("status"),
+        "method": drc_result.get("method"),
+        "pcb_file": drc_result.get("pcb_file"),
         "total_violations": drc_result.get("total_violations", 0),
         "violation_categories": drc_result.get("violation_categories", {}),
         "raw_violations": drc_result.get("violations", []),
+        "unconnected_items": drc_result.get("unconnected_items", []),
+        "unconnected_count": drc_result.get("unconnected_count", 0),
+        "schematic_parity": drc_result.get("schematic_parity", []),
+        "parity_count": drc_result.get("parity_count", 0),
     }
 
     if os.path.exists(history_path):
@@ -72,7 +82,11 @@ def save_drc_result(project_path: str, drc_result: Dict[str, Any]) -> None:
             with open(history_path, "r") as f:
                 history = json.load(f)
         except (json.JSONDecodeError, IOError) as e:
-            print(f"Error loading DRC history: {e}")
+            logger.warning(
+                "DRC history file %s is corrupted (%s) — prior history for "
+                "this project is being discarded and a fresh history started",
+                history_path, e,
+            )
             history = {"project_path": project_path, "entries": []}
     else:
         history = {"project_path": project_path, "entries": []}
@@ -90,9 +104,9 @@ def save_drc_result(project_path: str, drc_result: Dict[str, Any]) -> None:
     try:
         with open(history_path, "w") as f:
             json.dump(history, f, indent=2)
-        print(f"Saved DRC history entry to {history_path}")
+        logger.debug("Saved DRC history entry to %s", history_path)
     except IOError as e:
-        print(f"Error saving DRC history: {e}")
+        logger.warning("Error saving DRC history to %s: %s", history_path, e)
 
 
 def get_drc_history(project_path: str) -> List[Dict[str, Any]]:
@@ -107,7 +121,7 @@ def get_drc_history(project_path: str) -> List[Dict[str, Any]]:
     history_path = get_project_history_path(project_path)
 
     if not os.path.exists(history_path):
-        print(f"No DRC history found for {project_path}")
+        logger.debug("No DRC history found for %s", project_path)
         return []
 
     try:
@@ -122,7 +136,8 @@ def get_drc_history(project_path: str) -> List[Dict[str, Any]]:
 
         return entries
     except (json.JSONDecodeError, IOError) as e:
-        print(f"Error reading DRC history: {e}")
+        logger.warning("DRC history file %s is corrupted or unreadable (%s) — "
+                        "treating as no history", history_path, e)
         return []
 
 

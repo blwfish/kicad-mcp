@@ -154,6 +154,35 @@ class TestAddAndListComponents:
         refs = {c["reference"] for c in _call(fn, "list_components")["components"]}
         assert refs == {"R1", "C1"}                 # only R2 gone, not "the first one"
 
+    def test_remove_component_multi_unit_removes_all_units(self, sch_server):
+        """Regression: sch.components.remove(reference) only removes the FIRST
+        unit-instance sharing a reference (kicad-sch-api's own documented
+        behavior) -- a 3-unit LM358 reported status=ok while orphaning the
+        other 2 units on the schematic."""
+        fn = _get_schematic_fn(sch_server)
+        add_result = _call(fn, "add_multi_unit_component",
+            lib_id="Amplifier_Operational:LM358", reference="U1",
+            value="LM358", position=[100.0, 100.0])
+        assert add_result["total_units"] == 3
+        result = _call(fn, "remove_component", reference="U1")
+        assert result["status"] == "ok"
+        assert sorted(result["units_removed"]) == [1, 2, 3]
+        remaining = [c for c in _call(fn, "list_components")["components"]
+                     if c["reference"] == "U1"]
+        assert remaining == []                       # no orphaned units left behind
+
+    def test_remove_component_multi_unit_single_unit_leaves_others(self, sch_server):
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "add_multi_unit_component",
+            lib_id="Amplifier_Operational:LM358", reference="U1",
+            value="LM358", position=[100.0, 100.0])
+        result = _call(fn, "remove_component", reference="U1", unit=1)
+        assert result["status"] == "ok"
+        assert result["units_removed"] == [1]
+        remaining_units = len([c for c in _call(fn, "list_components")["components"]
+                                if c["reference"] == "U1"])
+        assert remaining_units == 2                  # units 2 and 3 untouched
+
 
 # -- move_component tests ----------------------------------------------------
 
@@ -199,6 +228,54 @@ class TestMoveComponent:
         assert "error" in result                    # not status=ok on a phantom ref
         # nothing moved
         assert {r: self._pos(r) for r in ("R1", "R2", "C1")} == before
+
+
+class TestMoveComponentMultiUnit:
+    """Regression: sch.components.get(reference) only ever resolves to ONE
+    unit-instance for a multi-unit reference (e.g. a 3-unit LM358) --
+    move_component used to silently move whichever unit that lookup happened
+    to return while reporting status=ok, leaving the other units behind at
+    their old position with no indication anything was ambiguous."""
+
+    @pytest.fixture(autouse=True)
+    def _create_schematic(self, sch_server):
+        fn = _get_schematic_fn(sch_server)
+        _call(fn, "create", name="test")
+        _call(fn, "add_multi_unit_component",
+            lib_id="Amplifier_Operational:LM358", reference="U1",
+            value="LM358", position=[100.0, 100.0])
+        self._fn = fn
+
+    def _positions(self):
+        return [c.get("position") for c in _call(self._fn, "list_components")["components"]
+                if c["reference"] == "U1"]
+
+    def test_no_unit_specified_is_error_not_silent_guess(self, sch_server):
+        before = self._positions()
+        result = _call(self._fn, "move_component", reference="U1", position=[60, 60])
+        assert "error" in result
+        assert "1" in result["error"] and "2" in result["error"] and "3" in result["error"]
+        assert self._positions() == before            # nothing silently moved
+
+    def test_unit_specified_moves_only_that_unit(self, sch_server):
+        before = self._positions()
+        result = _call(self._fn, "move_component", reference="U1", position=[60, 60], unit=2)
+        assert result["status"] == "ok"
+        assert result["unit"] == 2
+        after = self._positions()
+        moved = [p for p in after if p not in before]
+        assert len(moved) == 1
+        assert abs(moved[0][0] - 60) < 1.0 and abs(moved[0][1] - 60) < 1.0
+        # the other two units' positions are untouched
+        untouched_before = sorted(p for p in before if p != before[1])
+        untouched_after = sorted(p for p in after if p not in moved)
+        assert untouched_before == untouched_after
+
+    def test_unknown_unit_is_error(self, sch_server):
+        before = self._positions()
+        result = _call(self._fn, "move_component", reference="U1", position=[60, 60], unit=99)
+        assert "error" in result
+        assert self._positions() == before             # nothing moved
 
 
 # -- add_wire tests ----------------------------------------------------------

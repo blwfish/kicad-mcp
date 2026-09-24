@@ -114,6 +114,16 @@ def _op_gerbers(
     if not all_files:
         return {"error": "No output files generated — PCB may be empty"}
 
+    # A 0-byte gerber/drill file (kicad-cli can write an empty placeholder on
+    # a layer with nothing to export, or on a truncated write) previously
+    # passed the existence-only check above and was silently zipped into the
+    # fab package as if it were real data — report it instead of shipping it
+    # silently as a successful export.
+    empty_files = [os.path.basename(f) for f in all_files if os.path.getsize(f) == 0]
+    if empty_files:
+        return {"error": f"{len(empty_files)} exported file(s) are 0 bytes: {empty_files}",
+                "empty_files": empty_files}
+
     result = {
         "status": "ok",
         "output_dir": output_dir,
@@ -286,6 +296,9 @@ async def _generate_thumbnail_with_cli(
                 return {"error": f"Output file not created: {output_file}"}
 
             file_size = os.path.getsize(output_file)
+            if file_size == 0:
+                logger.warning("Thumbnail output file is 0 bytes: %s", output_file)
+                return {"error": f"Thumbnail generation produced a 0-byte file: {output_file}"}
 
             logger.info("Successfully generated thumbnail with CLI, size: %d bytes", file_size)
             if ctx:
