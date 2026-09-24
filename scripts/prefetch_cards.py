@@ -43,6 +43,25 @@ def _pin_names(symbol) -> list[str]:
     return [str(getattr(p, "name", "") or "") for p in (getattr(symbol, "pins", None) or ())]
 
 
+def _pin_types(symbol) -> dict[str, str]:
+    """Pin name -> KiCad electrical pin type (e.g. "input", "bidirectional").
+
+    Best-effort corroboration for synthesize_i2c_card's role classification,
+    which used to be 100% name-regex based -- a pin named SCL is not itself
+    proof of an I2C clock. Duplicate pin names (rare, but symbols aren't
+    guaranteed unique) keep whichever type is seen last; that's the same
+    silent-collision behavior _pin_names' own caller already tolerates for
+    names, not a new gap this introduces."""
+    out: dict[str, str] = {}
+    for p in (getattr(symbol, "pins", None) or ()):
+        name = str(getattr(p, "name", "") or "")
+        if not name:
+            continue
+        pin_type = getattr(p, "pin_type", None)
+        out[name] = str(getattr(pin_type, "value", pin_type) or "")
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Bulk-generate I2C device cards from KiCad symbols.")
     ap.add_argument("--symbols-dir", default=os.environ.get("KICAD_SYMBOL_DIR", _DEFAULT_SYMBOLS_DIR))
@@ -87,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
                 symbol_name=name, lib_id=lib_id, pin_names=_pin_names(sym),
                 footprint=symbol_footprint(sym),
                 unit_count=int(getattr(sym, "unit_count", 1) or 1),
+                pin_types=_pin_types(sym),
             )
             dispositions[conf] += 1
             if card is None or (want_high_only and conf != "high"):
