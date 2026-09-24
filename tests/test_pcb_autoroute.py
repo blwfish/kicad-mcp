@@ -336,14 +336,15 @@ class TestPreRouteCheckKeepouts:
         assert "keepout_violation_count" in script
 
     @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
-    def test_script_reports_keepout_violations_field(self, mock_run):
+    def test_script_wires_the_counter_into_the_output_dict(self, mock_run):
+        """Distinct from test_script_now_checks_keepouts above: that pins
+        the counter is COMPUTED; this pins it's actually WIRED into the
+        printed result dict, not just computed and discarded."""
         from kicad_mcp.tools.pcb_autoroute import _run_pre_route_check
-        mock_run.return_value = {"status": "ok", "route_ready": True,
-                                  "keepout_violations": 0}
-        result = _run_pre_route_check("/tmp/dummy.kicad_pcb")
+        mock_run.return_value = {"status": "ok", "route_ready": True}
+        _run_pre_route_check("/tmp/dummy.kicad_pcb")
         script = mock_run.call_args[0][0]
         assert '"keepout_violations": keepout_violation_count' in script
-        assert result["keepout_violations"] == 0
 
 
 class TestAutorouteUnknownOperation:

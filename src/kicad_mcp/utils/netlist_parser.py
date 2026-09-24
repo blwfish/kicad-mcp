@@ -10,6 +10,21 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+# Single source of truth for an S-expression quoted-string match. KiCad
+# quoted strings allow escaped quotes (\") and escaped backslashes (\\); the
+# naive `"([^"]+)"` pattern truncates a value silently at the first \" (e.g.
+# a label containing inch marks would have its trailing portion dropped).
+# Every regex in this module that matches a quoted string must use this,
+# not re-encode its own [^"]+ copy -- several sites (pin names, local/
+# global/hierarchical labels) used to do exactly that, silently truncating
+# any name/label containing an escaped quote while the lib_id/property
+# extraction right below was already correct.
+_QSTR = r'"((?:[^"\\]|\\.)*)"'
+# The same escape-aware body without the wrapping literal quotes, for a site
+# that needs a literal prefix INSIDE the quotes (e.g. "power:GND").
+_QSTR_BODY = r'(?:[^"\\]|\\.)*'
+
+
 # Single source of truth for power-net detection — used in analyze_netlist
 # and importable by other modules that need the same classification.
 _POWER_NET_PREFIXES = ("VCC", "VDD", "VSS", "VBUS", "GND")
@@ -243,14 +258,6 @@ class SchematicParser:
         """
         component: dict[str, Any] = {}
 
-        # KiCad S-expression quoted strings allow escaped quotes (\") and
-        # escaped backslashes (\\). The prior [^"]+ pattern truncated values
-        # silently at the first \" — e.g. a Value containing inch marks would
-        # land in the netlist with the trailing portion dropped. Pattern is
-        # "((?:[^"\\]|\\.)*)" — any non-quote-non-backslash OR a backslash
-        # followed by anything.
-        _QSTR = r'"((?:[^"\\]|\\.)*)"'
-
         lib_id_match = re.search(r'\(lib_id\s+' + _QSTR + r'\)', symbol_expr)
         if lib_id_match:
             component["lib_id"] = _unescape_sexpr(lib_id_match.group(1))
@@ -287,7 +294,7 @@ class SchematicParser:
 
         pins = []
         pin_matches = re.finditer(
-            r'\(pin\s+\(num\s+"([^"]+)"\)\s+\(name\s+"([^"]+)"\)', symbol_expr
+            r'\(pin\s+\(num\s+' + _QSTR + r'\)\s+\(name\s+' + _QSTR + r'\)', symbol_expr
         )
         for match in pin_matches:
             pin_num = match.group(1)
@@ -351,7 +358,7 @@ class SchematicParser:
         local_labels = self._extract_s_expressions(r"\(label\s+")
         for label in local_labels:
             label_match = re.search(
-                r'\(label\s+"([^"]+)"\s+\(at\s+([\d\.-]+)\s+([\d\.-]+)(\s+[\d\.-]+)?\)',
+                r'\(label\s+' + _QSTR + r'\s+\(at\s+([\d\.-]+)\s+([\d\.-]+)(\s+[\d\.-]+)?\)',
                 label,
             )
             if label_match:
@@ -373,7 +380,7 @@ class SchematicParser:
         global_labels = self._extract_s_expressions(r"\(global_label\s+")
         for label in global_labels:
             label_match = re.search(
-                r'\(global_label\s+"([^"]+)"\s+\(shape\s+([^\s\)]+)\)\s+'
+                r'\(global_label\s+' + _QSTR + r'\s+\(shape\s+([^\s\)]+)\)\s+'
                 r"\(at\s+([\d\.-]+)\s+([\d\.-]+)(\s+[\d\.-]+)?\)",
                 label,
             )
@@ -397,7 +404,7 @@ class SchematicParser:
         hierarchical_labels = self._extract_s_expressions(r"\(hierarchical_label\s+")
         for label in hierarchical_labels:
             label_match = re.search(
-                r'\(hierarchical_label\s+"([^"]+)"\s+\(shape\s+([^\s\)]+)\)\s+'
+                r'\(hierarchical_label\s+' + _QSTR + r'\s+\(shape\s+([^\s\)]+)\)\s+'
                 r"\(at\s+([\d\.-]+)\s+([\d\.-]+)(\s+[\d\.-]+)?\)",
                 label,
             )
@@ -430,7 +437,7 @@ class SchematicParser:
         power_symbols = self._extract_s_expressions(r'\(symbol\s+\(lib_id\s+"power:')
 
         for symbol in power_symbols:
-            type_match = re.search(r'\(lib_id\s+"power:([^"]+)"\)', symbol)
+            type_match = re.search(r'\(lib_id\s+"power:(' + _QSTR_BODY + r')"\)', symbol)
             pos_match = re.search(
                 r"\(at\s+([\d\.-]+)\s+([\d\.-]+)(\s+[\d\.-]+)?\)", symbol
             )
