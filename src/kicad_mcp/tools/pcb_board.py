@@ -392,6 +392,16 @@ if params["fix_silkscreen"]:
                 silk_ok += 1
                 continue
 
+            if text_bbox.GetWidth() <= 0 or text_bbox.GetHeight() <= 0:
+                # A degenerate zero-area text bbox (matches the canonical
+                # _op_auto_fix_silkscreen guard in pcb_silkscreen.py, which
+                # this copy was missing) -- attempting to compute move
+                # candidates from a zero-size box produces meaningless
+                # positions, so treat it as already-ok rather than "fixing"
+                # it into a wrong place.
+                silk_ok += 1
+                continue
+
             fp_bb = fp.GetBoundingBox()
             cx  = fp_bb.GetCenter().x
             cy  = fp_bb.GetCenter().y
