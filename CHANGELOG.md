@@ -2,6 +2,96 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.18.0] — 2026-09-24
+
+A full-codebase review remediation pass, plus three autoroute/export
+performance wins. No user-facing API changes.
+
+### Fixed — 2026-09-23 full-review remediation
+
+A comprehensive review (code review + interface-contract check +
+data-capture inventory + test audit) across the whole codebase, followed
+through to closure: 6 Critical and 48 High findings, plus the large
+majority of ~90 Medium findings, each independently verified against
+current code (many originally-reported findings turned out already fixed
+or no longer applicable), fixed with a minimally-scoped change, a
+regression test, and a mutation check (revert the fix, confirm the new
+test fails, restore) before being counted as done. A representative
+sample of what this pass caught and closed:
+
+- **Silent-wrong-output bugs**: `compare_with_previous` in
+  `drc_history.py` always diffed the current DRC run against itself
+  (the save happened before the compare, not after); `mounting_holes`
+  `count` validation was documented but never actually enforced;
+  `netlist.py`'s `pin_functions` classification silently returned `{}`
+  on the default `kicad-cli` parser path.
+- **Interface-contract (boundary-agreement) bugs**: sibling
+  implementations that individually looked correct but disagreed with
+  each other at the seam — `audit(operation="all")` silently dropping
+  `use_courtyard` for two of its three code paths; `add_hierarchical_label`
+  and `add_sheet_pin` accepting different spellings (`"tristate"` vs.
+  `"tri_state"`) for the same concept; `cards.py`'s MCU field registry and
+  `knowledge.py`'s `McuInfo` TypedDict having quietly drifted out of sync.
+- **Data-capture completeness gaps**: fields a source produced that a
+  consumer silently dropped or truncated — a telemetry consumer not
+  recognizing two of `rank.py`'s own warn-event data keys;
+  `run_pcbnew_script` discarding subprocess stderr on the success path.
+- **RuntimeError-envelope leaks**: several tool call paths (autoroute's
+  sync `run`, `pcb_planning.py`'s `estimate_board_size`/`suggest_placement`,
+  `build_pcb_from_schematic`'s early pipeline steps) let a subprocess
+  failure escape as a raw exception instead of the `{"error": ...}` shape
+  every other failure path returns.
+- **Duplicated-logic drift**: hand-copied classification/geometry logic
+  (a `_ref_class` designator-prefix helper copied into 4 separate embedded
+  pcbnew scripts, a naive `k.replace("no_", "")` keepout-label deriver
+  reintroduced after the canonical helper already existed elsewhere)
+  consolidated back to a single source of truth.
+- **Test-quality fixes**: tautological boundary tests that echoed a
+  mocked return value instead of asserting real behavior, and missing
+  at/below/above threshold coverage, caught and corrected per the
+  project's own threshold-boundary testing rule.
+
+Also closed out a 2-month-old backlog from an earlier (2026-07-21) review
+that had been reported but never acted on: 9 deferred High and 15
+deferred Medium findings, each re-verified against current code before
+fixing (confirming none had silently regressed further or been
+superseded).
+
+### Performance
+
+- **FreeRouter autoroute passes now run concurrently** instead of
+  serially. Each pass is an independent subprocess against the same
+  read-only DSN, writing to its own SES output — nothing depended on one
+  finishing before the next started. Passes now run in a thread pool
+  (capped via `KICAD_AUTOROUTE_MAX_CONCURRENT_PASSES`, default 4) instead
+  of one at a time; measured 10 passes going from ~160s to ~50s on a real
+  board. Each pass gets its own `--user_data_path` (Freerouting's
+  settings/log files otherwise default to a single fixed path shared by
+  every concurrent invocation, a real collision risk this closes).
+  `cancel_autoroute` now kills every in-flight pass, not just one.
+- **`audit(operation="all", detail="full")` now makes one subprocess
+  round trip instead of four** — the four sub-checks (placement,
+  footprint overlaps, pad clearances, keepouts) now share a single
+  `LoadBoard()` call instead of each independently loading the board.
+  Verified byte-for-bit identical to calling the four standalone
+  operations directly, across multiple parameter combinations, against
+  real KiCad.
+- **Gerber and drill export now run concurrently** (independent
+  `kicad-cli` invocations, no output collision) instead of sequentially.
+  Also fixed a genuine bug in the PCB thumbnail path: a blocking
+  `subprocess.run()` call made directly inside an `async def`, which
+  stalled the entire MCP server's event loop — and every other
+  concurrent request on it — for the duration of the call.
+
+### Testing
+
+Every fix in this release followed: verify the finding against current
+code, minimally-scoped implementation, a regression test, and a mutation
+check (temporarily revert the fix, confirm the new test fails, restore)
+before being counted as done. Boundary-op changes (embedded `pcbnew`
+subprocess scripts) were additionally verified against real KiCad, not
+just mocked. Full suite: 3148 passed, 1 pre-existing skip.
+
 ## [0.17.0] — 2026-09-22
 
 Makes AGENT-INSTRUCTIONS.md's "no concurrent PCB writes" rule actually
