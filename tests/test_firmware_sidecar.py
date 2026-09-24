@@ -359,6 +359,16 @@ def test_bus_part_override_rejected(tmp_path, body, needle):
     assert needle in str(e.value)
 
 
+def test_bus_part_override_type_error_message_matches_current_schema(tmp_path):
+    """finding #121: the error message still said '{part?, footprint?}' after
+    footprint was removed from _KNOWN_BUS_OVERRIDE_KEYS (only 'part' is
+    supported) -- docstring/error-message drift."""
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, "bus_part_overrides: 5\n"))
+    assert "footprint" not in str(e.value)
+    assert "{part}" in str(e.value)
+
+
 def test_apply_bus_part_override_stamps_user_provenance():
     from kicad_mcp.utils.firmware.intent import Bus
     i = _intent()
@@ -581,3 +591,91 @@ def test_mounting_holes_tiny_drill_accepted_here(tmp_path):
     # is the pipeline's job (see docstring). 0.001mm passes validation.
     assert load_sidecar(_write(tmp_path,
         "mounting_holes: {drill_mm: 0.001}\n")).mounting_holes == {"drill_mm": 0.001}
+
+
+# --- 2026-09-23 full review: findings #114/#119/#120/#122/#123 ----------------
+
+def test_placement_and_expander_key_sets_derive_from_their_dataclasses():
+    """finding #114: _KNOWN_PLACEMENT_KEYS / _KNOWN_EXPANDER_KEYS were
+    hand-typed frozensets that could silently drift from the Placement /
+    ExpanderSpec dataclasses they validate against. Pin the derivation."""
+    import dataclasses
+    from kicad_mcp.utils.firmware.intent import ExpanderSpec, Placement
+    from kicad_mcp.utils.firmware.sidecar import (
+        _KNOWN_EXPANDER_KEYS, _KNOWN_PLACEMENT_KEYS,
+    )
+    assert _KNOWN_PLACEMENT_KEYS == {f.name for f in dataclasses.fields(Placement)}
+    assert _KNOWN_EXPANDER_KEYS == {f.name for f in dataclasses.fields(ExpanderSpec)}
+
+
+def test_extra_connector_pin_count_mismatch_is_a_gap_not_a_crash():
+    """finding #119: synthesize_connector can raise ConnectorError (e.g. a
+    lib_id whose symbol encodes a fixed pin count smaller than the nets
+    mapping supplies) — _validate() doesn't check pin-count/lib_id
+    consistency, so this is only caught here. One bad connector must not
+    abort the rest of apply_sidecar."""
+    i = _intent()
+    sc = BoardSidecar(extra_connectors=[{
+        "ref": "J_BAD", "lib_id": "Connector_Generic:Conn_01x02",
+        "footprint": "FP:X",
+        "nets": {"1": "+5V", "2": "GND", "3": "SIG"},   # 3 positions, 2-pin symbol
+    }])
+    apply_sidecar(i, sc)   # must not raise
+    assert any(g.kind == "extra_connector_failed" for g in i.gaps)
+    assert not any(p.type == "CONN" for p in i.peripherals)
+
+
+def test_extra_connector_failure_does_not_block_a_later_good_one():
+    i = _intent()
+    sc = BoardSidecar(extra_connectors=[
+        {"ref": "J_BAD", "lib_id": "Connector_Generic:Conn_01x02", "footprint": "FP:X",
+         "nets": {"1": "+5V", "2": "GND", "3": "SIG"}},
+        {"ref": "J_GOOD", "lib_id": "Connector:Barrel_Jack", "footprint": "FP:Jack",
+         "nets": {"1": "+5V", "2": "GND"}},
+    ])
+    apply_sidecar(i, sc)
+    assert any(g.kind == "extra_connector_failed" for g in i.gaps)
+    good = [p for p in i.peripherals if p.type == "CONN"]
+    assert len(good) == 1 and good[0].value == "J_GOOD"
+
+
+def test_expander_terminals_nets_error_names_the_bad_pair(tmp_path):
+    """finding #122: multiple malformed (pin, net) entries previously produced
+    identical, unidentifiable error strings."""
+    with pytest.raises(SidecarError) as e:
+        load_sidecar(_write(tmp_path, """\
+            extra_connectors:
+              - ref: J1
+                lib_id: X:Y
+                footprint: F:P
+                nets: {"1": 5}
+        """))
+    assert "nets entry '1': 5" in str(e.value)
+
+
+def test_expander_terminals_missing_port_registry_logs_warning(tmp_path, monkeypatch, caplog):
+    """finding #120: both the ports-count bound check and the ports-list
+    unknown/duplicate-pin checks are gated on `valid_pins and ...` — an empty
+    registry (card lookup failed) silently disables BOTH checks with no
+    signal. A malformed spec that *should* be rejected (ports exceeds a
+    real MCP23017's 16 pins) must still surface the missing-registry
+    warning even though it happens to pass structural validation."""
+    import kicad_mcp.utils.firmware.sidecar as sidecar_mod
+    monkeypatch.setattr(sidecar_mod, "_expander_port_pins", lambda: [])
+    with caplog.at_level("WARNING", logger="kicad_mcp.utils.firmware.sidecar"):
+        sc = load_sidecar(_write(tmp_path,
+                                  "expander_terminals: {U3: {device: X, ports: 99}}\n"))
+    assert sc.expander_terminals["U3"]["ports"] == 99   # bound check silently skipped
+    assert any("could not resolve" in r.message for r in caplog.records)
+
+
+def test_expander_terminals_invalid_ports_type_at_apply_is_a_gap():
+    """finding #123: apply_sidecar's `else: pins = []` branch (ports neither
+    int nor list) is defense-in-depth for a caller that bypasses
+    _validate_expander_terminals (e.g. a hand-built BoardSidecar) — it must
+    not silently produce zero terminals with zero signal."""
+    i = _intent()
+    sc = BoardSidecar(expander_terminals={"U3": {"device": "X", "ports": None}})
+    apply_sidecar(i, sc)
+    assert any(g.kind == "expander_terminals_invalid_ports" for g in i.gaps)
+    assert i.expander_terminals["U3"].ports == []

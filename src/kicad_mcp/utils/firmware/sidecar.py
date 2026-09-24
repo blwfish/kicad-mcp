@@ -12,15 +12,20 @@ stays untouched, equivalence-preserved).
 # board.yaml
 power_source: usb_c            # usb_c | barrel | header | battery — sources +5V
 board_size_mm: [90, 75]
+board_id: esp32dev             # board id or Arduino FQBN — escape hatch when there's
+                                # no platformio.ini, or its board isn't recognized
 extra_connectors:
   - ref: J_PWR
     lib_id: Connector:Barrel_Jack
     footprint: "Connector_BarrelJack:BarrelJack_Horizontal"
+    value: "Barrel Jack"       # optional BOM value override (default: ref)
     nets: {"1": "+5V", "2": "GND"}
 placement:                     # WHERE each device lives (board-level, firmware-blind)
   CMCA_MIC:                    # keyed by bus stem (or a peripheral ref like U2)
     locus: remote              # not placed; its signals cross to a screw terminal
     device: INMP441            # human-supplied identity (firmware names it only in a comment)
+    connector: screw_terminal  # screw_terminal (default) | pin_header | pluggable
+    footprint: "TerminalBlock:..."  # optional series-default override
   CMCA_I2S:
     locus: on_board_with_remote_io   # amp stays on board; speaker leads cross out
     device: MAX98357A
@@ -35,6 +40,13 @@ mounting_holes:                # corner fixture holes (firmware-blind mechanical
   drill_mm: 3.2                # M3 = 3.2, M2.5 = 2.7
   inset_mm: 3.5                # hole-centre inset from each board edge
   keepout_mm: 1.5              # no-copper margin beyond the drill
+bus_part_overrides:            # DECLARE a bus's part when firmware doesn't name it
+  CMCA_MIC:
+    part: INMP441               # wins over corpus-scanned part evidence
+terminal_distribution: single_edge   # single_edge (default) | multi_edge (spill
+                                      # field terminals onto side edges to square up)
+terminal_centering: false      # center each edge's terminal group (layout only)
+board_refit: false             # re-fit an auto-sized board to the measured cluster
 expander_terminals:            # tap an I/O-expander's GPA/GPB pins out to terminals
   U3:                          # the expander's peripheral ref (a placed MCP23017)
     device: TCRT5000           # silk label + connector value
@@ -49,8 +61,9 @@ Unknown top-level keys are REJECTED (a typo like ``board_size`` for
 """
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as _dataclass_fields
 from pathlib import Path
 from typing import Any, Optional
 
@@ -58,6 +71,7 @@ import yaml
 
 from kicad_mcp.utils.firmware.cards import valid_lib_id
 from kicad_mcp.utils.firmware.connectors import (
+    ConnectorError,
     ConnectorPosition,
     VALID_CONNECTOR_TYPES,
     synthesize_connector,
@@ -71,6 +85,8 @@ from kicad_mcp.utils.firmware.intent import (
     VALID_LOCI,
 )
 from kicad_mcp.utils.firmware.power_names import RAILS as _RAILS
+
+logger = logging.getLogger(__name__)
 
 _POWER_SOURCES = frozenset({"usb_c", "usb", "barrel", "header", "battery", "screw_terminal"})
 _CONNECTOR_KINDS = VALID_CONNECTOR_TYPES
@@ -151,8 +167,12 @@ _KNOWN_SIDECAR_KEYS = frozenset({
 
 _TERMINAL_DISTRIBUTIONS = frozenset({"single_edge", "multi_edge"})
 
-# expander_terminals (v2): per-entry sub-keys + the closed value sets.
-_KNOWN_EXPANDER_KEYS = frozenset({"device", "ports", "group", "power", "net_prefix"})
+# expander_terminals (v2): per-entry sub-keys + the closed value sets. Derived
+# from ExpanderSpec's own fields (single source of truth, CLAUDE.md Rule 3) --
+# previously a hand-typed frozenset that could drift from the dataclass it
+# validates against, the same drift risk _HOLE_DEFAULTS below was already
+# fixed for. finding #114.
+_KNOWN_EXPANDER_KEYS = frozenset(f.name for f in _dataclass_fields(ExpanderSpec))
 _EXPANDER_GROUPS = frozenset({"per_sensor", "per_bank", "single"})
 _EXPANDER_POWER = frozenset({"3v3", "5v", "none"})
 
@@ -178,8 +198,9 @@ _KNOWN_MOUNTING_HOLES_KEYS = frozenset(_HOLE_DEFAULTS)
 # SUB-key (`devcie` for `device`, `Nets` for `nets`) was silently ignored, so the
 # directive degraded quietly (the misspelled value defaulting away). Reject them
 # too, the same way mounting_holes / expander_terminals already do.
-_KNOWN_PLACEMENT_KEYS = frozenset({"locus", "connector", "device", "footprint",
-                                   "external_io"})
+# Derived from Placement's own fields (finding #114 -- same rationale as
+# _KNOWN_EXPANDER_KEYS above).
+_KNOWN_PLACEMENT_KEYS = frozenset(f.name for f in _dataclass_fields(Placement))
 _KNOWN_EXTRA_CONNECTOR_KEYS = frozenset({"ref", "lib_id", "nets", "footprint", "value"})
 
 
@@ -201,6 +222,18 @@ def _validate_placement(d: dict[str, Any], errs: list[str]) -> None:
         if unknown:
             errs.append(f"{where}: unknown key(s) {sorted(unknown)} — "
                         f"valid: {sorted(_KNOWN_PLACEMENT_KEYS)}")
+        # locus is REQUIRED here (a missing key -> None -> "not in VALID_LOCI"
+        # -> loud error) for user-authored board.yaml: declaring a placement
+        # entry at all and leaving out WHERE it lives is a mistake worth
+        # catching, not a silent on_board assumption. _apply_placement's
+        # Placement(locus=spec.get("locus", "on_board"), ...) below disagrees
+        # in principle -- it exists only for direct BoardSidecar construction
+        # that bypasses this validator (e.g. tests), which never omits locus
+        # today; every real board.yaml is validated here first, so that
+        # default is unreachable on the validated path. finding #118: flagged
+        # as a two-path optionality mismatch. Documented rather than unified,
+        # since collapsing them either loosens this loud check or changes the
+        # dataclass's own default with no caller currently depending on it.
         locus = spec.get("locus")
         if locus not in VALID_LOCI:
             errs.append(f"{where}: locus {locus!r} not in {list(VALID_LOCI)}")
@@ -321,7 +354,12 @@ def _validate(d: dict[str, Any]) -> list[str]:
         else:
             for pin, net in nets.items():
                 if not isinstance(pin, str) or not isinstance(net, str):
-                    errs.append(f"{where}: nets entries must be pin_str -> net_str")
+                    # Naming the actual (pin, net) pair -- the prior generic
+                    # message was identical for every bad entry, so multiple
+                    # malformed pairs in one mapping were indistinguishable
+                    # from each other. finding #122.
+                    errs.append(f"{where}: nets entry {pin!r}: {net!r} must be "
+                                f"pin_str -> net_str")
     _validate_placement(d, errs)
     _validate_hints(d, errs)
     _validate_mounting_holes(d, errs)
@@ -355,6 +393,17 @@ def _validate_expander_terminals(d: dict[str, Any], errs: list[str]) -> None:
         errs.append("expander_terminals must be a mapping of expander-ref -> spec")
         return
     valid_pins = _expander_port_pins()
+    if et and not valid_pins:
+        # Both the ports-count bound check and the ports-list unknown-pin/
+        # duplicate checks below are gated on `valid_pins and ...` -- an
+        # empty valid_pins (the MCP23017 card couldn't be resolved, or its
+        # port_pins field is empty) silently short-circuits BOTH checks off
+        # for every entry, with nothing said about it. finding #120.
+        logger.warning(
+            "expander_terminals: could not resolve the MCP23017 port-pin "
+            "registry -- ports bound/duplicate-pin checks are skipped for "
+            "all %d entries", len(et),
+        )
     seen_prefix: dict[str, str] = {}   # effective net_prefix -> the ref that claimed it
     for ref, spec in et.items():
         where = f"expander_terminals[{ref!r}]"
@@ -423,7 +472,7 @@ def _validate_bus_part_overrides(d: dict[str, Any], errs: list[str]) -> None:
     if ov is None:
         return
     if not isinstance(ov, dict):
-        errs.append("bus_part_overrides must be a mapping of bus-stem -> {part?, footprint?}")
+        errs.append("bus_part_overrides must be a mapping of bus-stem -> {part}")
         return
     for stem, spec in ov.items():
         where = f"bus_part_overrides[{stem!r}]"
@@ -527,12 +576,28 @@ def apply_sidecar(
         def _fixed_alloc(_prefix: str, _r: str = ref) -> str:
             return _r   # ref was already normalized above; honor it verbatim
 
-        conn, joins, legend = synthesize_connector(
-            positions, alloc=_fixed_alloc, connector_type="pluggable",
-            device=str(c.get("value", friendly)), lib_id=c["lib_id"],
-            footprint=c.get("footprint"), value=c.get("value", friendly),
-            origin="user",
-        )
+        # _validate() checks nets is a non-empty {pin: net} mapping and lib_id
+        # looks like "Library:Symbol", but NOT that the pin count fits the
+        # named symbol -- synthesize_connector enforces that (and a few other
+        # semantic invariants) and can raise ConnectorError. Every OTHER
+        # semantic-error case in this function degrades to a Gap rather than
+        # aborting the whole sidecar apply; do the same here instead of
+        # letting one bad connector take down every other directive with it.
+        # finding #119.
+        try:
+            conn, joins, legend = synthesize_connector(
+                positions, alloc=_fixed_alloc, connector_type="pluggable",
+                device=str(c.get("value", friendly)), lib_id=c["lib_id"],
+                footprint=c.get("footprint"), value=c.get("value", friendly),
+                origin="user",
+            )
+        except ConnectorError as e:
+            intent.gaps.append(Gap(
+                "extra_connector_failed",
+                f"board.yaml extra_connectors[{friendly!r}] could not be "
+                f"synthesized: {e}",
+            ))
+            continue
         intent.peripherals.append(conn)
         intent.connector_legends.append(legend)
         added_refs.append(ref)
@@ -589,6 +654,18 @@ def apply_sidecar(
             elif isinstance(ports, list):
                 pins = [str(p) for p in ports]
             else:
+                # _validate_expander_terminals rejects this shape for a real
+                # board.yaml (ports is required, an int or a list) -- this is
+                # defense-in-depth for a caller that bypasses validation (e.g.
+                # a hand-built BoardSidecar). Silently producing pins=[] would
+                # mean zero terminals with zero signal that anything was
+                # wrong. finding #123.
+                intent.gaps.append(Gap(
+                    "expander_terminals_invalid_ports",
+                    f"board.yaml expander_terminals[{ref!r}].ports {ports!r} "
+                    "is neither an int count nor a list of pin names -- no "
+                    "terminals created for this entry.",
+                ))
                 pins = []
             intent.expander_terminals[str(ref)] = ExpanderSpec(
                 device=device,
