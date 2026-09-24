@@ -814,7 +814,31 @@ def _fetch_live_part(part_number: str) -> dict[str, Any] | None:
 
 
 def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] | None:
-    """Normalize live API response to local row format."""
+    """Normalize live API response to local row format.
+
+    Field names below are verified against a REAL captured response
+    (tests/fixtures/jlcpcb_live_component_sample.json, from a live
+    ``getComponentDetail`` call -- see finding #28 of the 2026-09-23 full
+    review: this module's live-API field-name guesses had no golden
+    fixture, so a wrong guess had nothing to catch it). Two guesses were
+    confirmed WRONG against that capture and fixed here:
+
+      * manufacturer previously read ONLY ``brandNameEn``, which does not
+        exist in the real payload (the real key is ``componentBrandEn``)
+        -- manufacturer was silently always "" on every live-API row.
+      * each price tier's quantity bounds previously read ONLY
+        ``startQuantity``/``qFrom`` and ``endQuantity``/``qTo``, none of
+        which exist in the real payload (the real keys are
+        ``startNumber``/``endNumber``) -- every tier collapsed to
+        ``qFrom=1, qTo=None`` regardless of its real quantity break,
+        while the price VALUE (``productPrice``, a guess that happened to
+        be correct) still varied per tier, producing a nonsensical
+        multi-tier price list with no distinguishing quantity range.
+
+    The old guessed keys are kept as fallbacks (harmless if the live API's
+    shape changes again) but are no longer the ones actually observed to
+    match.
+    """
     if not data:
         return None
     price_raw = data.get("prices") or data.get("price") or []
@@ -833,9 +857,11 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
                 logger.debug("Live API returned non-numeric price %r for %s; "
                              "dropping this price tier", raw_price, part_number)
                 continue
-            price_list.append({"qFrom": p.get("startQuantity", p.get("qFrom", 1)),
-                               "qTo": p.get("endQuantity", p.get("qTo")),
-                               "price": price_val})
+            price_list.append({
+                "qFrom": p.get("startNumber", p.get("startQuantity", p.get("qFrom", 1))),
+                "qTo": p.get("endNumber", p.get("endQuantity", p.get("qTo"))),
+                "price": price_val,
+            })
     tier = "basic" if data.get("componentLibraryType") == "base" else "extended"
     # solderJoint comes straight from the live API with no type guarantee --
     # unlike the local-DB path (jlcparts's own JSONL shards, where `joints`
@@ -844,6 +870,16 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
     # _row_to_resolved) used to do a bare `int(joints)` on whatever came
     # through here -- a non-numeric value from the API would raise
     # uncaught, crashing that tool call.
+    #
+    # Verified against 4 real captured responses spanning a resistor, a
+    # capacitor, an ESP8266 module, and an op-amp IC: `solderJoint` was
+    # ABSENT from every single one -- unlike manufacturer/price-tier above,
+    # this isn't a wrong-key guess with a fixable correct name; the live
+    # getComponentDetail endpoint appears not to expose a pin/joint count at
+    # all. The `is not None` guard below already treats a missing key as
+    # "unknown" (not a crash), which is the right behavior for a field that
+    # may simply never be present -- left as-is, documented so a future
+    # maintainer doesn't re-investigate this looking for a rename.
     solder_joint_raw = data.get("solderJoint")
     try:
         joints = int(solder_joint_raw) if solder_joint_raw is not None else None
@@ -854,7 +890,7 @@ def _live_part_to_row(data: dict[str, Any], part_number: str) -> dict[str, Any] 
     return {
         "lcsc": part_number,
         "mfr": data.get("componentModelEn") or data.get("erpMpn") or "",
-        "manufacturer": data.get("brandNameEn") or "",
+        "manufacturer": data.get("componentBrandEn") or data.get("brandNameEn") or "",
         "package": data.get("componentSpecificationEn") or "",
         "joints": joints,
         "assembly_tier": tier,
