@@ -52,12 +52,24 @@ else:
 
 # --- Additional search paths from environment ---
 
+def _exists_or_false(path: str) -> bool:
+    """os.path.exists() at module-import time, on a mount/permission-sensitive
+    path list -- an OSError here (a stale network mount, a permission-denied
+    parent directory, a TOCTOU race) used to be completely unguarded and
+    would crash the import of this module for every single tool call, not
+    just skip that one candidate path."""
+    try:
+        return os.path.exists(path)
+    except OSError:
+        return False
+
+
 ADDITIONAL_SEARCH_PATHS: list[str] = []
 env_paths = os.environ.get("KICAD_SEARCH_PATHS", "")
 if env_paths:
     for p in env_paths.split(","):
         expanded = os.path.expanduser(p.strip())
-        if os.path.exists(expanded):
+        if _exists_or_false(expanded):
             ADDITIONAL_SEARCH_PATHS.append(expanded)
 
 # Auto-detect common project locations
@@ -70,7 +82,7 @@ for loc in [
     "~/Projects/KiCad",
 ]:
     expanded = os.path.expanduser(loc)
-    if os.path.exists(expanded) and expanded not in ADDITIONAL_SEARCH_PATHS:
+    if _exists_or_false(expanded) and expanded not in ADDITIONAL_SEARCH_PATHS:
         ADDITIONAL_SEARCH_PATHS.append(expanded)
 
 

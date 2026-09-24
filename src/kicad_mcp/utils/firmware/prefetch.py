@@ -38,6 +38,39 @@ from kicad_mcp.utils.firmware.power_names import (
 _I2C_ROLES = ("SDA", "SCL")
 
 
+def symbol_footprint(symbol: Any) -> Optional[str]:
+    """Extract a symbol's pre-assigned ``Footprint`` property, if any.
+
+    Regression: an earlier assumption here ("symbols don't carry a
+    footprint") was wrong -- verified against real KiCad 10 symbols (e.g.
+    ``Sensor_Motion:MPU-6050``, one of prefetch's own DEFAULT_LIBRARIES),
+    which DO carry a pre-assigned Footprint property. ``kicad_sch_api``'s
+    ``SymbolDefinition`` has no dedicated ``.footprint`` attribute, so this
+    walks the raw S-expression the same way ``schematic_impl._parse_unit_pin_mapping``
+    already does for pin data. Returns ``None`` (not "") when the property
+    exists but is empty, so callers can't confuse "no footprint" with
+    "found and it happens to be blank".
+    """
+    import sexpdata  # type: ignore[import-untyped]
+
+    raw = getattr(symbol, "raw_kicad_data", None)
+    if not isinstance(raw, list):
+        return None
+    for item in raw:
+        if not isinstance(item, list) or len(item) < 3:
+            continue
+        tag = item[0]
+        tag_str = str(tag.value()) if isinstance(tag, sexpdata.Symbol) else str(tag).strip('"')
+        if tag_str != "property":
+            continue
+        key = item[1] if isinstance(item[1], str) else str(item[1]).strip('"')
+        if key != "Footprint":
+            continue
+        value = item[2] if isinstance(item[2], str) else str(item[2]).strip('"')
+        return value or None
+    return None
+
+
 def synthesize_i2c_card(
     *,
     symbol_name: str,
@@ -50,9 +83,10 @@ def synthesize_i2c_card(
     """Try to synthesize an I2C device card from a symbol's pin NAMES.
 
     Returns ``(card_or_None, confidence, reasons)``. ``confidence`` is
-    ``high`` | ``low`` | ``skip`` (skip => card is None). Footprint is best-effort
-    (symbols don't carry one) and left as ``TODO:confirm`` when unknown — the card
-    is a *draft for review*, not a shipped fact.
+    ``high`` | ``low`` | ``skip`` (skip => card is None). ``footprint`` is the
+    caller's best-effort extraction (see ``symbol_footprint``) and left as
+    ``TODO:confirm`` only when the symbol genuinely has none assigned — the
+    card is still a *draft for review*, not a shipped fact, regardless.
     """
     names = {n.strip() for n in pin_names if n and n.strip()}
     reasons: list[str] = []
