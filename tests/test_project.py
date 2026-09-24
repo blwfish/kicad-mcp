@@ -66,6 +66,19 @@ class TestLoadProjectJson:
     def test_returns_none_for_missing_file(self):
         assert load_project_json("/nonexistent/file.kicad_pro") is None
 
+    def test_invalid_json_logs_a_warning(self, tmp_path, caplog):
+        """Regression: a bare `except Exception` collapsed FileNotFoundError/
+        PermissionError/JSONDecodeError/UnicodeDecodeError into one
+        indistinguishable None with no logging at all. finding #87 of the
+        2026-09-23 full review."""
+        import logging
+        pro = tmp_path / "bad.kicad_pro"
+        pro.write_text("not valid json {{{")
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.file_utils"):
+            result = load_project_json(str(pro))
+        assert result is None
+        assert any("Could not load project file" in r.message for r in caplog.records)
+
 
 # -- get_project_files tests -------------------------------------------------
 
@@ -99,6 +112,46 @@ class TestGetProjectFiles:
 
         files = get_project_files(str(tmp_path / f"{name}.kicad_pro"))
         assert any("csv" in v for v in files.values())
+
+    def test_unrelated_file_with_shared_prefix_not_matched(self, tmp_path):
+        """Regression: file.startswith(project_name) matched an unintended
+        partial prefix -- project_name="proj" would match an unrelated
+        "project-data.csv" in the same directory just because "project"
+        happens to start with "proj". finding #90 of the 2026-09-23 full
+        review."""
+        name = "proj"
+        (tmp_path / f"{name}.kicad_pro").write_text("{}")
+        (tmp_path / "project-data.csv").write_text("unrelated,data")
+
+        files = get_project_files(str(tmp_path / f"{name}.kicad_pro"))
+        assert not any("project-data" in v for v in files.values())
+
+    def test_exact_name_data_file_still_matches(self, tmp_path):
+        # The boundary check must not reject the exact-name case (no
+        # separator character at all, file == project_name + ext).
+        name = "proj"
+        (tmp_path / f"{name}.kicad_pro").write_text("{}")
+        (tmp_path / f"{name}.net").write_text("net data")
+
+        files = get_project_files(str(tmp_path / f"{name}.kicad_pro"))
+        assert any(v.endswith(f"{name}.net") for v in files.values())
+
+    def test_data_scan_oserror_logs_warning_not_silent(self, tmp_path, monkeypatch, caplog):
+        """Regression: the whole DATA_EXTENSIONS scan wrapped in one bare
+        `except (OSError, FileNotFoundError): pass` -- "no data files" was
+        indistinguishable from "the scan failed partway through". finding
+        #86 of the 2026-09-23 full review."""
+        import logging
+        name = "proj"
+        (tmp_path / f"{name}.kicad_pro").write_text("{}")
+        monkeypatch.setattr(
+            "kicad_mcp.utils.file_utils.os.listdir",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("permission denied")),
+        )
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.file_utils"):
+            files = get_project_files(str(tmp_path / f"{name}.kicad_pro"))
+        assert "project" in files  # standard-file detection is unaffected
+        assert any("Could not scan" in r.message for r in caplog.records)
 
 
 # -- open_kicad_project tests ------------------------------------------------
