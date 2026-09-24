@@ -50,6 +50,12 @@ class FirmwareCorpus:
     files_scanned: int = 0      # source/doc files actually read
     files_errored: int = 0      # files that failed to read (counted, not dropped silently)
     truncated: bool = False     # hit _MAX_SOURCE_FILES — coverage was capped
+    # files_scanned via read_text(errors="replace") whose bytes weren't valid
+    # UTF-8 -- each invalid byte silently becomes U+FFFD with no signal at
+    # all previously. A part name straddling a replaced byte could fail to
+    # match with zero indication why; counted (not fixed -- there's no
+    # correct re-decoding to fall back to once the true encoding is unknown).
+    files_with_encoding_errors: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,10 +101,15 @@ def collect_corpus(config_path: str, config_text: str) -> FirmwareCorpus:
             corpus.truncated = True
             break
         try:
-            text = path.read_text(errors="replace")
+            raw_bytes = path.read_bytes()
         except OSError:
             corpus.files_errored += 1   # counted, never silently swallowed
             continue
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw_bytes.decode("utf-8", errors="replace")
+            corpus.files_with_encoding_errors += 1
         corpus.entries.append(
             CorpusEntry(text=text, file=str(path),
                         kind="source" if is_source else "doc")
