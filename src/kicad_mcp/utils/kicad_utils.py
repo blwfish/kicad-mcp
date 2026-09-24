@@ -71,14 +71,31 @@ def find_kicad_projects() -> List[Dict[str, Any]]:
 def get_project_name_from_path(project_path: str) -> str:
     """Extract the project name from a .kicad_pro file path.
 
+    This is the canonical helper other modules are meant to migrate to
+    instead of hand-rolling their own basename[:-10] slice (bom.py and
+    project.py both did, independently -- CLAUDE.md's Parallel
+    Implementation Rule). Centralizing on a shared helper only helps if the
+    helper itself is correct: the original `basename[:-len(ext)]` silently
+    returned a WRONG (not just unchanged) result whenever the basename
+    didn't actually end with the expected extension -- e.g. called on
+    "notes.txt" it would blindly chop the last 10 characters regardless of
+    what they are, since a negative-length slice has no way to verify the
+    suffix it's removing matches. Now verified with .endswith() first; a
+    mismatched extension returns the basename unchanged rather than a
+    silently corrupted truncation.
+
     Args:
         project_path: Path to the .kicad_pro file
 
     Returns:
-        Project name without extension
+        Project name without extension (or the unmodified basename if it
+        doesn't end with the expected .kicad_pro extension)
     """
     basename = os.path.basename(project_path)
-    return basename[: -len(config.KICAD_EXTENSIONS["project"])]
+    ext = config.KICAD_EXTENSIONS["project"]
+    if basename.endswith(ext):
+        return basename[: -len(ext)]
+    return basename
 
 
 def open_kicad_project(project_path: str) -> Dict[str, Any]:
@@ -104,12 +121,25 @@ def open_kicad_project(project_path: str) -> Dict[str, Any]:
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
-        return {
+        response: Dict[str, Any] = {
             "status": "ok" if result.returncode == 0 else "error",
             "command": " ".join(cmd),
             "output": result.stdout,
             "error": result.stderr if result.returncode != 0 else None,
         }
+        # stderr used to be discarded entirely on success (returncode==0) --
+        # `open`/`xdg-open` can still write warnings to stderr on a
+        # successful launch (e.g. a desktop-file lookup warning), which was
+        # silently lost with nowhere for a caller to see it.
+        if result.returncode == 0 and result.stderr:
+            response["warnings"] = result.stderr
+        return response
 
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError) as e:
+        # Only subprocess.run(...) can raise in this block (TimeoutExpired,
+        # or OSError from the `open`/`xdg-open` binary itself being
+        # missing) -- narrowed from a bare `except Exception`, which would
+        # have also silently swallowed an unrelated programming bug (a
+        # NameError/AttributeError) as an ordinary "error" result instead
+        # of letting it surface as the bug it is.
         return {"status": "error", "error": str(e)}

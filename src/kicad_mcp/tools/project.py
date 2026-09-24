@@ -9,7 +9,11 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.file_utils import get_project_files, load_project_json
-from kicad_mcp.utils.kicad_utils import find_kicad_projects, open_kicad_project
+from kicad_mcp.utils.kicad_utils import (
+    find_kicad_projects,
+    get_project_name_from_path,
+    open_kicad_project,
+)
 from kicad_mcp.utils.path_validation import validate_project_path
 
 logger = logging.getLogger(__name__)
@@ -36,7 +40,7 @@ def _op_get_structure(project_path: str) -> Dict[str, Any]:
         return {"error": err}
 
     project_dir = os.path.dirname(project_path)
-    project_name = os.path.basename(project_path)[:-10]  # Remove .kicad_pro
+    project_name = get_project_name_from_path(project_path)
 
     files = get_project_files(project_path)
 
