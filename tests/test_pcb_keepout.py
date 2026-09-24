@@ -983,105 +983,120 @@ class TestAuditAllDetailFlag:
         assert mock_run.call_count == 1
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_all_full_calls_each_sub_op(self, mock_run, audit_server, pcb_file):
-        """detail='full' calls each sub-op and aggregates their full output."""
-        # Each sub-op (_op_placement, _op_footprint_overlaps, _op_pad_clearances,
-        # _op_keepouts) makes exactly one run_pcbnew_script call.
-        mock_run.return_value = {"status": "ok"}
-        # Provide per-op return values that the full path expects
-        placement_result = {
+    def test_all_full_makes_one_combined_call(self, mock_run, audit_server, pcb_file):
+        """detail='full' now runs all 4 checks in ONE combined subprocess/
+        LoadBoard round trip (finding #27, 2026-09-23 full review Phase 1.5)
+        instead of 4 separate run_pcbnew_script calls -- see
+        tests/test_pcb_keepout_integration.py::TestAuditAllFullVsSeparateOps
+        for the real-KiCad proof the combined output matches the 4 standalone
+        ops exactly. This test pins the dispatch-level contract: one call,
+        combined script, per-op results nested under their existing keys."""
+        mock_run.return_value = {
             "status": "ok",
-            "total_footprints": 3,
-            "violations_count": 0,
-            "clean_count": 3,
-            "violations": [],
-            "summary": "All 3 footprints pass placement checks",
+            "placement": {
+                "status": "ok",
+                "total_footprints": 3,
+                "violations_count": 0,
+                "clean_count": 3,
+                "violations": [],
+                "summary": "All 3 footprints pass placement checks",
+            },
+            "footprint_overlaps": {
+                "status": "ok",
+                "total_footprints": 3,
+                "pairs_checked": 3,
+                "overlap_count": 0,
+                "error_count": 0,
+                "warning_count": 0,
+                "overlaps": [],
+                "summary": "All 3 footprints are clear of each other",
+            },
+            "pad_clearances": {
+                "status": "ok",
+                "total_pads": 6,
+                "min_clearance_mm": 0.2,
+                "min_clearance_source": "board",
+                "violation_count": 0,
+                "footprint_pairs_affected": 0,
+                "footprint_pair_summary": [],
+                "violations": [],
+                "summary": "All inter-footprint pad clearances >= 0.2mm (6 pads checked)",
+            },
+            "keepouts": {
+                "status": "ok",
+                "keepout_count": 1,
+                "keepouts": SAMPLE_KEEPOUTS,
+            },
+            "total_issues": 0,
+            "summary": "placement=0 violations, overlaps=0, pad_clearances=0",
         }
-        overlaps_result = {
-            "status": "ok",
-            "total_footprints": 3,
-            "pairs_checked": 3,
-            "overlap_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "overlaps": [],
-            "summary": "All 3 footprints are clear of each other",
-        }
-        pad_cl_result = {
-            "status": "ok",
-            "total_pads": 6,
-            "min_clearance_mm": 0.2,
-            "min_clearance_source": "board",
-            "violation_count": 0,
-            "footprint_pairs_affected": 0,
-            "footprint_pair_summary": [],
-            "violations": [],
-            "violations_truncated": False,
-            "summary": "All inter-footprint pad clearances >= 0.2mm (6 pads checked)",
-        }
-        keepouts_result = {
-            "status": "ok",
-            "keepout_count": 1,
-            "keepouts": SAMPLE_KEEPOUTS,
-        }
-        mock_run.side_effect = [
-            placement_result, overlaps_result, pad_cl_result, keepouts_result
-        ]
 
         fn = _get_audit_fn(audit_server)
         result = fn("all", pcb_path=pcb_file, detail="full")
 
-        # Four separate subprocess calls (one per sub-op)
-        assert mock_run.call_count == 4
+        # ONE combined subprocess call, not 4 (that's the whole point of #27).
+        assert mock_run.call_count == 1
+        # The combined script loads the board exactly once.
+        script = mock_run.call_args[0][0]
+        assert script.count("pcbnew.LoadBoard(") == 1
+        # And calls each check function exactly once.
+        for fn_name in ("_check_placement(", "_check_footprint_overlaps(",
+                        "_check_pad_clearances(", "_check_keepouts("):
+            assert script.count(fn_name) >= 2  # def + call site
 
-        # Each sub-op result is nested under its key
-        assert result["status"] == "ok"
+        # Each sub-op result is nested under its key, same shape as before
         assert result["placement"]["violations_count"] == 0
         assert result["footprint_overlaps"]["overlap_count"] == 0
         assert result["pad_clearances"]["violation_count"] == 0
         assert result["keepouts"]["keepout_count"] == 1
+
+        # _truncate_violations is still applied in-process to pad_clearances,
+        # same as the standalone _op_pad_clearances does -- pin that the
+        # violations_truncated field gets added even though the (mocked)
+        # embedded script's own pad_clearances dict didn't include it.
+        assert result["pad_clearances"]["violations_truncated"] is False
 
         # Aggregate summary fields
         assert "total_issues" in result
         assert "summary" in result
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
-    def test_all_full_forwards_use_courtyard_to_footprint_overlaps(
+    def test_all_full_forwards_use_courtyard_to_embedded_script(
         self, mock_run, audit_server, pcb_file
     ):
         """finding #15 (Phase 1.5, 2026-09-23 full review): audit(operation="all")
         accepts a use_courtyard parameter but used to drop it when calling
-        _op_footprint_overlaps for detail="full" (and had no way to honor it at
-        all for detail="summary", its embedded script hardcoding courtyard-first
-        bbox selection). Pin that use_courtyard=False actually reaches the
-        footprint_overlaps sub-call's run_pcbnew_script params."""
-        mock_run.return_value = {"status": "ok"}
-        placement_result = {
-            "status": "ok", "total_footprints": 3, "violations_count": 0,
-            "clean_count": 3, "violations": [], "summary": "",
+        _op_footprint_overlaps for detail="full". Now that detail="full" is a
+        single combined call (finding #27), pin that use_courtyard=False
+        reaches that one call's run_pcbnew_script params."""
+        mock_run.return_value = {
+            "status": "ok",
+            "placement": {
+                "status": "ok", "total_footprints": 3, "violations_count": 0,
+                "clean_count": 3, "violations": [], "summary": "",
+            },
+            "footprint_overlaps": {
+                "status": "ok", "total_footprints": 3, "pairs_checked": 3,
+                "overlap_count": 0, "error_count": 0, "warning_count": 0,
+                "overlaps": [], "summary": "",
+            },
+            "pad_clearances": {
+                "status": "ok", "total_pads": 6, "min_clearance_mm": 0.2,
+                "min_clearance_source": "board", "violation_count": 0,
+                "footprint_pairs_affected": 0, "footprint_pair_summary": [],
+                "violations": [], "summary": "",
+            },
+            "keepouts": {"status": "ok", "keepout_count": 0, "keepouts": []},
+            "total_issues": 0,
+            "summary": "",
         }
-        overlaps_result = {
-            "status": "ok", "total_footprints": 3, "pairs_checked": 3,
-            "overlap_count": 0, "error_count": 0, "warning_count": 0,
-            "overlaps": [], "summary": "",
-        }
-        pad_cl_result = {
-            "status": "ok", "total_pads": 6, "min_clearance_mm": 0.2,
-            "min_clearance_source": "board", "violation_count": 0,
-            "footprint_pairs_affected": 0, "footprint_pair_summary": [],
-            "violations": [], "violations_truncated": False, "summary": "",
-        }
-        keepouts_result = {"status": "ok", "keepout_count": 0, "keepouts": []}
-        mock_run.side_effect = [
-            placement_result, overlaps_result, pad_cl_result, keepouts_result
-        ]
 
         fn = _get_audit_fn(audit_server)
         fn("all", pcb_path=pcb_file, detail="full", use_courtyard=False)
 
-        # Call order: placement, footprint_overlaps, pad_clearances, keepouts
-        overlaps_call_params = mock_run.call_args_list[1].kwargs["params"]
-        assert overlaps_call_params["use_courtyard"] is False
+        assert mock_run.call_count == 1
+        call_params = mock_run.call_args.kwargs["params"]
+        assert call_params["use_courtyard"] is False
 
     @patch("kicad_mcp.tools.pcb_keepout.run_pcbnew_script")
     def test_all_summary_passes_use_courtyard_into_embedded_script(
@@ -1120,28 +1135,31 @@ class TestAuditAllDetailFlag:
             "silkscreen_text_overlaps": [],
             "summary": "1 footprint overlap(s)",
         }
-        placement_result = {
-            "status": "ok", "total_footprints": 2, "violations_count": 0,
-            "clean_count": 2, "violations": [], "summary": "",
-        }
-        overlaps_result = {
-            "status": "ok", "total_footprints": 2, "pairs_checked": 1,
-            "overlap_count": 1, "error_count": 1, "warning_count": 0,
-            "overlaps": [{"ref_a": "R1", "ref_b": "R2", "overlap": True,
-                          "overlap_mm2": 1.0, "gap_mm": -0.5,
-                          "bbox_a": {}, "bbox_b": {}, "value_a": "10k", "value_b": "10k",
-                          "bbox_source_a": "body", "bbox_source_b": "body",
-                          "severity": "error", "message": "R1 and R2 physically overlap"}],
-            "summary": "1 overlap(s) found",
-        }
-        pad_cl_result = {
-            "status": "ok", "total_pads": 4, "min_clearance_mm": 0.2,
-            "min_clearance_source": "board", "violation_count": 0,
-            "footprint_pairs_affected": 0, "footprint_pair_summary": [],
-            "violations": [], "violations_truncated": False, "summary": "",
-        }
-        keepouts_result = {
-            "status": "ok", "keepout_count": 0, "keepouts": [],
+        full_result = {
+            "status": "ok",
+            "placement": {
+                "status": "ok", "total_footprints": 2, "violations_count": 0,
+                "clean_count": 2, "violations": [], "summary": "",
+            },
+            "footprint_overlaps": {
+                "status": "ok", "total_footprints": 2, "pairs_checked": 1,
+                "overlap_count": 1, "error_count": 1, "warning_count": 0,
+                "overlaps": [{"ref_a": "R1", "ref_b": "R2", "overlap": True,
+                              "overlap_mm2": 1.0, "gap_mm": -0.5,
+                              "bbox_a": {}, "bbox_b": {}, "value_a": "10k", "value_b": "10k",
+                              "bbox_source_a": "body", "bbox_source_b": "body",
+                              "severity": "error", "message": "R1 and R2 physically overlap"}],
+                "summary": "1 overlap(s) found",
+            },
+            "pad_clearances": {
+                "status": "ok", "total_pads": 4, "min_clearance_mm": 0.2,
+                "min_clearance_source": "board", "violation_count": 0,
+                "footprint_pairs_affected": 0, "footprint_pair_summary": [],
+                "violations": [], "summary": "",
+            },
+            "keepouts": {"status": "ok", "keepout_count": 0, "keepouts": []},
+            "total_issues": 1,
+            "summary": "placement=0 violations, overlaps=1, pad_clearances=0",
         }
 
         fn = _get_audit_fn(audit_server)
@@ -1152,9 +1170,11 @@ class TestAuditAllDetailFlag:
         assert "footprint_overlaps" in result_summary  # abridged list
         assert "placement" not in result_summary        # no nested ops
 
-        # full: four calls
-        mock_run.side_effect = [placement_result, overlaps_result, pad_cl_result, keepouts_result]
+        # full: also a single call now (finding #27), but structurally
+        # different from summary's — nested per-op keys, not abridged counts.
+        mock_run.side_effect = [full_result]
         result_full = fn("all", pcb_path=pcb_file, detail="full")
+        assert mock_run.call_count == 2  # 1 for summary above + 1 for full
         assert "placement" in result_full               # nested op present
         assert "footprint_overlaps" in result_full      # nested op present
         assert "pad_clearances" in result_full          # nested op present

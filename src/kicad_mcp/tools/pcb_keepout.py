@@ -1182,47 +1182,372 @@ print(json.dumps({
     })
 
 
+# ---------------------------------------------------------------------------
+# Combined single-subprocess script for operation="all", detail="full".
+#
+# Each _check_* function below is the exact script body of _op_placement /
+# _op_footprint_overlaps / _op_pad_clearances / _op_keepouts above, wrapped
+# to take the already-loaded `board` instead of loading it itself. They are
+# NOT reimplementations -- keeping them as verbatim copies of those op
+# bodies is what makes byte-for-bit parity with the (formerly) 4-separate-
+# subprocess path checkable, and is proven against real KiCad by
+# tests/test_pcb_keepout_integration.py::TestAuditAllFullVsSeparateOps,
+# which runs both paths against the same board and diffs the JSON.
+#
+# If you change one of the 4 standalone _op_* functions above, mirror the
+# change here (and vice versa) -- see AGENTS.md's Parallel Implementation
+# Rule. This is a deliberately-accepted duplication (not the shared-helper
+# refactor discussed in finding #27), scoped narrowly to keep the 4
+# standalone ops -- which are also called independently, e.g. delegated to
+# subagents per AGENT-INSTRUCTIONS.md -- behaviorally untouched.
+# ---------------------------------------------------------------------------
+_ALL_FULL_CHECKS = """
+def _check_placement(board):
+    keepouts = extract_keepouts(board)
+    outline = get_board_outline(board)
+
+    violations_list = []
+    clean_count = 0
+
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        fp_bbox = fp.GetBoundingBox(False, False)  # exclude text for accurate body bbox
+        fp_rect = {
+            "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+            "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+            "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+            "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+        }
+        issues = []
+
+        for kz in keepouts:
+            if kz["source"] == "footprint" and kz["source_ref"] == ref:
+                continue
+            kz_bb = kz["bounding_box"]
+            if not rects_overlap(fp_rect, kz_bb):
+                continue
+            area = overlap_area(fp_rect, kz_bb)
+            c = kz["constraints"]
+            blocked = blocked_constraints(c)
+            severity = "violation" if c["no_footprints"] else "warning"
+            issues.append({
+                "type": "keepout_overlap",
+                "severity": severity,
+                "keepout_source": kz["source"],
+                "keepout_ref": kz["source_ref"],
+                "overlap_mm2": area,
+                "blocked": blocked,
+            })
+
+        if outline and not rect_inside(fp_rect, outline):
+            overhang = {k: round(v, 3) for k, v in compute_overhang_mm(fp_rect, outline).items()}
+            issues.append({
+                "type": "outside_board",
+                "severity": "violation",
+                "overhang": overhang,
+            })
+
+        if issues:
+            pos = fp.GetPosition()
+            violations_list.append({
+                "reference": ref,
+                "value": fp.GetValue(),
+                "footprint": fp.GetFPID().GetUniStringLibItemName(),
+                "position_mm": [round(pcbnew.ToMM(pos.x), 3), round(pcbnew.ToMM(pos.y), 3)],
+                "bbox_mm": fp_rect,
+                "issues": issues,
+            })
+        else:
+            clean_count += 1
+
+    total = len(list(board.GetFootprints()))
+    vcount = len(violations_list)
+    summary = f"{vcount} of {total} footprints have placement issues" if vcount > 0 else f"All {total} footprints pass placement checks"
+
+    return {
+        "status": "ok",
+        "total_footprints": total,
+        "violations_count": vcount,
+        "clean_count": clean_count,
+        "violations": violations_list,
+        "summary": summary,
+    }
+
+
+def _check_footprint_overlaps(board, min_clearance, use_courtyard):
+    # Wrap to add source annotation (courtyard vs pads vs none). Local to
+    # this function -- unlike the old separate-subprocess script where this
+    # shadowed the module-level get_courtyard_bbox for the rest of that
+    # script's (single-purpose) run, here it stays scoped to this check only
+    # and never leaks into _check_placement/_check_pad_clearances/
+    # _check_keepouts, which is strictly safer than the prior isolation
+    # (separate subprocesses) since there was never any cross-op state to
+    # leak into in the first place.
+    _base_get_bbox = get_courtyard_bbox
+    def _fpov_get_courtyard_bbox(fp):
+        result = _base_get_bbox(fp)
+        if result is None:
+            return None, "none"
+        for item in fp.GraphicalItems():
+            if "CrtYd" in board.GetLayerName(item.GetLayer()):
+                return result, "courtyard"
+        return result, "pads"
+
+    footprints = []
+    for fp in board.GetFootprints():
+        pos = fp.GetPosition()
+        fp_bbox = fp.GetBoundingBox(False, False)
+        body_box = {
+            "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
+            "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
+            "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
+            "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
+        }
+
+        if use_courtyard:
+            tight_box, source = _fpov_get_courtyard_bbox(fp)
+            check_box = tight_box if tight_box else body_box
+            box_source = source if tight_box else "body"
+        else:
+            check_box = body_box
+            box_source = "body"
+
+        footprints.append({
+            "reference": fp.GetReference(),
+            "value": fp.GetValue(),
+            "footprint": fp.GetFPID().GetUniStringLibItemName(),
+            "position_mm": [round(pcbnew.ToMM(pos.x), 3), round(pcbnew.ToMM(pos.y), 3)],
+            "bbox": check_box,
+            "bbox_source": box_source,
+        })
+
+    # Pairwise overlap check
+    overlaps = []
+    for i in range(len(footprints)):
+        a = footprints[i]
+        a_box = a["bbox"]
+        for j in range(i + 1, len(footprints)):
+            b = footprints[j]
+            b_box = b["bbox"]
+
+            actual_overlap = rects_overlap(a_box, b_box)
+            area = overlap_area(a_box, b_box) if actual_overlap else 0.0
+
+            is_clearance_violation = clearance_violation(a_box, b_box, min_clearance)
+
+            if actual_overlap or is_clearance_violation:
+                gap_mm = signed_gap_mm(a_box, b_box)
+
+                entry = {
+                    "ref_a": a["reference"],
+                    "ref_b": b["reference"],
+                    "value_a": a["value"],
+                    "value_b": b["value"],
+                    "overlap": actual_overlap,
+                    "overlap_mm2": area,
+                    "gap_mm": round(gap_mm, 3),
+                    "bbox_a": a_box,
+                    "bbox_b": b_box,
+                    "bbox_source_a": a["bbox_source"],
+                    "bbox_source_b": b["bbox_source"],
+                }
+                if actual_overlap:
+                    entry["severity"] = "error"
+                    entry["message"] = f"{a['reference']} and {b['reference']} physically overlap by {area} mm2"
+                else:
+                    entry["severity"] = "warning"
+                    entry["message"] = f"{a['reference']} and {b['reference']} are only {round(gap_mm, 3)} mm apart (min clearance: {min_clearance} mm)"
+                overlaps.append(entry)
+
+    total = len(footprints)
+    pairs_checked = total * (total - 1) // 2
+    error_count = sum(1 for o in overlaps if o["severity"] == "error")
+    warning_count = sum(1 for o in overlaps if o["severity"] == "warning")
+
+    if overlaps:
+        summary = f"{len(overlaps)} overlap(s) found among {total} footprints ({error_count} collisions, {warning_count} clearance warnings)"
+    else:
+        summary = f"All {total} footprints are clear of each other"
+        if min_clearance > 0:
+            summary += f" (min clearance {min_clearance} mm)"
+
+    return {
+        "status": "ok",
+        "total_footprints": total,
+        "pairs_checked": pairs_checked,
+        "overlap_count": len(overlaps),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "overlaps": overlaps,
+        "summary": summary,
+    }
+
+
+def _check_pad_clearances(board, min_cl):
+    min_cl_source = "caller"
+    if min_cl <= 0:
+        ds = board.GetDesignSettings()
+        min_cl = pcbnew.ToMM(ds.m_MinClearance)
+        min_cl_source = "board"
+        if min_cl <= 0:
+            min_cl = 0.2  # fallback
+            min_cl_source = "default_fallback"
+
+    all_pads = []
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        for pad in fp.Pads():
+            pos = pad.GetPosition()
+            size = pad.GetSize()
+            x = pcbnew.ToMM(pos.x)
+            y = pcbnew.ToMM(pos.y)
+            w = pcbnew.ToMM(size.x)
+            h = pcbnew.ToMM(size.y)
+            all_pads.append({
+                "ref": ref,
+                "pad": pad.GetNumber(),
+                "net": pad.GetNetname(),
+                "x": x, "y": y,
+                "w": w, "h": h,
+                "x0": x - w / 2, "y0": y - h / 2,
+                "x1": x + w / 2, "y1": y + h / 2,
+            })
+
+    violations = []
+    n = len(all_pads)
+
+    for i in range(n):
+        a = all_pads[i]
+        ax0 = a["x0"] - min_cl
+        ay0 = a["y0"] - min_cl
+        ax1 = a["x1"] + min_cl
+        ay1 = a["y1"] + min_cl
+        for j in range(i + 1, n):
+            b = all_pads[j]
+            if a["ref"] == b["ref"]:
+                continue
+            if a["net"] and a["net"] == b["net"]:
+                continue
+            if ax0 >= b["x1"] or ax1 <= b["x0"] or ay0 >= b["y1"] or ay1 <= b["y0"]:
+                continue
+            gap = pad_signed_gap(a, b)
+            if gap < min_cl:
+                violations.append({
+                    "pad_a": f"{a['ref']}:{a['pad']}",
+                    "pad_b": f"{b['ref']}:{b['pad']}",
+                    "net_a": a["net"],
+                    "net_b": b["net"],
+                    "gap_mm": round(gap, 3),
+                    "min_clearance_mm": round(min_cl, 3),
+                    "overlap": gap <= 0,
+                    "pad_a_center": [round(a["x"], 3), round(a["y"], 3)],
+                    "pad_b_center": [round(b["x"], 3), round(b["y"], 3)],
+                })
+
+    fp_pairs = {}
+    for v in violations:
+        ref_a = v["pad_a"].split(":")[0]
+        ref_b = v["pad_b"].split(":")[0]
+        key = tuple(sorted([ref_a, ref_b]))
+        if key not in fp_pairs:
+            fp_pairs[key] = {
+                "ref_a": key[0], "ref_b": key[1],
+                "pad_violations": 0, "min_gap_mm": float("inf"),
+            }
+        fp_pairs[key]["pad_violations"] += 1
+        fp_pairs[key]["min_gap_mm"] = min(fp_pairs[key]["min_gap_mm"], v["gap_mm"])
+
+    fp_summaries = []
+    for p in fp_pairs.values():
+        p["min_gap_mm"] = round(p["min_gap_mm"], 3)
+        fp_summaries.append(p)
+    fp_summaries.sort(key=lambda x: x["min_gap_mm"])
+
+    if violations:
+        summary = f"{len(violations)} pad clearance violation(s) across {len(fp_summaries)} footprint pair(s) (min_clearance={min_cl}mm)"
+    else:
+        summary = f"All inter-footprint pad clearances >= {min_cl}mm ({n} pads checked)"
+
+    return {
+        "status": "ok",
+        "total_pads": n,
+        "min_clearance_mm": round(min_cl, 3),
+        "min_clearance_source": min_cl_source,
+        "violation_count": len(violations),
+        "footprint_pairs_affected": len(fp_summaries),
+        "footprint_pair_summary": fp_summaries,
+        "violations": violations,  # full list; capped in-process by _truncate_violations
+        "summary": summary,
+    }
+
+
+def _check_keepouts(board):
+    keepouts = extract_keepouts(board)
+    return {"status": "ok", "keepout_count": len(keepouts), "keepouts": keepouts}
+"""
+
+
 def _op_all_full(
     pcb_path: str, min_clearance_mm: float = 0.0, use_courtyard: bool = True
 ) -> Dict[str, Any]:
-    """Run all placement audits and return full per-op detail (full detail level)."""
-    results: Dict[str, Any] = {"status": "ok"}
+    """Run all placement audits and return full per-op detail (full detail
+    level) -- in ONE pcbnew subprocess/LoadBoard round trip instead of 4
+    (finding #27, 2026-09-23 full review Phase 1). See _ALL_FULL_CHECKS
+    above for why this is safe: it's the same 4 op bodies, not new logic.
+    """
+    _pv_err = validate_project_path(pcb_path)
+    if _pv_err:
+        return {"error": _pv_err}
 
-    placement = _op_placement(pcb_path)
-    if "error" in placement:
-        return placement
-    results["placement"] = placement
+    script = """
+import pcbnew, json, sys
 
-    overlaps = _op_footprint_overlaps(
-        pcb_path, min_clearance_mm=min_clearance_mm, use_courtyard=use_courtyard
-    )
-    if "error" in overlaps:
-        return overlaps
-    results["footprint_overlaps"] = overlaps
+params = json.loads(open(sys.argv[1]).read())
+""" + _KEEPOUT_HELPER + _COURTYARD_BBOX + PAD_GAP_HELPER + _ALL_FULL_CHECKS + """
+board = pcbnew.LoadBoard(params["pcb_path"])
+if board is None:
+    print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
+    sys.exit(0)
+min_clearance = params["min_clearance_mm"]
+use_courtyard = params["use_courtyard"]
 
-    pad_cl = _op_pad_clearances(pcb_path, min_clearance_mm=min_clearance_mm)
-    if "error" in pad_cl:
-        return pad_cl
-    results["pad_clearances"] = pad_cl
+placement = _check_placement(board)
+overlaps = _check_footprint_overlaps(board, min_clearance, use_courtyard)
+pad_cl = _check_pad_clearances(board, min_clearance)
+keepouts = _check_keepouts(board)
 
-    keepouts = _op_keepouts(pcb_path)
-    if "error" in keepouts:
-        return keepouts
-    results["keepouts"] = keepouts
+total_issues = (
+    placement.get("violations_count", 0)
+    + overlaps.get("overlap_count", 0)
+    + pad_cl.get("violation_count", 0)
+)
+summary = (
+    f"placement={placement.get('violations_count', 0)} violations, "
+    f"overlaps={overlaps.get('overlap_count', 0)}, "
+    f"pad_clearances={pad_cl.get('violation_count', 0)}"
+)
 
-    # Aggregate summary from sub-results
-    total_issues = (
-        placement.get("violations_count", 0)
-        + overlaps.get("overlap_count", 0)
-        + pad_cl.get("violation_count", 0)
-    )
-    results["total_issues"] = total_issues
-    results["summary"] = (
-        f"placement={placement.get('violations_count', 0)} violations, "
-        f"overlaps={overlaps.get('overlap_count', 0)}, "
-        f"pad_clearances={pad_cl.get('violation_count', 0)}"
-    )
-    return results
+print(json.dumps({
+    "status": "ok",
+    "placement": placement,
+    "footprint_overlaps": overlaps,
+    "pad_clearances": pad_cl,
+    "keepouts": keepouts,
+    "total_issues": total_issues,
+    "summary": summary,
+}))
+"""
+    result = run_pcbnew_script(script, params={
+        "pcb_path": pcb_path,
+        "min_clearance_mm": min_clearance_mm,
+        "use_courtyard": use_courtyard,
+    })
+    if "error" in result:
+        return result
+    # Mirror _op_pad_clearances' own post-processing (applied there in-process,
+    # after its own run_pcbnew_script call) onto the nested pad_clearances dict.
+    result["pad_clearances"] = _truncate_violations(result["pad_clearances"])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1266,8 +1591,10 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
           all(pcb_path, min_clearance_mm=0, use_courtyard=True, detail="summary"|"full")
               -> combined audit of footprint overlaps, keepout violations, and
                  silkscreen overlaps. detail="summary" returns abridged counts
-                 (one subprocess call). detail="full" calls each sub-op
-                 independently and returns their complete output under
+                 (one subprocess call). detail="full" runs the same 4 checks
+                 as the standalone placement/footprint_overlaps/pad_clearances/
+                 keepouts operations below (one subprocess call, same output
+                 per check) and returns their complete output under
                  "placement", "footprint_overlaps", "pad_clearances", "keepouts".
                  use_courtyard applies to the footprint-overlap check, same as
                  the standalone footprint_overlaps operation below.

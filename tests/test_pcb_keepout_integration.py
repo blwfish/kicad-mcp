@@ -404,3 +404,112 @@ class TestSameNetPadClearanceExemptionIntegration:
         assert result.get("status") == "ok", result
         pairs = {(v["pad_a"], v["pad_b"]) for v in result["pad_violations"]}
         assert ("R1:2", "R2:1") not in pairs and ("R2:1", "R1:2") not in pairs, result
+
+
+class TestAuditAllFullVsSeparateOps:
+    """finding #27 (2026-09-23 full review, Phase 1): audit(operation="all",
+    detail="full") used to call _op_placement/_op_footprint_overlaps/
+    _op_pad_clearances/_op_keepouts independently -- 4 separate subprocess
+    spawns + LoadBoard() round trips. _op_all_full now runs the same 4
+    checks in ONE combined script/LoadBoard call (_ALL_FULL_CHECKS in
+    pcb_keepout.py, built from verbatim copies of each op's script body).
+
+    These tests are the real-KiCad proof that the combined path's output is
+    byte-for-bit identical to calling the 4 standalone ops directly -- not
+    just "same shape", but `==` on the actual parsed JSON, for every nested
+    key each standalone op returns (including violations lists, bboxes,
+    gap_mm, etc.), across both use_courtyard settings and both a clearance
+    value that produces zero violations and one that produces several. The
+    standalone ops are unchanged and still directly callable (e.g. by a
+    subagent per AGENT-INSTRUCTIONS.md's read-only delegation guidance) --
+    this only proves the combined aggregate matches them, not that they
+    were touched.
+    """
+
+    @pytest.fixture(autouse=True)
+    def skip_if_unavailable(self):
+        if not pcbnew_available():
+            pytest.skip("pcbnew not importable under KiCad's Python")
+        if not _pcb_exists():
+            pytest.skip(f"PCB file not found: {PCB_PATH}")
+
+    @pytest.mark.parametrize("min_clearance_mm,use_courtyard", [
+        (0.0, True),
+        (0.3, True),
+        (0.0, False),
+        (0.5, False),
+    ])
+    def test_combined_matches_four_separate_calls(self, min_clearance_mm, use_courtyard):
+        from kicad_mcp.tools.pcb_keepout import (
+            _op_all_full,
+            _op_footprint_overlaps,
+            _op_keepouts,
+            _op_pad_clearances,
+            _op_placement,
+        )
+
+        placement = _op_placement(PCB_PATH)
+        overlaps = _op_footprint_overlaps(
+            PCB_PATH, min_clearance_mm=min_clearance_mm, use_courtyard=use_courtyard
+        )
+        pad_cl = _op_pad_clearances(PCB_PATH, min_clearance_mm=min_clearance_mm)
+        keepouts = _op_keepouts(PCB_PATH)
+
+        combined = _op_all_full(
+            PCB_PATH, min_clearance_mm=min_clearance_mm, use_courtyard=use_courtyard
+        )
+
+        assert combined["status"] == "ok"
+        # Exact equality, not just matching keys/shape -- every violation
+        # entry, bbox, gap_mm, message string, etc. must match verbatim.
+        assert combined["placement"] == placement
+        assert combined["footprint_overlaps"] == overlaps
+        assert combined["pad_clearances"] == pad_cl
+        assert combined["keepouts"] == keepouts
+
+        expected_total = (
+            placement.get("violations_count", 0)
+            + overlaps.get("overlap_count", 0)
+            + pad_cl.get("violation_count", 0)
+        )
+        expected_summary = (
+            f"placement={placement.get('violations_count', 0)} violations, "
+            f"overlaps={overlaps.get('overlap_count', 0)}, "
+            f"pad_clearances={pad_cl.get('violation_count', 0)}"
+        )
+        assert combined["total_issues"] == expected_total
+        assert combined["summary"] == expected_summary
+
+    def test_combined_uses_one_subprocess_call(self, monkeypatch):
+        """The whole point of the merge: one run_pcbnew_script call, not 4."""
+        from kicad_mcp.tools import pcb_keepout
+        from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script as real_run
+
+        calls = []
+
+        def counting_run(script, **kwargs):
+            calls.append(script)
+            return real_run(script, **kwargs)
+
+        monkeypatch.setattr(pcb_keepout, "run_pcbnew_script", counting_run)
+        result = pcb_keepout._op_all_full(PCB_PATH)
+        assert result["status"] == "ok"
+        assert len(calls) == 1
+        # And that one call actually loads the board exactly once.
+        assert calls[0].count("pcbnew.LoadBoard(") == 1
+
+    def test_combined_error_on_unparseable_board(self, tmp_path):
+        """A path that passes validate_project_path's existence check but
+        isn't a real board -- pcbnew.LoadBoard() returns None. Matches the
+        standalone ops' identical error message/shape (verified directly
+        against _op_placement above the assert)."""
+        from kicad_mcp.tools.pcb_keepout import _op_all_full, _op_placement
+
+        garbage = tmp_path / "not_a_real_board.kicad_pcb"
+        garbage.write_text("not a real kicad pcb file")
+
+        standalone = _op_placement(str(garbage))
+        combined = _op_all_full(str(garbage))
+        assert standalone == combined == {
+            "error": f"Failed to load board: {garbage}"
+        }
