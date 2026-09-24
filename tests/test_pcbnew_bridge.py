@@ -261,6 +261,31 @@ class TestRunPcbnewScript:
         for f in created_files:
             assert not os.path.exists(f), f"Temp file not cleaned up: {f}"
 
+    @patch("kicad_mcp.utils.pcbnew_bridge._get_kicad_python",
+           return_value="/usr/bin/python3")
+    @patch("kicad_mcp.utils.pcbnew_bridge.subprocess.run")
+    def test_script_cleanup_oserror_does_not_mask_the_real_exception(
+        self, mock_run, mock_python, monkeypatch,
+    ):
+        """finding #6 (Phase 1, 2026-09-23 full review): `os.unlink(script_path)`
+        in the `finally` block was unguarded, unlike the params_path cleanup
+        right below it -- an OSError there (already removed, permission
+        issue) propagated and MASKED whatever real exception was already in
+        flight (here, the nonzero-exit RuntimeError)."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="ImportError: No module named pcbnew",
+        )
+        real_unlink = os.unlink
+
+        def flaky_unlink(path, *a, **k):
+            if str(path).endswith(".py"):
+                raise OSError("simulated: already removed")
+            return real_unlink(path, *a, **k)
+
+        monkeypatch.setattr("kicad_mcp.utils.pcbnew_bridge.os.unlink", flaky_unlink)
+        with pytest.raises(RuntimeError, match="pcbnew script failed"):
+            run_pcbnew_script('import pcbnew')
+
 
 # -- _extract_last_json_object tests ----------------------------------------
 
