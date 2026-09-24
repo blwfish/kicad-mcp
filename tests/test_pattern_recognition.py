@@ -889,10 +889,28 @@ class TestSensorMCPCollision:
         for non_current in ("MAX17048", "MAX98357A", "MAX7219", "MAX232"):
             sensors = identify_sensor_interfaces({"U1": _comp(value=non_current)}, {})
             assert "current_sensor" not in {s.get("type") for s in sensors}, non_current
-        # a real current-sense part is still classified (MAX9928; MAX4xxx parts
-        # collide with the broad 'light' MAX4\\d+ regex — a separate overlap)
+        # a real current-sense part is still classified
         sensors = identify_sensor_interfaces({"U1": _comp(value="MAX9928")}, {})
         assert "current_sensor" in {s.get("type") for s in sensors}
+
+    def test_max4xxx_current_parts_not_shadowed_by_light(self):
+        """Regression: 'light''s pattern used to include a bare MAX4\\d+,
+        which matched 6 of the 8 curated current-sense parts below (all
+        start with MAX4) -- since dict iteration is break-on-first-match and
+        'light' is checked before 'current', every one of these was silently
+        classified as an optical sensor instead of a current sensor."""
+        for current_part in ("MAX4080", "MAX4173", "MAX4372", "MAX4373",
+                              "MAX40056", "MAX44284"):
+            sensors = identify_sensor_interfaces({"U1": _comp(value=current_part)}, {})
+            types = {s.get("type") for s in sensors}
+            assert "current_sensor" in types, current_part
+            assert "optical_sensor" not in types, current_part
+
+    def test_real_light_sensor_parts_still_classified(self):
+        for light_part in ("MAX44006", "MAX44007", "MAX44009", "BH1750", "TSL2561"):
+            sensors = identify_sensor_interfaces({"U1": _comp(value=light_part)}, {})
+            types = {s.get("type") for s in sensors}
+            assert "optical_sensor" in types, light_part
 
     def test_mcp3204_still_classified_as_adc(self):
         """ADC path is unchanged. Emits type='analog_interface'."""

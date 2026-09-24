@@ -205,11 +205,24 @@ class TestExtractResistance:
         ("1k5", 1.5),
         ("4K7", 4.7),  # uppercase K should also work
         ("2M2", 2.2),  # megaohm shorthand
+        ("4R7", 4.7),  # ohm shorthand (regression: was missing from the shadow-fix pattern)
+        ("4r7", 4.7),  # lowercase r
+        ("0R5", 0.5),
     ])
     def test_european_shorthand_notation(self, value, expected_val):
         """European resistor shorthand: 4k7 == 4.7k, 2k2 == 2.2k, etc."""
         val, _unit = extract_resistance_value(value)
         assert val == expected_val, f"{value!r} should parse to {expected_val}, got {val}"
+
+    def test_4r7_notation_unit_is_ohms(self):
+        """Regression: '4R7' (ohm shorthand for 4.7Ω) was missing from the
+        shadow-fix regex ([kKmM] only), so '4' + 'R' matched the LOOSER
+        fallback pattern first and returned (4.0, 'Ω') -- silently dropping
+        the .7, exactly the same shadow-pattern bug the 4k7 fix addressed for
+        k/M but never extended to r/R."""
+        val, unit = extract_resistance_value("4R7")
+        assert val == 4.7
+        assert unit == "Ω"
 
     def test_unparseable(self):
         val, unit = extract_resistance_value("hello")

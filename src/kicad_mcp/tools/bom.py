@@ -472,6 +472,16 @@ def _analyze_bom_data(
 
     # --- Field detection (heuristic + caller overrides) --------------------
     overrides = {k.lower(): v.lower() for k, v in (column_map or {}).items()}
+    # A column_map key that isn't a recognized field name (a typo, e.g.
+    # "refrence" instead of "reference") used to be silently never consulted
+    # -- it just never matched anything in the loop below, with no signal
+    # that the override was ignored entirely.
+    unknown_keys = sorted(set(overrides) - set(_BOM_FIELD_PROBES))
+    if unknown_keys:
+        results["stage_errors"]["column_map"] = (
+            f"unrecognized field name(s) in column_map: {unknown_keys}; "
+            f"valid fields: {sorted(_BOM_FIELD_PROBES)}"
+        )
     detected: Dict[str, Optional[str]] = {}
     for field, candidates in _BOM_FIELD_PROBES.items():
         chosen: Optional[str] = None

@@ -374,3 +374,55 @@ class TestAnalyzeBomDataPandasPath:
         results = _analyze_bom_data(components, {})
         assert results["most_common_values"]["(unknown)"] == 1
         assert results["distinct_value_count"] == 2
+
+
+class TestColumnMapValidation:
+    """Regression: column_map's KEYS must be one of the canonical field
+    names (_BOM_FIELD_PROBES) -- a typo'd key (e.g. "refrence" instead of
+    "reference") never matched anything in the detection loop and was
+    silently never consulted at all, with zero signal the override had no
+    effect. Distinct from the existing column_map.<field> stage_error, which
+    only fires when the field name IS recognized but the requested VALUE
+    (the column header) doesn't exist in the BOM."""
+
+    def _components(self):
+        return [{"Part Number": "R1", "value": "10k"}]
+
+    def test_unrecognized_field_name_key_flagged(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(
+            self._components(), {}, column_map={"refrence": "Part Number"},
+        )
+        assert "column_map" in results["stage_errors"]
+        assert "refrence" in results["stage_errors"]["column_map"]
+
+    def test_unrecognized_field_name_key_does_not_set_the_field(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(
+            self._components(), {}, column_map={"refrence": "Part Number"},
+        )
+        assert "reference" not in results["detected_fields"]
+
+    def test_recognized_field_name_key_still_works(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(
+            self._components(), {}, column_map={"reference": "Part Number"},
+        )
+        assert "column_map" not in results.get("stage_errors", {})
+        assert results["detected_fields"]["reference"] == "part number"
+
+    def test_mix_of_recognized_and_unrecognized_keys(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(
+            self._components(),
+            {},
+            column_map={"reference": "Part Number", "vlaue": "value"},
+        )
+        assert results["detected_fields"]["reference"] == "part number"
+        assert "column_map" in results["stage_errors"]
+        assert "vlaue" in results["stage_errors"]["column_map"]
+
+    def test_no_column_map_no_stage_error(self):
+        from kicad_mcp.tools.bom import _analyze_bom_data
+        results = _analyze_bom_data(self._components(), {})
+        assert "column_map" not in results.get("stage_errors", {})
