@@ -989,7 +989,9 @@ print(json.dumps({
     })
 
 
-def _op_all_summary(pcb_path: str, min_clearance_mm: float = 0.0) -> Dict[str, Any]:
+def _op_all_summary(
+    pcb_path: str, min_clearance_mm: float = 0.0, use_courtyard: bool = True
+) -> Dict[str, Any]:
     """Run all placement audits in a single subprocess call (summary detail level)."""
     script = """
 import pcbnew, json, sys
@@ -1001,13 +1003,14 @@ if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
 min_clearance = params["min_clearance_mm"]
+use_courtyard = params["use_courtyard"]
 
-# --- 1. Footprint overlap check (courtyard-based) ---
+# --- 1. Footprint overlap check (courtyard-based, unless use_courtyard=False) ---
 """ + _COURTYARD_BBOX + """
 
 footprints = []
 for fp in board.GetFootprints():
-    tight_box = get_courtyard_bbox(fp)
+    tight_box = get_courtyard_bbox(fp) if use_courtyard else None
     if not tight_box:
         fp_bbox = fp.GetBoundingBox(False, False)
         tight_box = {
@@ -1175,10 +1178,13 @@ print(json.dumps({
     return run_pcbnew_script(script, params={
         "pcb_path": pcb_path,
         "min_clearance_mm": min_clearance_mm,
+        "use_courtyard": use_courtyard,
     })
 
 
-def _op_all_full(pcb_path: str, min_clearance_mm: float = 0.0) -> Dict[str, Any]:
+def _op_all_full(
+    pcb_path: str, min_clearance_mm: float = 0.0, use_courtyard: bool = True
+) -> Dict[str, Any]:
     """Run all placement audits and return full per-op detail (full detail level)."""
     results: Dict[str, Any] = {"status": "ok"}
 
@@ -1187,7 +1193,9 @@ def _op_all_full(pcb_path: str, min_clearance_mm: float = 0.0) -> Dict[str, Any]
         return placement
     results["placement"] = placement
 
-    overlaps = _op_footprint_overlaps(pcb_path, min_clearance_mm=min_clearance_mm)
+    overlaps = _op_footprint_overlaps(
+        pcb_path, min_clearance_mm=min_clearance_mm, use_courtyard=use_courtyard
+    )
     if "error" in overlaps:
         return overlaps
     results["footprint_overlaps"] = overlaps
@@ -1255,12 +1263,14 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
         """Audit domain router — placement, clearance, and constraint verification.
 
         Operations:
-          all(pcb_path, min_clearance_mm=0, detail="summary"|"full")
+          all(pcb_path, min_clearance_mm=0, use_courtyard=True, detail="summary"|"full")
               -> combined audit of footprint overlaps, keepout violations, and
                  silkscreen overlaps. detail="summary" returns abridged counts
                  (one subprocess call). detail="full" calls each sub-op
                  independently and returns their complete output under
                  "placement", "footprint_overlaps", "pad_clearances", "keepouts".
+                 use_courtyard applies to the footprint-overlap check, same as
+                 the standalone footprint_overlaps operation below.
 
           placement(pcb_path)
               -> {total_footprints, violations_count, clean_count, violations}
@@ -1329,8 +1339,12 @@ def register_pcb_keepout_tools(mcp: FastMCP) -> None:
                 if _pv_err:
                     return {"error": _pv_err}
                 if detail == "full":
-                    return _op_all_full(pcb_path, min_clearance_mm=min_clearance_mm)
-                return _op_all_summary(pcb_path, min_clearance_mm=min_clearance_mm)
+                    return _op_all_full(
+                        pcb_path, min_clearance_mm=min_clearance_mm, use_courtyard=use_courtyard
+                    )
+                return _op_all_summary(
+                    pcb_path, min_clearance_mm=min_clearance_mm, use_courtyard=use_courtyard
+                )
 
             if operation == "placement":
                 if pcb_path is None:
