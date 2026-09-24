@@ -232,8 +232,9 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                           check_keepouts=True)
               -> {status, placed, bounding_box, placement_warnings?}
 
-          move_footprint(pcb_path, reference, x_mm, y_mm, rotation_deg=None)
-              -> {status, reference, x_mm, y_mm, rotation}
+          move_footprint(pcb_path, reference, x_mm, y_mm, rotation_deg=None,
+                         check_keepouts=True)
+              -> {status, reference, x_mm, y_mm, rotation, placement_warnings?}
 
           list_footprints(pcb_path)
               -> {status, footprint_count, footprints}
@@ -405,6 +406,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 return _op_move_footprint(
                     pcb_path, reference, x_mm, y_mm,
                     rotation_deg=rotation_deg,
+                    check_keepouts=check_keepouts,
                 )
 
             if operation == "list_footprints":
