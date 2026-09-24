@@ -7,7 +7,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 from kicad_mcp.config import KICAD_CLI_VALIDATE_ATTEMPTS
-from kicad_mcp.utils.kicad_cli import KiCadCLIManager
+from kicad_mcp.utils.kicad_cli import KiCadCLIManager, format_cli_error
 
 _FAKE_CLI = "/fake/kicad-cli"
 
@@ -175,3 +175,38 @@ class TestValidateCliPathDistinguishesTimeout:
         ):
             assert mgr.find_kicad_cli() == _FAKE_CLI
         assert any("permission denied" in r.message for r in caplog.records)
+
+
+class TestFormatCliError:
+    """finding #14/#25 (Phase 1, 2026-09-23 full review): `e.stderr or
+    e.stdout` drops stderr entirely whenever it's an empty string but stdout
+    has real content (kicad-cli writes errors to stdout on some builds).
+    Single source of truth shared by export.py and pcb_pipeline.py, which
+    previously duplicated a private nested function and a bare `or` pattern
+    respectively, with the pcb_pipeline.py copy never receiving the fix."""
+
+    def _err(self, stderr, stdout, returncode=1):
+        return subprocess.CalledProcessError(
+            returncode, ["kicad-cli"], output=stdout, stderr=stderr,
+        )
+
+    def test_stdout_only_error_not_dropped(self):
+        e = self._err(stderr="", stdout="Error: could not open board file")
+        assert "could not open board file" in format_cli_error(e)
+
+    def test_stderr_only(self):
+        e = self._err(stderr="permission denied", stdout="")
+        assert format_cli_error(e) == "permission denied"
+
+    def test_both_streams_concatenated(self):
+        e = self._err(stderr="stderr line", stdout="stdout line")
+        text = format_cli_error(e)
+        assert "stderr line" in text and "stdout line" in text
+
+    def test_neither_stream_falls_back_to_exit_code(self):
+        e = self._err(stderr="", stdout="", returncode=7)
+        assert "7" in format_cli_error(e)
+
+    def test_whitespace_only_streams_treated_as_empty(self):
+        e = self._err(stderr="   \n", stdout="\t")
+        assert format_cli_error(e) == "(no output; exit code 1)"
