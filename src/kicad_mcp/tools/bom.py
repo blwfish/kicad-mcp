@@ -21,6 +21,7 @@ except ImportError:
 from fastmcp import Context
 
 from kicad_mcp.utils.file_utils import get_project_files
+from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 
 
 async def _op_analyze_bom(
@@ -725,77 +726,38 @@ async def _export_bom_with_cli(
     ctx: Context | None,
 ) -> Dict[str, Any]:
     """Export a BOM using KiCad command-line tools."""
-    import platform
-
-    system = platform.system()
-    logger.debug("Exporting BOM using CLI tools on %s", system)
+    logger.debug("Exporting BOM using CLI tools")
     if ctx:
         await ctx.report_progress(40, 100)
 
     output_file = os.path.join(output_dir, f"{project_name}_bom.csv")
 
-    if system == "Darwin":
-        from kicad_mcp.config import KICAD_APP_PATH
-
-        kicad_cli = os.path.join(KICAD_APP_PATH, "Contents/MacOS/kicad-cli")
-
-        if not os.path.exists(kicad_cli):
-            return {
-                "status": "error",
-                "error": f"KiCad CLI tool not found at {kicad_cli}",
-                "schematic_file": schematic_file,
-            }
-
-        cmd = [
-            kicad_cli,
-            "sch",
-            "export",
-            "bom",
-            "--output",
-            output_file,
-            schematic_file,
-        ]
-
-    elif system == "Windows":
-        from kicad_mcp.config import KICAD_APP_PATH
-
-        kicad_cli = os.path.join(KICAD_APP_PATH, "bin", "kicad-cli.exe")
-
-        if not os.path.exists(kicad_cli):
-            return {
-                "status": "error",
-                "error": f"KiCad CLI tool not found at {kicad_cli}",
-                "schematic_file": schematic_file,
-            }
-
-        cmd = [
-            kicad_cli,
-            "sch",
-            "export",
-            "bom",
-            "--output",
-            output_file,
-            schematic_file,
-        ]
-
-    elif system == "Linux":
-        kicad_cli = "kicad-cli"
-        cmd = [
-            kicad_cli,
-            "sch",
-            "export",
-            "bom",
-            "--output",
-            output_file,
-            schematic_file,
-        ]
-
-    else:
+    # Was a hand-rolled platform branch (Darwin/Windows hardcoded app-bundle
+    # paths, Linux a bare "kicad-cli" string relying on subprocess's own PATH
+    # resolution with no shutil.which pre-check at all) -- an independent,
+    # less capable copy of kicad_cli.py's KiCadCLIManager (env var override,
+    # shutil.which, per-OS common-path fallbacks including Homebrew/snap,
+    # actual `--version` validation, caching), which export.py's _op_gerbers
+    # already delegates to. finding #22 of the 2026-09-23 full review.
+    try:
+        kicad_cli = get_kicad_cli_path(required=True)
+    except KiCadCLIError as e:
         return {
             "status": "error",
-            "error": f"Unsupported operating system: {system}",
+            "error": str(e),
             "schematic_file": schematic_file,
         }
+    assert kicad_cli is not None  # required=True raises above if CLI not found
+
+    cmd = [
+        kicad_cli,
+        "sch",
+        "export",
+        "bom",
+        "--output",
+        output_file,
+        schematic_file,
+    ]
 
     try:
         logger.debug("Running command: %s", " ".join(cmd))
