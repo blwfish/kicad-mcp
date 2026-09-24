@@ -264,3 +264,49 @@ def test_pin_types_skips_unnamed_pins():
     from prefetch_cards import _pin_types
     sym = _FakePinSymbol([_FakePin("", "passive"), _FakePin("SDA", "bidirectional")])
     assert _pin_types(sym) == {"SDA": "bidirectional"}
+
+
+# --- synthesize_i2c_card: blank-pin visibility + unexplained-pin truncation --
+
+class TestBlankPinVisibility:
+    """Regression: pins with an empty/whitespace-only name were silently
+    filtered out of the classification set with no count anywhere -- a
+    badly-formed symbol (many blank pin names) was indistinguishable from a
+    clean one with a couple of genuine NC pins. finding #74 of the
+    2026-09-23 full review."""
+
+    def test_blank_pin_names_noted_in_reasons(self):
+        card, conf, reasons = _synth(
+            ["SDA", "SCL", "VDD", "GND", "", "  "], name="BME280", address=0x76,
+        )
+        assert conf == "high"
+        assert any("2 pin(s) have no name" in r for r in reasons)
+
+    def test_no_blank_pin_note_when_all_named(self):
+        _, _, reasons = _synth(["SDA", "SCL", "VDD", "GND"], name="BME280", address=0x76)
+        assert not any("have no name" in r for r in reasons)
+
+    def test_skip_path_does_not_mention_blank_pins(self):
+        # No I2C bus signature at all -> skip, before blank-pin accounting
+        # would even run; its own more relevant reason should be the only one.
+        _, conf, reasons = _synth(["OUT", "VDD", "GND", ""])
+        assert conf == "skip"
+        assert not any("have no name" in r for r in reasons)
+
+
+class TestUnexplainedPinsTruncationNote:
+    """Regression: unexplained[:8] silently capped the pins listed in the
+    reasons text with no indication more existed. finding #72 of the
+    2026-09-23 full review."""
+
+    def test_more_than_eight_unexplained_pins_notes_the_overflow(self):
+        extra_pins = [f"EXTRA{i}" for i in range(10)]
+        _, conf, reasons = _synth(["SDA", "SCL", "VDD", "GND"] + extra_pins)
+        assert conf == "low"
+        assert any("+2 more" in r for r in reasons)
+
+    def test_eight_or_fewer_unexplained_pins_no_overflow_note(self):
+        extra_pins = [f"EXTRA{i}" for i in range(3)]
+        _, conf, reasons = _synth(["SDA", "SCL", "VDD", "GND"] + extra_pins)
+        assert conf == "low"
+        assert not any("more)" in r for r in reasons)
