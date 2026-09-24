@@ -448,8 +448,18 @@ def _op_suggest_cards(*, firmware_path: Optional[str]) -> dict:
         d = draft_card(type_name=t, address=address, bus=bus, roles=roles,
                        whoami=whoami)
         if d is not None:
+            # draft_card() embeds the same confidence/reasons redundantly under
+            # card["_draft"] (consumed by scripts/prefetch_cards.py, which pops
+            # it before writing the card out) -- this path exposes them at the
+            # top level instead but used to leave the redundant sub-key sitting
+            # in "card" too, so a caller following this tool's own advice
+            # ("drop the card in a devices dir") would write a lingering
+            # _draft key into a real device card file. finding #22 of the
+            # 2026-09-23 full review's Phase 1.5 pass.
+            card = dict(d.card)
+            card.pop("_draft", None)
             drafts.append({"confidence": d.confidence, "reasons": d.reasons,
-                           "card": d.card})
+                           "card": card})
         else:
             # Auto-draft only handles I2C-addressable identity today. A non-I2C
             # uncarded peripheral (HX711, bit-bang device, …) can't be drafted —
