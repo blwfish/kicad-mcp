@@ -109,6 +109,18 @@ def synthesize_i2c_card(
     if not set(_I2C_ROLES) <= names:
         return None, "skip", ["no clean I2C bus signature (need SDA + SCL by name)"]
 
+    # Pins whose name was empty/whitespace-only (a real NC pin, or a symbol
+    # binding that returned None -> "") are correctly excluded from `names`
+    # entirely -- an unnamed pin has nothing to classify by -- but that used
+    # to happen with no visibility at all into how many were dropped, making
+    # a badly-formed symbol (many blank pin names) indistinguishable from a
+    # clean one with a couple of genuine NC pins. Only noted once we know
+    # this symbol is a real I2C candidate (the skip path above already has
+    # its own, more relevant reason).
+    blank_pins = sum(1 for n in pin_names if not (n and n.strip()))
+    if blank_pins:
+        reasons.append(f"{blank_pins} pin(s) have no name (excluded from classification)")
+
     implausible_bus_pins = sorted(
         role for role in _I2C_ROLES
         if pin_types and (pin_types.get(role) or "").lower() in _IMPLAUSIBLE_I2C_PIN_TYPES
@@ -140,7 +152,13 @@ def synthesize_i2c_card(
     elif unit_count > 1:
         reasons.append("flagged: multi-unit symbol (ambiguous pin lookup)")
     elif unexplained:
-        reasons.append(f"flagged: unexplained signal pins {unexplained[:8]} "
+        # Display-only cap (confidence is already "low" regardless of how
+        # many pins are unexplained) -- but a silent cap with no indication
+        # more were dropped made a symbol with 20 unexplained pins look
+        # identical to one with exactly 8 in the reasons text.
+        shown = unexplained[:8]
+        more = f" (+{len(unexplained) - 8} more)" if len(unexplained) > 8 else ""
+        reasons.append(f"flagged: unexplained signal pins {shown}{more} "
                        "(multi-interface part — confirm before shipping)")
     elif not corroborated:
         # The decisive identity check: pin NAMES alone don't prove an I2C device
