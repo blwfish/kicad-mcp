@@ -222,6 +222,52 @@ class TestWiresWillBeStaleDetection:
         result = _detect_stale_wires(sch, {"R1": {"x_mm": 100, "y_mm": 100}})
         assert result == []
 
+    def test_wire_enumeration_failure_logs_warning_not_silent(self, caplog):
+        """finding #15 (Phase 1, 2026-09-23 full review): a genuine detection
+        failure (sch.wires.all() raising) fell through to the same []
+        result as "no stale wires" -- indistinguishable from the caller's
+        side, which then skips its warning event entirely. The advisory-only
+        contract (never block the move) is kept; the failure must at least
+        be logged."""
+        import logging
+        from kicad_mcp.tools.schematic_layout import _detect_stale_wires
+
+        class _BoomWires:
+            def all(self):
+                raise RuntimeError("boom")
+
+        class _FakeSch:
+            wires = _BoomWires()
+
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.tools.schematic_layout"):
+            result = _detect_stale_wires(_FakeSch(), {"R1": {"x_mm": 1, "y_mm": 1}})
+        assert result == []
+        assert any("could not enumerate wires" in r.message for r in caplog.records)
+
+    def test_per_component_lookup_failure_logs_warning_not_silent(self, caplog):
+        """The per-ref `sch.components.get(ref)` failure path must also be
+        visible, not a silent `continue`."""
+        import logging
+        from kicad_mcp.tools.schematic_layout import _detect_stale_wires
+
+        class _BoomComponents:
+            def get(self, ref):
+                raise RuntimeError(f"lookup failed for {ref}")
+
+        class _FakeSch:
+            class wires:
+                @staticmethod
+                def all():
+                    return [type("W", (), {"points": [type("P", (), {"x": 0, "y": 0})()]})()]
+
+            components = _BoomComponents()
+
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.tools.schematic_layout"):
+            result = _detect_stale_wires(_FakeSch(), {"R1": {"x_mm": 1, "y_mm": 1}})
+        assert result == []
+        assert any("could not look up" in r.message and "R1" in r.message
+                   for r in caplog.records)
+
     def test_apply_emits_wires_will_be_stale_warning(
         self, schematic_layout_fn, tmp_path, monkeypatch,
     ):
