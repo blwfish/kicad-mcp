@@ -223,6 +223,43 @@ class TestExtractionSkipCounts:
         assert result["extraction_skip_counts"] == {"junctions": 1, "no_connects": 2}
 
 
+class TestBuildNetlistLabelCoverage:
+    """Regression: _build_netlist only ever registered global_labels and
+    power_symbols as net keys -- local labels (self.labels, the far more
+    common net-naming mechanism in a typical schematic) and hierarchical
+    labels were extracted but never consulted here at all, so net_count
+    silently undercounted on the regex-fallback path for any schematic
+    that names its nets with local labels (the normal case)."""
+
+    def test_local_label_becomes_a_net(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(label "SDA" (at 10 20 0))\n'
+        result = p.parse()
+        assert "SDA" in result["nets"]
+
+    def test_hierarchical_label_becomes_a_net(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = '(hierarchical_label "RESET" (shape output) (at 10 20 0))\n'
+        result = p.parse()
+        assert "RESET" in result["nets"]
+
+    def test_global_label_still_becomes_a_net(self, tmp_path):
+        # Pre-existing behavior must survive this change unchanged.
+        p = _parser(tmp_path)
+        p.content = '(global_label "VBUS" (shape input) (at 10 20 0))\n'
+        result = p.parse()
+        assert "VBUS" in result["nets"]
+
+    def test_same_name_across_label_kinds_is_one_net_not_duplicated(self, tmp_path):
+        p = _parser(tmp_path)
+        p.content = (
+            '(label "GND" (at 1 1 0))\n'
+            '(global_label "GND" (shape input) (at 2 2 0))\n'
+        )
+        result = p.parse()
+        assert list(result["nets"]).count("GND") == 1
+
+
 class TestPowerSymbolTypeEscapedQuote:
     def test_power_symbol_type_with_escaped_quote_not_truncated(self, tmp_path):
         p = _parser(tmp_path)
