@@ -16,6 +16,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -359,6 +360,15 @@ def _tier_from_attributes(
                     return "basic"
                 if v == "preferred":
                     return "preferred"
+            # The "Basic/Extended" tier attribute IS present, but its value
+            # is missing/malformed or a string neither "basic" nor
+            # "preferred" (a typo, a new JLCPCB tier not yet mapped here) --
+            # this fell through to the same "extended" default as a
+            # component with NO tier attribute at all, indistinguishable
+            # with no counter. finding #4 of the 2026-09-23 full review's
+            # Phase 1 pass.
+            if drops is not None:
+                drops["unrecognized_tier_value"] = drops.get("unrecognized_tier_value", 0) + 1
         if name in ("JLCPCB Best Choice Part", "Preferred Part") and isinstance(val_entry, str):
             if val_entry.lower() in ("yes", "true", "preferred"):
                 return "preferred"
@@ -560,8 +570,15 @@ def build_db_from_jsonl(
     conn.commit()
 
     total_inserted = 0
-    drop_counts: dict[str, int] = {"bad_json": 0, "not_list": 0, "no_lcsc": 0,
-                                    "integrity_error": 0}
+    # A plain dict pre-declaring only 4 keys crashed with KeyError the first
+    # time `drop_counts[reason] += count` (below) saw ANY of the other
+    # reason keys _decode_shard_rows can actually report (bad_attr_index,
+    # bad_tier_index, bad_price, unrecognized_tier_value) -- those are real,
+    # reachable reasons from a live snapshot, not hypothetical. A defaultdict
+    # means a NEW reason key introduced later needs no matching edit here.
+    drop_counts: dict[str, int] = defaultdict(int, {
+        "bad_json": 0, "not_list": 0, "no_lcsc": 0, "integrity_error": 0,
+    })
     shard_files = [fname for fname, info in files_dict.items()
                    if isinstance(info, dict) and info.get("kind") in ("components", None)]
 
