@@ -193,12 +193,22 @@ def find_latest_for_schematic(schematic_path: str) -> dict[str, Any] | None:
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    for candidate in candidates:
+    for i, candidate in enumerate(candidates):
         try:
             obj: dict[str, Any] = json.loads(candidate.read_text())
-            return obj
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Cached state %s is unreadable/corrupt (%s); "
+                            "falling back to the next-newest candidate",
+                            candidate, e)
             continue
+        if i > 0:
+            # The caller asked for the LATEST state (cluster_id stability
+            # depends on it); silently returning a STALE one with no signal
+            # meant "latest" was corrupt used to be indistinguishable from
+            # actually getting the latest.
+            logger.warning("Most recent cached state(s) for %s were unreadable; "
+                            "returning stale candidate %s instead", schematic_path, candidate)
+        return obj
     return None
 
 

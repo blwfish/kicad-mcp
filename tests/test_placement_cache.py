@@ -297,3 +297,27 @@ class TestCorruptCacheFile:
         latest = placement_cache.find_latest_for_schematic("/tmp/x.kicad_sch")
         assert latest is not None
         assert latest["state_id"] == _hex_id("good")
+
+    def test_stale_fallback_logs_a_warning(self, isolated_cache_dir, caplog):
+        """Regression: silently falling back to a STALE candidate when the
+        actual latest is corrupt used to be indistinguishable from really
+        getting the latest -- the caller (suggest's cluster_id stability
+        mechanism) had no signal it was working from stale data."""
+        import logging
+        placement_cache.save_state(_state("good", "/tmp/x.kicad_sch"))
+        shard = placement_cache._shard_dir("/tmp/x.kicad_sch")
+        time.sleep(0.02)
+        (shard / f"{_hex_id('bogus')}.json").write_text("not json {")
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.placement.cache"):
+            placement_cache.find_latest_for_schematic("/tmp/x.kicad_sch")
+        assert any("returning stale candidate" in r.message.lower() for r in caplog.records)
+
+    def test_reading_the_actual_latest_logs_no_stale_warning(self, isolated_cache_dir, caplog):
+        """No corruption in play -- must not log a stale-fallback warning
+        just because a single readable candidate exists."""
+        import logging
+        placement_cache.save_state(_state("good", "/tmp/x.kicad_sch"))
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.placement.cache"):
+            latest = placement_cache.find_latest_for_schematic("/tmp/x.kicad_sch")
+        assert latest is not None
+        assert not any("returning stale candidate" in r.message.lower() for r in caplog.records)
