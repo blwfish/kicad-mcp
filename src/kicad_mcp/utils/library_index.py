@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 
 import filelock
 
+from kicad_mcp.utils.netlist_parser import _QSTR_BODY, _unescape_sexpr
+
 logger = logging.getLogger(__name__)
 
 # Singleton instance
@@ -216,18 +218,27 @@ def _parse_kicad_mod(filepath: str) -> Dict:
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
-    except OSError:
+    except OSError as e:
+        # Was a bare `return result` with no logging at all -- contrast
+        # _parse_lib_table_uris above, which correctly logs the identical
+        # OSError. finding #30 of the 2026-09-23 full review.
+        logger.warning("Could not read footprint file %s: %s", filepath, e)
         return result
 
-    m = re.match(r'\(footprint\s+"([^"]+)"', content)
+    # _QSTR_BODY is the escape-aware quoted-string body (shared with
+    # netlist_parser.py) -- the naive `[^"]*` here silently truncated at the
+    # first ESCAPED quote (e.g. a description containing inch marks would
+    # have its trailing portion dropped). finding #32 of the 2026-09-23
+    # full review.
+    m = re.match(r'\(footprint\s+"(' + _QSTR_BODY + r')"', content)
     if m:
-        result["name"] = m.group(1)
-    m = re.search(r'\(descr\s+"([^"]*)"', content)
+        result["name"] = _unescape_sexpr(m.group(1))
+    m = re.search(r'\(descr\s+"(' + _QSTR_BODY + r')"', content)
     if m:
-        result["description"] = m.group(1)
-    m = re.search(r'\(tags\s+"([^"]*)"', content)
+        result["description"] = _unescape_sexpr(m.group(1))
+    m = re.search(r'\(tags\s+"(' + _QSTR_BODY + r')"', content)
     if m:
-        result["tags"] = m.group(1)
+        result["tags"] = _unescape_sexpr(m.group(1))
     result["pad_count"] = len(re.findall(r"\(pad\s+", content))
     return result
 
@@ -247,7 +258,11 @@ def _parse_kicad_sym(filepath: str) -> List[Dict]:
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
-    except OSError:
+    except OSError as e:
+        # Was a bare `return results` with no logging at all -- contrast
+        # _parse_lib_table_uris above, which correctly logs the identical
+        # OSError. finding #30 of the 2026-09-23 full review.
+        logger.warning("Could not read symbol library file %s: %s", filepath, e)
         return results
 
     library = os.path.splitext(os.path.basename(filepath))[0]
@@ -259,8 +274,10 @@ def _parse_kicad_sym(filepath: str) -> List[Dict]:
     # dropped legitimate top-level symbols whose names happen to end in
     # _N_N (verified against the KiCad standard library: Raspberry_Pi_2_3
     # was the only false positive across 22,730 top-level symbols).
-    for m in re.finditer(r'^\t\(symbol\s+"([^"]+)"', content, re.MULTILINE):
-        name = m.group(1)
+    # _QSTR_BODY: see _parse_kicad_mod above -- naive `[^"]+`/`[^"]*` silently
+    # truncated at the first ESCAPED quote. finding #32.
+    for m in re.finditer(r'^\t\(symbol\s+"(' + _QSTR_BODY + r')"', content, re.MULTILINE):
+        name = _unescape_sexpr(m.group(1))
 
         # Extract the block for this symbol (approximate — find next same-indent symbol)
         start = m.start()
@@ -277,13 +294,13 @@ def _parse_kicad_sym(filepath: str) -> List[Dict]:
             "pin_count": 0,
         }
 
-        dm = re.search(r'\(property\s+"Description"\s+"([^"]*)"', block)
+        dm = re.search(r'\(property\s+"Description"\s+"(' + _QSTR_BODY + r')"', block)
         if dm:
-            sym["description"] = dm.group(1)
+            sym["description"] = _unescape_sexpr(dm.group(1))
 
-        km = re.search(r'\(property\s+"ki_keywords"\s+"([^"]*)"', block)
+        km = re.search(r'\(property\s+"ki_keywords"\s+"(' + _QSTR_BODY + r')"', block)
         if km:
-            sym["keywords"] = km.group(1)
+            sym["keywords"] = _unescape_sexpr(km.group(1))
 
         # Count pins across all sub-units
         sym["pin_count"] = len(re.findall(r"\(pin\s+", block))

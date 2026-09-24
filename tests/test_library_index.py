@@ -751,3 +751,112 @@ class TestRebuildLock:
             idx_b._rebuild_lock.release()
         finally:
             idx_a._rebuild_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# _op_search: OSError from a stale-index rebuild must not propagate
+# ---------------------------------------------------------------------------
+
+class TestSearchCatchesOSError:
+    """Regression: _op_search's except clause caught (sqlite3.Error,
+    RuntimeError) but not OSError -- yet it calls the SAME
+    rebuild_footprints()/rebuild_symbols() methods _op_rebuild_index does on
+    a stale index, and THAT sibling already caught OSError from the
+    directory-scan/file-I/O those methods can raise. finding #31 of the
+    2026-09-23 full review."""
+
+    def test_stale_footprint_rebuild_oserror_returns_clean_error(self):
+        from unittest.mock import MagicMock, patch
+        from kicad_mcp.tools.library import _op_search
+
+        fake_index = MagicMock()
+        fake_index.footprints_stale.return_value = True
+        fake_index.rebuild_footprints.side_effect = OSError("disk error")
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=fake_index):
+            result = _op_search("resistor", type="footprint", limit=5)
+        assert "error" in result
+        assert "disk error" in result["error"]
+
+    def test_stale_symbol_rebuild_oserror_returns_clean_error(self):
+        from unittest.mock import MagicMock, patch
+        from kicad_mcp.tools.library import _op_search
+
+        fake_index = MagicMock()
+        fake_index.symbols_stale.return_value = True
+        fake_index.rebuild_symbols.side_effect = OSError("disk error")
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=fake_index):
+            result = _op_search("R", type="symbol", limit=5)
+        assert "error" in result
+        assert "disk error" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_kicad_mod / _parse_kicad_sym: escape-aware quoted strings + logging
+# ---------------------------------------------------------------------------
+
+class TestParseFileEscapedQuotesAndLogging:
+    """Regression: naive `[^"]*`/`[^"]+` regexes silently truncated at the
+    first ESCAPED quote (e.g. a description containing inch marks would lose
+    its trailing portion); and OSError opening the file was swallowed with
+    NO logging, unlike the sibling _parse_lib_table_uris which does log.
+    finding #30 and #32 of the 2026-09-23 full review."""
+
+    def test_footprint_description_with_escaped_quote_not_truncated(self, tmp_path):
+        from kicad_mcp.utils.library_index import _parse_kicad_mod
+        fp = tmp_path / "test.kicad_mod"
+        fp.write_text(
+            '(footprint "R_0805"\n'
+            '  (descr "4.7\\" spacer resistor")\n'
+            '  (tags "resistor smd")\n'
+            ')\n'
+        )
+        result = _parse_kicad_mod(str(fp))
+        assert result["name"] == "R_0805"
+        assert result["description"] == '4.7" spacer resistor'
+        assert result["tags"] == "resistor smd"
+
+    def test_footprint_read_failure_logs_warning(self, tmp_path, caplog, monkeypatch):
+        import logging
+        from kicad_mcp.utils.library_index import _parse_kicad_mod
+
+        fp = tmp_path / "test.kicad_mod"
+        fp.write_text('(footprint "R_0805")')
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("permission denied")),
+        )
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.library_index"):
+            result = _parse_kicad_mod(str(fp))
+        assert result == {"name": "", "description": "", "tags": "", "pad_count": 0}
+        assert any("Could not read footprint file" in r.message for r in caplog.records)
+
+    def test_symbol_description_with_escaped_quote_not_truncated(self, tmp_path):
+        from kicad_mcp.utils.library_index import _parse_kicad_sym
+        sym_file = tmp_path / "Test.kicad_sym"
+        sym_file.write_text(
+            '(kicad_symbol_lib\n'
+            '\t(symbol "4.7\\" Resistor"\n'
+            '\t\t(property "Description" "A 4.7\\" long part")\n'
+            '\t\t(property "ki_keywords" "resistor")\n'
+            '\t)\n'
+            ')\n'
+        )
+        results = _parse_kicad_sym(str(sym_file))
+        assert len(results) == 1
+        assert results[0]["name"] == '4.7" Resistor'
+        assert results[0]["description"] == 'A 4.7" long part'
+
+    def test_symbol_read_failure_logs_warning(self, tmp_path, caplog, monkeypatch):
+        import logging
+        from kicad_mcp.utils.library_index import _parse_kicad_sym
+
+        sym_file = tmp_path / "Test.kicad_sym"
+        sym_file.write_text('(kicad_symbol_lib)')
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("permission denied")),
+        )
+        with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.library_index"):
+            result = _parse_kicad_sym(str(sym_file))
+        assert result == []
+        assert any("Could not read symbol library file" in r.message for r in caplog.records)

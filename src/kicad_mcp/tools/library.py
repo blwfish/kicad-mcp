@@ -53,9 +53,14 @@ def _op_search(
             # from "top 5 of 500 matches."
             "truncated": len(results) == limit,
         }
-    except (sqlite3.Error, RuntimeError) as e:
-        # Library-index database error or other runtime failure.
-        # AttributeError/KeyError/ImportError propagate (programming bugs).
+    except (sqlite3.Error, RuntimeError, OSError) as e:
+        # Library-index database error or other runtime failure. This calls
+        # the SAME index.rebuild_footprints()/rebuild_symbols() methods
+        # _op_rebuild_index below does (on a stale index) -- that sibling
+        # already catches OSError from the directory-scan/file-I/O this can
+        # trigger; this call site didn't, an inconsistency for the identical
+        # underlying operation. AttributeError/KeyError/ImportError still
+        # propagate (programming bugs).
         logger.error("Search failed (%s): %s", e.__class__.__name__, e)
         return {"error": f"Search failed: {e.__class__.__name__}: {e}"}
 
