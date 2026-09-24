@@ -765,6 +765,15 @@ def _detect_stale_wires(
 
     Components whose target position equals the current position are not
     treated as moves and never count as stale (regardless of wires).
+
+    Fails OPEN (returns []) on any of the exceptions below -- the caller
+    treats an empty result as "no stale wires" and skips its warning event
+    entirely, so a genuine detection failure here is otherwise
+    indistinguishable from "nothing to warn about," a false-confidence
+    result worse than no check at all. Each failure is logged so it's at
+    least visible, even though the advisory-only contract (never block the
+    move over a detection-side failure) is kept. finding #15 of the
+    2026-09-23 full review's Phase 1 pass.
     """
     import math
 
@@ -773,12 +782,22 @@ def _detect_stale_wires(
     # comes back empty under current kicad-sch-api versions).
     try:
         from kicad_sch_api.library.cache import get_symbol_cache  # type: ignore[import-untyped]
-    except ImportError:
+    except ImportError as e:
+        logger.warning(
+            "_detect_stale_wires: symbol cache unavailable (%s) -- stale-wire "
+            "detection skipped, no warning will be raised even if wires go "
+            "stale", e,
+        )
         return []
 
     try:
         wires = list(sch.wires.all())
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "_detect_stale_wires: could not enumerate wires (%s) -- stale-wire "
+            "detection skipped, no warning will be raised even if wires go "
+            "stale", e,
+        )
         return []
     if not wires:
         return []
@@ -799,7 +818,11 @@ def _detect_stale_wires(
         # See _op_apply: components.get(ref), not filter(reference=ref).
         try:
             comp = sch.components.get(ref)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "_detect_stale_wires: could not look up %r (%s) -- this "
+                "component's stale-wire check was skipped", ref, e,
+            )
             continue
         if comp is None or not comp.position:
             continue
