@@ -227,6 +227,44 @@ def test_no_expander_block_is_a_noop():
     assert not any(n.name.startswith("SENSOR_") for n in it.nets)
 
 
+def test_expander_groups_dispatch_matches_sidecar_validation():
+    """finding #21 (Phase 1.5, 2026-09-23 full review): sidecar._EXPANDER_GROUPS
+    (what the board.yaml path validates) and templates.py's if/elif dispatch on
+    spec.group (what actually happens per group) are two independent sources of
+    truth for the same set of valid group values, with nothing tying them
+    together. Structural check: every value _EXPANDER_GROUPS allows must have a
+    literal `spec.group == "<value>"` dispatch branch in templates.py, so a group
+    added to one without the other is caught here rather than silently falling
+    through templates.py's final else."""
+    import inspect
+
+    from kicad_mcp.utils.firmware import templates
+    from kicad_mcp.utils.firmware.sidecar import _EXPANDER_GROUPS
+
+    source = inspect.getsource(templates.expander_terminals)
+    for group in _EXPANDER_GROUPS:
+        assert f'spec.group == "{group}"' in source, (
+            f"group {group!r} is valid per sidecar._EXPANDER_GROUPS but has no "
+            "matching dispatch branch in templates.expander_terminals")
+
+
+def test_expander_unrecognized_group_raises_not_silently_treated_as_single():
+    """finding #21: templates.expander_terminals can be reached directly with an
+    already-built DesignIntent that never went through sidecar's _EXPANDER_GROUPS
+    validation (e.g. hand-built, or a future group value added to the frozenset
+    without a matching dispatch branch here). Pin that an unrecognized group
+    raises loudly instead of silently falling into the 'single' behavior."""
+    import pytest
+    from kicad_mcp.utils.firmware.intent import ExpanderSpec
+    from kicad_mcp.utils.firmware.templates import expand_intent
+
+    it = _mcp_intent()   # no spec applied via apply_sidecar (skips its validation)
+    it.expander_terminals["U3"] = ExpanderSpec(
+        device="S", ports=["GPA0"], group="bogus_future_group")
+    with pytest.raises(ValueError, match="bogus_future_group"):
+        expand_intent(it)
+
+
 def test_expander_spec_round_trips():
     # to_dict -> yaml -> from_dict must preserve the ExpanderSpec (this is the path
     # import->expand takes across two design() calls via the saved intent doc).
