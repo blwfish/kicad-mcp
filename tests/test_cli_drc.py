@@ -364,6 +364,38 @@ class TestParseDrcReport:
         empty_report = parse_drc_report({})
         assert "schema_unrecognized" not in empty_report
 
+    def test_non_dict_violation_item_does_not_crash(self):
+        """Regression: a malformed/version-skewed kicad-cli report could put
+        a non-dict item in the violations array (a bare string, null); calling
+        .get() on it raised AttributeError uncaught (run_drc_via_cli's own
+        except clause only catches OSError/SubprocessError/ValueError). Must
+        degrade that one item to "Unknown" like an empty-dict item does, and
+        count it separately so the degradation is visible, not silent."""
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": [
+            {"type": "silk_overlap"},
+            "not a dict",
+            None,
+        ]})
+        assert out["total_violations"] == 3
+        assert out["violation_categories"]["Unknown"] == 2
+        assert out["malformed_violations"] == 2
+
+    def test_no_malformed_violations_key_when_all_well_formed(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": [{"type": "silk_overlap"}]})
+        assert "malformed_violations" not in out
+
+    def test_kicad_version_captured_when_present(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": [], "kicad_version": "10.0.5"})
+        assert out["kicad_version"] == "10.0.5"
+
+    def test_no_kicad_version_key_when_absent(self):
+        from kicad_mcp.tools.drc_impl.cli_drc import parse_drc_report
+        out = parse_drc_report({"violations": []})
+        assert "kicad_version" not in out
+
 
 # ---------------------------------------------------------------------------
 # Test: subprocess exception
