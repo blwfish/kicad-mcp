@@ -19,6 +19,7 @@ from kicad_mcp.utils.keepout_helpers import BODY_EXTENT_HELPER, KEEPOUT_HELPER, 
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.net_injection import existing_net_codes, inject_net_definitions
 from kicad_mcp.utils.netlist_parser import POWER_NET_HELPER, extract_netlist_via_cli
+from kicad_mcp.utils.path_validation import validate_project_path
 from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.placement.edge_terminal import (
@@ -2386,8 +2387,12 @@ def register_pipeline_tools(mcp: FastMCP) -> None:
                 reported (events) and ignored, never crash. Merged over any
                 hints carried in the design intent (these win — explicit caller).
         """
-        if not os.path.exists(project_path):
-            return {"error": f"Project file not found: {project_path}"}
+        # os.path.exists() only checked existence -- unlike every _op_* in
+        # the pcb_*.py routers, this bypassed the path-traversal defense
+        # (KICAD_MCP_STRICT_PATHS).
+        _pv_err = validate_project_path(project_path)
+        if _pv_err:
+            return {"error": _pv_err}
 
         project_dir = os.path.dirname(os.path.abspath(project_path))
         project_name = os.path.splitext(os.path.basename(project_path))[0]

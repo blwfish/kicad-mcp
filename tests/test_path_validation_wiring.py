@@ -90,6 +90,44 @@ class TestStrictModeRejectionReachesRealTools:
         assert "error" in result
         assert "outside the configured" in result["error"]
 
+    def test_circuit_patterns_rejects_out_of_root_path_under_strict_mode(self, tmp_path, monkeypatch):
+        """Regression: patterns.py's _op_identify_circuit_patterns used
+        os.path.exists() only -- unlike every _op_* in the pcb_*.py
+        routers, it never went through validate_project_path, bypassing
+        the traversal defense entirely."""
+        monkeypatch.setenv("KICAD_MCP_STRICT_PATHS", "1")
+        _isolated_roots(monkeypatch, tmp_path)
+        outsider = tmp_path / "outsider"
+        outsider.mkdir(exist_ok=True)
+        target = outsider / "board.kicad_sch"
+        target.write_text('(kicad_sch (version 20230121))\n')
+
+        mcp = create_server()
+        fn = _get_tool_fn(mcp, "analyze")
+        result = asyncio.run(fn(operation="circuit_patterns", ctx=None, schematic_path=str(target)))
+
+        assert "error" in result
+        assert "outside the configured" in result["error"]
+
+    def test_netlist_rejects_out_of_root_path_under_strict_mode(self, tmp_path, monkeypatch):
+        """Regression: netlist.py had 3 separate os.path.exists()-only
+        entry points (the main netlist-extraction dispatch, connection
+        analysis, and find_component_connections) bypassing the same
+        traversal defense."""
+        monkeypatch.setenv("KICAD_MCP_STRICT_PATHS", "1")
+        _isolated_roots(monkeypatch, tmp_path)
+        outsider = tmp_path / "outsider"
+        outsider.mkdir(exist_ok=True)
+        target = outsider / "board.kicad_sch"
+        target.write_text('(kicad_sch (version 20230121))\n')
+
+        mcp = create_server()
+        fn = _get_tool_fn(mcp, "analyze")
+        result = asyncio.run(fn(operation="netlist", ctx=None, path=str(target)))
+
+        assert "error" in result
+        assert "outside the configured" in result["error"]
+
     def test_pcb_create_rejects_out_of_root_path_under_strict_mode(self, tmp_path, monkeypatch):
         """Regression: _op_create (unlike every other _op_* in pcb_board.py)
         never called validate_project_path at all -- a new board could be
