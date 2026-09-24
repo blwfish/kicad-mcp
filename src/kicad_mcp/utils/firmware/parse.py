@@ -151,6 +151,12 @@ class Macro:
     bus: Optional[str] = None
     # Reason a pin-named macro was rejected, for provenance.
     note: str = ""
+    # Populated only for macros sourced from a const/constexpr declaration
+    # (never a #define, which has no C type): the declared type token
+    # (uint8_t, gpio_num_t, int, ...). Was matched by _CONST_DECL_RE and
+    # then discarded entirely -- dropped with no dropped-with-reason label,
+    # per CLAUDE.md's data-capture rule. None for #define-sourced macros.
+    c_type: Optional[str] = None
 
 
 _GPIO_NUM_RE = re.compile(r"^GPIO_NUM_(\d+)$")
@@ -358,8 +364,8 @@ def parse_defines(text: str) -> list[Macro]:
 # matches — strings are skipped, not misread. ``int x = 2`` (no const/constexpr)
 # is deliberately NOT matched — a mutable global is not a pin constant.
 _CONST_DECL_RE = re.compile(
-    r"^\s*(?:static\s+)?(?:const|constexpr)\s+(?:unsigned\s+)?"
-    r"\w+\s+(?P<decls>[A-Za-z_][^;]*);"
+    r"^\s*(?:static\s+)?(?:const|constexpr)\s+"
+    r"(?P<ctype>(?:unsigned\s+)?\w+)\s+(?P<decls>[A-Za-z_][^;]*);"
 )
 # One ``NAME = VALUE`` declarator. A bare fragment (``PINS[]``, a comma-split piece
 # of a function-call value) has no scalar ``=`` here and is skipped.
@@ -447,6 +453,7 @@ def parse_const_decls(
             macro = classify(dm.group("name"), value, None)
             macro.line_no = i
             macro.comment = comment
+            macro.c_type = m.group("ctype")
             out.append(macro)
     return out
 
@@ -480,6 +487,21 @@ _PP_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif|undef)\b(.*)$")
 
 
 def _eval_cond(directive: str, arg: str, defines: set[str]) -> Optional[bool]:
+    """Evaluate a single #if/#ifdef/#ifndef condition against ``defines``.
+
+    Returns None for anything this simple evaluator can't parse (a compound
+    condition with && / ||, an arithmetic comparison, a macro-function call,
+    etc.) -- NOT a value, a genuine "I don't know". The caller
+    (select_active_branches) treats that None as True: an unrecognized
+    condition's branch is KEPT (fail-open), not dropped. finding #47 of the
+    2026-09-23 full review flagged this as undocumented; documented here
+    rather than changed, since neither direction is clearly more correct for
+    THIS module's purpose (surfacing pin/macro candidates for human/AI
+    review, not compiling firmware) -- fail-open risks pulling in an
+    inactive branch's unrelated defines; fail-closed risks silently missing
+    a branch that genuinely IS active. Fail-open was the existing behavior
+    and is the direction that avoids losing real pin candidates.
+    """
     arg = re.sub(r"//.*$", "", arg).strip()
     if directive == "ifdef":
         return arg.split()[0] in defines if arg else False

@@ -690,3 +690,38 @@ class TestConstDeclSkipCounts:
         counts: dict[str, int] = {}
         parse_macros("const int PINS[] = {1, 2, 3};\n", skip_counts=counts)
         assert counts == {"unparsed_const_declarators": 1}
+
+
+# --- c_type: the declared C type was matched then discarded entirely --------
+
+class TestConstDeclCType:
+    """Regression: _CONST_DECL_RE matched the declaration's type token
+    (uint8_t, gpio_num_t, int, ...) but never captured it anywhere -- the
+    Macro dataclass had no field for it at all, so it was dropped with no
+    dropped-with-reason label. finding #49 of the 2026-09-23 full review."""
+
+    def test_plain_int_type_captured(self):
+        macros = parse_const_decls("const int LED_PIN = 2;")
+        assert macros[0].c_type == "int"
+
+    def test_typedef_type_captured(self):
+        macros = parse_const_decls("static const gpio_num_t MIC_PIN = GPIO_NUM_15;")
+        assert macros[0].c_type == "gpio_num_t"
+
+    def test_unsigned_qualifier_included_in_type(self):
+        macros = parse_const_decls("const unsigned int TIMEOUT_MS = 5000;")
+        assert macros[0].c_type == "unsigned int"
+
+    def test_stdint_type_captured(self):
+        macros = parse_const_decls("constexpr uint8_t SDA_PIN = 21;")
+        assert macros[0].c_type == "uint8_t"
+
+    def test_multiple_declarators_on_one_line_all_get_the_shared_type(self):
+        macros = parse_const_decls("const int LED_PIN = 2, BTN_PIN = 3;")
+        assert [m.c_type for m in macros] == ["int", "int"]
+
+    def test_define_sourced_macro_has_no_c_type(self):
+        """#define has no C type at all -- must stay None, not inherit
+        anything from a const-decl code path it never went through."""
+        macros = parse_defines("#define LED_PIN 2\n")
+        assert macros[0].c_type is None
