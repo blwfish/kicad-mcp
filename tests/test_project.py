@@ -30,6 +30,21 @@ class TestGetProjectNameFromPath:
         name = get_project_name_from_path("/tmp/My Board.kicad_pro")
         assert name == "My Board"
 
+    def test_mismatched_extension_returns_basename_unchanged(self):
+        """Regression: basename[:-len(ext)] silently returned a WRONG (not
+        just unchanged) result when the basename didn't actually end with
+        .kicad_pro -- it blindly chopped the last 10 characters off
+        whatever string it was given. Called (as this canonical helper's
+        callers assume it won't be, but the review flagged it as
+        unverified) on a non-.kicad_pro path, it must return the basename
+        unchanged rather than a corrupted truncation."""
+        assert get_project_name_from_path("/tmp/notes.txt") == "notes.txt"
+
+    def test_extension_only_basename_yields_empty_string(self):
+        # The one case where chopping IS correct: the whole basename is
+        # just the extension itself.
+        assert get_project_name_from_path("/tmp/.kicad_pro") == ""
+
 
 # -- load_project_json tests -------------------------------------------------
 
@@ -120,6 +135,51 @@ class TestOpenKicadProject:
             result = open_kicad_project(str(pro))
         assert result["status"] == "ok"
         assert "xdg-open" in result["command"]
+
+    @patch("kicad_mcp.utils.kicad_utils.subprocess.run")
+    def test_stderr_on_success_is_surfaced_as_warnings(self, mock_run, tmp_path):
+        """Regression: stderr was discarded entirely on a successful
+        (returncode==0) launch -- xdg-open/open can still write warnings to
+        stderr on success (e.g. a desktop-file lookup warning), which had
+        nowhere to go."""
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        mock_run.return_value = type("Result", (), {
+            "returncode": 0, "stdout": "", "stderr": "warning: some desktop entry issue"
+        })()
+        with patch("kicad_mcp.utils.kicad_utils.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            result = open_kicad_project(str(pro))
+        assert result["status"] == "ok"
+        assert result["warnings"] == "warning: some desktop entry issue"
+
+    @patch("kicad_mcp.utils.kicad_utils.subprocess.run")
+    def test_no_warnings_key_when_stderr_empty_on_success(self, mock_run, tmp_path):
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        mock_run.return_value = type("Result", (), {
+            "returncode": 0, "stdout": "", "stderr": ""
+        })()
+        with patch("kicad_mcp.utils.kicad_utils.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            result = open_kicad_project(str(pro))
+        assert "warnings" not in result
+
+    @patch("kicad_mcp.utils.kicad_utils.subprocess.run")
+    def test_subprocess_error_is_caught_not_propagated(self, mock_run, tmp_path):
+        """Regression: the bare `except Exception` used to mask real
+        programming bugs alongside the subprocess failures it was meant
+        for. Narrowed to (SubprocessError, OSError) -- confirm the actual
+        failure modes (e.g. a timeout) are still caught cleanly."""
+        import subprocess as subprocess_module
+        pro = tmp_path / "test.kicad_pro"
+        pro.write_text("{}")
+        mock_run.side_effect = subprocess_module.TimeoutExpired(cmd="xdg-open", timeout=60)
+        with patch("kicad_mcp.utils.kicad_utils.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            result = open_kicad_project(str(pro))
+        assert result["status"] == "error"
+        assert "timed out" in result["error"]
 
 
 # -- project(operation="list") pagination -------------------------------------
