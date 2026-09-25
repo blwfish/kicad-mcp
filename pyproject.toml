@@ -27,7 +27,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "fastmcp>=4.0.3",
+    "fastmcp>=4.0.5",
     "authlib>=1.8.0",
     "kicad-sch-api>=0.5.6",
     "pyyaml>=6.0.3",
@@ -43,7 +43,7 @@ dependencies = [
     # constraint once it's on PyPI.
     "mcp-agent-notes @ git+https://github.com/blwfish/mcp-agent-notes.git@dd83adf8bb97755f91dbfcf857dbaeb987883f8f",
     "networkx>=3.0",
-    "filelock>=3.32.6",
+    "filelock>=4.0.0",
 ]
 
 [project.scripts]
@@ -67,7 +67,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-mock>=3.15.1",
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.7",
+    "ruff>=0.16.8",
     "mypy>=2.3.1",
     "pip-audit>=2.10.1",
     "pytest-timeout>=2.3.0",
