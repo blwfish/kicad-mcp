@@ -136,3 +136,24 @@ dict access, and whether it should discount a test that has other genuine
 assertions alongside an echoed one) before trusting its output over this
 repo's own detector on future runs. Flagged, not chased further (2026-07-19,
 attention/budget reasons).
+
+## After merging a release PR (dev -> main), run sync-dev-after-release.sh
+
+This repo uses `dev` as the working branch (commit directly) and `main` as
+release-only (merged via PR with `gh pr merge --rebase`). GitHub's "Rebase
+and merge" replays dev's commits onto main as brand-new commit objects (same
+tree content, different hashes/parents) but never touches dev itself — so
+dev's branch pointer is stale the instant the PR merges, even though main
+and dev have identical content at that point. Left alone, this is exactly
+what produced PR #148 ("Bring main up to date (v0.18.0 catch-up +
+release)") — main hadn't been merged with dev since 0.15.0, so v0.16.0 and
+v0.17.0 were tagged and released directly from dev, and reconciling the two
+96 commits later needed a real conflict resolution (`uv.lock`).
+
+Run `~/.claude/scripts/sync-dev-after-release.sh /path/to/kicad-mcp`
+immediately after every release-PR merge to prevent this from recurring —
+canonical copy in the `infrastructure` repo's `scripts/`, shared with
+freecad-mcp and any other repo using this same dev/main convention. It only
+fast-forwards dev's ref to main when their tree contents are identical
+(the expected state right after a clean release merge); it refuses if dev
+has real work main doesn't have yet, rather than force-pushing blindly.
