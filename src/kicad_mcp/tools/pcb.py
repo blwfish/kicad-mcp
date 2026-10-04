@@ -319,7 +319,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                   text_overlap_count, text_overlaps}
                  Shared impl with audit.check_silkscreen_overlaps.
         """
-        def _dispatch() -> Any:
+        def _dispatch() -> Dict[str, Any]:
             # ── Lifecycle ──────────────────────────────────────────────────────
 
             if operation == "create":
@@ -637,7 +637,7 @@ def register_pcb_tools(mcp: FastMCP) -> None:
                 )
             }
 
-        def _safe_dispatch() -> Any:
+        def _safe_dispatch() -> Dict[str, Any]:
             # run_pcbnew_script normalizes every subprocess failure (missing
             # KiCad Python, script traceback, timeout, unparseable output) to
             # RuntimeError -- that's its documented contract. Every _op_*
