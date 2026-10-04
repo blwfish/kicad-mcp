@@ -1419,3 +1419,114 @@ class TestBodyExtentHelper:
             pads=[_FakePad(x=10, y=10, w=2, h=2)],
         )
         assert self.body_bbox(fp, has_keepout=False) == (-1, -1, 11, 11)
+
+
+class _FakeRuleAreaZone:
+    def __init__(self, rule_area):
+        self._rule_area = rule_area
+    def GetIsRuleArea(self): return self._rule_area
+
+
+class _FakeFootprintWithZones(_FakeFootprint):
+    def __init__(self, zones, **kw):
+        super().__init__(**kw)
+        self._zones = zones
+    def Zones(self): return list(self._zones)
+
+
+class TestPlacementExtentHelper:
+    """placement_extent_bbox(fp) is the footprint extent the AUTOPLACER uses
+    (body_bbox with the keepout-aware courtyard rule). The autoroute preflight
+    and its nudge consume it instead of the raw courtyard.
+
+    Regression (issues #150/#151): on an RF module the library courtyard wraps
+    the off-board antenna keepout (U1 on the expander board: 48.6x41.6 mm
+    courtyard vs a 19x18.7 mm body). Once KiCad 10's courtyard lookup was fixed,
+    a courtyard-based preflight flagged every neighbour the placer had seated
+    beside the module and the nudge tore the layout apart (0 -> 17 unconnected
+    nets). The decision here is boolean (any rule-area zone?), not numeric, so
+    there is no at/below/above threshold; the ambiguous inputs (non-rule-area
+    zone, no Zones attribute, several zones) are pinned instead."""
+
+    _LAYERS = types.SimpleNamespace(F_Fab=0, B_Fab=1, F_SilkS=2, B_SilkS=3,
+                                     F_CrtYd=4, B_CrtYd=5)
+
+    @pytest.fixture(autouse=True)
+    def _exec_helper(self):
+        from kicad_mcp.utils.keepout_helpers import PLACEMENT_EXTENT_HELPER
+        ns = {"pcbnew": types.SimpleNamespace(ToMM=lambda v: v, **vars(self._LAYERS))}
+        exec(PLACEMENT_EXTENT_HELPER, ns)
+        self.extent = ns["placement_extent_bbox"]
+
+    def _module(self, zones):
+        """RF-module-shaped footprint: 19x18.6 body (pads + Fab) and a courtyard
+        far larger than the body, as on the ESP32 module."""
+        return _FakeFootprintWithZones(
+            zones=zones,
+            graphical_items=[
+                _FakeGraphicalItem(layer=self._LAYERS.F_Fab, bbox=_FakeBBox(-9.5, -9.3, 9.5, 9.3)),
+                _FakeGraphicalItem(layer=self._LAYERS.F_CrtYd, bbox=_FakeBBox(-24.3, -23.0, 24.3, 18.6)),
+            ],
+            pads=[_FakePad(x=0, y=0, w=19, h=18.6)],
+        )
+
+    def test_ordinary_part_extent_includes_courtyard(self):
+        fp = _FakeFootprint(
+            graphical_items=[
+                _FakeGraphicalItem(layer=self._LAYERS.F_CrtYd, bbox=_FakeBBox(-3, -3, 3, 3)),
+            ],
+            pads=[_FakePad(x=0, y=0, w=2, h=2)],
+        )
+        assert self.extent(fp) == (-3, -3, 3, 3)
+
+    def test_rf_module_extent_excludes_its_antenna_wrapping_courtyard(self):
+        ext = self.extent(self._module([_FakeRuleAreaZone(rule_area=True)]))
+        assert ext == (-9.5, -9.3, 9.5, 9.3)       # body, NOT the 48.6 mm courtyard
+
+    def test_neighbour_inside_courtyard_but_outside_body_does_not_overlap(self):
+        """Consumer invariant (the thing the preflight actually does with the
+        extent): a part seated 3 mm off the module body sits inside the module's
+        raw courtyard but must NOT overlap its placement extent."""
+        mod = self.extent(self._module([_FakeRuleAreaZone(rule_area=True)]))
+        neighbour = (12.5, -1.0, 14.5, 1.0)         # 3 mm clear of the body edge (x=9.5)
+        raw_courtyard = (-24.3, -23.0, 24.3, 18.6)
+
+        def overlaps(a, b):  # non-strict, as rects_overlap / the nudge use
+            return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
+
+        assert overlaps(raw_courtyard, neighbour), "fixture must model the false positive"
+        assert not overlaps(mod, neighbour)
+
+    def test_neighbour_touching_the_body_edge_overlaps(self):
+        """Boundary: the extent keeps the non-strict contract -- a part flush
+        against the body counts as overlapping (KiCad DRC would flag it)."""
+        mod = self.extent(self._module([_FakeRuleAreaZone(rule_area=True)]))
+        flush = (9.5, -1.0, 11.5, 1.0)
+        assert mod[2] >= flush[0]
+
+    def test_non_rule_area_zone_is_treated_as_ordinary(self):
+        """A plain copper-pour zone on a footprint is not a keepout: the
+        courtyard stays in the extent."""
+        ext = self.extent(self._module([_FakeRuleAreaZone(rule_area=False)]))
+        assert ext == (-24.3, -23.0, 24.3, 18.6)
+
+    def test_any_rule_area_among_several_zones_makes_it_a_keepout_part(self):
+        zones = [_FakeRuleAreaZone(rule_area=False), _FakeRuleAreaZone(rule_area=True)]
+        assert self.extent(self._module(zones)) == (-9.5, -9.3, 9.5, 9.3)
+
+    def test_empty_zone_list_is_ordinary(self):
+        assert self.extent(self._module([])) == (-24.3, -23.0, 24.3, 18.6)
+
+    def test_footprint_without_zones_attribute_is_ordinary(self):
+        fp = _FakeFootprint(
+            graphical_items=[
+                _FakeGraphicalItem(layer=self._LAYERS.F_CrtYd, bbox=_FakeBBox(-3, -3, 3, 3)),
+            ],
+            pads=[_FakePad(x=0, y=0, w=2, h=2)],
+        )
+        assert not hasattr(fp, "Zones")
+        assert self.extent(fp) == (-3, -3, 3, 3)
+
+    def test_extent_is_rounded_to_three_decimals(self):
+        fp = _FakeFootprint(pads=[_FakePad(x=0.1234, y=0, w=2, h=2)])
+        assert self.extent(fp) == (-0.877, -1, 1.123, 1)

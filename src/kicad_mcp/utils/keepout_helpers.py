@@ -227,10 +227,14 @@ def _board_outline_mm(board):
     return None
 
 
-def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3):
+def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3, bbox_fn=None):
     # Move overlapping footprints apart, never outside the board outline, and
     # refresh each mover's bbox so later pairs in the same pass see the new
     # position. Returns (move_count, moved_refs).
+    # bbox_fn(fp) -> (xmin, ymin, xmax, ymax) mm or None: the extent to separate.
+    # Default (None) is the footprint courtyard, which is what drc(autofix) wants;
+    # the autoroute preflight passes placement_extent_bbox instead.
+    extent = bbox_fn if bbox_fn is not None else get_courtyard_bbox
     outline = _board_outline_mm(board)
 
     def _overlap(a, b):  # non-strict AABB overlap (touching counts)
@@ -245,7 +249,7 @@ def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3):
     for _pass in range(max_passes):
         fp_data = []
         for fp in board.GetFootprints():
-            bbox = get_courtyard_bbox(fp)
+            bbox = extent(fp)
             if bbox is None:
                 continue
             fp_data.append({"ref": fp.GetReference(), "fp": fp,
@@ -348,4 +352,21 @@ def body_bbox(fp, has_keepout):
         bx0, by0 = pcbnew.ToMM(bb.GetX()), pcbnew.ToMM(bb.GetY())
         bx1, by1 = pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom())
     return bx0, by0, bx1, by1
+"""
+
+# "Area this footprint occupies" as the AUTOPLACER defines it: body_bbox with the
+# keepout-aware courtyard rule. The pre-route check and its auto-fix nudge use
+# this -- NOT the raw courtyard -- so they cannot disagree with the placer. On an
+# RF module the library courtyard wraps the off-board antenna keepout (U1 on the
+# expander board: 48.6x41.6 mm vs a 19x18.7 mm body), so a courtyard-based check
+# flags every neighbour the placer deliberately seated beside the module and the
+# nudge then tears the layout apart (issues #150/#151). The antenna keepout itself
+# is still enforced separately by the keepout-zone check.
+# Self-contained: carries body_bbox, requires only pcbnew in scope.
+PLACEMENT_EXTENT_HELPER = BODY_EXTENT_HELPER + """
+def placement_extent_bbox(fp):
+    has_keepout = (any(z.GetIsRuleArea() for z in fp.Zones())
+                   if hasattr(fp, "Zones") else False)
+    x0, y0, x1, y1 = body_bbox(fp, has_keepout)
+    return (round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3))
 """

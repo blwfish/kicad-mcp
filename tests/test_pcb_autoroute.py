@@ -347,6 +347,34 @@ class TestPreRouteCheckKeepouts:
         assert '"keepout_violations": keepout_violation_count' in script
 
 
+class TestPreflightUsesPlacementExtent:
+    """Regression (issues #150/#151): the preflight measured raw courtyards while
+    the autoplacer seats parts against the body, so on KiCad 10 (once the
+    courtyard lookup actually worked) an ESP32 module's antenna-wrapping
+    courtyard made the preflight 'fix' a layout the placer got right. The check
+    and its auto-fix must measure the SAME extent. Can't run the embedded script
+    without real pcbnew, so this pins the wiring in the emitted script; the
+    helper's own behavior is exec-tested in test_pcb_keepout.py."""
+
+    @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
+    def test_pre_route_check_measures_placement_extent_not_courtyard(self, mock_run):
+        from kicad_mcp.tools.pcb_autoroute import _run_pre_route_check
+        mock_run.return_value = {"status": "ok", "route_ready": True}
+        _run_pre_route_check("/tmp/dummy.kicad_pcb")
+        script = mock_run.call_args[0][0]
+        assert "ext = placement_extent_bbox(fp)" in script
+        assert "get_courtyard_bbox(fp)" not in script
+
+    @patch("kicad_mcp.tools.pcb_autoroute.run_pcbnew_script")
+    def test_auto_fix_nudges_the_same_extent_the_check_measures(self, mock_run):
+        from kicad_mcp.tools.pcb_autoroute import _run_auto_fix_placement
+        mock_run.return_value = {"status": "ok", "components_moved": 0, "moved": []}
+        _run_auto_fix_placement("/tmp/dummy.kicad_pcb")
+        script = mock_run.call_args[0][0]
+        assert ("nudge_overlapping_footprints(board, spacing, 3, placement_extent_bbox)"
+                in script)
+
+
 class TestAutorouteUnknownOperation:
 
     def test_unknown_op(self, route_server):
@@ -590,6 +618,62 @@ def test_nudge_acts_on_touching_courtyards():
     # strictly separated afterward (no longer even touching)
     ax, bx = a.bbox(), b.bbox()
     assert ax[2] < bx[0] or bx[2] < ax[0] or ax[3] < bx[1] or bx[3] < ax[1]
+
+
+# --- bbox_fn: the nudge separates the extent the CALLER measures -------------
+# The autoroute preflight passes placement_extent_bbox so the nudge cannot chase
+# raw-courtyard overlaps its own check never reported (issues #150/#151). The
+# default (bbox_fn=None) stays the courtyard, which drc(autofix) relies on.
+
+def _tight(fp):
+    """A footprint's 'body': 1 mm half-extent, far tighter than _FakeFP's courtyard."""
+    return (fp.cx - 1.0, fp.cy - 1.0, fp.cx + 1.0, fp.cy + 1.0)
+
+
+def test_nudge_default_bbox_fn_is_the_courtyard():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 56, 50, nets=1)          # courtyards (half=5) overlap, bodies don't
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3)
+    assert count >= 1 and "R2" in moved
+
+
+def test_nudge_explicit_none_bbox_fn_matches_the_default():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 56, 50, nets=1)
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, None)
+    assert count >= 1 and "R2" in moved
+
+
+def test_nudge_with_bbox_fn_ignores_courtyard_only_overlap():
+    """The regression: courtyards overlap (|dx|=6 < 10) but the caller's extents
+    (half=1) do not -- nothing may move."""
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 56, 50, nets=1)
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, _tight)
+    assert count == 0 and moved == []
+    assert (a.cx, a.cy, b.cx, b.cy) == (50, 50, 56, 50)
+
+
+@pytest.mark.parametrize("dx, should_nudge", [
+    (2.0 - 1e-9, True),    # extents overlap by 1e-9
+    (2.0,        True),    # extents share exactly one edge (touching counts)
+    (2.0 + 1e-9, False),   # extents clear by 1e-9
+])
+def test_nudge_with_bbox_fn_boundary_is_non_strict(dx, should_nudge):
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 50 + dx, 50, nets=1)
+    count, _ = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, _tight)
+    assert (count >= 1) is should_nudge
+
+
+def test_nudge_skips_footprints_whose_bbox_fn_returns_none():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 50, 50, nets=1)          # coincident with R1
+    def only_r1(fp):
+        return _tight(fp) if fp.ref == "R1" else None
+
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, only_r1)
+    assert count == 0 and moved == []
 
 
 def test_nudge_never_moves_a_footprint_off_board():
