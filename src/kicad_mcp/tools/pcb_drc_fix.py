@@ -8,6 +8,7 @@ from typing import Any, Dict
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
 from kicad_mcp.utils.keepout_helpers import (
     COURTYARD_BBOX_TUPLE_HELPER,
+    COURTYARD_COLLIDE_HELPER,
     NUDGE_PLACEMENT_HELPER,
 )
 from kicad_mcp.utils.path_validation import validate_project_path
@@ -199,9 +200,15 @@ if board is None:
     print(json.dumps({"error": "Failed to load board: " + str(params["pcb_path"])}))
     sys.exit(0)
 
-""" + COURTYARD_BBOX_TUPLE_HELPER + NUDGE_PLACEMENT_HELPER + """
+""" + COURTYARD_BBOX_TUPLE_HELPER + COURTYARD_COLLIDE_HELPER + NUDGE_PLACEMENT_HELPER + """
 
-move_count, _ = nudge_overlapping_footprints(board, 0.5, 3)
+# This step runs because KiCad DRC reported courtyards_overlap, so nudge ONLY pairs
+# whose real courtyard polygons collide (courtyards_collide mirrors that DRC test).
+# A bbox-only nudge treats a non-rectangular courtyard (the ESP32 module's T) as
+# its bounding box and, once triggered by ONE genuine overlap, shoves every part
+# seated in its notches -- observed: 1 real overlap -> 15 footprints moved, U1 by
+# ~22 mm, courtyards_overlap 1 -> 12.
+move_count, _ = nudge_overlapping_footprints(board, 0.5, 3, None, courtyards_collide)
 board.Save(params["pcb_path"])
 print(json.dumps({"status": "ok", "move_count": move_count}))
 """, params={"pcb_path": pcb_path})
