@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.freerouter_version import freerouter_version_info, probe_version
 from kicad_mcp.utils.keepout_helpers import (
     KEEPOUT_HELPER,
     COURTYARD_BBOX_TUPLE_HELPER,
@@ -378,6 +379,20 @@ def _freerouter_cmd(
     ]
 
 
+def _freerouter_version_info(java_path: str, jar_path: str) -> Dict[str, Any]:
+    """Typed version/validation status of the FreeRouter jar (cached per jar).
+
+    The probe runs the SAME command line a real pass uses (``_freerouter_cmd``: headless,
+    analytics off) against an input that cannot exist, so it reads the startup banner
+    without routing anything or phoning home.  See ``utils/freerouter_version.py``.
+    """
+    def _probe():
+        nowhere = os.path.join(tempfile.gettempdir(), f"kicad_mcp_version_probe_{uuid.uuid4().hex}")
+        return probe_version(_freerouter_cmd(java_path, jar_path, nowhere + ".dsn", nowhere + ".ses"))
+
+    return freerouter_version_info(jar_path, _probe)
+
+
 def _run_freerouter_pass(
     java_path: str,
     jar_path: str,
@@ -456,6 +471,11 @@ def _run_full_autoroute(
     per_pass_timeout = 1800.0
 
     try:
+        # Identify the FreeRouter build up front (cached per jar) so a version this
+        # project has not validated is logged before minutes of routing, and is
+        # reported in the result alongside everything else about the run.
+        freerouter_info = _freerouter_version_info(java_path, jar_path)
+
         # mkdtemp goes inside try so the finally block guarantees cleanup
         # even if the job-dict write below raises (otherwise the temp dir
         # would leak).
@@ -579,6 +599,7 @@ def _run_full_autoroute(
             "status": "ok",
             "pcb_path": pcb_path,
             "freerouter_jar": jar_path,
+            "freerouter": freerouter_info,
             "zones_removed": export_result.get("zones_removed", 0),
             "tracks_before": export_result.get("existing_tracks", 0),
             "vias_before": export_result.get("existing_vias", 0),
@@ -1100,6 +1121,14 @@ def _op_start(
     if not java_path:
         return {"error": "Java runtime not found. Install Java 17+ (e.g. Amazon Corretto)."}
 
+    # Identify the FreeRouter build NOW and return it in the submit response: this call
+    # returns immediately while the job runs for minutes, so a version this project has
+    # not validated is something the caller can act on (cancel, tell the user) before
+    # the cost is paid -- not only learn from the poll result afterwards. Cached per jar,
+    # so the worker's own check below costs nothing; done before the job is registered
+    # so a slow probe can never leave a phantom "running" job behind.
+    freerouter_info = _freerouter_version_info(java_path, jar_path)
+
     # Enforce concurrent job limit and clean up stale jobs
     with _autoroute_lock:
         _cleanup_stale_jobs()
@@ -1148,6 +1177,7 @@ def _op_start(
         "status": "submitted",
         "pcb_path": pcb_path,
         "passes": passes,
+        "freerouter": freerouter_info,
         "note": "Use autoroute(operation='poll', job_id=...) to check progress.",
     }
 

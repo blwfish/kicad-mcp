@@ -58,17 +58,19 @@ Required for `autoroute(operation="run")`, which wraps the FreeRouter autorouter
 
 The FreeRouter autorouter.
 
-> **⚠️ Version matters — use v2.2.3 or later.**
-> v2.2.3+ is **10–30× faster** than v2.1.0 and produces **deterministic results** (same board, same result every run). v2.1.0 is non-deterministic — the same board can route to 1 unrouted connection one run and 13 the next, depending on JVM timing. If you're on v2.1.0, upgrade.
+> **⚠️ Version matters — use v2.2.3.**
+> v2.2.3 is **10–30× faster** than v2.1.0 and produces **deterministic results** (same board, same result every run). v2.1.0 is non-deterministic — the same board can route to 1 unrouted connection one run and 13 the next, depending on JVM timing. If you're on v2.1.0, upgrade to v2.2.3.
+>
+> **Don't go newer yet.** v2.2.3 is the newest version this project's integration suite is validated against. v2.4.1 routed correctly but took about **2× as long** on the full suite and tripped test timeouts (issue #140); versions in between are unmeasured. If you run a newer one, autoroute results carry a `freerouter` field with `status: "newer_than_validated"` and a warning.
 
-Download v2.2.4:
+Download v2.2.3:
 
 ```bash
-curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.2.4/freerouting-2.2.4.jar
+curl -L -o ~/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.2.3/freerouting-2.2.3.jar
 ```
 
-The server auto-detects these locations (newest version name wins when multiple JARs are present):
-- `~/freerouting-2.2.4.jar` (or any `~/freerouting*.jar`)
+The server auto-detects these locations (the exact names `~/freerouting.jar` and `~/Downloads/freerouting.jar` are tried first; among `freerouting*.jar` globs the newest version name wins, so don't leave a newer jar next to the one you want):
+- `~/freerouting-2.2.3.jar` (or any `~/freerouting*.jar`)
 - `~/freerouting.jar`
 - `~/Downloads/freerouting*.jar`
 - `freerouting` on the system PATH

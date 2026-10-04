@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 from kicad_mcp.utils.geometry import GEOMETRY_HELPER
@@ -162,6 +162,9 @@ async def _op_autofix_locked(
 
     actions_taken = []
     routing_regressed = False
+    # FreeRouter's version/validation status, set only if this run actually re-routed
+    # (the reroute's own result carries it); None means no FreeRouter run happened.
+    freerouter_info: Optional[Dict[str, Any]] = None
 
     # --- Run initial DRC ---
     before_drc = await run_drc_via_cli(pcb_path, ctx=None)
@@ -284,6 +287,7 @@ print(json.dumps({"status": "ok", "removed": removed}))
                 )
             else:
                 routing_regressed = False
+                freerouter_info = route_result.get("freerouter")
                 incomplete = route_result.get("unconnected_after_routing", "?")
                 actions_taken.append(
                     f"routing: cleared {tracks_cleared} tracks/vias, "
@@ -442,6 +446,7 @@ print(json.dumps({"status": "ok", "moved": moved, "hidden": hidden_count,
         "after": {"total": after_total, "categories": after_cats},
         "actions_taken": actions_taken,
         "routing_regressed": routing_regressed,
+        "freerouter": freerouter_info,
         "improvement": before_total - after_total if isinstance(after_total, int) else None,
     }
 
