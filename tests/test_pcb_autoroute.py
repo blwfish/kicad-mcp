@@ -375,6 +375,159 @@ class TestPreflightUsesPlacementExtent:
                 in script)
 
 
+class TestStartReportsFreerouter:
+    """autoroute(operation="start") returns immediately while the job runs for
+    minutes, so the FreeRouter version/validation status must be in the SUBMIT
+    response -- the caller can act on it (cancel, tell the user) before the cost is
+    paid, not only learn from the poll result afterwards."""
+
+    @pytest.fixture
+    def jar(self, tmp_path):
+        from kicad_mcp.utils import freerouter_version as fv
+        fv._version_cache.clear()
+        p = tmp_path / "freerouting-test.jar"
+        p.write_bytes(b"jar")
+        yield str(p)
+        fv._version_cache.clear()
+
+    @pytest.fixture
+    def pcb(self, tmp_path):
+        p = tmp_path / "t.kicad_pcb"
+        p.write_text('(kicad_pcb (version 20240108) (generator "test"))\n')
+        return str(p)
+
+    @pytest.mark.parametrize("version, status, warned", [
+        ((2, 2, 3), "validated", False),
+        ((2, 4, 1), "newer_than_validated", True),
+        (None, "unknown", False),
+    ])
+    @patch("kicad_mcp.tools.pcb_autoroute.threading.Thread")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    def test_submit_response_carries_the_status(
+        self, mock_java, mock_thread, route_server, jar, pcb, version, status, warned,
+    ):
+        with patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value=jar), \
+                patch("kicad_mcp.tools.pcb_autoroute.probe_version", return_value=version):
+            result = _get_tool_fn(route_server, "autoroute")("start", pcb_path=pcb)
+        assert result["status"] == "submitted"
+        assert result["freerouter"]["status"] == status
+        assert (result["freerouter"]["warning"] is not None) is warned
+        mock_thread.return_value.start.assert_called_once()   # the job still launches
+
+    @patch("kicad_mcp.tools.pcb_autoroute.threading.Thread")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    def test_version_is_probed_before_a_job_is_registered(
+        self, mock_java, mock_thread, route_server, jar, pcb,
+    ):
+        """A slow or hung probe must never leave a phantom 'running' job behind."""
+        jobs_during_probe = []
+
+        def probe(*_a, **_k):
+            jobs_during_probe.append(len(_autoroute_jobs))
+            return (2, 2, 3)
+
+        before = len(_autoroute_jobs)
+        with patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value=jar), \
+                patch("kicad_mcp.tools.pcb_autoroute.probe_version", side_effect=probe):
+            result = _get_tool_fn(route_server, "autoroute")("start", pcb_path=pcb)
+        assert jobs_during_probe == [before]
+        assert result["job_id"] in _autoroute_jobs
+
+    @patch("kicad_mcp.tools.pcb_autoroute.threading.Thread")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouting.jar")
+    def test_a_nonexistent_jar_is_reported_unknown_without_running_anything(
+        self, mock_jar, mock_java, mock_thread, route_server, pcb,
+    ):
+        with patch("subprocess.run") as run:
+            result = _get_tool_fn(route_server, "autoroute")("start", pcb_path=pcb)
+        run.assert_not_called()
+        assert result["freerouter"]["status"] == "unknown"
+
+
+class TestFreerouterVersionWiring:
+    """The version check is wired into the one path every autoroute caller shares
+    (_run_full_autoroute: autoroute run/start, drc autofix, the pipeline). Version
+    LOGIC is tested in test_freerouter_version.py; this pins the wiring."""
+
+    @pytest.fixture
+    def jar(self, tmp_path):
+        from kicad_mcp.utils import freerouter_version as fv
+        fv._version_cache.clear()
+        p = tmp_path / "freerouting-test.jar"
+        p.write_bytes(b"jar")
+        yield str(p)
+        fv._version_cache.clear()
+
+    def test_probe_runs_the_same_command_line_a_real_pass_uses(self, jar):
+        """Headless + analytics OFF come from _freerouter_cmd, the single source:
+        a probe that phoned home would defeat the point of disabling analytics."""
+        from kicad_mcp.tools.pcb_autoroute import _freerouter_version_info
+        with patch("kicad_mcp.tools.pcb_autoroute.probe_version", return_value=(2, 2, 3)) as probe:
+            _freerouter_version_info("/usr/bin/java", jar)
+        cmd = probe.call_args[0][0]
+        assert cmd[0] == "/usr/bin/java"
+        assert cmd[cmd.index("-jar") + 1] == jar
+        assert "--usage_and_diagnostic_data.disable_analytics=true" in cmd
+        assert "--gui.enabled=false" in cmd
+        assert "-Djava.awt.headless=true" in cmd
+
+    def test_probe_input_cannot_exist_and_output_is_not_written_into_the_repo(self, jar):
+        import os
+        import tempfile
+        from kicad_mcp.tools.pcb_autoroute import _freerouter_version_info
+        with patch("kicad_mcp.tools.pcb_autoroute.probe_version", return_value=(2, 2, 3)) as probe:
+            _freerouter_version_info("/usr/bin/java", jar)
+        cmd = probe.call_args[0][0]
+        dsn, ses = cmd[cmd.index("-de") + 1], cmd[cmd.index("-do") + 1]
+        assert not os.path.exists(dsn) and not os.path.exists(ses)
+        assert dsn.startswith(tempfile.gettempdir()) and ses.startswith(tempfile.gettempdir())
+
+    def test_a_jar_that_does_not_exist_is_never_executed(self):
+        """Existing tests (and users) can pass a fake jar path; running
+        `java -jar /fake.jar` for it would be a pointless side effect."""
+        from kicad_mcp.tools.pcb_autoroute import _freerouter_version_info
+        with patch("kicad_mcp.tools.pcb_autoroute.probe_version") as probe, \
+                patch("subprocess.run") as run:
+            info = _freerouter_version_info("/usr/bin/java", "/fake.jar")
+        probe.assert_not_called()
+        run.assert_not_called()
+        assert info["status"] == "unknown"
+
+    @patch("kicad_mcp.tools.pcb_autoroute._import_ses")
+    @patch("kicad_mcp.tools.pcb_autoroute._measure_ses_unconnected")
+    @patch("kicad_mcp.tools.pcb_autoroute._run_freerouter_pass")
+    @patch("kicad_mcp.tools.pcb_autoroute._export_dsn")
+    @pytest.mark.parametrize("version, status, warned", [
+        ((2, 2, 3), "validated", False),
+        ((2, 4, 1), "newer_than_validated", True),
+    ])
+    def test_successful_run_reports_the_freerouter_status(
+        self, mock_export, mock_pass, mock_measure, mock_import, jar, tmp_path,
+        version, status, warned,
+    ):
+        from kicad_mcp.tools.pcb_autoroute import _run_full_autoroute
+
+        def touch(pcb, dsn, remove_zones):
+            open(dsn, "w").close()
+            return {"status": "ok", "dsn_exported": True, "zones_removed": 0}
+
+        mock_export.side_effect = touch
+        mock_pass.return_value = {"status": "ok"}
+        mock_measure.return_value = 0
+        mock_import.return_value = {"status": "ok", "tracks": 1, "vias": 0, "net_count": 1,
+                                    "unconnected_after_routing": 0, "zones_removed": 0}
+        with patch("kicad_mcp.tools.pcb_autoroute.probe_version", return_value=version):
+            result = _run_full_autoroute(
+                pcb_path=str(tmp_path / "b.kicad_pcb"), jar_path=jar,
+                java_path="/usr/bin/java", passes=1, remove_zones=False,
+            )
+        assert result["status"] == "ok"
+        assert result["freerouter"]["status"] == status
+        assert (result["freerouter"]["warning"] is not None) is warned
+        assert result["freerouter_jar"] == jar        # existing key unchanged
+
+
 class TestAutorouteUnknownOperation:
 
     def test_unknown_op(self, route_server):
