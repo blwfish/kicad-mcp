@@ -22,6 +22,8 @@ from datetime import date
 from fastmcp import FastMCP
 from mcp_agent_notes import Note, NoteKind, Priority, find, strategy, tactics
 
+from kicad_mcp.utils.freerouter_version import FREEROUTER_VALIDATED_MAX, format_version
+
 CAPABILITY_STATEMENT = (
     'KiCad EDA — design schematics and lay out PCBs. Most tools are routers '
     'that dispatch on an `operation=` argument (e.g. '
@@ -38,6 +40,10 @@ QUERY_TOOL_NAME = "get_usage_guidance"
 # drives render_instructions()'s "recently added" surfacing, and these are
 # newly-structured entries even though the underlying rules aren't new.
 _MIGRATED = date(2026, 9, 20)
+
+# The version in the FreeRouter note below comes from the same constant that gates the
+# runtime warning, so the guidance and the gate cannot drift apart.
+_FR_VALIDATED = format_version(FREEROUTER_VALIDATED_MAX)
 
 NOTES: tuple[Note, ...] = (
     Note(
@@ -234,6 +240,41 @@ NOTES: tuple[Note, ...] = (
         ),
         tags=(),
         addresses=("context window filling up", "keep conversation lean"),
+    ),
+    Note(
+        id="freerouter-newer-than-validated",
+        added=date(2026, 10, 4),
+        priority=Priority.MEDIUM,
+        kind=NoteKind.TACTIC,
+        summary=(
+            f"FreeRouter newer than {_FR_VALIDATED} is not validated here and "
+            "FreeRouter 2.4.1 measured about 2x slower — autoroute results carry "
+            "a `freerouter` field; if its status is 'newer_than_validated', expect "
+            f"long runs or use {_FR_VALIDATED}."
+        ),
+        detail=(
+            f"The integration suite is validated against FreeRouter up to "
+            f"{_FR_VALIDATED}. On the full suite FreeRouter 2.4.1 took about 2.1x as "
+            "long as 2.2.3 and tripped five test timeouts (issue #140); it routed "
+            "correctly, only slowly. Versions in between are unmeasured. "
+            "autoroute(operation='start') returns a `freerouter` field in its submit "
+            "response, so you can check it BEFORE the job's minutes are spent; "
+            "autoroute(operation='run'), build_pcb_from_schematic and "
+            "drc(operation='autofix') carry it in their results. The field is "
+            "{version, status, validated_max, warning}; status is 'validated', "
+            "'newer_than_validated' or 'unknown' (version banner unreadable — no "
+            "warning is raised for unknown). If the newer version is not what the user "
+            "intended, point FREEROUTER_JAR at a validated jar. A version newer than "
+            "the validated one is a warning, not an error: nothing is refused."
+        ),
+        tags=("autoroute",),
+        addresses=(
+            "autoroute is slow",
+            "autoroute timed out",
+            "which FreeRouter version",
+            "FreeRouter newer than validated",
+            "freerouter warning in result",
+        ),
     ),
     Note(
         id="firmware-design-narrow-envelope",

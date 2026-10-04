@@ -68,6 +68,61 @@ class TestRoutingFixSuccess:
         assert not any("FAILED" in a for a in result["actions_taken"])
 
 
+class TestAutofixReportsFreerouter:
+    """drc(autofix) used to discard the reroute's FreeRouter version/validation status,
+    leaving only a log line -- nothing an assistant could read. It now returns the
+    `freerouter` field, set only when this run actually re-routed."""
+
+    _NEWER = {"version": "2.4.1", "status": "newer_than_validated",
+              "validated_max": "2.2.3", "warning": "w"}
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouter.jar")
+    @patch("kicad_mcp.utils.pcbnew_bridge.run_pcbnew_script", return_value={"removed": 5})
+    @patch("kicad_mcp.tools.drc_impl.cli_drc.run_drc_via_cli")
+    @patch("os.path.exists", return_value=True)
+    def test_reroute_forwards_the_freerouter_status(
+        self, mock_exists, mock_drc, mock_script, mock_jar, mock_java, mock_route,
+    ):
+        mock_drc.side_effect = [_ROUTING_DRC, _CLEAN_DRC]
+        mock_route.return_value = {"tracks_after": 1, "vias_after": 0,
+                                   "unconnected_after_routing": 0, "freerouter": self._NEWER}
+        result = _run(fix_placement=False, fix_silkscreen=False)
+        assert result["freerouter"]["status"] == "newer_than_validated"
+        assert result["freerouter"]["version"] == "2.4.1"
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouter.jar")
+    @patch("kicad_mcp.utils.pcbnew_bridge.run_pcbnew_script", return_value={"removed": 5})
+    @patch("kicad_mcp.tools.drc_impl.cli_drc.run_drc_via_cli")
+    @patch("os.path.exists", return_value=True)
+    def test_no_reroute_means_no_freerouter_status(
+        self, mock_exists, mock_drc, mock_script, mock_jar, mock_java, mock_route,
+    ):
+        """fix_routing=False: FreeRouter never runs, so there is nothing to report."""
+        mock_drc.side_effect = [_ROUTING_DRC, _ROUTING_DRC]
+        result = _run(fix_routing=False, fix_placement=False, fix_silkscreen=False)
+        mock_route.assert_not_called()
+        assert result["freerouter"] is None
+
+    @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_java", return_value="/usr/bin/java")
+    @patch("kicad_mcp.tools.pcb_autoroute._find_freerouter_jar", return_value="/fake/freerouter.jar")
+    @patch("kicad_mcp.utils.pcbnew_bridge.run_pcbnew_script", return_value={"removed": 5})
+    @patch("kicad_mcp.tools.drc_impl.cli_drc.run_drc_via_cli")
+    @patch("os.path.exists", return_value=True)
+    def test_failed_reroute_reports_no_freerouter_status(
+        self, mock_exists, mock_drc, mock_script, mock_jar, mock_java, mock_route,
+    ):
+        mock_drc.side_effect = [_ROUTING_DRC, _ROUTING_DRC]
+        mock_route.return_value = {"error": "FreeRouter crashed"}
+        result = _run(fix_placement=False, fix_silkscreen=False)
+        assert result["routing_regressed"] is True
+        assert result["freerouter"] is None
+
+
 class TestRoutingFixFailure:
     @patch("kicad_mcp.tools.pcb_autoroute._run_full_autoroute")
     @patch("kicad_mcp.tools.pcb_autoroute._find_java")
