@@ -25,9 +25,9 @@ from fastmcp import FastMCP
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
 from kicad_mcp.utils.keepout_helpers import (
     KEEPOUT_HELPER,
-    COURTYARD_BBOX_HELPER,
     COURTYARD_BBOX_TUPLE_HELPER,
     NUDGE_PLACEMENT_HELPER,
+    PLACEMENT_EXTENT_HELPER,
 )
 from kicad_mcp.utils.path_validation import validate_project_path
 from kicad_mcp.utils.pcb_lock import busy_error, pcb_write_lock
@@ -696,20 +696,19 @@ if min_cl <= 0:
 
 errors = []
 
-# --- Courtyard overlap check ---
-""" + COURTYARD_BBOX_HELPER + """
+# --- Footprint overlap check ---
+# Uses the placement extent (body bbox, keepout-aware), NOT the raw courtyard:
+# the autoplacer seats parts against the body, and an RF module's courtyard
+# wraps its off-board antenna keepout, so a courtyard check flags every
+# neighbour the placer put there on purpose (issues #150/#151). The antenna
+# keepout is enforced by the keepout-zone check below.
+""" + PLACEMENT_EXTENT_HELPER + """
 
 footprints = []
 for fp in board.GetFootprints():
-    tight_box = get_courtyard_bbox(fp)
-    if not tight_box:
-        fp_bbox = fp.GetBoundingBox(False, False)
-        tight_box = {
-            "x_min_mm": round(pcbnew.ToMM(fp_bbox.GetX()), 3),
-            "y_min_mm": round(pcbnew.ToMM(fp_bbox.GetY()), 3),
-            "x_max_mm": round(pcbnew.ToMM(fp_bbox.GetRight()), 3),
-            "y_max_mm": round(pcbnew.ToMM(fp_bbox.GetBottom()), 3),
-        }
+    ext = placement_extent_bbox(fp)
+    tight_box = {"x_min_mm": ext[0], "y_min_mm": ext[1],
+                 "x_max_mm": ext[2], "y_max_mm": ext[3]}
     footprints.append({"reference": fp.GetReference(), "bbox": tight_box})
 
 courtyard_overlaps = []
@@ -817,9 +816,11 @@ if board is None:
     sys.exit(0)
 spacing = params["spacing_mm"]
 
-""" + COURTYARD_BBOX_TUPLE_HELPER + NUDGE_PLACEMENT_HELPER + """
+""" + COURTYARD_BBOX_TUPLE_HELPER + PLACEMENT_EXTENT_HELPER + NUDGE_PLACEMENT_HELPER + """
 
-move_count, moved = nudge_overlapping_footprints(board, spacing, 3)
+# Separate the SAME extent the pre-route check measures (placement extent, not the
+# raw courtyard) so the fix cannot chase overlaps the check never reported.
+move_count, moved = nudge_overlapping_footprints(board, spacing, 3, placement_extent_bbox)
 if moved:
     board.Save(params["pcb_path"])
 
