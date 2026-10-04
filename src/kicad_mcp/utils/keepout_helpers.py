@@ -208,6 +208,30 @@ def signal_net_count(fp):
 """
 
 # ---------------------------------------------------------------------------
+# Courtyard-collision predicate -- "do these two footprints' courtyards overlap?"
+# the way KiCad DRC's courtyards_overlap decides it: on the real courtyard
+# POLYGONS, front-vs-front / back-vs-back only. A courtyard is not its bounding
+# box: the ESP32 module's is T-shaped (an antenna wing over a narrower body,
+# 1438 mm^2 inside a 2023 mm^2 bbox), and a bbox test reports every part seated
+# in the notches beside the body as overlapping it. Verified equal to DRC on
+# KiCad 9.0.9 and 10.0.3 at overlap 0.1 mm / overlap <=10 um / touching / gap
+# (touching counts as CLEAR in both), and that DRC ignores opposite-side pairs.
+# Requires: pcbnew. Passed to nudge_overlapping_footprints as collide_fn.
+# ---------------------------------------------------------------------------
+COURTYARD_COLLIDE_HELPER = """
+def courtyards_collide(fa, fb):
+    la = pcbnew.F_CrtYd if fa.GetLayer() == pcbnew.F_Cu else pcbnew.B_CrtYd
+    lb = pcbnew.F_CrtYd if fb.GetLayer() == pcbnew.F_Cu else pcbnew.B_CrtYd
+    if la != lb:
+        return False  # DRC never compares a front courtyard with a back one
+    pa = fa.GetCourtyard(la)
+    pb = fb.GetCourtyard(lb)
+    if pa.OutlineCount() == 0 or pb.OutlineCount() == 0:
+        return True  # no courtyard polygon to judge by: keep the caller's bbox verdict
+    return bool(pa.Collide(pb, 0))
+"""
+
+# ---------------------------------------------------------------------------
 # Footprint-nudge helper — SINGLE SOURCE OF TRUTH for the "push overlapping
 # footprints apart" operation, shared by the autoroute and DRC-fix placement
 # steps (previously two drifted copies; the autoroute copy ignored the board
@@ -227,13 +251,17 @@ def _board_outline_mm(board):
     return None
 
 
-def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3, bbox_fn=None):
+def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3, bbox_fn=None, collide_fn=None):
     # Move overlapping footprints apart, never outside the board outline, and
     # refresh each mover's bbox so later pairs in the same pass see the new
     # position. Returns (move_count, moved_refs).
     # bbox_fn(fp) -> (xmin, ymin, xmax, ymax) mm or None: the extent to separate.
     # Default (None) is the footprint courtyard, which is what drc(autofix) wants;
     # the autoroute preflight passes placement_extent_bbox instead.
+    # collide_fn(fp_a, fp_b) -> bool: optional second opinion on a pair whose
+    # extents overlap. It can only REMOVE a pair (a bbox overlap that is not a real
+    # collision), never add one; drc(autofix) passes courtyards_collide so only
+    # overlaps KiCad's own DRC reports get nudged.
     extent = bbox_fn if bbox_fn is not None else get_courtyard_bbox
     outline = _board_outline_mm(board)
 
@@ -256,7 +284,9 @@ def nudge_overlapping_footprints(board, spacing=0.5, max_passes=3, bbox_fn=None)
                             "bbox": bbox, "nets": signal_net_count(fp)})
         pairs = [(fp_data[i], fp_data[j])
                  for i in range(len(fp_data)) for j in range(i + 1, len(fp_data))
-                 if _overlap(fp_data[i]["bbox"], fp_data[j]["bbox"])]
+                 if _overlap(fp_data[i]["bbox"], fp_data[j]["bbox"])
+                 and (collide_fn is None
+                      or collide_fn(fp_data[i]["fp"], fp_data[j]["fp"]))]
         if not pairs:
             break
         moved = False
@@ -356,12 +386,14 @@ def body_bbox(fp, has_keepout):
 
 # "Area this footprint occupies" as the AUTOPLACER defines it: body_bbox with the
 # keepout-aware courtyard rule. The pre-route check and its auto-fix nudge use
-# this -- NOT the raw courtyard -- so they cannot disagree with the placer. On an
-# RF module the library courtyard wraps the off-board antenna keepout (U1 on the
-# expander board: 48.6x41.6 mm vs a 19x18.7 mm body), so a courtyard-based check
-# flags every neighbour the placer deliberately seated beside the module and the
-# nudge then tears the layout apart (issues #150/#151). The antenna keepout itself
-# is still enforced separately by the keepout-zone check.
+# this -- NOT the courtyard's bounding box -- so they cannot disagree with the
+# placer. On an RF module the library courtyard is a T-shaped polygon (antenna
+# wing over a narrower body; U1 on the expander board: bbox 48.6x41.6 mm vs a
+# 19x18.7 mm body). Its BOUNDING BOX swallows the notches beside the body where
+# the placer deliberately seats neighbours, so a bbox-based check flags them and
+# the nudge tears the layout apart (issues #150/#151) -- even though KiCad DRC,
+# which tests the real polygon, reports no overlap. The antenna keepout itself is
+# still enforced separately by the keepout-zone check.
 # Self-contained: carries body_bbox, requires only pcbnew in scope.
 PLACEMENT_EXTENT_HELPER = BODY_EXTENT_HELPER + """
 def placement_extent_bbox(fp):

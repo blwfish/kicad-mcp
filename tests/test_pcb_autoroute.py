@@ -676,6 +676,61 @@ def test_nudge_skips_footprints_whose_bbox_fn_returns_none():
     assert count == 0 and moved == []
 
 
+# --- collide_fn: a second opinion that can only REMOVE a bbox-overlap pair ----
+# drc(autofix) passes courtyards_collide so only overlaps KiCad DRC reports are
+# nudged. Observed without it: ONE genuine overlap -> 15 footprints moved, U1 by
+# ~22 mm, courtyards_overlap 1 -> 12 (bbox of a T-shaped courtyard != courtyard).
+
+def test_nudge_collide_fn_false_drops_a_bbox_only_overlap():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 54, 50, nets=1)          # bboxes overlap (half=5, |dx|=4)
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, None, lambda x, y: False)
+    assert count == 0 and moved == []
+    assert (a.cx, b.cx) == (50, 54)
+
+
+def test_nudge_collide_fn_true_still_nudges():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 54, 50, nets=1)
+    count, moved = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, None, lambda x, y: True)
+    assert count >= 1 and "R2" in moved
+
+
+def test_nudge_collide_fn_cannot_add_a_pair():
+    """Bboxes clear -> collide_fn is never consulted and nothing moves, even if it
+    would say True (it filters pairs, it does not create them)."""
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 70, 50, nets=1)
+    calls = []
+    count, _ = _make_nudge()(_FakeBoard([a, b]), 0.5, 3, None,
+                             lambda x, y: calls.append(1) or True)
+    assert count == 0 and calls == []
+
+
+def test_nudge_collide_fn_receives_the_footprint_objects():
+    a = _FakeFP("R1", 50, 50, nets=2)
+    b = _FakeFP("R2", 54, 50, nets=1)
+    seen = []
+    _make_nudge()(_FakeBoard([a, b]), 0.5, 3, None, lambda x, y: seen.append((x, y)) or False)
+    assert seen and {id(seen[0][0]), id(seen[0][1])} == {id(a), id(b)}
+
+
+def test_nudge_collide_fn_only_unflags_the_phantom_pair_in_a_mixed_board():
+    """Three parts: R1/R2 genuinely collide, R3 only shares a bbox with R1. Only
+    R1/R2 may be separated; R3 must stay put."""
+    r1 = _FakeFP("R1", 50, 50, nets=3)
+    r2 = _FakeFP("R2", 54, 50, nets=1)
+    r3 = _FakeFP("R3", 50, 58, nets=0)         # bbox overlaps R1 (|dy|=8<10), no real collision
+
+    def real(x, y):
+        return {x.ref, y.ref} == {"R1", "R2"}
+
+    _make_nudge()(_FakeBoard([r1, r2, r3]), 0.5, 3, None, real)
+    assert (r3.cx, r3.cy) == (50, 58)
+    assert (r1.cx, r1.cy) == (50, 50)
+    assert (r2.cx, r2.cy) != (54, 50)
+
+
 def test_nudge_never_moves_a_footprint_off_board():
     """h-autoroute-nudge: R2 overlaps R1 at the board's right edge, so the
     separating move would go off-board. The shared helper keeps it inside the
