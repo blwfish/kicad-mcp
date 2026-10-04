@@ -697,11 +697,12 @@ if min_cl <= 0:
 errors = []
 
 # --- Footprint overlap check ---
-# Uses the placement extent (body bbox, keepout-aware), NOT the raw courtyard:
-# the autoplacer seats parts against the body, and an RF module's courtyard
-# wraps its off-board antenna keepout, so a courtyard check flags every
-# neighbour the placer put there on purpose (issues #150/#151). The antenna
-# keepout is enforced by the keepout-zone check below.
+# Uses the placement extent (body bbox, keepout-aware), NOT the courtyard's
+# bounding box: the autoplacer seats parts against the body, and an RF module's
+# T-shaped courtyard has a bbox that swallows the notches beside its body, so a
+# bbox check flags every neighbour the placer put there on purpose (issues
+# #150/#151) -- KiCad DRC, testing the real polygon, reports no overlap. The
+# antenna keepout is enforced by the keepout-zone check below.
 """ + PLACEMENT_EXTENT_HELPER + """
 
 footprints = []

@@ -1437,16 +1437,19 @@ class _FakeFootprintWithZones(_FakeFootprint):
 class TestPlacementExtentHelper:
     """placement_extent_bbox(fp) is the footprint extent the AUTOPLACER uses
     (body_bbox with the keepout-aware courtyard rule). The autoroute preflight
-    and its nudge consume it instead of the raw courtyard.
+    and its nudge consume it instead of the courtyard's bounding box.
 
-    Regression (issues #150/#151): on an RF module the library courtyard wraps
-    the off-board antenna keepout (U1 on the expander board: 48.6x41.6 mm
-    courtyard vs a 19x18.7 mm body). Once KiCad 10's courtyard lookup was fixed,
-    a courtyard-based preflight flagged every neighbour the placer had seated
-    beside the module and the nudge tore the layout apart (0 -> 17 unconnected
-    nets). The decision here is boolean (any rule-area zone?), not numeric, so
-    there is no at/below/above threshold; the ambiguous inputs (non-rule-area
-    zone, no Zones attribute, several zones) are pinned instead."""
+    Regression (issues #150/#151): an RF module's library courtyard is a T-shaped
+    polygon (U1 on the expander board: bbox 48.6x41.6 mm vs a 19x18.7 mm body).
+    get_courtyard_bbox collapses it to that bbox, which swallows the notches
+    beside the body where the placer seats neighbours -- so once KiCad 10's
+    courtyard lookup was fixed, the preflight flagged those neighbours and the
+    nudge tore the layout apart (0 -> 17 unconnected nets), although KiCad DRC
+    (which tests the real polygon) reports no overlap. The fixture below models
+    the courtyard as the single bbox the helper actually sees. The decision here is
+    boolean (any rule-area zone?), not numeric, so there is no at/below/above
+    threshold; the ambiguous inputs (non-rule-area zone, no Zones attribute,
+    several zones) are pinned instead."""
 
     _LAYERS = types.SimpleNamespace(F_Fab=0, B_Fab=1, F_SilkS=2, B_SilkS=3,
                                      F_CrtYd=4, B_CrtYd=5)
@@ -1485,8 +1488,9 @@ class TestPlacementExtentHelper:
 
     def test_neighbour_inside_courtyard_but_outside_body_does_not_overlap(self):
         """Consumer invariant (the thing the preflight actually does with the
-        extent): a part seated 3 mm off the module body sits inside the module's
-        raw courtyard but must NOT overlap its placement extent."""
+        extent): a part seated 3 mm off the module body sits inside the courtyard's
+        BOUNDING BOX (it is in a notch of the real polygon) but must NOT overlap
+        the placement extent."""
         mod = self.extent(self._module([_FakeRuleAreaZone(rule_area=True)]))
         neighbour = (12.5, -1.0, 14.5, 1.0)         # 3 mm clear of the body edge (x=9.5)
         raw_courtyard = (-24.3, -23.0, 24.3, 18.6)
@@ -1530,3 +1534,83 @@ class TestPlacementExtentHelper:
     def test_extent_is_rounded_to_three_decimals(self):
         fp = _FakeFootprint(pads=[_FakePad(x=0.1234, y=0, w=2, h=2)])
         assert self.extent(fp) == (-0.877, -1, 1.123, 1)
+
+
+class _FakePoly:
+    def __init__(self, outlines=1, collides=False):
+        self._outlines, self._collides = outlines, collides
+        self.collide_calls = []
+    def OutlineCount(self): return self._outlines
+    def Collide(self, other, clearance):
+        self.collide_calls.append(clearance)
+        return self._collides
+
+
+class _FakeCourtyardFP:
+    def __init__(self, layer, poly):
+        self._layer, self._poly = layer, poly
+        self.asked_layers = []
+    def GetLayer(self): return self._layer
+    def GetCourtyard(self, layer):
+        self.asked_layers.append(layer)
+        return self._poly
+
+
+class TestCourtyardCollideHelper:
+    """courtyards_collide(fa, fb) mirrors KiCad DRC's courtyards_overlap: real
+    courtyard POLYGONS, front-vs-front / back-vs-back only. The geometric
+    boundary behaviour (touching and sub-10 um overlaps are CLEAR; 0.1 mm overlap
+    is a collision) belongs to pcbnew's SHAPE_POLY_SET.Collide and is pinned
+    against the real DRC in tests/integration/test_courtyard_collide_parity.py;
+    here we pin the helper's own decisions with fakes."""
+
+    _L = types.SimpleNamespace(F_Cu=0, B_Cu=31, F_CrtYd=100, B_CrtYd=101)
+
+    @pytest.fixture(autouse=True)
+    def _exec_helper(self):
+        from kicad_mcp.utils.keepout_helpers import COURTYARD_COLLIDE_HELPER
+        ns = {"pcbnew": types.SimpleNamespace(**vars(self._L))}
+        exec(COURTYARD_COLLIDE_HELPER, ns)
+        self.collide = ns["courtyards_collide"]
+
+    def _fp(self, side, poly):
+        return _FakeCourtyardFP(self._L.F_Cu if side == "F" else self._L.B_Cu, poly)
+
+    @pytest.mark.parametrize("verdict", [True, False])
+    def test_same_side_returns_the_polygon_verdict(self, verdict):
+        a = self._fp("F", _FakePoly(collides=verdict))
+        b = self._fp("F", _FakePoly(collides=verdict))
+        assert self.collide(a, b) is verdict
+
+    def test_collide_is_called_with_zero_clearance(self):
+        """Clearance 0 is what matches DRC; a nonzero value would start flagging
+        near-misses DRC accepts."""
+        pa, pb = _FakePoly(), _FakePoly()
+        self.collide(self._fp("F", pa), self._fp("F", pb))
+        assert pa.collide_calls == [0]
+
+    def test_opposite_sides_never_collide(self):
+        """DRC ignores a front courtyard against a back one, even when the
+        polygons themselves would collide."""
+        a = self._fp("F", _FakePoly(collides=True))
+        b = self._fp("B", _FakePoly(collides=True))
+        assert self.collide(a, b) is False
+        assert self.collide(b, a) is False
+
+    def test_back_side_parts_use_the_back_courtyard_layer(self):
+        a = self._fp("B", _FakePoly()); b = self._fp("B", _FakePoly())
+        self.collide(a, b)
+        assert a.asked_layers == [self._L.B_CrtYd] and b.asked_layers == [self._L.B_CrtYd]
+
+    def test_front_side_parts_use_the_front_courtyard_layer(self):
+        a = self._fp("F", _FakePoly()); b = self._fp("F", _FakePoly())
+        self.collide(a, b)
+        assert a.asked_layers == [self._L.F_CrtYd] and b.asked_layers == [self._L.F_CrtYd]
+
+    @pytest.mark.parametrize("empty", ["a", "b", "both"])
+    def test_missing_courtyard_polygon_keeps_the_bbox_verdict(self, empty):
+        """No polygon to judge by -> True, so the helper can only REMOVE phantom
+        pairs and never hides an overlap the caller's bbox test found."""
+        a = self._fp("F", _FakePoly(outlines=0 if empty in ("a", "both") else 1, collides=False))
+        b = self._fp("F", _FakePoly(outlines=0 if empty in ("b", "both") else 1, collides=False))
+        assert self.collide(a, b) is True
