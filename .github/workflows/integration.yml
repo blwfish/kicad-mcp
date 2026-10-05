@@ -79,8 +79,17 @@ jobs:
         # kicad_common.json there, ignores $HOME).
         env:
           KICAD_CONFIG_HOME: ${{ runner.temp }}/kicad-config
+        #
+        # Held under a machine-wide flock so *different runs* (two PRs, or a PR
+        # plus a push to main) also never overlap on the shared machine --
+        # max-parallel above only serializes legs within one run, and Actions
+        # `concurrency:` can't serialize across runs without cancelling queued
+        # jobs. Observed 2026-10-05: PR #163's autoroute tests timed out/failed
+        # while PR #161's run overlapped it on the same legs. See
+        # scripts/ci_machine_lock.py.
         run: |
-          KICAD_INTEGRATION=1 uv run pytest tests/integration/ -v \
+          KICAD_INTEGRATION=1 uv run python scripts/ci_machine_lock.py -- \
+            uv run pytest tests/integration/ -v \
             --tb=short \
             --timeout=120
 
