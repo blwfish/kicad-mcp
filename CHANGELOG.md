@@ -2,6 +2,96 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.18.1] — 2026-10-04
+
+Fixes a KiCad 10 autoroute regression that shipped in 0.18.0 and resolves the
+`integration / kicad-10.0` failure that release was shipped with
+([#150](https://github.com/blwfish/kicad-mcp/issues/150),
+[#151](https://github.com/blwfish/kicad-mcp/issues/151)). Adds a warning when
+FreeRouter is newer than the version this project is validated against.
+
+### Fixed
+
+- **Autoroute preflight rearranged boards with an RF module (KiCad 10).** 0.18.0
+  fixed a courtyard lookup that silently found nothing on KiCad 10 (the layer was
+  renamed `F.CrtYd` → `F.Courtyard`, so a name match never hit and the code fell
+  back to pad boxes). The fix was correct, and it exposed a disagreement that had
+  been hidden: the preflight compared each courtyard's **bounding box**, but an
+  ESP32 module's courtyard is a T-shaped polygon (an antenna wing over a narrower
+  body — 1438 mm² inside a 2023 mm² box) and the box swallows the notches beside
+  the body, where the autoplacer deliberately seats neighbours. The preflight
+  flagged them and its auto-fix nudged 14 footprints (the module by 22 mm) before
+  routing: the expander test board went from 0 to 17 unconnected nets and from
+  ~11 s to ~240 s. The preflight now measures the same placement extent the
+  autoplacer uses. Found by bisecting to `8e57847` and confirming that reverting
+  only its courtyard hunk restores the pass.
+- **`drc(operation="autofix")` nudged parts that DRC does not flag.** One genuine
+  courtyard overlap elsewhere made it move 15 footprints (the ESP32 module by
+  22 mm) and took `courtyards_overlap` from 1 to 12. It now separates only pairs
+  whose real courtyard polygons collide (new `courtyards_collide`), which matches
+  KiCad's own `courtyards_overlap` on KiCad 9.0.9 and 10.0.3: a 0.1 mm overlap
+  collides; overlaps of 10 µm or less, touching, and any gap do not; front and back
+  side courtyards are never compared. **Behavior change:** autofix no longer
+  nudges courtyards that merely touch, because DRC does not flag them either.
+- `pcb()`'s dispatch closures are annotated `Dict[str, Any]`, clearing the two
+  `no-any-return` mypy errors ([#149](https://github.com/blwfish/kicad-mcp/issues/149)).
+
+### Added
+
+- **FreeRouter version warning.** FreeRouter 2.2.3 is the newest version the
+  integration suite is validated against. On the full suite 2.4.1 routed correctly
+  but took ~2.1x as long (1283 s vs 624 s on KiCad 10, 1445 s vs 683 s on KiCad 9)
+  and tripped five test timeouts ([#140](https://github.com/blwfish/kicad-mcp/issues/140));
+  versions in between are unmeasured. Results from anything that ran FreeRouter now
+  carry `freerouter: {version, status, validated_max, warning}`, where `status` is
+  `validated`, `newer_than_validated` or `unknown` (version banner unreadable; no
+  warning). It is in the `autoroute(operation="start")` submit response, so a caller
+  can act before the job's minutes are spent, in the `autoroute` run/poll result and
+  the pipeline's autoroute step, and in `drc(operation="autofix")` when it
+  re-routed. It only warns; nothing is refused. FreeRouter publishes no
+  machine-readable version, so the build is read from the startup banner each jar
+  prints (about 2 s, cached per jar).
+- A usage-guidance note, `freerouter-newer-than-validated`, findable by symptom
+  (e.g. "autoroute is slow") and listed under `tactics(topic="autoroute")`.
+
+### Changed
+
+- `README.md`, `AGENT-INSTALL.md` and `.github/upstream-versions.env` now name
+  FreeRouter **2.2.3** (they said 2.2.4, which the suite had never been run
+  against) and explain why not to go newer.
+
+### Dependencies
+
+- fastmcp 4.0.5 → 4.0.9, filelock 4.0.0 → 4.0.3, pyjwt 2.13.0 → 2.15.0,
+  urllib3 2.7.0 → 2.8.0 (the urllib3 and pyjwt releases carry security fixes;
+  both are transitive), ruff 0.16.8 → 0.16.9 and hypothesis 6.168.0 → 6.168.1 (dev).
+
+### Testing
+
+Full unit suite: 3229 passed, 1 pre-existing skip. The full integration suite
+passes on KiCad 10 and KiCad 9 (58 tests each) against this code, including a new
+real-library regression for the ESP32 courtyard case, a DRC-parity test for the
+courtyard predicate, and a real-jar test that fails if an upstream FreeRouter
+release reformats its version banner. New logic was mutation-checked.
+
+### Known Issues
+
+- **Corrects 0.18.0's Known Issues:** the `integration / kicad-10.0` failure was
+  *not* a routability problem with the test fixture. The cause is the preflight
+  regression above; the boards route fine.
+- `audit(operation="auto_fix_placement")` still compares courtyard bounding boxes,
+  so it reports and "fixes" the same phantom overlaps around an RF module's notch
+  (verified; not yet fixed).
+- `drc(operation="autofix")`'s placement step still leaves a moved footprint's
+  tracks behind (and does not reroute unless routing violations already existed),
+  can move locked footprints, can move a part too short a distance when it sits
+  deep inside a large courtyard, and its "nudged N footprint(s)" counts moves
+  rather than footprints. A design for closing these is drafted and awaiting
+  review.
+- The FreeRouter 2.2.3 this project is validated against is a locally built jar;
+  the official 2.2.3 release asset is a different file and has not itself been run
+  against the suite.
+
 ## [0.18.0] — 2026-09-24
 
 A full-codebase review remediation pass, plus two audit/export
