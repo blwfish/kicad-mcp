@@ -2,6 +2,11 @@ version: 2
 updates:
   - package-ecosystem: uv
     directory: /
+    # Version-update PRs target dev (the working branch); main is release-only.
+    # Dependabot reads this file from the DEFAULT branch (main), so it only
+    # takes effect once it lands there. Security updates ignore target-branch
+    # and always open against the default branch.
+    target-branch: dev
     schedule:
       interval: weekly
       day: monday
