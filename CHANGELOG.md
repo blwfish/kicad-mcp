@@ -14,6 +14,14 @@ changes to the tools.
   runs produced false failures (empty library search results, and a 120 s
   pytest timeout on `test_firmware_to_routed_pcb`). The integration step now runs
   under `scripts/ci_machine_lock.py`, a machine-wide `flock`.
+- **The KiCad integration matrix is defined once.** `release.yml` carried its
+  own copy of the integration job, so the flock above reached only
+  `integration.yml`; the release gate also lacked `max-parallel: 1`, and its two
+  KiCad legs ran unserialized next to the main-push run (kicad-10.0 then failed
+  on empty library searches and skipped the release). The matrix, flock,
+  `max-parallel` and config isolation now live in `integration-matrix.yml`
+  (`workflow_call`), which `integration.yml` and `release.yml` both call. Check
+  names (`integration / kicad-10.0`) are unchanged.
 - **Dependabot version updates target `dev`** (`target-branch: dev`). Security
   updates still open against the default branch (`main`); that is a dependabot
   limitation, not configurable.
