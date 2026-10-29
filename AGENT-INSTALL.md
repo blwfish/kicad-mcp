@@ -30,9 +30,9 @@ KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP 
 - KiCad's Python 3.9 with pcbnew — used by the subprocess bridge for all PCB modifications
 - Symbol and footprint libraries — indexed by the MCP server for `library(operation="search", type="symbol"|"footprint")`
 
-### 2. Python 3.10+ (required)
+### 2. Python 3.11+ (required)
 
-The MCP server runs on the system Python (not KiCad's Python). 3.10+ is required for type union syntax.
+The MCP server runs on the system Python (not KiCad's Python). 3.11+ is required.
 
 **Check:** `python3 --version`
 
