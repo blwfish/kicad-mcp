@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from fastmcp import FastMCP
 
 from kicad_mcp.utils.pcbnew_bridge import run_pcbnew_script
+from kicad_mcp.utils.dsn_order import reorder_dsn
 from kicad_mcp.utils.freerouter_version import freerouter_version_info, probe_version
 from kicad_mcp.utils.keepout_helpers import (
     KEEPOUT_HELPER,
@@ -512,6 +513,16 @@ def _run_full_autoroute(
         # read from KiCad's own connectivity engine; we keep the lowest.
         pass_meas: list[tuple[str, Optional[int]]] = []
         pass_results: list[dict] = []
+        # FreeRouter is a pure function of its DSN, but pcbnew exports the DSN's
+        # components/nets/images in a different order on every run, and that
+        # order alone changes the routing outcome.  Pin the order (see
+        # utils/dsn_order.py) so best-of-N is a fixed ensemble, not luck.
+        try:
+            with open(dsn_path, encoding="utf-8") as fh:
+                raw_dsn = fh.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("Cannot read DSN for reordering (%s); using as exported", exc)
+            raw_dsn = ""
 
         for pass_num in range(1, passes + 1):
             # Check cancellation before each pass
@@ -531,16 +542,35 @@ def _run_full_autoroute(
                 else os.path.join(work_dir, f"{pcb_basename}_pass{pass_num}.ses")
             )
 
-            logger.info("FreeRouter pass %d/%d", pass_num, passes)
+            # Pass 1 = canonical (sorted) order; pass k>1 = seeded permutation k-1.
+            dsn_order = "canonical" if pass_num == 1 else f"seeded:{pass_num - 1}"
+            pass_dsn = dsn_path
+            reordered = reorder_dsn(
+                raw_dsn, None if pass_num == 1 else pass_num - 1,
+            ) if raw_dsn else None
+            if reordered is None:
+                dsn_order = "as_exported"
+                logger.warning(
+                    "DSN reordering unavailable for pass %d; using the exported "
+                    "order (routing outcome may vary run to run)", pass_num,
+                )
+            else:
+                pass_dsn = os.path.join(work_dir, f"{pcb_basename}_pass{pass_num}.dsn")
+                with open(pass_dsn, "w", encoding="utf-8") as fh:
+                    fh.write(reordered)
+
+            logger.info("FreeRouter pass %d/%d (dsn order: %s)", pass_num, passes, dsn_order)
             result = _run_freerouter_pass(
-                java_path, jar_path, dsn_path, pass_ses,
+                java_path, jar_path, pass_dsn, pass_ses,
                 work_dir, per_pass_timeout, job_id,
             )
 
             if result["status"] == "cancelled":
                 return {"error": "Cancelled by user", "passes": pass_results}
 
-            pass_result = {"pass": pass_num, "status": result["status"]}
+            pass_result = {
+                "pass": pass_num, "status": result["status"], "dsn_order": dsn_order,
+            }
             if "error" in result:
                 pass_result["error"] = result["error"]
             if result["status"] == "ok":

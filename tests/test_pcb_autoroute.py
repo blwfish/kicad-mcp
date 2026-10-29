@@ -895,3 +895,67 @@ def test_nudge_never_moves_a_footprint_off_board():
         x0, y0, x1, y1 = fp.bbox()
         assert x0 >= 0 and y0 >= 0 and x1 <= 100 and y1 <= 100, \
             f"{fp.ref} moved outside the board outline: {fp.bbox()}"
+
+
+class TestPassesUseDeterministicDsnOrder:
+    """Each pass routes a DSN whose order is a pure function of (board, pass#),
+    not of pcbnew's per-export emission order (see utils/dsn_order.py)."""
+
+    FIXTURE = (
+        __import__("pathlib").Path(__file__).parent / "fixtures" / "dsn"
+        / "firmware_esp32dev_a.dsn"
+    )
+
+    @pytest.fixture
+    def jar(self, tmp_path):
+        j = tmp_path / "freerouting-2.2.3.jar"
+        j.write_bytes(b"")
+        return str(j)
+
+    def _run(self, tmp_path, jar, dsn_text, passes):
+        from kicad_mcp.tools.pcb_autoroute import _run_full_autoroute
+        seen = []
+
+        def export(pcb, dsn, remove_zones):
+            with open(dsn, "w") as fh:
+                fh.write(dsn_text)
+            return {"status": "ok", "dsn_exported": True, "zones_removed": 0}
+
+        def route(java, jar_, dsn, ses, work_dir, timeout, job_id=None):
+            with open(dsn) as fh:
+                seen.append((dsn, fh.read()))
+            open(ses, "w").close()
+            return {"status": "ok"}
+
+        with patch("kicad_mcp.tools.pcb_autoroute._export_dsn", side_effect=export), \
+                patch("kicad_mcp.tools.pcb_autoroute._run_freerouter_pass", side_effect=route), \
+                patch("kicad_mcp.tools.pcb_autoroute._measure_ses_unconnected", return_value=0), \
+                patch("kicad_mcp.tools.pcb_autoroute._import_ses",
+                      return_value={"status": "ok", "tracks": 1, "vias": 0, "net_count": 1,
+                                    "unconnected_after_routing": 0, "zones_removed": 0}), \
+                patch("kicad_mcp.tools.pcb_autoroute.probe_version", return_value=(2, 2, 3)):
+            result = _run_full_autoroute(
+                pcb_path=str(tmp_path / "b.kicad_pcb"), jar_path=jar,
+                java_path="/usr/bin/java", passes=passes, remove_zones=False,
+            )
+        return result, seen
+
+    def test_passes_get_canonical_then_seeded_orders(self, jar, tmp_path):
+        from kicad_mcp.utils.dsn_order import reorder_dsn
+        text = self.FIXTURE.read_text()
+        result, seen = self._run(tmp_path, jar, text, passes=3)
+        assert [t for _, t in seen] == [
+            reorder_dsn(text, None), reorder_dsn(text, 1), reorder_dsn(text, 2),
+        ]
+        assert [p["dsn_order"] for p in result["pass_results"]] == [
+            "canonical", "seeded:1", "seeded:2",
+        ]
+
+    def test_unparseable_dsn_falls_back_and_says_so(self, jar, tmp_path):
+        result, seen = self._run(tmp_path, jar, "(pcb x (placement", passes=2)
+        assert [p["dsn_order"] for p in result["pass_results"]] == ["as_exported"] * 2
+        assert all(t == "(pcb x (placement" for _, t in seen)
+
+    def test_single_pass_is_canonical(self, jar, tmp_path):
+        result, _ = self._run(tmp_path, jar, self.FIXTURE.read_text(), passes=1)
+        assert result["pass_results"][0]["dsn_order"] == "canonical"
