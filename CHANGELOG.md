@@ -19,6 +19,22 @@ All notable changes to kicad-mcp are documented here.
   routed, only to the order FreeRouter sees.
 - **Python 3.10 is no longer supported** (`requires-python >=3.11`).
 
+### Fixed
+
+- **Library search no longer returns "no results" while the index rebuilds.**
+  `rebuild_symbols`/`rebuild_footprints` dropped and recreated their tables
+  outside a transaction, so a search running at the same time (a second
+  session, an overlapping CI job) saw missing or empty tables while the index
+  still read as fresh, and a rebuild killed midway left an empty index that
+  never rebuilt itself. A rebuild is now one transaction: searches keep seeing
+  the previous index until the new one is committed, and a failed rebuild
+  leaves the previous index in place.
+- **A failed library search is an error, not an empty list.** `search_symbols`
+  / `search_footprints` swallowed `sqlite3.OperationalError` (missing table,
+  locked file) and returned `[]`, indistinguishable from "no such part". They
+  now raise `LibraryIndexError`, which `library(operation="search")` reports as
+  an error.
+
 ## [0.18.2] — 2026-10-29
 
 Maintenance release: dependency refresh and CI hardening. No runtime code

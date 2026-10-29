@@ -4,6 +4,7 @@ Single database with separate tables for symbols and footprints.
 Both indexes auto-rebuild when their respective library files change.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -11,13 +12,23 @@ import platform
 import re
 import sqlite3
 import time
-from typing import Dict, List, Optional
+from collections.abc import Iterator
+from typing import Any, Dict, List, Optional
 
 import filelock
 
 from kicad_mcp.utils.netlist_parser import _QSTR_BODY, _unescape_sexpr
 
 logger = logging.getLogger(__name__)
+
+class LibraryIndexError(RuntimeError):
+    """A search could not be answered (index missing, locked or unreadable).
+
+    Distinct from an empty result list, which means the query matched nothing.
+    A RuntimeError so existing ``except (sqlite3.Error, RuntimeError, OSError)``
+    call sites turn it into an error response.
+    """
+
 
 # Singleton instance
 _index: Optional["LibraryIndex"] = None
@@ -345,10 +356,36 @@ class LibraryIndex:
     def _ensure_db_dir(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+    def _connect(self, **kwargs: Any) -> sqlite3.Connection:
+        conn: sqlite3.Connection = sqlite3.connect(self.db_path, **kwargs)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @contextlib.contextmanager
+    def _atomic_rebuild(self) -> Iterator[sqlite3.Connection]:
+        """Connection inside ONE write transaction: all-or-nothing rebuild.
+
+        Python's sqlite3 does not open a transaction for DDL, so a rebuild on a
+        plain connection autocommits each ``DROP TABLE`` / ``CREATE TABLE``
+        straight away and only the INSERTs share the final commit.  Anything
+        that searched in between saw missing or empty tables while the
+        metadata still said "fresh" (and a rebuild killed midway left the empty
+        tables behind for good, since nothing marked the index stale).  SQLite
+        DDL is transactional, so with an explicit BEGIN IMMEDIATE readers keep
+        seeing the previous index until COMMIT, and a failed or killed rebuild
+        rolls back to it.
+        """
+        conn = self._connect(isolation_level=None)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
 
     def _ensure_tables(self):
         """Create tables if they don't exist (non-destructive)."""
@@ -390,8 +427,7 @@ class LibraryIndex:
         start = time.monotonic()
         logger.info("Rebuilding footprint index from %s", self.footprint_lib_path)
 
-        with self._rebuild_lock:
-            conn = self._connect()
+        with self._rebuild_lock, self._atomic_rebuild() as conn:
             conn.execute("DROP TABLE IF EXISTS footprints")
             conn.execute("DROP TABLE IF EXISTS footprints_fts")
 
@@ -459,8 +495,6 @@ class LibraryIndex:
             self._set_meta(conn, "fp_build_time", str(time.time()))
             self._set_meta(conn, "fp_lib_path", self.footprint_lib_path)
             self._set_meta(conn, "fp_count", str(count))
-            conn.commit()
-            conn.close()
 
         if insert_errors:
             logger.warning("Footprint index rebuild skipped %d malformed entr%s "
@@ -515,8 +549,12 @@ class LibraryIndex:
             ]
             return results
         except sqlite3.OperationalError as e:
-            logger.warning("Footprint FTS query failed for %r: %s", query, e)
-            return []
+            # NOT [] -- that reads as "no such part", the answer an agent
+            # acts on (picks a different footprint, or concludes the library
+            # lacks it).  A missing table / locked file is a failed lookup.
+            raise LibraryIndexError(
+                f"footprint search for {query!r} failed: {e}"
+            ) from e
         finally:
             # try/finally so a non-OperationalError (e.g. building results)
             # can't leak the connection — repeated leaks exhaust the FD limit.
@@ -547,8 +585,7 @@ class LibraryIndex:
         start = time.monotonic()
         logger.info("Rebuilding symbol index from %s", self.symbol_lib_path)
 
-        with self._rebuild_lock:
-            conn = self._connect()
+        with self._rebuild_lock, self._atomic_rebuild() as conn:
             conn.execute("DROP TABLE IF EXISTS symbols")
             conn.execute("DROP TABLE IF EXISTS symbols_fts")
 
@@ -618,8 +655,6 @@ class LibraryIndex:
             self._set_meta(conn, "sym_build_time", str(time.time()))
             self._set_meta(conn, "sym_lib_path", self.symbol_lib_path)
             self._set_meta(conn, "sym_count", str(count))
-            conn.commit()
-            conn.close()
 
         if insert_errors:
             logger.warning("Symbol index rebuild skipped %d malformed entr%s "
@@ -674,8 +709,10 @@ class LibraryIndex:
             ]
             return results
         except sqlite3.OperationalError as e:
-            logger.warning("Symbol FTS query failed for %r: %s", query, e)
-            return []
+            # See search_footprints: an error is not an empty result set.
+            raise LibraryIndexError(
+                f"symbol search for {query!r} failed: {e}"
+            ) from e
         finally:
             # try/finally so a non-OperationalError can't leak the connection.
             conn.close()

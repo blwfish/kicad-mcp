@@ -5,13 +5,14 @@ import os
 import filelock
 import pytest
 
+from kicad_mcp.utils import library_index as library_index_mod
 from kicad_mcp.utils.library_index import (
     LibraryIndex,
+    LibraryIndexError,
     _default_db_path,
     _parse_kicad_mod,
     _parse_kicad_sym,
 )
-
 
 # ---------------------------------------------------------------------------
 # Sample .kicad_mod content
@@ -379,7 +380,7 @@ class TestRebuildSurvivesOneBadRow:
 
         real_connect = index._connect
         flaky = self._FlakyConn(real_connect(), "INSERT INTO footprints ", fail_on_call=2)
-        monkeypatch.setattr(index, "_connect", lambda: flaky)
+        monkeypatch.setattr(index, "_connect", lambda **kw: flaky)
 
         with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.library_index"):
             count = index.rebuild_footprints()
@@ -399,7 +400,7 @@ class TestRebuildSurvivesOneBadRow:
 
         real_connect = index._connect
         flaky = self._FlakyConn(real_connect(), "INSERT INTO symbols ", fail_on_call=1)
-        monkeypatch.setattr(index, "_connect", lambda: flaky)
+        monkeypatch.setattr(index, "_connect", lambda **kw: flaky)
 
         with caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.library_index"):
             count = index.rebuild_symbols()
@@ -516,6 +517,7 @@ class TestSearchTruncatedBoundary:
         "resistor" matches exactly 1 footprint; limit=5 → count(1) < limit(5).
         """
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -530,6 +532,7 @@ class TestSearchTruncatedBoundary:
         "pin" matches 3 footprints (SOIC-8, SOT-23, TerminalBlock); set limit=3.
         """
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -544,6 +547,7 @@ class TestSearchTruncatedBoundary:
     def test_below_limit_symbol_not_truncated(self, index):
         """Symbols: result < limit → truncated False."""
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -556,6 +560,7 @@ class TestSearchTruncatedBoundary:
     def test_at_limit_symbol_is_truncated(self, index):
         """Symbols: result == limit → truncated True."""
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -578,6 +583,7 @@ class TestSearchLimitValidation:
 
     def test_limit_zero_rejected(self, index):
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -587,6 +593,7 @@ class TestSearchLimitValidation:
 
     def test_negative_limit_rejected(self, index):
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -595,6 +602,7 @@ class TestSearchLimitValidation:
 
     def test_positive_limit_still_accepted(self, index):
         from unittest.mock import patch
+
         from kicad_mcp.tools.library import _op_search
 
         with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
@@ -767,6 +775,7 @@ class TestSearchCatchesOSError:
 
     def test_stale_footprint_rebuild_oserror_returns_clean_error(self):
         from unittest.mock import MagicMock, patch
+
         from kicad_mcp.tools.library import _op_search
 
         fake_index = MagicMock()
@@ -779,6 +788,7 @@ class TestSearchCatchesOSError:
 
     def test_stale_symbol_rebuild_oserror_returns_clean_error(self):
         from unittest.mock import MagicMock, patch
+
         from kicad_mcp.tools.library import _op_search
 
         fake_index = MagicMock()
@@ -788,6 +798,169 @@ class TestSearchCatchesOSError:
             result = _op_search("R", type="symbol", limit=5)
         assert "error" in result
         assert "disk error" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Rebuild is atomic: readers never see a half-built index
+# ---------------------------------------------------------------------------
+
+
+class TestRebuildIsAtomic:
+    """Regression: rebuild_* autocommitted DROP TABLE / CREATE TABLE and only
+    the INSERTs shared the final commit.  A search during the rebuild (another
+    process, same db_path) hit missing or empty tables while the metadata still
+    said "fresh" and got [] -- "no such part".  A rebuild killed midway left the
+    empty tables behind with no staleness marker, so the index stayed empty
+    until a library file changed.  Observed empty `0603 resistor` search in CI."""
+
+    def _reader(self, index):
+        return LibraryIndex(
+            db_path=index.db_path,
+            footprint_lib_path=index.footprint_lib_path,
+            symbol_lib_path=index.symbol_lib_path,
+        )
+
+    def test_footprint_reader_sees_previous_index_during_rebuild(self, index, monkeypatch):
+        reader = self._reader(index)
+        seen = []
+        real = library_index_mod._parse_kicad_mod
+        calls = {"n": 0}
+
+        def probe(path):
+            calls["n"] += 1
+            if calls["n"] == 3:  # mid-rebuild: DROP/CREATE done, INSERTs pending
+                seen.append((
+                    len(reader.search_footprints("resistor")),
+                    reader.footprints_stale(),
+                ))
+            return real(path)
+
+        monkeypatch.setattr(library_index_mod, "_parse_kicad_mod", probe)
+        index.rebuild_footprints()
+
+        assert seen == [(1, False)]  # old rows still served, still "fresh"
+
+    def test_symbol_reader_sees_previous_index_during_rebuild(self, index, monkeypatch):
+        reader = self._reader(index)
+        seen = []
+        real = library_index_mod._parse_kicad_sym
+        calls = {"n": 0}
+
+        def probe(path):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                seen.append((len(reader.search_symbols("LM358")), reader.symbols_stale()))
+            return real(path)
+
+        monkeypatch.setattr(library_index_mod, "_parse_kicad_sym", probe)
+        index.rebuild_symbols()
+
+        assert seen == [(1, False)]
+
+    def test_failed_footprint_rebuild_keeps_previous_index(self, index, monkeypatch):
+        calls = {"n": 0}
+        real = library_index_mod._parse_kicad_mod
+
+        def die(path):
+            calls["n"] += 1
+            if calls["n"] > 2:
+                raise KeyboardInterrupt("killed mid-rebuild")
+            return real(path)
+
+        monkeypatch.setattr(library_index_mod, "_parse_kicad_mod", die)
+        with pytest.raises(KeyboardInterrupt):
+            index.rebuild_footprints()
+        monkeypatch.setattr(library_index_mod, "_parse_kicad_mod", real)
+
+        fresh = self._reader(index)
+        assert fresh.footprints_stale() is False
+        assert len(fresh.search_footprints("resistor")) == 1
+        conn = fresh._connect()
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM footprints").fetchone()[0] == 4
+        finally:
+            conn.close()
+
+    def test_failed_symbol_rebuild_keeps_previous_index(self, index, monkeypatch):
+        def die(path):
+            raise OSError("disk went away")
+
+        monkeypatch.setattr(library_index_mod, "_parse_kicad_sym", die)
+        with pytest.raises(OSError):
+            index.rebuild_symbols()
+
+        fresh = self._reader(index)
+        assert fresh.symbols_stale() is False
+        assert len(fresh.search_symbols("LM358")) == 1
+
+    def test_failed_rebuild_releases_the_write_lock(self, index, monkeypatch):
+        """A failed rebuild must ROLLBACK and close, or the next rebuild blocks."""
+        real = library_index_mod._parse_kicad_mod
+        monkeypatch.setattr(
+            library_index_mod, "_parse_kicad_mod",
+            lambda p: (_ for _ in ()).throw(OSError("boom")),
+        )
+        with pytest.raises(OSError):
+            index.rebuild_footprints()
+        monkeypatch.setattr(library_index_mod, "_parse_kicad_mod", real)
+
+        assert index.rebuild_footprints() == 4
+
+    def test_first_ever_build_failure_leaves_index_stale_not_empty_fresh(
+        self, mock_fp_lib, mock_sym_lib, tmp_path, monkeypatch,
+    ):
+        """No previous index to fall back to: it must read as stale (rebuild
+        again), never as a fresh-but-empty index."""
+        idx = LibraryIndex(
+            db_path=str(tmp_path / "first.db"),
+            footprint_lib_path=mock_fp_lib,
+            symbol_lib_path=mock_sym_lib,
+        )
+        monkeypatch.setattr(
+            library_index_mod, "_parse_kicad_mod",
+            lambda p: (_ for _ in ()).throw(OSError("boom")),
+        )
+        with pytest.raises(OSError):
+            idx.rebuild_footprints()
+        assert idx.footprints_stale() is True
+
+
+class TestSearchErrorIsNotEmptyResult:
+    """Regression: search_* caught sqlite3.OperationalError and returned [],
+    indistinguishable from "the library has no such part"."""
+
+    def _drop(self, index, *tables):
+        conn = index._connect()
+        for name in tables:
+            conn.execute(f"DROP TABLE {name}")
+        conn.commit()
+        conn.close()
+
+    def test_footprint_search_raises_when_table_missing(self, index):
+        self._drop(index, "footprints_fts")
+        with pytest.raises(LibraryIndexError, match="footprint search"):
+            index.search_footprints("resistor")
+
+    def test_symbol_search_raises_when_table_missing(self, index):
+        self._drop(index, "symbols_fts")
+        with pytest.raises(LibraryIndexError, match="symbol search"):
+            index.search_symbols("LM358")
+
+    def test_no_match_is_still_an_empty_list(self, index):
+        assert index.search_footprints("xyznonexistent") == []
+        assert index.search_symbols("xyznonexistent") == []
+
+    def test_op_search_reports_the_error(self, index):
+        from unittest.mock import patch
+
+        from kicad_mcp.tools.library import _op_search
+
+        self._drop(index, "footprints_fts")
+        with patch("kicad_mcp.utils.library_index.get_library_index", return_value=index):
+            result = _op_search("resistor", type="footprint", limit=5)
+        assert "error" in result
+        assert "footprint search" in result["error"]
+        assert "results" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +990,7 @@ class TestParseFileEscapedQuotesAndLogging:
 
     def test_footprint_read_failure_logs_warning(self, tmp_path, caplog, monkeypatch):
         import logging
+
         from kicad_mcp.utils.library_index import _parse_kicad_mod
 
         fp = tmp_path / "test.kicad_mod"
@@ -848,6 +1022,7 @@ class TestParseFileEscapedQuotesAndLogging:
 
     def test_symbol_read_failure_logs_warning(self, tmp_path, caplog, monkeypatch):
         import logging
+
         from kicad_mcp.utils.library_index import _parse_kicad_sym
 
         sym_file = tmp_path / "Test.kicad_sym"
