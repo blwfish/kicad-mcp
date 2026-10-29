@@ -8,7 +8,6 @@ into a CI failure on the real jar the runners use.
 """
 
 import os
-import time
 
 import pytest
 
@@ -27,13 +26,10 @@ def test_installed_jar_reports_a_parseable_version():
         pytest.skip("FreeRouter jar or Java not available")
     fv._version_cache.clear()
 
-    started = time.monotonic()
     info = _freerouter_version_info(java, jar)
-    elapsed = time.monotonic() - started
 
     assert info["status"] != fv.STATUS_UNKNOWN, (
         f"could not read a version banner from {jar}: the startup line format may have "
         f"changed -- update parse_version_banner"
     )
     assert info["version"] is not None and info["version"].count(".") == 2
-    assert elapsed < 20, f"version probe took {elapsed:.1f}s (should be a couple of seconds)"

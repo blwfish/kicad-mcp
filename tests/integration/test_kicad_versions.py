@@ -318,6 +318,10 @@ def test_autoroute_smoke(mcp_server, workspace):
     # Place two footprints and connect them via a net
     search = _get_tool(mcp_server, "library")
     sr = _run(search({"operation": "search", "query": "0603 resistor"}))
+    assert sr["results"], (
+        "'0603 resistor' found nothing after the warm index rebuild: the library "
+        "index is empty or unreadable, not a routing problem"
+    )
     fp = sr["results"][0]
 
     for ref, x in [("R1", 15), ("R2", 35)]:

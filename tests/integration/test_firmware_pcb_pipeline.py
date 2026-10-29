@@ -129,12 +129,16 @@ def _assert_mostly_routed(r4, max_unrouted):
     and best-of-N pass selection ranks each pass by re-measuring it (see
     ``_select_best_pass`` / ``_measure_ses_unconnected`` in pcb_autoroute).
 
-    FreeRouter is a heuristic, nondeterministic router, so the count has a small
-    run-to-run spread. The simple boards route to 0–1; the dense audio node has
-    ~2 structurally-hard nets that no pass clears (a placement follow-up, not a
-    regression). ``max_unrouted`` is set per board to observed-max + 1 margin, so
-    the gate stays non-flaky on both KiCad versions while still catching a real
-    routing regression (a broken board leaves far more than a couple unrouted).
+    The count is reproducible: FreeRouter is a pure function of its DSN and the
+    autorouter hands every pass a DSN whose order is a function of (board, pass
+    number) only (``utils/dsn_order.py``), so one board on one KiCad + FreeRouter
+    gives the same count every run.  What still varies is the KiCad version (its
+    DSN export differs) and any change to placement or the board.  The simple
+    boards route to 0-1; the dense audio node has ~2 structurally-hard nets that
+    no pass clears (a placement follow-up, not a regression).  ``max_unrouted``
+    was set per board to observed-max + 1 when outcomes were random; it now acts
+    as a ceiling a deterministic result must stay under, so a failure is a real
+    change in routing (or placement), not noise.
     The EXACT design-correctness checks are the deterministic by-ref connectivity
     invariants each test asserts below.
     """
@@ -142,7 +146,8 @@ def _assert_mostly_routed(r4, max_unrouted):
     assert r4.get("tracks", 0) > 0, "no routed copper — dead board"
     assert r4["incomplete_nets"] <= max_unrouted, (
         f"{r4['incomplete_nets']} unconnected nets exceeds the bound of "
-        f"{max_unrouted} — a real routing regression, not heuristic noise"
+        f"{max_unrouted} — routing changed (outcomes are deterministic); per-pass: "
+        f"{[(p.get('pass'), p.get('dsn_order'), p.get('unconnected')) for p in r4.get('pass_results', [])]}"
     )
 
 
@@ -291,6 +296,7 @@ print(json.dumps({"checked": checked, "outboard": outboard, "under_block": under
                                              "edge_of": dict(edge_of)}, timeout=30.0)
 
 
+@pytest.mark.timeout(360)
 def test_firmware_to_routed_pcb(mcp_server, tmp_path):
     design = _tool(mcp_server, "design")
     build = _tool(mcp_server, "build_pcb_from_schematic")
@@ -440,6 +446,7 @@ def test_audio_s3_to_routed_pcb(mcp_server, tmp_path):
     assert len(refs_on("I2S0_BCLK")) == 3               # MCU + 2 amps share the clock
 
 
+@pytest.mark.timeout(360)
 def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
     """Placement locus on the audio node: a board.yaml declares the mic + presence
     sensor REMOTE (field-wired) and the amps on_board_with_remote_io. The board
@@ -633,6 +640,7 @@ def test_audio_remote_to_routed_pcb(mcp_server, tmp_path):
         f"beyond the block on the inboard side)")
 
 
+@pytest.mark.timeout(360)
 def test_audio_remote_multi_edge_distribution(mcp_server, tmp_path):
     """board.yaml ``terminal_distribution: multi_edge`` spreads the field terminals
     across the antenna-opposite edge AND the two side edges (vs the single-edge
@@ -719,6 +727,7 @@ def test_audio_remote_multi_edge_distribution(mcp_server, tmp_path):
     assert not any("antenna_frame_mismatch" in w for w in (r4.get("warnings") or []))
 
 
+@pytest.mark.timeout(360)
 def test_audio_remote_terminal_centering(mcp_server, tmp_path):
     """board.yaml ``terminal_centering: true`` centres each edge's field-terminal
     group within its edge instead of packing it at one end (Part B of
@@ -797,6 +806,7 @@ def test_audio_remote_terminal_centering(mcp_server, tmp_path):
     assert not {o.get("silk_text") for o in ov.get("overlaps", [])} & {"SCL", "SDA", "BCLK"}
 
 
+@pytest.mark.timeout(360)
 def test_audio_remote_board_refit(mcp_server, tmp_path, monkeypatch):
     """board.yaml ``board_refit: true`` runs the post-placement re-fit pass
     (SPEC_Post_Placement_Board_Refit Part A). On audio-remote the board is already
@@ -1030,6 +1040,7 @@ def test_track_geometry_to_routed_pcb(mcp_server, tmp_path):
     assert "U1" in refs_on("+3V3")
 
 
+@pytest.mark.timeout(360)
 def test_sidecar_to_routed_pcb(mcp_server, tmp_path):
     """Phase 6b: a board.yaml sidecar supplies a firmware-blind external power
     connector. import auto-detects it, resolves the `connectors` gap, and the

@@ -2,6 +2,23 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Autorouting is reproducible.** FreeRouter is a pure function of the DSN it
+  is given, but pcbnew emits a DSN's components, nets, images and pins in a
+  different order on every export of the same board, and that order alone
+  changed the routing result (the cause of the occasional integration flake
+  where best-of-N landed one or two nets worse than usual). Each pass now routes
+  a DSN whose order is a function of the board and the pass number only:
+  pass 1 is sorted order, pass *k* a fixed seeded permutation. Best-of-N is a
+  fixed ensemble, so the same board gives the same result every run. Each entry
+  in `pass_results` reports its `dsn_order` (`canonical`, `seeded:<k>`, or
+  `as_exported` if the DSN could not be parsed). No change to what is
+  routed, only to the order FreeRouter sees.
+- **Python 3.10 is no longer supported** (`requires-python >=3.11`).
+
 ## [0.18.2] — 2026-10-29
 
 Maintenance release: dependency refresh and CI hardening. No runtime code
