@@ -2,11 +2,20 @@ version: 2
 updates:
   - package-ecosystem: uv
     directory: /
-    # Version-update PRs target dev (the working branch); main is release-only.
-    # Dependabot reads this file from the DEFAULT branch (main), so it only
-    # takes effect once it lands there. Security updates ignore target-branch
-    # and always open against the default branch.
-    target-branch: dev
+    # No `target-branch`: Dependabot reads this file from the default branch
+    # (main) and security updates always open against it, so version updates
+    # target main too. Splitting them across main and dev meant every bump
+    # needed a cherry-pick/rebase to keep dev usable. Keep dev current with
+    # `git fetch && git rebase origin/main && git push --force-with-lease`.
     schedule:
       interval: weekly
       day: monday
+    groups:
+      # One PR per week for minor/patch bumps instead of one per package.
+      # Majors stay separate, and security updates are unaffected
+      # (applies-to: version-updates), so they keep opening one PR each.
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
