@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  # Matrix job — produces check names "pytest (3.10)" etc.  These are NOT
+  # Matrix job — produces check names "pytest (3.11)" etc.  These are NOT
   # what branch protection requires (it requires a single check named
   # exactly "pytest"); the umbrella job below provides that.
   matrix:
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +76,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Install package + dev deps (from lockfile)
         run: uv sync --frozen --group dev
