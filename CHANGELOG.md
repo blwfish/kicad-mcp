@@ -2,6 +2,33 @@
 
 All notable changes to kicad-mcp are documented here.
 
+## [0.18.2] — 2026-10-29
+
+Maintenance release: dependency refresh and CI hardening. No runtime code
+changes to the tools.
+
+### Changed
+
+- **Integration CI runs are serialized machine-wide.** The self-hosted runners
+  share one `~/.cache/kicad-mcp/library_index.db`, so overlapping integration
+  runs produced false failures (empty library search results, and a 120 s
+  pytest timeout on `test_firmware_to_routed_pcb`). The integration step now runs
+  under `scripts/ci_machine_lock.py`, a machine-wide `flock`.
+- **Dependabot version updates target `dev`** (`target-branch: dev`). Security
+  updates still open against the default branch (`main`); that is a dependabot
+  limitation, not configurable.
+
+### Dependencies
+
+- fastmcp 4.0.9 → 4.1.3 (also fastmcp-slim 4.0.10 → 4.1.2 in the lock),
+  authlib 1.8.0 → 1.9.1, filelock 4.0.3 → 4.1.0, msgpack 1.2.1 → 1.2.3
+  (transitive). The fastmcp re-resolve also moved certifi to 2026.10.23.
+- Dev: ruff 0.16.9 → 0.17.2, mypy 2.3.1 → 2.4.0, pytest-mock 3.15.1 → 3.17.0,
+  hypothesis 6.168.1 → 6.168.5.
+- The `pyproject.toml` floors were raised to match (`fastmcp>=4.1.3`,
+  `authlib>=1.9.1`, `filelock>=4.1.0`, `pytest-mock>=3.17.0`, `ruff>=0.17.2`,
+  `mypy>=2.4.0`, `hypothesis>=6.168.5`).
+
 ## [0.18.1] — 2026-10-04
 
 Fixes a KiCad 10 autoroute regression that shipped in 0.18.0 and resolves the
