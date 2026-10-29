@@ -32,66 +32,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The matrix itself lives in integration-matrix.yml (shared with release.yml).
+  # The job id must stay `integration`: the check names "integration / kicad-*"
+  # (merge-queue gate, notify-on-failure below) derive from it.
   integration:
-    name: integration / kicad-${{ matrix.kicad }}
-    runs-on: [self-hosted, macOS]
-    strategy:
-      fail-fast: false
-      # Multiple self-hosted runners are registered under the "macOS" label but
-      # share one physical machine, so the kicad-9.0 and kicad-10.0 legs can be
-      # picked up concurrently -- each launching its own batch of FreeRouter
-      # JVMs during autoroute tests. Investigated 2026-09-24 (PR #148): a CI-only
-      # "hang" in test_expander_terminals_to_routed_pcb was actually every pass
-      # completing successfully but ~10x slower than normal (loadavg 32-33),
-      # consistent with both legs' FreeRouter batches colliding at the same
-      # relative test-execution moment. max-parallel: 1 forces the two legs to
-      # run one at a time so they never compete for the machine's CPU/JVMs.
-      max-parallel: 1
-      matrix:
-        include:
-          - kicad: "10.0"
-            continue_on_error: false
-          - kicad: "9.0"
-            continue_on_error: true
-    continue-on-error: ${{ matrix.continue_on_error }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify KiCad install
-        run: |
-          kicad_app="/Volumes/Files/claude/kicad-versions/${{ matrix.kicad }}/KiCad.app"
-          if [ ! -d "$kicad_app" ]; then
-            echo "KiCad ${{ matrix.kicad }} not found at $kicad_app"
-            echo "See docs/MULTI_VERSION_TESTING.md for install instructions."
-            exit 1
-          fi
-          echo "KICAD_APP_PATH=$kicad_app" >> "$GITHUB_ENV"
-
-      - name: Install Python dependencies
-        run: uv sync
-
-      - name: Run integration tests
-        # Isolate KiCad's config/cache per runner so concurrent kicad-cli runs
-        # (multiple self-hosted runners on one machine) can't race on shared
-        # config init or lock files. runner.temp is unique per runner and wiped
-        # per job. Verified: KiCad 10 honors KICAD_CONFIG_HOME (writes
-        # kicad_common.json there, ignores $HOME).
-        env:
-          KICAD_CONFIG_HOME: ${{ runner.temp }}/kicad-config
-        #
-        # Held under a machine-wide flock so *different runs* (two PRs, or a PR
-        # plus a push to main) also never overlap on the shared machine --
-        # max-parallel above only serializes legs within one run, and Actions
-        # `concurrency:` can't serialize across runs without cancelling queued
-        # jobs. Observed 2026-10-05: PR #163's autoroute tests timed out/failed
-        # while PR #161's run overlapped it on the same legs. See
-        # scripts/ci_machine_lock.py.
-        run: |
-          KICAD_INTEGRATION=1 uv run python scripts/ci_machine_lock.py -- \
-            uv run pytest tests/integration/ -v \
-            --tb=short \
-            --timeout=120
+    uses: ./.github/workflows/integration-matrix.yml
 
   notify-on-failure:
     name: Notify on integration failure
