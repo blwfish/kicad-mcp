@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Iterator, Optional
 
 # ESP32 GPIO numbers span 0..48 across the family (classic ~0..39, S2/S3 up to
 # 48). We accept the generous upper bound here as a *plausibility* gate; the
@@ -336,11 +336,38 @@ def classify(name: str, value: str, args: Optional[str]) -> Macro:
     return Macro(name=name, raw_value=value, line_no=0, kind=MacroKind.OTHER)
 
 
+def _logical_lines(text: str) -> Iterator[tuple[int, str]]:
+    """Yield ``(first_physical_line_no, text)`` per *logical* line: a trailing
+    backslash splices the next physical line on, exactly as the C preprocessor's
+    line-splicing phase does (before comments or directives are recognized).
+
+    Without this, ``#define LED_PIN \\`` / ``    5`` read as a pin-named macro
+    whose value is a bare ``\\`` (the real value on the next line silently lost),
+    and a multi-line value kept only its first physical line (2026-09-23 review
+    finding #43). Whitespace between the backslash and the newline is tolerated,
+    as gcc does. ``line_no`` is the FIRST physical line, so numbering stays
+    consistent with the file. A continuation on the final line (no following
+    line) yields what was accumulated rather than dropping it."""
+    buf: Optional[str] = None
+    start = 0
+    for i, line in enumerate(text.splitlines(), start=1):
+        if buf is None:
+            start, buf = i, ""
+        trimmed = line.rstrip(" \t")
+        if trimmed.endswith("\\"):
+            buf += trimmed[:-1]
+            continue
+        yield start, buf + line
+        buf = None
+    if buf is not None:
+        yield start, buf
+
+
 def parse_defines(text: str) -> list[Macro]:
     """Extract and classify every ``#define`` in ``text``. Order-preserving;
     every macro is returned (nothing dropped)."""
     out: list[Macro] = []
-    for i, line in enumerate(text.splitlines(), start=1):
+    for i, line in _logical_lines(text):
         m = _DEFINE_RE.match(line)
         if not m:
             continue
@@ -437,7 +464,7 @@ def parse_const_decls(
     omit it (the default, used by every existing caller) for unchanged
     behavior."""
     out: list[Macro] = []
-    for i, line in enumerate(text.splitlines(), start=1):
+    for i, line in _logical_lines(text):
         m = _CONST_DECL_RE.match(line)
         if not m:
             continue

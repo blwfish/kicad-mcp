@@ -725,3 +725,75 @@ class TestConstDeclCType:
         anything from a const-decl code path it never went through."""
         macros = parse_defines("#define LED_PIN 2\n")
         assert macros[0].c_type is None
+
+
+# --- backslash line continuation (2026-09-23 review finding #43) -------------
+
+class TestBackslashContinuation:
+    """C line-splicing: a trailing backslash joins the next physical line
+    BEFORE directives/comments are recognized. Previously the first line's
+    value was a bare ``\\`` and the real value on the next line was lost."""
+
+    def test_value_on_continuation_line_is_a_pin(self):
+        macros = parse_defines("#define LED_PIN \\\n    5\n")
+        assert len(macros) == 1
+        assert macros[0].kind is MacroKind.PIN
+        assert macros[0].gpio == 5
+        assert macros[0].pin_value_valid
+
+    def test_multiline_value_is_joined_not_truncated(self):
+        macros = parse_defines("#define PIN_TABLE { 1, \\\n   2, \\\n   3 }\n")
+        assert len(macros) == 1
+        assert macros[0].raw_value.split() == ["{", "1,", "2,", "3", "}"]
+        assert "\\" not in macros[0].raw_value
+
+    def test_line_number_is_first_physical_line_and_later_lines_unshifted(self):
+        text = "#define A_PIN \\\n  4\n\n#define B_PIN 6\n"
+        by_name = {m.name: m for m in parse_defines(text)}
+        assert by_name["A_PIN"].line_no == 1
+        assert by_name["B_PIN"].line_no == 4      # not 3: physical numbering kept
+
+    def test_define_after_continuation_is_not_swallowed(self):
+        macros = parse_defines("#define A_PIN 1 \\\n  + 0\n#define B_PIN 2\n")
+        assert [m.name for m in macros] == ["A_PIN", "B_PIN"]
+        assert macros[1].gpio == 2
+
+    def test_trailing_whitespace_after_backslash_still_splices(self):
+        # gcc tolerates this (with a warning); a "\ " line must not truncate.
+        macros = parse_defines("#define LED_PIN \\  \t\n    7\n")
+        assert macros[0].gpio == 7
+
+    def test_backslash_not_at_end_of_line_does_not_splice(self):
+        text = '#define PATH "a\\b"\n#define LED_PIN 3\n'
+        macros = parse_defines(text)
+        assert [m.name for m in macros] == ["PATH", "LED_PIN"]
+        assert macros[0].raw_value == '"a\\b"'
+
+    def test_continuation_on_final_line_without_follower_is_not_dropped(self):
+        macros = parse_defines("#define LED_PIN 9 \\")
+        assert len(macros) == 1
+        assert macros[0].gpio == 9
+
+    def test_crlf_line_endings_splice(self):
+        macros = parse_defines("#define LED_PIN \\\r\n    5\r\n")
+        assert macros[0].gpio == 5
+
+    def test_no_continuation_is_unchanged(self):
+        macros = parse_defines("#define LED_PIN 5\n#define OTHER 1\n")
+        assert [(m.name, m.line_no) for m in macros] == [("LED_PIN", 1), ("OTHER", 2)]
+
+    def test_line_comment_ending_in_backslash_swallows_next_define(self):
+        """Faithful to the compiler: ``// ... \\`` continues the COMMENT onto
+        the next line, so a #define there is not a live macro. Pinned so the
+        behaviour is visible, not accidental."""
+        macros = parse_defines("// art \\\n#define HIDDEN_PIN 4\n#define LIVE_PIN 5\n")
+        assert [m.name for m in macros] == ["LIVE_PIN"]
+
+    def test_const_decl_continuation_across_lines(self):
+        macros = parse_const_decls("const int LED_PIN = \\\n  12;\n")
+        assert len(macros) == 1
+        assert macros[0].gpio == 12
+
+    def test_const_decl_line_number_after_continuation(self):
+        macros = parse_const_decls("const int A_PIN = \\\n 1;\nconst int B_PIN = 2;\n")
+        assert {m.name: m.line_no for m in macros} == {"A_PIN": 1, "B_PIN": 3}
