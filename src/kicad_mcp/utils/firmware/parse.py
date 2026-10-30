@@ -29,6 +29,10 @@ from typing import Iterator, Optional
 # authoritative check is whether the MCU symbol actually exposes an IO{n} pin,
 # which the generator does later. A pin-named macro whose value is outside this
 # range (e.g. the common ``-1`` "unused" sentinel) is kept but flagged.
+# Deliberately NOT per-chip (2026-09-23 review finding #28, closed wontfix): a pin
+# outside a given MCU's real GPIO set (e.g. Pico GPIO40) still fails loudly later
+# as an unresolved_endpoints failure, and a hand-written per-chip table risked
+# rejecting valid pins. See .claude-review/ledger.jsonl.
 GPIO_MIN = 0
 GPIO_MAX = 48
 
