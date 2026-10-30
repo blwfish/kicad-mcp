@@ -220,11 +220,12 @@ async def _op_thumbnail(
     try:
         logger.debug("Generating thumbnail via CLI for project: %s", project_path)
 
-        if not os.path.exists(project_path):
-            logger.warning("Project not found: %s", project_path)
+        _pv_err = validate_project_path(project_path)
+        if _pv_err:
+            logger.warning(_pv_err)
             if ctx:
-                await ctx.info(f"Project not found: {project_path}")
-            return {"error": f"Project not found: {project_path}"}
+                await ctx.info(_pv_err)
+            return {"error": _pv_err}
 
         files = get_project_files(project_path)
         if "pcb" not in files:

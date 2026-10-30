@@ -153,8 +153,9 @@ async def _op_autofix_locked(
         base = os.path.splitext(pcb_path)[0]
         project_path = base + ".kicad_pro"
 
-    if not os.path.exists(project_path):
-        return {"error": f"Project file not found: {project_path}. Provide project_path explicitly."}
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
+        return {"error": f"{_pv_err}. Provide project_path explicitly."}
 
     # Lazy imports to avoid circular dependencies
     from kicad_mcp.tools.drc_impl.cli_drc import run_drc_via_cli

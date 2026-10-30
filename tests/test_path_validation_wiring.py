@@ -144,3 +144,86 @@ class TestStrictModeRejectionReachesRealTools:
 
         assert "error" in result
         assert "outside the configured" in result["error"]
+
+
+class TestProjectPathEntryPointsHonourStrictMode:
+    """Regression (2026-09-23 review finding #22, remainder): bom.py (2
+    entry points), drc.py (run, history), export.py (thumbnail) and
+    pcb_drc_fix.py (autofix's project_path) still gated on a bare
+    os.path.exists(project_path), bypassing KICAD_MCP_STRICT_PATHS even after
+    the netlist/patterns/pcb_pipeline entry points were wired up."""
+
+    def _outside_project(self, tmp_path):
+        outsider = tmp_path / "outsider"
+        outsider.mkdir(exist_ok=True)
+        pro = outsider / "board.kicad_pro"
+        pro.write_text("{}")
+        return str(pro)
+
+    def _call(self, tool, **kwargs):
+        fn = _get_tool_fn(create_server(), tool)
+        result = fn(**kwargs)
+        return asyncio.run(result) if asyncio.iscoroutine(result) else result
+
+    def _strict(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KICAD_MCP_STRICT_PATHS", "1")
+        _isolated_roots(monkeypatch, tmp_path)
+        return self._outside_project(tmp_path)
+
+    def test_analyze_bom_rejects_out_of_root_project(self, tmp_path, monkeypatch):
+        target = self._strict(tmp_path, monkeypatch)
+        r = self._call("analyze", operation="bom", ctx=None, project_path=target)
+        assert r["status"] == "error"
+        assert "outside the configured" in r["error"]
+
+    def test_export_bom_csv_rejects_out_of_root_project(self, tmp_path, monkeypatch):
+        target = self._strict(tmp_path, monkeypatch)
+        r = self._call("export", operation="bom_csv", ctx=None, project_path=target)
+        assert r["status"] == "error"
+        assert "outside the configured" in r["error"]
+
+    def test_export_thumbnail_rejects_out_of_root_project(self, tmp_path, monkeypatch):
+        target = self._strict(tmp_path, monkeypatch)
+        r = self._call("export", operation="thumbnail", ctx=None, project_path=target)
+        assert "outside the configured" in r["error"]
+
+    def test_drc_run_rejects_out_of_root_project(self, tmp_path, monkeypatch):
+        target = self._strict(tmp_path, monkeypatch)
+        r = self._call("drc", operation="run", ctx=None, project_path=target)
+        assert r["status"] == "error"
+        assert "outside the configured" in r["error"]
+
+    def test_drc_history_rejects_out_of_root_project(self, tmp_path, monkeypatch):
+        target = self._strict(tmp_path, monkeypatch)
+        r = self._call("drc", operation="history", ctx=None, project_path=target)
+        assert r["status"] == "error"
+        assert "outside the configured" in r["error"]
+
+    def test_drc_autofix_rejects_out_of_root_project_path(self, tmp_path, monkeypatch):
+        """pcb_path is in-root and valid; only project_path is outside."""
+        target = self._strict(tmp_path, monkeypatch)
+        pcb = tmp_path / "kicad_root" / "board.kicad_pcb"
+        pcb.write_text("")
+        r = self._call("drc", operation="autofix", ctx=None,
+                       pcb_path=str(pcb), project_path=target)
+        assert "outside the configured" in r["error"]
+        assert "Provide project_path explicitly" in r["error"]
+
+    def test_drc_history_not_rejected_when_strict_mode_off(self, tmp_path, monkeypatch):
+        """Same out-of-root path, strict unset: warn-only, so the traversal
+        error must NOT appear (the existing must_exist/"not found" behaviour
+        is unchanged)."""
+        monkeypatch.delenv("KICAD_MCP_STRICT_PATHS", raising=False)
+        _isolated_roots(monkeypatch, tmp_path)
+        target = self._outside_project(tmp_path)
+        r = self._call("drc", operation="history", ctx=None, project_path=target)
+        assert "outside the configured" not in str(r)
+
+    def test_missing_project_still_reports_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KICAD_MCP_STRICT_PATHS", raising=False)
+        _isolated_roots(monkeypatch, tmp_path)
+        missing = str(tmp_path / "nope" / "x.kicad_pro")
+        for tool, op in (("analyze", "bom"), ("export", "bom_csv"),
+                         ("export", "thumbnail"), ("drc", "run"), ("drc", "history")):
+            r = self._call(tool, operation=op, ctx=None, project_path=missing)
+            assert "not found" in r["error"].lower(), (tool, op, r)

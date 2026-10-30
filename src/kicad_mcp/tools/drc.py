@@ -18,14 +18,16 @@ from kicad_mcp.utils.drc_history import (
     save_drc_result,
 )
 from kicad_mcp.utils.file_utils import get_project_files
+from kicad_mcp.utils.path_validation import validate_project_path
 
 
 def _op_history(project_path: str) -> Dict[str, Any]:
     logger.debug("Getting DRC history for project: %s", project_path)
 
-    if not os.path.exists(project_path):
-        logger.warning("Project not found: %s", project_path)
-        return {"status": "error", "error": f"Project not found: {project_path}"}
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
+        logger.warning(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     history_info = get_drc_history_info(project_path)
     history_entries = history_info["entries"]
@@ -62,9 +64,10 @@ def _op_history(project_path: str) -> Dict[str, Any]:
 async def _op_run(project_path: str, ctx: Context | None) -> Dict[str, Any]:
     logger.debug("Running DRC check for project: %s", project_path)
 
-    if not os.path.exists(project_path):
-        logger.warning("Project not found: %s", project_path)
-        return {"status": "error", "error": f"Project not found: {project_path}"}
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
+        logger.warning(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     files = get_project_files(project_path)
     if "pcb" not in files:

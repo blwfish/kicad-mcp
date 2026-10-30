@@ -24,6 +24,7 @@ from kicad_mcp.utils.component_utils import get_component_type_from_reference
 from kicad_mcp.utils.file_utils import get_project_files
 from kicad_mcp.utils.kicad_cli import KiCadCLIError, get_kicad_cli_path
 from kicad_mcp.utils.kicad_utils import get_project_name_from_path
+from kicad_mcp.utils.path_validation import validate_project_path
 
 
 async def _op_analyze_bom(
@@ -34,11 +35,12 @@ async def _op_analyze_bom(
     """Analyze a KiCad project's Bill of Materials."""
     logger.debug("Analyzing BOM for project: %s", project_path)
 
-    if not os.path.exists(project_path):
-        logger.warning("Project not found: %s", project_path)
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
+        logger.warning(_pv_err)
         if ctx:
-            await ctx.info(f"Project not found: {project_path}")
-        return {"status": "error", "error": f"Project not found: {project_path}"}
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     if ctx:
         await ctx.report_progress(10, 100)
@@ -182,11 +184,12 @@ async def _op_export_bom_csv(
     """Export a CSV BOM from the project's schematic."""
     logger.debug("Exporting BOM for project: %s", project_path)
 
-    if not os.path.exists(project_path):
-        logger.warning("Project not found: %s", project_path)
+    _pv_err = validate_project_path(project_path)
+    if _pv_err:
+        logger.warning(_pv_err)
         if ctx:
-            await ctx.info(f"Project not found: {project_path}")
-        return {"status": "error", "error": f"Project not found: {project_path}"}
+            await ctx.info(_pv_err)
+        return {"status": "error", "error": _pv_err}
 
     if ctx:
         await ctx.report_progress(10, 100)
