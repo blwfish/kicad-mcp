@@ -226,6 +226,10 @@ class SchematicParser:
                     "Unbalanced parens at position %d (depth=%d at EOF); skipping s-expression",
                     pos, depth,
                 )
+                # Same counter the per-construct helpers use, so a truncated
+                # or corrupt schematic is visible in parse()'s result, not
+                # only in the log.
+                self._record_skip("unbalanced_sexpr")
                 continue
 
             matches.append(s_exp)

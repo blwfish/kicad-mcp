@@ -212,6 +212,37 @@ class TestExtractionSkipCounts:
         result = p.parse()
         assert result["extraction_skip_counts"] == {"no_connects": 1}
 
+    def test_unclosed_sexpr_is_counted(self, tmp_path):
+        # Truncated file: the final wire never closes (depth 1 at EOF). It is
+        # skipped from extraction AND must show up in the result dict, not
+        # only in the log.
+        p = _parser(tmp_path)
+        p.content = (
+            '(wire (pts (xy 0 0) (xy 10 10)))\n'
+            '(wire (pts (xy 1 1) (xy 2 2))\n'
+        )
+        result = p.parse()
+        assert len(result["wires"]) == 1
+        assert result["extraction_skip_counts"] == {"unbalanced_sexpr": 1}
+
+    def test_one_char_short_of_closing_is_counted(self, tmp_path):
+        # Boundary: exactly one ")" missing vs. exactly balanced.
+        p = _parser(tmp_path)
+        p.content = '(no_connect (at 2 2)\n'
+        assert p.parse()["extraction_skip_counts"] == {"unbalanced_sexpr": 1}
+        p2 = _parser(tmp_path)
+        p2.content = '(no_connect (at 2 2))\n'
+        assert p2.parse()["extraction_skip_counts"] == {}
+
+    def test_paren_inside_quoted_string_is_not_unbalanced(self, tmp_path):
+        # A literal ")" in a quoted value must not close the expression, and
+        # a literal "(" must not leave it open -- neither is a skip.
+        p = _parser(tmp_path)
+        p.content = '(label "NET (a" (at 1 1 0))\n(label "NET b)" (at 2 2 0))\n'
+        result = p.parse()
+        assert result["extraction_skip_counts"] == {}
+        assert len(result["labels"]) == 2
+
     def test_multiple_constructs_accumulate_independently(self, tmp_path):
         p = _parser(tmp_path)
         p.content = (
