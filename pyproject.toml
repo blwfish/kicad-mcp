@@ -32,7 +32,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "defusedxml>=0.7.1",
     "python-multipart>=0.0.32",
-    "mcp-events>=0.1.0",
+    "mcp-events~=0.1.0",
     # Not yet published to PyPI -- a PEP 508 direct reference (not a
     # [tool.uv.sources] override) so plain `pip install -e .` resolves it
     # too, not just `uv sync`. [tool.uv.sources] is uv-only; docs-check.yml
