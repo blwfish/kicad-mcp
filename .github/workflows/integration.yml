@@ -41,10 +41,9 @@ jobs:
   notify-on-failure:
     name: Notify on integration failure
     needs: integration
-    # `integration` uses a matrix with continue-on-error: true on kicad-9.0,
-    # so its job-level result only reflects kicad-10.0 (the non-continued
-    # leg) — this fires on a genuine kicad-10.0 break, not the known-flaky
-    # kicad-9.0 leg. Skipped for plain pull_request runs: a failure there is
+    # `integration` is a one-leg matrix (kicad-10.0), so its job-level result
+    # is that leg's — this fires on a genuine kicad-10.0 break. Skipped for plain
+    # pull_request runs: a failure there is
     # already visible to whoever's iterating on that branch. Filed for
     # push/schedule/merge_group instead — the cases where nothing else is
     # watching, which is exactly how this broke silently for a month.

@@ -15,7 +15,7 @@ matrix with no external firmware tree.
      SEAL it (it can't prove the intent is electrically correct — card correctness
      is the residual).
 
-Gated by KICAD_INTEGRATION=1; runs on the self-hosted KiCad 9/10 matrix.
+Gated by KICAD_INTEGRATION=1; runs on the self-hosted KiCad 10 matrix.
 """
 from __future__ import annotations
 

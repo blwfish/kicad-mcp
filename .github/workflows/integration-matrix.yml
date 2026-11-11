@@ -9,7 +9,9 @@ name: Integration matrix (reusable)
 #
 # Check names: the callers name their job `integration`, and GitHub renders a
 # reusable-workflow job as "<caller job> / <called job>", so these legs surface
-# as "integration / kicad-10.0" and "integration / kicad-9.0".
+# as "integration / kicad-10.0". (A kicad-9.0 leg existed until 2026-11-11 and was
+# dropped: upstream ended 9.x with 9.0.9 -- the last bug-fix release -- when 10.0
+# shipped in March 2026, and firmware-generated schematics don't load in 9.0.9.)
 #
 # Do NOT add a `concurrency:` block here: a called workflow that declares the
 # same group as its caller cancels/deadlocks against it. Concurrency belongs to
@@ -28,21 +30,21 @@ jobs:
     strategy:
       fail-fast: false
       # Multiple self-hosted runners are registered under the "macOS" label but
-      # share one physical machine, so the kicad-9.0 and kicad-10.0 legs can be
-      # picked up concurrently -- each launching its own batch of FreeRouter
-      # JVMs during autoroute tests. Investigated 2026-09-24 (PR #148): a CI-only
+      # share one physical machine, so when this matrix had two legs (kicad-9.0
+      # and kicad-10.0) they could be picked up concurrently -- each launching
+      # its own batch of FreeRouter JVMs during autoroute tests. Investigated 2026-09-24 (PR #148): a CI-only
       # "hang" in test_expander_terminals_to_routed_pcb was actually every pass
       # completing successfully but ~10x slower than normal (loadavg 32-33),
       # consistent with both legs' FreeRouter batches colliding at the same
-      # relative test-execution moment. max-parallel: 1 forces the two legs to
-      # run one at a time so they never compete for the machine's CPU/JVMs.
+      # relative test-execution moment. max-parallel: 1 forces legs to run one
+      # at a time so they never compete for the machine's CPU/JVMs; it is kept
+      # (and the matrix kept as a list) so a future second KiCad version stays
+      # serialized rather than reintroducing that collision.
       max-parallel: 1
       matrix:
         include:
           - kicad: "10.0"
             continue_on_error: false
-          - kicad: "9.0"
-            continue_on_error: true
     continue-on-error: ${{ matrix.continue_on_error }}
 
     steps:

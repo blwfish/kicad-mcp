@@ -11,7 +11,7 @@ unit-tier meta-gate (``test_card_fields_all_classified``) keeps complete. So a n
 pin-bearing card field is both validated here AND can't escape classification: the
 two gates can never drift (the port_pins lesson).
 
-Gated by KICAD_INTEGRATION=1; runs on the self-hosted KiCad 9/10 matrix.
+Gated by KICAD_INTEGRATION=1; runs on the self-hosted KiCad 10 matrix.
 """
 import os
 

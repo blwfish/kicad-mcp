@@ -1,7 +1,7 @@
 """Integration tests against a real KiCad installation.
 
 Run with: KICAD_INTEGRATION=1 pytest tests/integration/ -v
-Override install: KICAD_APP_PATH=$HOME/kicad-versions/9.0/KiCad.app
+Override install: KICAD_APP_PATH=$HOME/kicad-versions/10.0/KiCad.app
 
 Assertion rules:
 - Assert on JSON structure (keys, status field), not exact values.

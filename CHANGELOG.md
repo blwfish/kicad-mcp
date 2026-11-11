@@ -4,6 +4,20 @@ All notable changes to kicad-mcp are documented here.
 
 ## [Unreleased]
 
+### Removed
+
+- **KiCad 9.0 is no longer tested.** Upstream ended the 9.x series when 10.0
+  shipped (9.0.9, April 2026, was the last bug-fix release), so the advisory
+  `integration / kicad-9.0` CI leg is gone and KiCad 10.0 is the only supported,
+  tested version. This also surfaced that it had never been a real 9.0 check:
+  the runner's `PATH` resolved `kicad-cli` to the Homebrew 10.x install for
+  every leg. Each leg now pins `KICAD_CLI_PATH` to its own `KiCad.app`. With
+  that pin, 9.0.9 fails to load firmware-generated schematics (`Failed to load
+  schematic`; at least `duplicate_pin_numbers_are_jumpers`, a 10-only token,
+  is present in them) — not fixed, since 9.x is unsupported. The version-tolerant
+  code paths (e.g. `alt_lib_ids`, `GetDoNotAllowZoneFills` fallbacks) were left
+  in place.
+
 ### Changed
 
 - **Autorouting is reproducible.** FreeRouter is a pure function of the DSN it

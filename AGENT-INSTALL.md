@@ -14,11 +14,11 @@ kicad-mcp is a Model Context Protocol (MCP) server providing <!-- tool-count -->
 
 The following must be present on the system. Check each one. Install anything missing — the commands and URLs are provided for each platform.
 
-### 1. KiCad 8+ (required)
+### 1. KiCad 10+ (required)
 
 KiCad provides the pcbnew Python bindings that all PCB tools depend on. The MCP server calls KiCad's bundled Python as a subprocess — it does not import pcbnew directly.
 
-**Check:** `kicad-cli --version` — must be 8.0 or later (9.x is fine).
+**Check:** `kicad-cli --version` — must be 10.0 or later. 10.0 is the only version CI tests; upstream ended KiCad 9.x (9.0.9 was its last release), and firmware-generated schematics are known not to load in 9.0.9.
 
 **Install:**
 - **macOS:** GUI installer from https://www.kicad.org/download/ (drag to Applications)

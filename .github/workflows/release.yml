@@ -37,9 +37,9 @@ jobs:
   # Gate the release on the SAME self-hosted KiCad integration matrix that runs
   # on main (integration-matrix.yml), so a tag can never cut a release with the
   # board pipeline red (the gap that let v0.11.0 publish over a red integration
-  # run). kicad-10.0 is the hard gate; kicad-9.0 is advisory (continue-on-error)
-  # -- its FreeRouter is chronically marginal. One shared definition means the
-  # machine-wide flock and max-parallel apply here too.
+  # run). kicad-10.0 is the hard gate (the only leg; 9.x was dropped when
+  # upstream ended it). One shared definition means the machine-wide flock and
+  # max-parallel apply here too.
   integration:
     uses: ./.github/workflows/integration-matrix.yml
 
