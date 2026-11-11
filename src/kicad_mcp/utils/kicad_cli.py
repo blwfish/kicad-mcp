@@ -38,6 +38,11 @@ class KiCadCLIManager:
         """Initialize the CLI manager."""
         self._cached_cli_path: str | None = None
         self._cache_validated = False
+        # Human-readable reason the most recent _validate_cli_path probe failed
+        # (None when it last succeeded / never ran). Surfaced in the WARNING
+        # find_kicad_cli emits so CI logs (WARNING+) can tell a hang from a
+        # nonzero exit from a missing binary.
+        self._last_validation_failure: str | None = None
         self._system = platform.system()
 
     def find_kicad_cli(self, force_refresh: bool = False) -> str | None:
@@ -62,7 +67,11 @@ class KiCadCLIManager:
                 logger.info("Found KiCad CLI at: %s", cli_path)
                 return cli_path
             else:
-                logger.warning("Found KiCad CLI at %s but validation failed", cli_path)
+                logger.warning(
+                    "Found KiCad CLI at %s but validation failed: %s",
+                    cli_path,
+                    self._last_validation_failure or "(no reason recorded)",
+                )
 
         self._cached_cli_path = None
         self._cache_validated = False
@@ -212,6 +221,7 @@ class KiCadCLIManager:
             True if CLI is working
         """
         attempts = max(1, KICAD_CLI_VALIDATE_ATTEMPTS)
+        self._last_validation_failure = None
         for attempt in range(attempts):
             try:
                 result = subprocess.run(
@@ -221,7 +231,12 @@ class KiCadCLIManager:
                     timeout=TIMEOUT_CONSTANTS["kicad_cli_version_check"],
                 )
                 if result.returncode == 0:
+                    self._last_validation_failure = None
                     return True
+                self._last_validation_failure = (
+                    f"--version exited {result.returncode}: "
+                    f"{result.stderr.strip() or '(no stderr)'}"
+                )
                 logger.debug(
                     "KiCad CLI validation attempt %d/%d for %s exited %s: %s",
                     attempt + 1,
@@ -231,6 +246,9 @@ class KiCadCLIManager:
                     result.stderr.strip() or "(no stderr)",
                 )
             except subprocess.TimeoutExpired as e:
+                self._last_validation_failure = (
+                    f"--version timed out after {e.timeout}s (process hung)"
+                )
                 # Distinguished from the catch-all below (finding: "losing
                 # the timeout-vs-not-found distinction") -- a hung process
                 # and a missing/crashing binary call for different operator
@@ -243,6 +261,7 @@ class KiCadCLIManager:
                     e.timeout,
                 )
             except (subprocess.SubprocessError, OSError) as e:
+                self._last_validation_failure = f"--version could not run: {e}"
                 logger.debug(
                     "KiCad CLI validation attempt %d/%d for %s failed: %s",
                     attempt + 1,

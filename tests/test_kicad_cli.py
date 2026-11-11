@@ -210,3 +210,78 @@ class TestFormatCliError:
     def test_whitespace_only_streams_treated_as_empty(self):
         e = self._err(stderr="   \n", stdout="\t")
         assert format_cli_error(e) == "(no output; exit code 1)"
+
+
+class TestFinalWarningCarriesFailureReason:
+    """CI logs show WARNING+ only, but the per-attempt reasons are DEBUG.
+    The 2026-11-09 PR #193 kicad-10.0 run logged just 'validation failed'
+    for 26 tests, so a hung CLI was indistinguishable from a crashing or
+    missing one. The terminal WARNING must carry the last attempt's reason."""
+
+    def _final_warning(self, caplog, side_effects):
+        import logging
+        mgr = _manager_with_detect()
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run", side_effect=side_effects),
+            patch("kicad_mcp.utils.kicad_cli.time.sleep"),
+            caplog.at_level(logging.WARNING, logger="kicad_mcp.utils.kicad_cli"),
+        ):
+            assert mgr.find_kicad_cli() is None
+        msgs = [r.message for r in caplog.records if "validation failed" in r.message]
+        assert len(msgs) == 1
+        return mgr, msgs[0]
+
+    def test_timeout_reason_names_hang(self, caplog):
+        effects = [
+            subprocess.TimeoutExpired(cmd="kicad-cli", timeout=10.0)
+            for _ in range(KICAD_CLI_VALIDATE_ATTEMPTS)
+        ]
+        _, msg = self._final_warning(caplog, effects)
+        assert "timed out after 10.0s" in msg and "hung" in msg
+
+    def test_nonzero_reason_has_returncode_and_stderr(self, caplog):
+        effects = [_nonzero(stderr="dyld: library not loaded")
+                   for _ in range(KICAD_CLI_VALIDATE_ATTEMPTS)]
+        _, msg = self._final_warning(caplog, effects)
+        assert "exited 1" in msg and "dyld: library not loaded" in msg
+
+    def test_nonzero_empty_stderr_says_so(self, caplog):
+        effects = [_nonzero(stderr="") for _ in range(KICAD_CLI_VALIDATE_ATTEMPTS)]
+        _, msg = self._final_warning(caplog, effects)
+        assert "(no stderr)" in msg
+
+    def test_oserror_reason_names_cause(self, caplog):
+        effects = [PermissionError("Operation not permitted")
+                   for _ in range(KICAD_CLI_VALIDATE_ATTEMPTS)]
+        _, msg = self._final_warning(caplog, effects)
+        assert "could not run" in msg and "Operation not permitted" in msg
+
+    def test_reason_is_from_last_attempt_not_first(self, caplog):
+        effects = [_nonzero(stderr="first")] * (KICAD_CLI_VALIDATE_ATTEMPTS - 1) + [
+            subprocess.TimeoutExpired(cmd="kicad-cli", timeout=10.0)
+        ]
+        _, msg = self._final_warning(caplog, effects)
+        assert "timed out" in msg and "first" not in msg
+
+    def test_success_after_failure_clears_reason(self):
+        mgr = _manager_with_detect()
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run",
+                  side_effect=[_nonzero(stderr="transient"), _ok()]),
+            patch("kicad_mcp.utils.kicad_cli.time.sleep"),
+        ):
+            assert mgr.find_kicad_cli() == _FAKE_CLI
+        assert mgr._last_validation_failure is None
+
+    def test_stale_reason_does_not_leak_into_next_validation(self):
+        """A later probe that fails differently must not report the old reason."""
+        mgr = _manager_with_detect()
+        mgr._last_validation_failure = "stale reason from a previous call"
+        with (
+            patch("kicad_mcp.utils.kicad_cli.subprocess.run",
+                  side_effect=[_nonzero(stderr="fresh")] * KICAD_CLI_VALIDATE_ATTEMPTS),
+            patch("kicad_mcp.utils.kicad_cli.time.sleep"),
+        ):
+            assert mgr.find_kicad_cli() is None
+        assert "stale" not in (mgr._last_validation_failure or "")
+        assert "fresh" in mgr._last_validation_failure

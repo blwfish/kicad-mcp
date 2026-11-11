@@ -57,6 +57,18 @@ jobs:
             exit 1
           fi
           echo "KICAD_APP_PATH=$kicad_app" >> "$GITHUB_ENV"
+          # Pin the CLI to this leg's KiCad. kicad-cli detection checks
+          # KICAD_CLI_PATH, then PATH, then KICAD_APP_PATH -- and the runner's
+          # PATH has /opt/homebrew/bin first, whose kicad-cli symlinks to the
+          # Homebrew-installed KiCad (a different version than the pinned
+          # one). Without this, every matrix leg silently tested that one copy.
+          kicad_cli="$kicad_app/Contents/MacOS/kicad-cli"
+          if [ ! -x "$kicad_cli" ]; then
+            echo "kicad-cli not executable at $kicad_cli"
+            exit 1
+          fi
+          echo "KICAD_CLI_PATH=$kicad_cli" >> "$GITHUB_ENV"
+          "$kicad_cli" --version
 
       - name: Install Python dependencies
         run: uv sync
