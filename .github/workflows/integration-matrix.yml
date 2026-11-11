@@ -84,6 +84,20 @@ jobs:
         env:
           KICAD_CONFIG_HOME: ${{ runner.temp }}/kicad-config
         #
+        # KNOWN UNEXPLAINED FLAKE -- "KiCad CLI not found" / "netlist export failed".
+        # Seen 2026-06 (first few tests, self-recovered; see commit 37f53bc's
+        # retry) and 2026-11-09 (PR #193: all 26 CLI-dependent tests failed for
+        # the whole ~18 min run, which looks like kicad-cli --version hanging:
+        # 3 probes x 10 s timeout per call). Root cause NOT established. The
+        # PATH-resolves-to-Homebrew bug fixed above is a real discrepancy but is
+        # not shown to be the cause; the machine's macOS was also updated that
+        # afternoon, so green runs since are not evidence it is fixed.
+        # If you see it again, the log now says WHY: grep the job log for
+        # "validation failed:" -- it records "--version timed out after Ns (process
+        # hung)", "--version exited N: <stderr>", or "--version could not run: <err>".
+        # Capture that line (and anything else running on the runner machine) in
+        # a new issue instead of re-running blind.
+        #
         # Held under a machine-wide flock so *different runs* (two PRs, or a PR
         # plus a push to main) also never overlap on the shared machine --
         # max-parallel above only serializes legs within one run, and Actions
