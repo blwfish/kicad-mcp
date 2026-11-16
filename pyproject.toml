@@ -26,7 +26,7 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=4.1.6",
+    "fastmcp>=4.1.8",
     "authlib>=1.9.5",
     "kicad-sch-api>=0.5.6",
     "pyyaml>=6.0.3",
@@ -42,7 +42,7 @@ dependencies = [
     # constraint once it's on PyPI.
     "mcp-agent-notes @ git+https://github.com/blwfish/mcp-agent-notes.git@dd83adf8bb97755f91dbfcf857dbaeb987883f8f",
     "networkx>=3.0",
-    "filelock>=4.2.9",
+    "filelock>=4.2.10",
 ]
 
 [project.scripts]
@@ -63,14 +63,14 @@ packages = ["src/kicad_mcp"]
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1",
+    "pytest-asyncio>=1.5.0",
     "pytest-mock>=3.17.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.17.4",
+    "ruff>=0.17.5",
     "mypy>=2.4.1",
     "pip-audit>=2.10.1",
     "pytest-timeout>=2.3.0",
-    "hypothesis>=6.170.14",
+    "hypothesis>=6.170.15",
     # bom.py's rich analysis (counts/categories/cost/supplier-info) is a soft
     # runtime dependency -- try/except ImportError, degrades to basic counts
     # for end users who don't install it. But that meant the entire
