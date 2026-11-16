@@ -479,6 +479,17 @@ class TestAttributeLutHelpers:
         assert tier == "extended"
         assert drops["unrecognized_tier_value"] == 1
 
+    def test_explicit_extended_value_is_recognized_not_counted(self):
+        """The live jlcparts LUT carries the literal "Extended" (and its
+        case variants) for most of the catalog; it must map to "extended"
+        without incrementing the unrecognized-value counter."""
+        for raw in ("Extended", "extended", "EXTENDED"):
+            lut = [["Basic/Extended", {"primary": "default",
+                                        "values": {"default": [raw, "string"]}}]]
+            drops: dict[str, int] = {}
+            assert _tier_from_attributes([0], lut, drops=drops) == "extended"
+            assert drops.get("unrecognized_tier_value", 0) == 0
+
     def test_recognized_tier_value_does_not_count_as_drop(self):
         drops: dict[str, int] = {}
         _tier_from_attributes([1], self.SAMPLE_LUT, drops=drops)   # "Basic"
@@ -990,6 +1001,174 @@ class TestBuildDbDropCountsAggregation:
         assert meta["total_components"] == 1
         assert meta["rows_dropped_by_reason"]["bad_attr_index"] == 1
         assert meta["rows_dropped_by_reason"]["bad_tier_index"] == 1
+
+
+class TestRefreshIsAtomic:
+    """Regression: ``lcsc(refresh_snapshot)`` on a DB built by an older release
+    failed with "table components has no column named attributes" -- and,
+    because the build used to DELETE the live tables in place before inserting,
+    the failed refresh also emptied the existing snapshot.  The refresh now
+    builds into a side file and swaps it in only on success."""
+
+    COL_MAP = {"lcsc": 0, "mfr": 1, "joints": 2, "description": 3,
+               "price": 4, "attributes": 5, "stock": 6, "datasheet": 7}
+    V1_DDL = """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE components (
+            lcsc TEXT PRIMARY KEY, mfr TEXT, manufacturer TEXT, package TEXT,
+            joints INTEGER,
+            assembly_tier TEXT CHECK(assembly_tier IN ('basic','preferred','extended')),
+            description TEXT, datasheet TEXT, stock INTEGER, price TEXT);
+        CREATE VIRTUAL TABLE components_fts
+            USING fts5(lcsc, description, content=components, content_rowid=rowid);
+    """
+
+    def _make_v1_db(self, path):
+        import sqlite3
+        conn = sqlite3.connect(str(path))
+        conn.executescript(self.V1_DDL)
+        conn.execute(
+            "INSERT INTO components VALUES "
+            "('COLD1','OLDPART','Vendor','0603',2,'basic','old v1 part','',5,'[]')")
+        conn.execute("INSERT INTO components_fts(components_fts) VALUES('rebuild')")
+        conn.execute("INSERT INTO metadata VALUES ('snapshot_date','2026-05-27')")
+        conn.commit()
+        conn.close()
+
+    def _patch_network(self, monkeypatch, *, shards=("shard1.jsonl",), fail=()):
+        manifest = json.dumps({
+            "created": "2026-11-15T00:00:00Z",
+            "files": {f: {"kind": "components"} for f in shards},
+        }).encode()
+        header = json.dumps(self.COL_MAP)
+        rows = "\n".join(
+            json.dumps([f"C{i}", f"MFR{i}", 2, f"I2C LED driver {i}", "[]", [], 10, "http"])
+            for i in range(3))
+        shard_bytes = (header + "\n" + rows).encode()
+
+        def fake_fetch_url(url, timeout=60):
+            return manifest
+
+        def fake_fetch_gzip(url):
+            if "attributes-lut" in url:
+                return json.dumps([]).encode()
+            name = url.rsplit("/", 1)[-1]
+            if name in fail:
+                raise OSError(f"boom {name}")
+            return shard_bytes
+
+        monkeypatch.setattr(lcsc_db, "_fetch_url", fake_fetch_url)
+        monkeypatch.setattr(lcsc_db, "_fetch_gzip", fake_fetch_gzip)
+
+    def _count(self, path, where=""):
+        import sqlite3
+        conn = sqlite3.connect(str(path))
+        try:
+            return conn.execute(f"SELECT COUNT(*) FROM components {where}").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_fresh_db_builds(self, tmp_path, monkeypatch):
+        self._patch_network(monkeypatch)
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        meta = lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert meta["total_components"] == 3
+        assert self._count(db) == 3
+        assert json.loads(meta_path.read_text())["snapshot_date"] == "2026-11-15"
+        assert not (tmp_path / "j.db.building").exists()
+        lcsc_db.validate_schema(db)
+        # the new column is populated, not just present
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        assert conn.execute("SELECT attributes FROM components LIMIT 1").fetchone()[0] == "{}"
+        conn.close()
+
+    def test_refresh_over_v1_schema_db_succeeds(self, tmp_path, monkeypatch):
+        """The reported bug: v1 DB (no `attributes` column) + refresh."""
+        self._patch_network(monkeypatch)
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        self._make_v1_db(db)
+        meta = lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert meta["total_components"] == 3
+        assert self._count(db) == 3
+        assert self._count(db, "WHERE lcsc='COLD1'") == 0   # old snapshot replaced
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(components)")}
+        conn.close()
+        assert "attributes" in cols
+
+    def test_stale_wal_of_old_db_not_replayed_onto_new_db(self, tmp_path, monkeypatch):
+        self._patch_network(monkeypatch)
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        self._make_v1_db(db)
+        (tmp_path / "j.db-wal").write_bytes(b"garbage that is not a valid WAL")
+        (tmp_path / "j.db-shm").write_bytes(b"garbage")
+        lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert self._count(db) == 3
+
+    def test_schema_migration_adds_attributes_to_v1_table(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(self.V1_DDL)
+        conn.execute("INSERT INTO components (lcsc, assembly_tier) VALUES ('C1','basic')")
+        lcsc_db._create_schema(conn)
+        assert conn.execute("SELECT attributes FROM components").fetchone()[0] is None
+        lcsc_db._create_schema(conn)   # idempotent: second run must not raise
+        conn.execute("INSERT INTO components (lcsc, assembly_tier, attributes) "
+                     "VALUES ('C2','basic','{}')")
+
+    def test_failed_download_leaves_existing_db_and_meta_intact(self, tmp_path, monkeypatch):
+        self._patch_network(monkeypatch, shards=("a.jsonl", "b.jsonl"), fail=("b.jsonl",))
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        self._make_v1_db(db)
+        meta_path.write_text('{"snapshot_date": "2026-05-27"}')
+        before = meta_path.read_text()
+        with pytest.raises(RuntimeError, match="partial catalog"):
+            lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert self._count(db) == 1
+        assert self._count(db, "WHERE lcsc='COLD1'") == 1
+        assert meta_path.read_text() == before
+        assert not (tmp_path / "j.db.building").exists()
+        # old snapshot still searchable through its FTS index
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        hits = conn.execute(
+            "SELECT lcsc FROM components_fts WHERE components_fts MATCH 'old'").fetchall()
+        conn.close()
+        assert [h[0] for h in hits] == ["COLD1"]
+
+    def test_unexpected_exception_mid_build_is_wrapped_and_old_db_survives(
+        self, tmp_path, monkeypatch,
+    ):
+        self._patch_network(monkeypatch)
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        self._make_v1_db(db)
+
+        def boom(*a, **k):
+            import sqlite3
+            raise sqlite3.OperationalError("simulated disk failure")
+
+        monkeypatch.setattr(lcsc_db, "_insert_component_batch", boom)
+        with pytest.raises(RuntimeError, match="lcsc_refresh_failed.*simulated disk failure"):
+            lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert self._count(db, "WHERE lcsc='COLD1'") == 1
+        assert not (tmp_path / "j.db.building").exists()
+
+    def test_empty_build_does_not_replace_existing_db(self, tmp_path, monkeypatch):
+        self._patch_network(monkeypatch, shards=())
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        self._make_v1_db(db)
+        with pytest.raises(RuntimeError, match="0 components"):
+            lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert self._count(db, "WHERE lcsc='COLD1'") == 1
+
+    def test_stale_building_file_from_crashed_build_is_discarded(self, tmp_path, monkeypatch):
+        self._patch_network(monkeypatch)
+        db, meta_path = tmp_path / "j.db", tmp_path / "j_meta.json"
+        (tmp_path / "j.db.building").write_bytes(b"half written junk")
+        lcsc_db.build_db_from_jsonl(db_path=db, meta_path=meta_path)
+        assert self._count(db) == 3
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ The local DB is stored at ~/.cache/kicad-mcp/jlcparts.db with a companion metada
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import logging
@@ -254,7 +255,23 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS components_fts
             USING fts5(lcsc, description, content=components, content_rowid=rowid);
     """)
+    _migrate_components_columns(conn)
     conn.commit()
+
+
+def _migrate_components_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after v1 to a pre-existing ``components`` table.
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op against an old table, so a DB
+    built by an earlier release (schema v1: no ``attributes``) kept its old
+    shape while the insert path wrote the new column -> "table components has
+    no column named attributes". ALTER ... ADD COLUMN is cheap in SQLite (no
+    table rewrite) and existing rows read back NULL, which the query layer
+    already treats as {}.
+    """
+    present = {r[1] for r in conn.execute("PRAGMA table_info(components)").fetchall()}
+    if "attributes" not in present:
+        conn.execute("ALTER TABLE components ADD COLUMN attributes TEXT")
 
 
 def _validate_schema(conn: sqlite3.Connection) -> None:
@@ -360,6 +377,12 @@ def _tier_from_attributes(
                     return "basic"
                 if v == "preferred":
                     return "preferred"
+                if v == "extended":
+                    # A recognized value, not drift: live snapshots carry the
+                    # literal "Extended" for ~2/3 of the catalog. Counting it
+                    # as unrecognized made every refresh report ~390k phantom
+                    # "dropped" rows (rows_dropped in the metadata).
+                    return "extended"
             # The "Basic/Extended" tier attribute IS present, but its value
             # is missing/malformed or a string neither "basic" nor
             # "preferred" (a typo, a new JLCPCB tier not yet mapped here) --
@@ -538,8 +561,50 @@ def build_db_from_jsonl(
     """
     db_path = db_path if db_path is not None else DB_PATH
     meta_path = meta_path if meta_path is not None else META_PATH
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # The live DB is never written to during a refresh: everything is built
+    # into a side file and swapped in atomically only once the whole build
+    # succeeded and looks sane. A failed/aborted refresh therefore leaves the
+    # existing snapshot (and its metadata) exactly as it was.
+    building_path = db_path.with_name(db_path.name + ".building")
+    _remove_sqlite_files(building_path)  # leftover from a crashed earlier build
+    try:
+        meta = _build_into(building_path, db_path, meta_path, progress_callback)
+    except BaseException as e:
+        _remove_sqlite_files(building_path)
+        if isinstance(e, Exception) and not isinstance(e, RuntimeError):
+            # Callers (the lcsc tool) report RuntimeError as a refresh failure
+            # with the cached snapshot still usable; anything else (sqlite3
+            # errors etc.) used to escape as a raw tool crash.
+            raise RuntimeError(
+                f"lcsc_refresh_failed: {type(e).__name__}: {e}"
+            ) from e
+        raise
+    return meta
+
+
+def _remove_sqlite_files(path: Path) -> None:
+    """Delete a SQLite file plus its -wal/-shm/-journal companions."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        with contextlib.suppress(FileNotFoundError):
+            path.with_name(path.name + suffix).unlink()
+
+
+def _remove_sqlite_sidecars(path: Path) -> None:
+    """Delete only the -wal/-shm/-journal companions of ``path``."""
+    for suffix in ("-wal", "-shm", "-journal"):
+        with contextlib.suppress(FileNotFoundError):
+            path.with_name(path.name + suffix).unlink()
+
+
+def _build_into(
+    building_path: Path,
+    db_path: Path,
+    meta_path: Path,
+    progress_callback: Any,
+) -> dict[str, Any]:
+    """Build the snapshot into ``building_path`` then atomically publish it."""
     # 1. Fetch manifest
     logger.info("Fetching jlcparts manifest...")
     try:
@@ -559,17 +624,12 @@ def build_db_from_jsonl(
     lut: list[list] = json.loads(lut_data)
     logger.info("Loaded attributes LUT with %d entries", len(lut))
 
-    # 3. Build DB
-    conn = _db_connect(db_path)
+    # 3. Build DB (fresh side file: always the current schema, no stale rows)
+    conn = _db_connect(building_path)
     _create_schema(conn)
 
-    # Clear existing component data for a fresh build
-    conn.execute("DELETE FROM components")
-    conn.execute("DELETE FROM components_fts")
-    conn.execute("DELETE FROM metadata")
-    conn.commit()
-
     total_inserted = 0
+    shards_failed: list[str] = []
     # A plain dict pre-declaring only 4 keys crashed with KeyError the first
     # time `drop_counts[reason] += count` (below) saw ANY of the other
     # reason keys _decode_shard_rows can actually report (bad_attr_index,
@@ -590,7 +650,8 @@ def build_db_from_jsonl(
         try:
             shard_bytes = _fetch_gzip(url)
         except Exception as e:
-            logger.warning("Failed to fetch shard %s: %s — skipping", fname, e)
+            logger.warning("Failed to fetch shard %s: %s", fname, e)
+            shards_failed.append(fname)
             continue
 
         lines = shard_bytes.decode("utf-8").splitlines()
@@ -631,6 +692,20 @@ def build_db_from_jsonl(
 
         time.sleep(0.05)  # polite throttle
 
+    if shards_failed:
+        conn.close()
+        raise RuntimeError(
+            f"lcsc_snapshot_unavailable: {len(shards_failed)} of {len(shard_files)} "
+            f"shard(s) failed to download (first: {shards_failed[0]}); refusing to "
+            "replace the existing snapshot with a partial catalog"
+        )
+    if total_inserted == 0:
+        conn.close()
+        raise RuntimeError(
+            "lcsc_snapshot_unavailable: build produced 0 components; "
+            "keeping the existing snapshot"
+        )
+
     # Rebuild FTS
     conn.execute("INSERT INTO components_fts(components_fts) VALUES('rebuild')")
     conn.commit()
@@ -656,9 +731,19 @@ def build_db_from_jsonl(
     conn.execute("INSERT OR REPLACE INTO metadata VALUES ('rows_dropped', ?)", (str(rows_dropped),))
     conn.execute("INSERT OR REPLACE INTO metadata VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.commit()
+    # Fold the WAL into the main file so the side file is self-contained
+    # before it is renamed over the live DB.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.close()
 
-    meta_path.write_text(json.dumps(meta, indent=2))
+    # Publish: a stale -wal/-shm belonging to the OLD db file must not be
+    # replayed against the new one, so drop them first, then rename atomically.
+    _remove_sqlite_sidecars(db_path)
+    _remove_sqlite_sidecars(building_path)
+    os.replace(building_path, db_path)
+    meta_tmp = meta_path.with_name(meta_path.name + ".tmp")
+    meta_tmp.write_text(json.dumps(meta, indent=2))
+    os.replace(meta_tmp, meta_path)
     logger.info("jlcparts DB built: %d components (%d dropped), snapshot_date=%s",
                 total_inserted, rows_dropped, snapshot_date)
     return meta
